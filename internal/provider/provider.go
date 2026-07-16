@@ -12,7 +12,7 @@ const TIMEOUT = 5 * time.Second
 type Provider interface {
 	ID() string
 	Name() string
-	Platform() string
+	Platform() Platform
 	StartAdapter(ctx context.Context) error
 	StopAdapter(ctx context.Context) error
 	SendMessage(ctx context.Context, msg *Message)
