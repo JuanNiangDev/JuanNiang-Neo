@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // Config OneBot11 适配器配置。
@@ -80,14 +81,35 @@ func (p *Provider) SelfID() int64 {
 }
 
 // UpdateConfig 热更新配置。仅 Token 和 Admins 可在运行时更新, Addr/Port 需重启。
-func (p *Provider) UpdateConfig(cfg Config) {
+func (p *Provider) UpdateConfig(cfg Config) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	defer func() {
+		cancel()
+		p.mu.Unlock()
+	}()
+
 	p.cfg.Token = cfg.Token
 	if cfg.Admins != nil {
 		p.cfg.Admins = append([]int64{}, cfg.Admins...)
 	}
+
+	slog.Info("provider 重启中")
+
+	if err := p.Stop(ctx); err != nil {
+		slog.Error("provider 配置更新出错 (Stop)", "err", err.Error())
+		return err
+	}
+
+	if err := p.Start(ctx); err != nil {
+		slog.Error("provider 配置更新出错 (Start)", "err", err.Error())
+		return err
+	}
+
 	slog.Info("provider 配置已更新")
+
+	return nil
 }
 
 // Status 返回适配器当前运行状态。
