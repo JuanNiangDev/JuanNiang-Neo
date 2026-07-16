@@ -2,89 +2,122 @@ package provider
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"log/slog"
 	"sync"
-	"time"
 )
 
-const TIMEOUT = 5 * time.Second
-
-type Provider interface {
-	ID() string
-	Name() string
-	Platform() Platform
-	StartAdapter(ctx context.Context) error
-	StopAdapter(ctx context.Context) error
-	SendMessage(ctx context.Context, msg *Message)
-	Register(messageChan chan Message)
+// Config OneBot11 适配器配置。
+type Config struct {
+	Addr   string // 监听地址, 格式 host:port
+	Port   int
+	Token  string
+	Admins []int64
 }
 
-type ProviderHub struct {
-	mu             sync.RWMutex
-	MessageChan    chan Message
-	ActiveProvider map[string]Provider
+// Provider 是 OneBot11 协议适配器, 管理 WebSocket 连接并提供 OneBot11 API。
+// Agent 通过 Events() 获取事件流, 通过 API 方法调用 OneBot11 接口。
+type Provider struct {
+	cfg    Config
+	server *wsServer
+	events chan Event
+	mu     sync.RWMutex
+	closed bool
 }
 
-func NewProviderHub() *ProviderHub {
-	return &ProviderHub{
-		mu:             sync.RWMutex{},
-		MessageChan:    make(chan Message),
-		ActiveProvider: make(map[string]Provider),
+// New 创建 Provider 实例。
+func New(cfg Config) *Provider {
+	return &Provider{
+		cfg:    cfg,
+		events: make(chan Event, 128),
 	}
 }
 
-func (r *ProviderHub) StartProvider(ctx context.Context, provider Provider) error {
-	ctx, cancel := context.WithTimeout(ctx, TIMEOUT)
+// Start 启动 WebSocket 服务器, 开始接收事件。
+func (p *Provider) Start(ctx context.Context) error {
+	addr := p.resolveAddr()
 
-	r.mu.Lock()
-	defer func() {
-		cancel()
-		r.mu.Unlock()
-	}()
-
-	if _, ok := r.ActiveProvider[provider.ID()]; ok {
-		return errors.New("provider already started")
+	srv, err := newWSServer(ctx, addr, p.cfg.Token, p.events)
+	if err != nil {
+		return fmt.Errorf("provider start: %w", err)
 	}
-
-	if err := provider.StartAdapter(ctx); err != nil {
-		return err
-	}
-
-	provider.Register(r.MessageChan)
-
-	r.ActiveProvider[provider.ID()] = provider
-
+	p.server = srv
+	slog.Info("provider 已启动", "addr", addr)
 	return nil
 }
 
-func (r *ProviderHub) StopProvider(ctx context.Context, providerID string) error {
-	ctx, cancel := context.WithTimeout(ctx, TIMEOUT)
+// Stop 关闭 WebSocket 服务器和事件通道。
+func (p *Provider) Stop(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	r.mu.Lock()
-	defer func() {
-		cancel()
-		r.mu.Unlock()
-	}()
-
-	provider, ok := r.ActiveProvider[providerID]
-
-	if !ok {
-		return errors.New("provider not started")
+	if p.closed {
+		return nil
 	}
+	p.closed = true
 
-	if err := provider.StopAdapter(ctx); err != nil {
-		return err
+	if p.server != nil {
+		p.server.stop()
+		p.server = nil
 	}
+	close(p.events)
 
-	delete(r.ActiveProvider, providerID)
-
-	provider = nil
-
+	slog.Info("provider 已停止")
 	return nil
 }
 
-func (r *ProviderHub) GetProviderStatus(providerID string) bool {
-	_, ok := r.ActiveProvider[providerID]
+// Events 返回只读事件通道, Agent 通过此通道接收所有 OneBot11 事件。
+func (p *Provider) Events() <-chan Event {
+	return p.events
+}
 
-	return ok
+// SelfID 返回当前连接的机器人 QQ 号。
+func (p *Provider) SelfID() int64 {
+	if p.server == nil {
+		return 0
+	}
+	return p.server.selfID()
+}
+
+// UpdateConfig 热更新配置。仅 Token 和 Admins 可在运行时更新, Addr/Port 需重启。
+func (p *Provider) UpdateConfig(cfg Config) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cfg.Token = cfg.Token
+	if cfg.Admins != nil {
+		p.cfg.Admins = append([]int64{}, cfg.Admins...)
+	}
+	slog.Info("provider 配置已更新")
+}
+
+// Status 返回适配器当前运行状态。
+func (p *Provider) Status() ProviderStatus {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	s := ProviderStatus{ListenAddr: p.resolveAddr()}
+	if p.server == nil || p.closed {
+		return s
+	}
+
+	s.Running = true
+	s.SelfID = p.server.selfID()
+	s.ConnCount = p.server.connCount()
+	s.ConnIDs = p.server.connIDs()
+	return s
+}
+
+func (p *Provider) resolveAddr() string {
+	if p.cfg.Addr != "" {
+		return p.cfg.Addr
+	}
+	return fmt.Sprintf("0.0.0.0:%d", p.cfg.Port)
+}
+
+// call 向 OneBot11 客户端发送 API 调用并返回原始响应。
+func (p *Provider) call(action string, params map[string]any) (*APIResponse, error) {
+	if p.server == nil {
+		return nil, fmt.Errorf("provider 未启动")
+	}
+	return p.server.callAPI(action, params)
 }
