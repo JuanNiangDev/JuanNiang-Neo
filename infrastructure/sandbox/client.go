@@ -1,7 +1,7 @@
 package sandbox
 
 import (
-	"JuanNiang-Neo/infrastructure/sandbox/caller"
+	handler "JuanNiang-Neo/infrastructure/sandbox/handler"
 	"fmt"
 	"net/http"
 	"time"
@@ -36,7 +36,7 @@ func WithTimeout(d time.Duration) Option {
 	}
 }
 
-func NewClient(opts ...Option) (*caller.Client, error) {
+func NewClient(opts ...Option) (*handler.Client, error) {
 	basicInfo := BasicInfo{
 		BaseURL: "http://localhost:8080",
 		Timeout: 30 * time.Second,
@@ -45,8 +45,8 @@ func NewClient(opts ...Option) (*caller.Client, error) {
 		opt(&basicInfo)
 	}
 
-	client := &caller.Client{
-		Config: caller.Config{
+	client := &handler.Client{
+		Config: handler.Config{
 			BaseURL: basicInfo.BaseURL,
 			APIKey:  basicInfo.APIKey,
 			Timeout: basicInfo.Timeout,
