@@ -301,6 +301,11 @@ func (d *PromptDAO) Delete(ctx context.Context, id string) error {
 	return d.db.WithContext(ctx).Where("id = ?", id).Delete(&models.Prompt{}).Error
 }
 
+func (d *PromptDAO) SetActive(ctx context.Context, id string, active bool) error {
+	return d.db.WithContext(ctx).Model(&models.Prompt{}).Where("id = ?", id).
+		Update("is_active", active).Error
+}
+
 func (d *PromptDAO) List(ctx context.Context) ([]models.Prompt, error) {
 	var list []models.Prompt
 	err := d.db.WithContext(ctx).Order("created_at DESC").Find(&list).Error

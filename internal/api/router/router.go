@@ -55,6 +55,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.POST("/prompts", auth, svc.AddPrompt)
 	api.PUT("/prompts/:id", auth, svc.UpdatePrompt)
 	api.DELETE("/prompts/:id", auth, svc.DeletePrompt)
+	api.PUT("/prompts/:id/toggle", auth, svc.TogglePrompt)
 
 	// Sessions
 	api.GET("/sessions", auth, svc.ListSessions)

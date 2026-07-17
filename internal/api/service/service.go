@@ -455,6 +455,19 @@ func (s *Service) DeletePrompt(ctx context.Context, c *app.RequestContext) {
 	ok(c, nil)
 }
 
+func (s *Service) TogglePrompt(ctx context.Context, c *app.RequestContext) {
+	var req struct{ IsActive bool `json:"is_active"` }
+	if err := c.BindJSON(&req); err != nil {
+		fail(c, 400, "参数格式错误")
+		return
+	}
+	if err := s.DAO.Prompt.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	ok(c, nil)
+}
+
 // ====================================================================
 // Tool
 // ====================================================================
