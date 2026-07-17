@@ -1,0 +1,914 @@
+openapi: "3.0.3"
+info:
+  title: JuanNiang-Neo API
+  description: JuanNiang-Neo Web 管理面板 API
+  version: "1.0.0"
+
+servers:
+  - url: http://localhost:8090/api/v1
+    description: 本地开发服务器
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: integer
+        msg:
+          type: string
+
+    Success:
+      type: object
+      properties:
+        code:
+          type: integer
+        data: {}
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+
+    ChangePasswordRequest:
+      type: object
+      required: [old_password, new_password]
+      properties:
+        old_password:
+          type: string
+        new_password:
+          type: string
+
+    Provider:
+      type: object
+      required: [name, type, endpoint, token, model]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+          enum: [text_model, image_model, embedding_model]
+        endpoint:
+          type: string
+          format: uri
+        token:
+          type: string
+        model:
+          type: string
+        temperature:
+          type: number
+          format: float
+          default: 0.7
+        is_active:
+          type: boolean
+          default: true
+
+    MCPServer:
+      type: object
+      required: [name, server_url]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        server_url:
+          type: string
+        headers:
+          type: object
+        timeout:
+          type: integer
+          default: 30000
+        retry_count:
+          type: integer
+          default: 3
+        tool_filter:
+          type: array
+          items:
+            type: string
+        auto_reconnect:
+          type: boolean
+          default: true
+        is_active:
+          type: boolean
+          default: true
+
+    Skill:
+      type: object
+      required: [name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        regex_pattern:
+          type: string
+        prompt_ref:
+          type: string
+        tool_refs:
+          type: array
+          items:
+            type: string
+        mcp_refs:
+          type: array
+          items:
+            type: string
+        is_active:
+          type: boolean
+          default: true
+        is_system:
+          type: boolean
+          default: false
+        priority:
+          type: integer
+          default: 0
+
+    Prompt:
+      type: object
+      required: [name, type, content]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+          enum: [system, personality, custom]
+        content:
+          type: string
+        is_active:
+          type: boolean
+          default: true
+        variables:
+          type: array
+          items:
+            type: string
+
+    ShortTermMemoryConfig:
+      type: object
+      properties:
+        id:
+          type: string
+        chat_area_id:
+          type: string
+        window_size:
+          type: integer
+        auto_compact:
+          type: boolean
+
+    LongTermMemoryConfig:
+      type: object
+      properties:
+        id:
+          type: string
+        chat_area_id:
+          type: string
+        hot_area_size:
+          type: integer
+        hot_memory_ttl:
+          type: integer
+
+    ACLRule:
+      type: object
+      required: [user_id, chat_area_id, permission]
+      properties:
+        id:
+          type: integer
+        user_id:
+          type: integer
+          format: int64
+        chat_area_id:
+          type: string
+        permission:
+          type: string
+          enum: [allowed, denied]
+        actions:
+          type: array
+          items:
+            type: string
+
+    ToggleRequest:
+      type: object
+      required: [is_active]
+      properties:
+        is_active:
+          type: boolean
+
+    Overview:
+      type: object
+      properties:
+        chat_area_count:
+          type: integer
+        mcp_count:
+          type: integer
+        adapter_count:
+          type: integer
+        plugin_count:
+          type: integer
+        total_token_usage:
+          type: integer
+
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+        chat_area_id:
+          type: string
+        model:
+          type: string
+        token_usage:
+          type: integer
+        meta_data:
+          type: object
+
+    ToolConfig:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        is_active:
+          type: boolean
+        is_builtin:
+          type: boolean
+
+    ChatRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        chat_area_id:
+          type: string
+        user_id:
+          type: integer
+        role:
+          type: string
+          enum: [user, assistant, tool]
+        content:
+          type: string
+        token_count:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    ChatRecordList:
+      type: object
+      properties:
+        total:
+          type: integer
+        list:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatRecord'
+
+    ChatArea:
+      type: object
+      properties:
+        id:
+          type: string
+        area_type:
+          type: string
+          enum: [private, group]
+        target_id:
+          type: integer
+
+    Plugin:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+        path:
+          type: string
+        is_active:
+          type: boolean
+
+security:
+  - bearerAuth: []
+
+paths:
+  /login:
+    post:
+      tags: [Auth]
+      summary: 登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        200:
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Success'
+                  - properties:
+                      data:
+                        $ref: '#/components/schemas/LoginResponse'
+
+  /change-password:
+    post:
+      tags: [Auth]
+      summary: 修改密码
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        200:
+          description: 修改成功
+
+  /adapter:
+    get:
+      tags: [Adapter]
+      summary: 获取适配器状态
+      responses:
+        200:
+          description: 运行状态
+
+  /providers:
+    get:
+      tags: [Providers]
+      summary: 列出所有 Provider
+      responses:
+        200:
+          description: Provider 列表
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Provider'
+    post:
+      tags: [Providers]
+      summary: 添加 Provider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Provider'
+      responses:
+        200:
+          description: 添加成功
+
+  /providers/{id}:
+    put:
+      tags: [Providers]
+      summary: 修改 Provider
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Provider'
+      responses:
+        200:
+          description: 修改成功
+    delete:
+      tags: [Providers]
+      summary: 删除 Provider
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 删除成功
+
+  /mcp:
+    get:
+      tags: [MCP]
+      summary: 列出所有 MCP 服务器
+      responses:
+        200:
+          description: MCP 列表
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MCPServer'
+    post:
+      tags: [MCP]
+      summary: 添加 MCP 服务器
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPServer'
+      responses:
+        200:
+          description: 添加成功
+
+  /mcp/{id}:
+    put:
+      tags: [MCP]
+      summary: 修改 MCP 配置
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MCPServer'
+      responses:
+        200:
+          description: 修改成功
+    delete:
+      tags: [MCP]
+      summary: 删除 MCP 服务器
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 删除成功
+
+  /memory/{chatAreaID}/short-term:
+    get:
+      tags: [Memory]
+      summary: 获取短期记忆配置
+      parameters:
+        - name: chatAreaID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 配置
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ShortTermMemoryConfig'
+    put:
+      tags: [Memory]
+      summary: 修改短期记忆配置
+      parameters:
+        - name: chatAreaID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                window_size:
+                  type: integer
+                auto_compact:
+                  type: boolean
+      responses:
+        200:
+          description: 修改成功
+
+  /memory/{chatAreaID}/long-term:
+    get:
+      tags: [Memory]
+      summary: 获取长期记忆配置
+      parameters:
+        - name: chatAreaID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 配置
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    $ref: '#/components/schemas/LongTermMemoryConfig'
+    put:
+      tags: [Memory]
+      summary: 修改长期记忆配置
+      parameters:
+        - name: chatAreaID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                hot_area_size:
+                  type: integer
+                hot_memory_ttl:
+                  type: integer
+      responses:
+        200:
+          description: 修改成功
+
+  /prompts:
+    get:
+      tags: [Prompts]
+      summary: 列出所有 Prompt
+      responses:
+        200:
+          description: Prompt 列表
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Prompt'
+    post:
+      tags: [Prompts]
+      summary: 添加 Prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Prompt'
+      responses:
+        200:
+          description: 添加成功
+
+  /prompts/{id}:
+    put:
+      tags: [Prompts]
+      summary: 修改 Prompt
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Prompt'
+      responses:
+        200:
+          description: 修改成功
+    delete:
+      tags: [Prompts]
+      summary: 删除 Prompt
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 删除成功
+
+  /sessions:
+    get:
+      tags: [Sessions]
+      summary: 列出所有 Session
+      responses:
+        200:
+          description: Session 列表
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Session'
+
+  /sessions/{id}:
+    delete:
+      tags: [Sessions]
+      summary: 清除 Session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 删除成功
+
+  /skills:
+    get:
+      tags: [Skills]
+      summary: 列出所有 Skill
+      responses:
+        200:
+          description: Skill 列表
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Skill'
+    post:
+      tags: [Skills]
+      summary: 添加 Skill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Skill'
+      responses:
+        200:
+          description: 添加成功
+
+  /skills/{id}:
+    put:
+      tags: [Skills]
+      summary: 修改 Skill
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Skill'
+      responses:
+        200:
+          description: 修改成功
+    delete:
+      tags: [Skills]
+      summary: 删除 Skill
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 删除成功
+
+  /tools:
+    get:
+      tags: [Tools]
+      summary: 列出所有 Tool
+      responses:
+        200:
+          description: Tool 列表
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ToolConfig'
+
+  /tools/{id}/toggle:
+    put:
+      tags: [Tools]
+      summary: 启用/禁用 Tool
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleRequest'
+      responses:
+        200:
+          description: 操作成功
+
+  /plugins:
+    get:
+      tags: [Plugins]
+      summary: 列出所有插件
+      responses:
+        200:
+          description: 插件列表
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Plugin'
+
+  /plugins/{id}/toggle:
+    put:
+      tags: [Plugins]
+      summary: 启用/禁用插件
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleRequest'
+      responses:
+        200:
+          description: 操作成功
+
+  /plugins/{id}:
+    delete:
+      tags: [Plugins]
+      summary: 删除插件
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        200:
+          description: 删除成功
+
+  /acl:
+    get:
+      tags: [ACL]
+      summary: 列出所有 ACL 规则
+      responses:
+        200:
+          description: ACL 规则列表
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ACLRule'
+    post:
+      tags: [ACL]
+      summary: 添加 ACL 规则
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ACLRule'
+      responses:
+        200:
+          description: 添加成功
+
+  /acl/{id}:
+    delete:
+      tags: [ACL]
+      summary: 删除 ACL 规则
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        200:
+          description: 删除成功
+
+  /chat-records/{chatAreaID}:
+    get:
+      tags: [ChatRecords]
+      summary: 获取聊天记录
+      parameters:
+        - name: chatAreaID
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        200:
+          description: 聊天记录
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ChatRecordList'
+
+  /chat-areas:
+    get:
+      tags: [ChatAreas]
+      summary: 列出所有 ChatArea
+      responses:
+        200:
+          description: ChatArea 列表
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ChatArea'
+
+  /overview:
+    get:
+      tags: [Overview]
+      summary: 全局概览
+      responses:
+        200:
+          description: 全局统计
+          content:
+            application/json:
+              schema:
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Overview'

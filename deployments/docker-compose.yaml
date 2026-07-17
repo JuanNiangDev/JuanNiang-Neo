@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: juan
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass root
+    ports:
+      - "6379:6379"
+
+  juan-niang-neo:
+    build:
+      context: ..
+      dockerfile: deployments/Dockerfile
+    ports:
+      - "8081:8081"
+      - "8090:8090"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_NAME: juan
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: root
+      OB_PORT: "8081"
+      API_ADDR: ":8090"
+      JWT_SECRET: "change-me-in-production"
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ../data/pluggins:/var/lib/juan-niang-neo/data/pluggins
+
+volumes:
+  pgdata:

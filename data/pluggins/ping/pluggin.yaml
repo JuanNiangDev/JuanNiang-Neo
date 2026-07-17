@@ -1,0 +1,7 @@
+name: ping
+version: "1.0.0"
+author: JuanNiang
+description: "Ping 插件，/ping 命令返回 pong"
+entry: main.lua
+permissions:
+  - onebot11

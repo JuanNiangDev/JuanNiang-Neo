@@ -40,7 +40,15 @@ Top-level:
 - `infrastructure/` — `postgres`, `redis`, `sandbox`, `t2i` adapters.
 - `data/` — runtime data; `data/pluggins/` holds Lua plugins + their
   `pluggin.yaml` configs (not committed).
-- `docs/` — design docs (`guidance.md`, `provider.md`). Reference, not spec.
+- `docs/` — 完整文档:
+  - `architecture.md` — 项目架构
+  - `event-flow.md` — 事件流 & Agent 处理流程
+  - `call-stack.md` — 调用栈
+  - `implementation.md` — 实现细节
+  - `api.md` — Web API 文档
+  - `openapi.yaml` — OpenAPI 3.0 规范
+  - `pluggin/` — 插件开发文档 (API参考/开发指南/架构/实现)
+  - `dev/` — 原始设计文档 (`guidance.md`, `provider.md`)。
 - `sql/`, `scripts/`, `deployments/`, `config/`, `web/`, `api/`, `pkg/` —
   currently Empty placeholders.
 

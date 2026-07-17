@@ -1,0 +1,38 @@
+# JuanNiang-Neo 配置文件
+
+server:
+  # OneBot11 反向 WebSocket 监听端口
+  ob_port: 8081
+  # Web 管理面板 API 监听地址
+  api_addr: ":8090"
+
+# 数据库
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: postgres
+  db: juan
+
+# 缓存
+redis:
+  addr: localhost:6379
+  password: root
+  db: 0
+
+# 鉴权
+auth:
+  jwt_secret: "change-me-in-production"
+  ob_token: ""
+
+# 管理员
+  admins: []
+
+# 基础设施
+infra:
+  sandbox_url: "http://localhost:8080"
+  sandbox_api_key: ""
+  t2i_url: "http://localhost:8999"
+
+# 默认 LLM Provider (启动后通过 Web API 管理)
+providers: []
