@@ -1,4 +1,4 @@
-package provider
+package adapter
 
 import (
 	"fmt"
@@ -129,7 +129,7 @@ type MessageBuilder struct {
 
 // NewMsg 创建一个空的消息构建器。
 //
-//	msg := provider.NewMsg().Text("Hello ").At("123").Image("https://...")
+//	msg := adapter.NewMsg().Text("Hello ").At("123").Image("https://...")
 //	p.SendGroupMsg(groupID, msg)
 func NewMsg() *MessageBuilder {
 	return &MessageBuilder{}

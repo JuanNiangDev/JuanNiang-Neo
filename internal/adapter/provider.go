@@ -1,4 +1,4 @@
-package provider
+package adapter
 
 import (
 	"context"
@@ -40,10 +40,10 @@ func (p *Provider) Start(ctx context.Context) error {
 
 	srv, err := newWSServer(ctx, addr, p.cfg.Token, p.events)
 	if err != nil {
-		return fmt.Errorf("provider start: %w", err)
+		return fmt.Errorf("adapter start: %w", err)
 	}
 	p.server = srv
-	slog.Info("provider 已启动", "addr", addr)
+	slog.Info("adapter 已启动", "addr", addr)
 	return nil
 }
 
@@ -63,7 +63,7 @@ func (p *Provider) Stop(ctx context.Context) error {
 	}
 	close(p.events)
 
-	slog.Info("provider 已停止")
+	slog.Info("adapter 已停止")
 	return nil
 }
 
@@ -95,19 +95,19 @@ func (p *Provider) UpdateConfig(cfg Config) error {
 		p.cfg.Admins = append([]int64{}, cfg.Admins...)
 	}
 
-	slog.Info("provider 重启中")
+	slog.Info("adapter 重启中")
 
 	if err := p.Stop(ctx); err != nil {
-		slog.Error("provider 配置更新出错 (Stop)", "err", err.Error())
+		slog.Error("adapter 配置更新出错 (Stop)", "err", err.Error())
 		return err
 	}
 
 	if err := p.Start(ctx); err != nil {
-		slog.Error("provider 配置更新出错 (Start)", "err", err.Error())
+		slog.Error("adapter 配置更新出错 (Start)", "err", err.Error())
 		return err
 	}
 
-	slog.Info("provider 配置已更新")
+	slog.Info("adapter 配置已更新")
 
 	return nil
 }
@@ -139,7 +139,7 @@ func (p *Provider) resolveAddr() string {
 // call 向 OneBot11 客户端发送 API 调用并返回原始响应。
 func (p *Provider) call(action string, params map[string]any) (*APIResponse, error) {
 	if p.server == nil {
-		return nil, fmt.Errorf("provider 未启动")
+		return nil, fmt.Errorf("adapter 未启动")
 	}
 	return p.server.callAPI(action, params)
 }

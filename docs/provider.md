@@ -44,7 +44,7 @@ func main() {
     }
     defer p.Stop(context.Background())
 
-    slog.Info("provider 已启动，等待客户端连接...", "addr", ":8080")
+    slog.Info("adapter 已启动，等待客户端连接...", "addr", ":8080")
 
     // 事件循环
     for ev := range p.Events() {
