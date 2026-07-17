@@ -140,3 +140,4 @@ Onebot11 --> pluggin(插件拦截，重写) --> Agent --> 调用用Onebot11Api�
 - 要支持Web界面上传插件压缩包添加插件
 - 外层要暴露足够的API以满足Lua插件的开发，包括但不限于：Onebot11操作，HTTP访问，Agent操作（包括Agent的相关设置），数据库，缓存（这两个注意与系统使用的数据分开），文转图，沙箱操作等
 - 要提供日志功能
+- 插件存储在data\pluggins下
