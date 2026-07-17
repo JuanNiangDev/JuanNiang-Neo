@@ -113,14 +113,22 @@
 - gopher-lua 引擎, 每个插件独立 `lua.LState`
 - 插件目录: `data/pluggins/<name>/`
 - 清单: `pluggin.yaml` (YAML)
-- 权限控制: `permissions` 字段 → API 注入白名单
+- **7 组 Lua API (按权限注入)**:
+  - `log.*` — 日志 (始终可用)
+  - `json.*` — JSON 编解码 (始终可用)
+  - `onebot11.*` — 20 个函数: 消息发送、群管理、信息查询、请求处理
+  - `http.*` — HTTP GET/POST (30s 超时)
+  - `database.*` — 原始 SQL 执行, 表名前缀 `pluggin_<name>_` 隔离
+  - `cache.*` — Redis KV, Key 前缀 `pluggin:<name>:` 隔离
+  - `t2i.*` — 图片生成, 服务 nil → 返回 `"T2I 服务未启用"`
+  - `sandbox.*` — 沙箱创建 + Shell/Python 执行, 服务 nil → 返回 error
+  - `agent.*` — 11 个函数: 配置查询 + Provider/MCP 切换 + Chat-Area 上下文 + Compact
+- **服务开关检测**: T2I/Sandbox 为 nil 时 Lua 函数返回明确错误, 无需配置
+- **AgentOperator 接口**: `HagoCenter` 实现, 提供 `SetProviderActive`/`SetMCPActive`/`CompactMemory`/`GetChatAreaID`
 - 事件拦截: `on_message(event)` → 返回 consumed 阻止 Agent 处理
-- API 注入:
-  - `log.info/warn/error` — 日志
-  - `json.encode/decode` — JSON
-  - `onebot11.send_private_msg/send_group_msg` — 消息发送
-  - `http.get/post` — HTTP (预留)
-  - 类型转换: Go ↔ Lua (map→table, slice→table, number, string, bool)
+- `currentEv` 上下文: `OnMessage` 时存储当前事件, 供 `agent.get_current_chat_area()` 查询
+- `AdapterWrapper`: 将 `adapter.Provider` 强类型接口包装为 `SendAdapter` (map 返回值)
+- 并发安全: `RWMutex` + 独立 LState
 
 ### 6. Web API (`internal/api/`)
 

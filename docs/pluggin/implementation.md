@@ -4,16 +4,23 @@
 
 ```go
 type PluginEngine struct {
-    mu       sync.RWMutex
-    plugins  map[string]*LoadedPlugin  // name → 已加载插件
-    basePath string                     // data/pluggins/
-    adapter  SendAdapter               // 消息发送接口
+    mu         sync.RWMutex
+    plugins    map[string]*LoadedPlugin
+    basePath   string
+    adapter    SendAdapter              // OneBot11 完整 API
+    db         *gorm.DB                 // 数据库 (命名空间隔离)
+    cache      *cache.Cache             // Redis (命名空间隔离)
+    t2i        *t2icaller.Client        // T2I 服务 (nil = 未启用)
+    sandbox    *sandboxcaller.Client    // Sandbox 服务 (nil = 未启用)
+    dao        *dao.Bundle              // Agent 配置查询
+    agentOp    AgentOperator            // Provider/MCP 切换 + Compact
+    currentEv  EventData                // 当前事件上下文
 }
 
 type LoadedPlugin struct {
-    Manifest Manifest      // pluggin.yaml 内容
-    State    *lua.LState   // 独立 Lua VM
-    Dir      string         // 插件目录路径
+    Manifest Manifest
+    State    *lua.LState
+    Dir      string
 }
 ```
 
@@ -21,157 +28,174 @@ type LoadedPlugin struct {
 
 ### 1. 独立 Lua VM (LState 隔离)
 
-每个插件使用独立的 `*lua.LState`:
-- 通过 `lua.NewState()` 创建新 VM
-- VM 之间完全隔离, 全局变量互不影响
-- 插件崩溃时 `LState.Close()` 释放资源, 不影响其他插件
+每个插件使用独立的 `*lua.LState`，通过 `lua.NewState()` 创建，VM 之间完全隔离。
 
-### 2. 权限控制 (API 注入白名单)
+### 2. 权限控制 + 服务开关检测
 
-`injectBaseAPI` 方法根据 `pluggin.yaml` 中的 `permissions` 决定注入哪些 API:
+`injectBaseAPI` 根据 `pluggin.yaml` 中的 `permissions` 注入 API，同时检测服务的可用性：
 
 ```go
-hasPerm := func(p string) bool {
-    for _, pp := range permissions {
-        if pp == p || pp == "*" {
-            return true
-        }
-    }
-    return false
-}
-
-// 始终注入
+// 始终注入 (无需权限)
 L.SetGlobal("log", logTable)
 L.SetGlobal("json", jsonTable)
 
-// 按权限注入
+// 按权限 + 服务可用性注入
 if hasPerm("onebot11") && pe.adapter != nil {
-    L.SetGlobal("onebot11", obTable)
+    pe.injectOneBot11(L, pluginName)     // 20 个函数
 }
-if hasPerm("http") {
-    L.SetGlobal("http", httpTable)
+if hasPerm("t2i") {
+    pe.injectT2I(L, pluginName)          // nil → 注入返回 error 的占位函数
+}
+if hasPerm("sandbox") {
+    pe.injectSandbox(L, pluginName)      // nil → 注入返回 error 的占位函数
+}
+if hasPerm("agent") && pe.dao != nil {
+    pe.injectAgent(L)                    // 查询 + 管理 + Compact
 }
 ```
 
-### 3. Go ↔ Lua 类型转换
+### 3. OneBot11 完整 API (20 函数)
 
-**Go → Lua (`goToLuaValue`)**:
-- `string` → `lua.LString`
-- `float64/int64/int` → `lua.LNumber`
-- `bool` → `lua.LBool`
-- `map[string]any` → `*lua.LTable` (递归转换)
-- `[]any` → `*lua.LTable` (1-indexed 数组)
-- `nil` → `lua.LNil`
-- 其他 → `lua.LString(json.Marshal)`
+通过 `SendAdapter` 接口暴露，`AdapterWrapper` 将 `adapter.Provider` 的强类型返回值转为 `map[string]any`:
 
-**Lua → Go (`luaValueToGo`)**:
-- `lua.LString` → `string`
-- `lua.LNumber` → `float64`
-- `lua.LBool` → `bool`
-- `*lua.LTable` (len>0) → `[]any` (数组)
-- `*lua.LTable` (len=0) → `map[string]any` (字典)
-- `*lua.LNilType` → `nil`
+```go
+type SendAdapter interface {
+    SendPrivateMsg(userID int64, message any) (int64, error)
+    SendGroupMsg(groupID int64, message any) (int64, error)
+    DeleteMsg(messageID int64) error
+    GetGroupInfo(groupID int64) (map[string]any, error)
+    GetGroupMemberList(groupID int64) ([]map[string]any, error)
+    GetGroupMemberInfo(groupID, userID int64) (map[string]any, error)
+    GetGroupHonorInfo(groupID int64) (map[string]any, error)
+    KickGroupMember(groupID, userID int64, rejectAdd bool) error
+    BanGroupMember(groupID, userID int64, duration int) error
+    SetGroupWholeBan(groupID int64, enable bool) error
+    SetGroupCard(groupID, userID int64, card string) error
+    HandleFriendRequest(flag, approve, remark) error
+    HandleGroupRequest(flag, subType, approve, reason) error
+    GetLoginInfo() (map[string]any, error)
+    GetStrangerInfo(userID int64) (map[string]any, error)
+    GetFriendList() ([]map[string]any, error)
+    GetGroupList() ([]map[string]any, error)
+    SendLike(userID int64, times int) error
+    GetStatus() (map[string]any, error)
+    GetVersionInfo() (map[string]any, error)
+}
+```
 
-### 4. 事件处理 (`OnMessage`)
+### 4. HTTP API (真实请求)
+
+```go
+httpClient := &http.Client{Timeout: 30 * time.Second}
+
+"get": func(L *lua.LState) int {
+    url := L.CheckString(1)
+    resp, err := httpClient.Get(url)
+    // 返回 {status=200, body="..."}
+}
+
+"post": func(L *lua.LState) int {
+    url := L.CheckString(1)
+    contentType := L.CheckString(2)   // 可选
+    body := L.CheckString(3)          // 可选
+    resp, err := httpClient.Post(url, contentType, bytes.NewBufferString(body))
+    // 返回 {status=200, body="..."}
+}
+```
+
+### 5. 数据库 API (命名空间隔离)
+
+```go
+// 隔离: 表名前缀 pluggin_<name>_
+db.Exec(sql)     // INSERT/UPDATE/DELETE → 返回影响行数
+db.Query(sql)    // SELECT → 返回 []map[string]any
+```
+
+使用 `gorm.DB.Raw()` 执行原始 SQL，插件代码需自行管理表创建。
+
+### 6. 缓存 API (命名空间隔离)
+
+```go
+// 隔离: Key 前缀 pluggin:<name>:
+cache.Get(key)      // 读取 → map[string]any
+cache.Set(key, val [, ttl])  // 写入 → bool
+cache.Del(key)      // 删除 → bool
+cache.Exists(key)   // 检查 → 0 or 1
+```
+
+通过 `cache.Cache` 封装，使用 Redis 后端。
+
+### 7. T2I / Sandbox 服务开关
+
+服务为 nil 时注入返回 error 的占位函数：
+
+```go
+if pe.t2i == nil {
+    L.SetFuncs(t2iTable, map[string]lua.LGFunction{
+        "generate": func(L *lua.LState) int {
+            L.Push(lua.LNil)
+            L.Push(lua.LString("T2I 服务未启用"))
+            return 2
+        },
+    })
+    return
+}
+```
+
+### 8. AgentOperator (Provider/MCP 切换 + Compact)
+
+```go
+type AgentOperator interface {
+    SetProviderActive(ctx, id, active) error
+    SetMCPActive(ctx, id, active) error
+    CompactMemory(ctx, chatAreaID) error
+    GetChatAreaID(userID, groupID, messageType) string
+}
+```
+
+`HagoCenter` 实现此接口 (`agent_operator.go`):
+- `SetProviderActive`: 更新 DB → 从 ProviderGroup 添加/移除
+- `SetMCPActive`: 更新 DB → 停用时断开 MCP 连接
+- `CompactMemory`: 调用 `MemoryGroup.CompactShortTermMemory` (需要 LLM)
+- `GetChatAreaID`: 根据 userID/groupID/type 获取或创建 ChatArea
+
+### 9. Current Event 上下文
 
 ```go
 func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
-    pe.mu.RLock()
-    defer pe.mu.RUnlock()
-
-    for _, p := range pe.plugins {
-        if !p.HasPermission("onebot11") {
-            continue  // 无 onebot11 权限的插件不接收消息事件
-        }
-
-        fn := p.State.GetGlobal("on_message")
-        if fn.Type() != lua.LTFunction {
-            continue  // 没有定义 on_message, 跳过
-        }
-
-        table := eventToLuaTable(p.State, event)
-
-        // 调用 Lua 函数: on_message(event) → (consumed, modified)
-        p.State.Push(fn)
-        p.State.Push(table)
-        p.State.PCall(1, 2, nil)
-
-        consumedRet := p.State.Get(-2)  // 第一个返回值
-        p.State.Pop(2)
-
-        if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
-            return true  // 事件被消费, 后续插件和 Agent 不再处理
-        }
-    }
-
-    return false
+    pe.currentEv = event  // 存储当前上下文
+    // ... 调用插件 on_message ...
 }
 ```
 
-### 5. OneBot11 API 注入
+`agent.get_current_chat_area()` 读取 `currentEv` 并调用 `agentOp.GetChatAreaID()` 获取持久化 ID。
 
-`onebot11` 全局表通过 Go 闭包桥接 `SendAdapter` 接口:
-
-```go
-obTable := L.NewTable()
-L.SetFuncs(obTable, map[string]lua.LGFunction{
-    "send_group_msg": func(L *lua.LState) int {
-        groupID := int64(L.CheckNumber(1))
-        msg := L.CheckString(2)
-        _, err := adapter.SendGroupMsg(groupID, msg)
-        if err != nil {
-            L.Push(lua.LBool(false))
-            L.Push(lua.LString(err.Error()))
-            return 2
-        }
-        L.Push(lua.LBool(true))
-        return 1
-    },
-    // ...
-})
-L.SetGlobal("onebot11", obTable)
-```
-
-`L.SetFuncs` 将 Go 函数注册为 Lua 表的字段, 调用时自动进行 Lua → Go 参数转换。
-
-### 6. YAML 解析
-
-使用 `gopkg.in/yaml.v3` 解析 `pluggin.yaml`:
+### 10. Go ↔ Lua 类型转换
 
 ```go
-func (pe *PluginEngine) readManifest(dir string) (*Manifest, error) {
-    path := filepath.Join(dir, "pluggin.yaml")
-    data, err := os.ReadFile(path)
-    var m Manifest
-    yaml.Unmarshal(data, &m)
-    return &m, nil
-}
+goToLuaValue(v any) lua.LValue    // Go → Lua
+luaValueToGo(v lua.LValue) any    // Lua → Go
+pushResult(L, err) int             // bool + err
+pushResultJSON(L, v, err) int      // table + err
 ```
 
-### 7. 并发安全
+### 11. 并发安全
 
-- `sync.RWMutex` 保护 `plugins` map
+- `sync.RWMutex` 保护 `plugins` map 和 `currentEv`
 - 读操作 (OnMessage, List) 使用 `RLock`
 - 写操作 (Load, Unload, Reload) 使用 `Lock`
-- 每个插件的 LState 是非并发安全的 (一个事件串行处理)
+- 每个插件的 LState 串行处理 (一个事件串行调用)
 
-### 8. 事件循环集成
-
-在 `agent/event.go` 中:
+### 12. 事件循环集成
 
 ```go
+// agent/event.go
 if h.PluginEngine != nil {
-    pluginEvent := pluggin.EventData{
-        PostType:    "message",
-        MessageType: ev.Message.MessageType,
-        UserID:      ev.Message.UserID,
-        GroupID:     ev.Message.GroupID,
-        RawMessage:  ev.Message.RawMessage,
-    }
+    pluginEvent := pluggin.EventData{...}
     if h.PluginEngine.OnMessage(pluginEvent) {
         continue  // 插件消费, 跳过 Agent
     }
 }
 ```
 
-插件拦截在 ACL 检查之前, Skill 匹配之前, LLM 调用之前 — 即最早的消息处理阶段。
+插件拦截在 ACL 检查之前、Skill 匹配之前、LLM 调用之前。

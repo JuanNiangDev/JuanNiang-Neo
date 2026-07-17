@@ -73,6 +73,20 @@ ChatArea (1) ──< ACLRule (1:N per user)
 LongTermMemory (1) ──< LongTermMemoryItem (1:N)
 ```
 
+### 插件 API 分组
+
+| 权限 | 全局表 | 函数数 | 说明 |
+|------|--------|--------|------|
+| 始终 | `log` | 3 | info/warn/error |
+| 始终 | `json` | 2 | encode/decode |
+| `onebot11` | `onebot11` | 20 | 消息发送/群管理/信息查询/请求处理 |
+| `http` | `http` | 2 | get/post (真实 HTTP 请求) |
+| `database` | `database` | 2 | query/exec (命名空间隔离) |
+| `cache` | `cache` | 4 | get/set/del/exists (命名空间隔离) |
+| `t2i` | `t2i` | 2 | generate/generate_url (开关检测) |
+| `sandbox` | `sandbox` | 3 | create/exec_shell/exec_python (开关检测) |
+| `agent` | `agent` | 11 | 配置查询 + Provider/MCP 切换 + Compact + 上下文 |
+
 ---
 
 ## 状态管理
@@ -80,6 +94,8 @@ LongTermMemory (1) ──< LongTermMemoryItem (1:N)
 遵循 `docs/guidance.md` 的约定:
 
 - **持久化状态**: Postgres (所有配置 + 数据)
-- **缓存状态**: Redis (Session 消息历史、短期记忆热数据)
+- **缓存状态**: Redis (Session 消息历史)
+- **插件数据**: DB 和 Cache 均通过命名空间隔离 (`pluggin_<name>_` / `pluggin:<name>:`)
 - **例外**: Lua 插件配置由 `data/pluggins/<name>/pluggin.yaml` 管理
+- **服务开关**: T2I 和 Sandbox 为可插拔服务, 未配置时自动返回未启用提示, 无需手动配置
 - **原则**: 内存中的有状态模块 (Agent/Memory/Skill) 最终与 DB 同步

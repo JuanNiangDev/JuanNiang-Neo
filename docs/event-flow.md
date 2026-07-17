@@ -27,10 +27,20 @@
 │  │ 1. 过滤非 message 事件                                 │  │
 │  │ 2. Plugin 拦截 (pluggin.OnMessage)                    │  │
 │  │    ┌─────────────────────────────────────────────┐   │  │
+│  │    │ PluginEngine 存储 currentEv (事件上下文)      │   │  │
 │  │    │ for each plugin:                             │   │  │
 │  │    │   if has on_message():                       │   │  │
 │  │    │     call on_message(event) → (consumed, ..)  │   │  │
 │  │    │     if consumed: skip agent, continue loop   │   │  │
+│  │    │                                             │   │  │
+│  │    │ 插件可调用:                                   │   │  │
+│  │    │   onebot11.*  (20 fn) — 消息/群管理/查询     │   │  │
+│  │    │   http.*     (2 fn)  — 外部 API             │   │  │
+│  │    │   database.* (2 fn)  — 插件数据 CRUD        │   │  │
+│  │    │   cache.*    (4 fn)  — 插件缓存             │   │  │
+│  │    │   t2i.*      (2 fn)  — 图片生成             │   │  │
+│  │    │   sandbox.*  (3 fn)  — 沙箱执行             │   │  │
+│  │    │   agent.*    (11 fn) — 配置/开关/Compact     │   │  │
 │  │    └─────────────────────────────────────────────┘   │  │
 │  │ 3. Agent 处理 (handleMessage)                         │  │
 │  └──────────────────────────────────────────────────────┘  │
