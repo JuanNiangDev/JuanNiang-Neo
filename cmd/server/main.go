@@ -132,7 +132,15 @@ func main() {
 
 	// ---------- 6. Plugin Engine ----------
 
-	pluginEngine := pluggin.NewPluginEngine("data/pluggins", adapterProv)
+	pluginEngine := pluggin.NewPluginEngine(
+		"data/pluggins",
+		pluggin.WrapAdapter(adapterProv),
+		db,
+		coreInst.Cache,
+		t2iCli,
+		sandboxCli,
+		coreInst.DAO,
+	)
 	if err := pluginEngine.LoadAll(); err != nil {
 		slog.Error("插件加载失败", "err", err)
 	}
