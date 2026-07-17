@@ -150,6 +150,8 @@ func main() {
 	// ---------- 7. Web API ----------
 
 	svc := service.New(coreInst.DAO)
+	svc.AdapterCb = &adapterCB{p: adapterProv}
+	svc.PluginEngine = &pluginCB{pe: pluginEngine}
 	webEngine := engine.New(env("API_ADDR", ":8090"), svc)
 
 	go func() {
@@ -195,3 +197,33 @@ func parseAdmins(s string) []int64 {
 	}
 	return admins
 }
+
+// adapterCB 将 adapter.Provider 包装为 service.AdapterCallback。
+type adapterCB struct{ p *adapter.Provider }
+
+func (a *adapterCB) UpdateConfig(token string, admins []int64) error {
+	return a.p.UpdateConfig(adapter.Config{Token: token, Admins: admins})
+}
+
+func (a *adapterCB) Restart() error {
+	return a.p.UpdateConfig(adapter.Config{})
+}
+
+func (a *adapterCB) Status() map[string]any {
+	s := a.p.Status()
+	return map[string]any{
+		"running":     s.Running,
+		"listen_addr": s.ListenAddr,
+		"self_id":     s.SelfID,
+		"conn_count":  s.ConnCount,
+		"conn_ids":    s.ConnIDs,
+	}
+}
+
+// pluginCB 将 pluggin.PluginEngine 包装为 service.PluginEngineCb。
+type pluginCB struct{ pe *pluggin.PluginEngine }
+
+func (p *pluginCB) Load(name string) error    { return p.pe.Load(name) }
+func (p *pluginCB) Unload(name string) error  { return p.pe.Unload(name) }
+func (p *pluginCB) Reload(name string) error  { return p.pe.Reload(name) }
+func (p *pluginCB) List() []map[string]any    { return p.pe.ListMaps() }

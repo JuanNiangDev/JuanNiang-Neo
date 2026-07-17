@@ -1,10 +1,15 @@
 package service
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/core/dao"
@@ -15,7 +20,22 @@ import (
 )
 
 type Service struct {
-	DAO *dao.Bundle
+	DAO          *dao.Bundle
+	AdapterCb    AdapterCallback
+	PluginEngine PluginEngineCb
+}
+
+type AdapterCallback interface {
+	UpdateConfig(token string, admins []int64) error
+	Restart() error
+	Status() map[string]any
+}
+
+type PluginEngineCb interface {
+	Load(name string) error
+	Unload(name string) error
+	Reload(name string) error
+	List() []map[string]any
 }
 
 func New(dao *dao.Bundle) *Service {
@@ -30,7 +50,9 @@ func fail(c *app.RequestContext, code int, msg string) {
 	c.JSON(code, map[string]any{"code": code, "msg": msg})
 }
 
-// ---------- Auth ----------
+// ====================================================================
+// Auth
+// ====================================================================
 
 func (s *Service) Login(ctx context.Context, c *app.RequestContext) {
 	var req struct {
@@ -38,10 +60,9 @@ func (s *Service) Login(ctx context.Context, c *app.RequestContext) {
 		Password string `json:"password"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
-
 	user, err := s.DAO.User.GetByUsername(ctx, req.Username)
 	if err != nil {
 		fail(c, 401, "用户名或密码错误")
@@ -51,10 +72,9 @@ func (s *Service) Login(ctx context.Context, c *app.RequestContext) {
 		fail(c, 401, "用户名或密码错误")
 		return
 	}
-
 	token, err := middleware.GenerateToken(user.ID, user.Username, user.Role)
 	if err != nil {
-		fail(c, 500, "token generation failed")
+		fail(c, 500, "token 生成失败")
 		return
 	}
 	ok(c, map[string]string{"token": token})
@@ -67,39 +87,133 @@ func (s *Service) ChangePassword(ctx context.Context, c *app.RequestContext) {
 		NewPassword string `json:"new_password"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
-
 	user, err := s.DAO.User.GetByUsername(ctx, "admin")
 	if err != nil {
-		fail(c, 404, "user not found")
+		fail(c, 404, "用户不存在")
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.OldPassword)) != nil {
 		fail(c, 400, "原密码错误")
 		return
 	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
-	if err != nil {
-		fail(c, 500, "password hash failed")
-		return
-	}
+	hash, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	if err := s.DAO.User.UpdatePassword(ctx, userID, string(hash)); err != nil {
-		fail(c, 500, "password update failed")
+		fail(c, 500, "密码更新失败")
 		return
 	}
 	ok(c, nil)
 }
 
-// ---------- Adapter ----------
+// ====================================================================
+// Admin QQ 列表 (动态管理)
+// ====================================================================
 
-func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
-	ok(c, map[string]any{"status": "running"})
+func (s *Service) ListAdminQQs(ctx context.Context, c *app.RequestContext) {
+	list, err := s.DAO.AdminQQ.List(ctx)
+	if err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	ok(c, list)
 }
 
-// ---------- Provider ----------
+func (s *Service) AddAdminQQ(ctx context.Context, c *app.RequestContext) {
+	var req struct{ QQ int64 `json:"qq"` }
+	if err := c.BindJSON(&req); err != nil {
+		fail(c, 400, "参数格式错误")
+		return
+	}
+	if req.QQ <= 0 {
+		fail(c, 400, "无效的 QQ 号")
+		return
+	}
+	if err := s.DAO.AdminQQ.Add(ctx, req.QQ); err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	if s.AdapterCb != nil {
+		admins, _ := s.DAO.AdminQQ.List(ctx)
+		qqs := make([]int64, len(admins))
+		for i, a := range admins {
+			qqs[i] = a.ID
+		}
+		s.AdapterCb.UpdateConfig("", qqs)
+	}
+	ok(c, nil)
+}
+
+func (s *Service) DeleteAdminQQ(ctx context.Context, c *app.RequestContext) {
+	id := c.Param("id")
+	qq, _ := strconv.ParseInt(id, 10, 64)
+	if qq <= 0 {
+		fail(c, 400, "无效的 QQ 号")
+		return
+	}
+	if err := s.DAO.AdminQQ.Remove(ctx, qq); err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	if s.AdapterCb != nil {
+		admins, _ := s.DAO.AdminQQ.List(ctx)
+		qqs := make([]int64, len(admins))
+		for i, a := range admins {
+			qqs[i] = a.ID
+		}
+		s.AdapterCb.UpdateConfig("", qqs)
+	}
+	ok(c, nil)
+}
+
+// ====================================================================
+// Adapter
+// ====================================================================
+
+func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
+	if s.AdapterCb != nil {
+		ok(c, s.AdapterCb.Status())
+		return
+	}
+	ok(c, map[string]any{"running": false, "listen_addr": ""})
+}
+
+func (s *Service) UpdateAdapterConfig(ctx context.Context, c *app.RequestContext) {
+	if s.AdapterCb == nil {
+		fail(c, 500, "adapter 未初始化")
+		return
+	}
+	var req struct {
+		Token  string  `json:"token"`
+		Admins []int64 `json:"admins"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		fail(c, 400, "参数格式错误")
+		return
+	}
+	if err := s.AdapterCb.UpdateConfig(req.Token, req.Admins); err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	ok(c, s.AdapterCb.Status())
+}
+
+func (s *Service) RestartAdapter(ctx context.Context, c *app.RequestContext) {
+	if s.AdapterCb == nil {
+		fail(c, 500, "adapter 未初始化")
+		return
+	}
+	if err := s.AdapterCb.Restart(); err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	ok(c, s.AdapterCb.Status())
+}
+
+// ====================================================================
+// Provider
+// ====================================================================
 
 func (s *Service) ListProviders(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.Provider.List(ctx, "")
@@ -110,10 +224,19 @@ func (s *Service) ListProviders(ctx context.Context, c *app.RequestContext) {
 	ok(c, list)
 }
 
+func (s *Service) GetProvider(ctx context.Context, c *app.RequestContext) {
+	p, err := s.DAO.Provider.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		fail(c, 404, "Provider 不存在")
+		return
+	}
+	ok(c, p)
+}
+
 func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 	var p models.Provider
 	if err := c.BindJSON(&p); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	p.ID = newUUID()
@@ -128,7 +251,7 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 	var p models.Provider
 	if err := c.BindJSON(&p); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	p.ID = id
@@ -140,15 +263,29 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	if err := s.DAO.Provider.Delete(ctx, id); err != nil {
+	if err := s.DAO.Provider.Delete(ctx, c.Param("id")); err != nil {
 		fail(c, 500, err.Error())
 		return
 	}
 	ok(c, nil)
 }
 
-// ---------- MCP ----------
+func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
+	var req struct{ IsActive bool `json:"is_active"` }
+	if err := c.BindJSON(&req); err != nil {
+		fail(c, 400, "参数格式错误")
+		return
+	}
+	if err := s.DAO.Provider.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	ok(c, nil)
+}
+
+// ====================================================================
+// MCP
+// ====================================================================
 
 func (s *Service) ListMCPServers(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.MCPServer.List(ctx)
@@ -159,10 +296,19 @@ func (s *Service) ListMCPServers(ctx context.Context, c *app.RequestContext) {
 	ok(c, list)
 }
 
+func (s *Service) GetMCPServer(ctx context.Context, c *app.RequestContext) {
+	m, err := s.DAO.MCPServer.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		fail(c, 404, "MCP 服务器不存在")
+		return
+	}
+	ok(c, m)
+}
+
 func (s *Service) AddMCPServer(ctx context.Context, c *app.RequestContext) {
 	var m models.MCPServer
 	if err := c.BindJSON(&m); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	m.ID = newUUID()
@@ -177,7 +323,7 @@ func (s *Service) UpdateMCPServer(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 	var m models.MCPServer
 	if err := c.BindJSON(&m); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	m.ID = id
@@ -189,15 +335,29 @@ func (s *Service) UpdateMCPServer(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) DeleteMCPServer(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	if err := s.DAO.MCPServer.Delete(ctx, id); err != nil {
+	if err := s.DAO.MCPServer.Delete(ctx, c.Param("id")); err != nil {
 		fail(c, 500, err.Error())
 		return
 	}
 	ok(c, nil)
 }
 
-// ---------- Skill ----------
+func (s *Service) ToggleMCPServer(ctx context.Context, c *app.RequestContext) {
+	var req struct{ IsActive bool `json:"is_active"` }
+	if err := c.BindJSON(&req); err != nil {
+		fail(c, 400, "参数格式错误")
+		return
+	}
+	if err := s.DAO.MCPServer.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	ok(c, nil)
+}
+
+// ====================================================================
+// Skill
+// ====================================================================
 
 func (s *Service) ListSkills(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.Skill.List(ctx)
@@ -211,7 +371,7 @@ func (s *Service) ListSkills(ctx context.Context, c *app.RequestContext) {
 func (s *Service) AddSkill(ctx context.Context, c *app.RequestContext) {
 	var sk models.Skill
 	if err := c.BindJSON(&sk); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	sk.ID = newUUID()
@@ -226,7 +386,7 @@ func (s *Service) UpdateSkill(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 	var sk models.Skill
 	if err := c.BindJSON(&sk); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	sk.ID = id
@@ -238,15 +398,16 @@ func (s *Service) UpdateSkill(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) DeleteSkill(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	if err := s.DAO.Skill.Delete(ctx, id); err != nil {
+	if err := s.DAO.Skill.Delete(ctx, c.Param("id")); err != nil {
 		fail(c, 500, err.Error())
 		return
 	}
 	ok(c, nil)
 }
 
-// ---------- Prompt ----------
+// ====================================================================
+// Prompt
+// ====================================================================
 
 func (s *Service) ListPrompts(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.Prompt.List(ctx)
@@ -260,7 +421,7 @@ func (s *Service) ListPrompts(ctx context.Context, c *app.RequestContext) {
 func (s *Service) AddPrompt(ctx context.Context, c *app.RequestContext) {
 	var p models.Prompt
 	if err := c.BindJSON(&p); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	p.ID = newUUID()
@@ -275,7 +436,7 @@ func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 	var p models.Prompt
 	if err := c.BindJSON(&p); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	p.ID = id
@@ -287,15 +448,16 @@ func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) DeletePrompt(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	if err := s.DAO.Prompt.Delete(ctx, id); err != nil {
+	if err := s.DAO.Prompt.Delete(ctx, c.Param("id")); err != nil {
 		fail(c, 500, err.Error())
 		return
 	}
 	ok(c, nil)
 }
 
-// ---------- Tool ----------
+// ====================================================================
+// Tool
+// ====================================================================
 
 func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.ToolConfig.List(ctx)
@@ -307,20 +469,21 @@ func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
 	var req struct{ IsActive bool `json:"is_active"` }
 	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
-	if err := s.DAO.ToolConfig.SetActive(ctx, id, req.IsActive); err != nil {
+	if err := s.DAO.ToolConfig.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
 		fail(c, 500, err.Error())
 		return
 	}
 	ok(c, nil)
 }
 
-// ---------- Session ----------
+// ====================================================================
+// Session
+// ====================================================================
 
 func (s *Service) ListSessions(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.Session.List(ctx)
@@ -331,18 +494,32 @@ func (s *Service) ListSessions(ctx context.Context, c *app.RequestContext) {
 	ok(c, list)
 }
 
+func (s *Service) GetSession(ctx context.Context, c *app.RequestContext) {
+	sess, err := s.DAO.Session.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		fail(c, 404, "Session 不存在")
+		return
+	}
+	ok(c, sess)
+}
+
 func (s *Service) DeleteSession(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	if err := s.DAO.Session.Delete(ctx, id); err != nil {
+	if err := s.DAO.Session.Delete(ctx, c.Param("id")); err != nil {
 		fail(c, 500, err.Error())
 		return
 	}
 	ok(c, nil)
 }
 
-// ---------- Plugin ----------
+// ====================================================================
+// Plugin
+// ====================================================================
 
 func (s *Service) ListPlugins(ctx context.Context, c *app.RequestContext) {
+	if s.PluginEngine != nil {
+		ok(c, s.PluginEngine.List())
+		return
+	}
 	list, err := s.DAO.Plugin.List(ctx)
 	if err != nil {
 		fail(c, 500, err.Error())
@@ -351,14 +528,94 @@ func (s *Service) ListPlugins(ctx context.Context, c *app.RequestContext) {
 	ok(c, list)
 }
 
-func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	var req struct{ IsActive bool `json:"is_active"` }
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "invalid request")
+func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		fail(c, 400, "缺少上传文件")
 		return
 	}
-	if err := s.DAO.Plugin.SetActive(ctx, id, req.IsActive); err != nil {
+
+	src, err := file.Open()
+	if err != nil {
+		fail(c, 500, "无法打开文件")
+		return
+	}
+	defer src.Close()
+
+	tmpFile, err := os.CreateTemp("", "pluggin-*.zip")
+	if err != nil {
+		fail(c, 500, "临时文件创建失败")
+		return
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := io.Copy(tmpFile, src); err != nil {
+		fail(c, 500, "文件写入失败")
+		return
+	}
+	tmpFile.Close()
+
+	reader, err := zip.OpenReader(tmpFile.Name())
+	if err != nil {
+		fail(c, 400, "无效的 ZIP 文件")
+		return
+	}
+	defer reader.Close()
+
+	var pluginName string
+	for _, f := range reader.File {
+		if f.Name == "pluggin.yaml" || filepath.Base(f.Name) == "pluggin.yaml" {
+			pluginName = filepath.Base(filepath.Dir(f.Name))
+			if pluginName == "." {
+				pluginName = filepath.Base(tmpFile.Name())
+				pluginName = pluginName[:len(pluginName)-4]
+			}
+			break
+		}
+	}
+	if pluginName == "" {
+	pluginName = file.Filename
+	pluginName = pluginName[:len(pluginName)-len(filepath.Ext(pluginName))]
+	}
+
+	destDir := filepath.Join("data/pluggins", pluginName)
+	os.RemoveAll(destDir)
+	os.MkdirAll(destDir, 0755)
+
+	for _, f := range reader.File {
+		path := filepath.Join(destDir, f.Name)
+		if f.FileInfo().IsDir() {
+			os.MkdirAll(path, 0755)
+			continue
+		}
+		os.MkdirAll(filepath.Dir(path), 0755)
+		dst, err := os.Create(path)
+		if err != nil {
+			continue
+		}
+		rc, _ := f.Open()
+		io.Copy(dst, rc)
+		rc.Close()
+		dst.Close()
+	}
+
+	if s.PluginEngine != nil {
+		if err := s.PluginEngine.Load(pluginName); err != nil {
+			fail(c, 500, "插件加载失败: "+err.Error())
+			return
+		}
+	}
+
+	ok(c, map[string]string{"name": pluginName, "status": "loaded"})
+}
+
+func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
+	var req struct{ IsActive bool `json:"is_active"` }
+	if err := c.BindJSON(&req); err != nil {
+		fail(c, 400, "参数格式错误")
+		return
+	}
+	if err := s.DAO.Plugin.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
 		fail(c, 500, err.Error())
 		return
 	}
@@ -367,6 +624,9 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 
 func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
+	if s.PluginEngine != nil {
+		s.PluginEngine.Unload(id)
+	}
 	if err := s.DAO.Plugin.Delete(ctx, id); err != nil {
 		fail(c, 500, err.Error())
 		return
@@ -374,7 +634,9 @@ func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	ok(c, nil)
 }
 
-// ---------- ACL ----------
+// ====================================================================
+// ACL
+// ====================================================================
 
 func (s *Service) ListACLRules(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.ACL.List(ctx)
@@ -388,7 +650,7 @@ func (s *Service) ListACLRules(ctx context.Context, c *app.RequestContext) {
 func (s *Service) AddACLRule(ctx context.Context, c *app.RequestContext) {
 	var r models.ACLRule
 	if err := c.BindJSON(&r); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	if err := s.DAO.ACL.Create(ctx, &r); err != nil {
@@ -399,37 +661,54 @@ func (s *Service) AddACLRule(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) DeleteACLRule(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	var req struct{ ID int64 `json:"id"` }
-	c.BindJSON(&req)
-	if req.ID == 0 {
-		fail(c, 400, "invalid id")
+	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
+	if id <= 0 {
+		fail(c, 400, "无效的 ID")
 		return
 	}
-	if err := s.DAO.ACL.Delete(ctx, req.ID); err != nil {
+	if err := s.DAO.ACL.Delete(ctx, id); err != nil {
 		fail(c, 500, err.Error())
 		return
 	}
 	ok(c, nil)
-	_ = id
 }
 
-// ---------- Chat Records ----------
+// ====================================================================
+// Chat Records
+// ====================================================================
 
 func (s *Service) GetChatRecords(ctx context.Context, c *app.RequestContext) {
 	chatAreaID := c.Param("chatAreaID")
-	limit := c.DefaultQuery("limit", "20")
-	offset := c.DefaultQuery("offset", "0")
+	limit := atoi(c.DefaultQuery("limit", "20"))
+	offset := atoi(c.DefaultQuery("offset", "0"))
+	role := c.Query("role")
 
-	l := atoi(limit)
-	o := atoi(offset)
+	if role != "" {
+		list, total, err := s.DAO.ChatRecord.ListByChatAreaAndRole(ctx, chatAreaID, role, limit, offset)
+		if err != nil {
+			fail(c, 500, err.Error())
+			return
+		}
+		ok(c, map[string]any{"total": total, "list": list})
+		return
+	}
 
-	list, total, err := s.DAO.ChatRecord.ListByChatArea(ctx, chatAreaID, l, o)
+	list, total, err := s.DAO.ChatRecord.ListByChatArea(ctx, chatAreaID, limit, offset)
 	if err != nil {
 		fail(c, 500, err.Error())
 		return
 	}
 	ok(c, map[string]any{"total": total, "list": list})
+}
+
+func (s *Service) GetChatAreaTokenUsage(ctx context.Context, c *app.RequestContext) {
+	chatAreaID := c.Param("chatAreaID")
+	sess, err := s.DAO.Session.GetOrCreate(ctx, chatAreaID)
+	if err != nil {
+		fail(c, 500, err.Error())
+		return
+	}
+	ok(c, map[string]any{"chat_area_id": chatAreaID, "token_usage": sess.TokenUsage})
 }
 
 func (s *Service) GetChatAreas(ctx context.Context, c *app.RequestContext) {
@@ -441,28 +720,43 @@ func (s *Service) GetChatAreas(ctx context.Context, c *app.RequestContext) {
 	ok(c, list)
 }
 
-// ---------- Overview ----------
+// ====================================================================
+// Overview
+// ====================================================================
 
 func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	chatAreaCount, _ := s.DAO.ChatArea.Count(ctx)
-	mcpCount := int64(0)
-	pluginCount := int64(0)
+
+	mcpList, _ := s.DAO.MCPServer.List(ctx)
+	mcpCount := int64(len(mcpList))
+
+	pluginList, _ := s.DAO.Plugin.List(ctx)
+	pluginCount := int64(len(pluginList))
+
 	totalTokens, _ := s.DAO.ChatRecord.TotalTokenUsage(ctx)
+
+	providerCount, _ := s.DAO.Provider.List(ctx, "")
+	skillCount, _ := s.DAO.Skill.List(ctx)
+	sessionCount, _ := s.DAO.Session.List(ctx)
 
 	ok(c, map[string]any{
 		"chat_area_count":   chatAreaCount,
 		"mcp_count":         mcpCount,
 		"adapter_count":     1,
 		"plugin_count":      pluginCount,
+		"provider_count":    len(providerCount),
+		"skill_count":       len(skillCount),
+		"session_count":     len(sessionCount),
 		"total_token_usage": totalTokens,
 	})
 }
 
-// ---------- Memory ----------
+// ====================================================================
+// Memory
+// ====================================================================
 
 func (s *Service) GetShortTermMemoryConfig(ctx context.Context, c *app.RequestContext) {
-	chatAreaID := c.Param("chatAreaID")
-	m, err := s.DAO.ShortTermMemory.GetOrCreate(ctx, chatAreaID)
+	m, err := s.DAO.ShortTermMemory.GetOrCreate(ctx, c.Param("chatAreaID"))
 	if err != nil {
 		fail(c, 500, err.Error())
 		return
@@ -482,7 +776,7 @@ func (s *Service) UpdateShortTermMemoryConfig(ctx context.Context, c *app.Reques
 		AutoCompact bool `json:"auto_compact"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	m.WindowSize = req.WindowSize
@@ -495,8 +789,7 @@ func (s *Service) UpdateShortTermMemoryConfig(ctx context.Context, c *app.Reques
 }
 
 func (s *Service) GetLongTermMemoryConfig(ctx context.Context, c *app.RequestContext) {
-	chatAreaID := c.Param("chatAreaID")
-	m, err := s.DAO.LongTermMemory.GetOrCreate(ctx, chatAreaID)
+	m, err := s.DAO.LongTermMemory.GetOrCreate(ctx, c.Param("chatAreaID"))
 	if err != nil {
 		fail(c, 500, err.Error())
 		return
@@ -516,7 +809,7 @@ func (s *Service) UpdateLongTermMemoryConfig(ctx context.Context, c *app.Request
 		HotMemoryTTL int `json:"hot_memory_ttl"`
 	}
 	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "invalid request")
+		fail(c, 400, "参数格式错误")
 		return
 	}
 	m.HotAreaSize = req.HotAreaSize
@@ -528,7 +821,7 @@ func (s *Service) UpdateLongTermMemoryConfig(ctx context.Context, c *app.Request
 	ok(c, m)
 }
 
-// ---------- helpers ----------
+// helpers
 
 func newUUID() string {
 	b := make([]byte, 16)

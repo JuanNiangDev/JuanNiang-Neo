@@ -41,6 +41,26 @@ func (d *UserDAO) Exists(ctx context.Context) (bool, error) {
 	return count > 0, err
 }
 
+// ---------- Admin QQ DAO ----------
+
+type AdminQQDAO struct{ db *gorm.DB }
+
+func NewAdminQQDAO(db *gorm.DB) *AdminQQDAO { return &AdminQQDAO{db: db} }
+
+func (d *AdminQQDAO) List(ctx context.Context) ([]models.AdminQQ, error) {
+	var list []models.AdminQQ
+	err := d.db.WithContext(ctx).Order("created_at DESC").Find(&list).Error
+	return list, err
+}
+
+func (d *AdminQQDAO) Add(ctx context.Context, qq int64) error {
+	return d.db.WithContext(ctx).Create(&models.AdminQQ{ID: qq}).Error
+}
+
+func (d *AdminQQDAO) Remove(ctx context.Context, qq int64) error {
+	return d.db.WithContext(ctx).Where("id = ?", qq).Delete(&models.AdminQQ{}).Error
+}
+
 // ---------- Provider DAO ----------
 
 type ProviderDAO struct{ db *gorm.DB }
@@ -609,6 +629,19 @@ func (d *ChatRecordDAO) TotalTokenUsage(ctx context.Context) (int64, error) {
 	return total, err
 }
 
+func (d *ChatRecordDAO) ListByChatAreaAndRole(ctx context.Context, chatAreaID, role string, limit, offset int) ([]models.ChatRecord, int64, error) {
+	var list []models.ChatRecord
+	var total int64
+
+	q := d.db.WithContext(ctx).Model(&models.ChatRecord{}).
+		Where("chat_area_id = ? AND role = ?", chatAreaID, role)
+	if err := q.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+	err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&list).Error
+	return list, total, err
+}
+
 // ---------- Plugin DAO ----------
 
 type PluginDAO struct{ db *gorm.DB }
@@ -733,6 +766,7 @@ func newUUID() string {
 // Bundle 汇聚所有 DAO，方便注入。
 type Bundle struct {
 	User             *UserDAO
+	AdminQQ          *AdminQQDAO
 	Provider         *ProviderDAO
 	MCPServer        *MCPServerDAO
 	Skill            *SkillDAO
@@ -752,6 +786,7 @@ type Bundle struct {
 func NewBundle(db *gorm.DB) *Bundle {
 	return &Bundle{
 		User:             NewUserDAO(db),
+		AdminQQ:          NewAdminQQDAO(db),
 		Provider:         NewProviderDAO(db),
 		MCPServer:        NewMCPServerDAO(db),
 		Skill:            NewSkillDAO(db),

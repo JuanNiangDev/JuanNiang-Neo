@@ -292,6 +292,15 @@ type LongTermMemoryItem struct {
 	CreatedAt  time.Time `gorm:"index"`
 }
 
+// ---------- 管理员 QQ ----------
+
+type AdminQQ struct {
+	ID        int64          `gorm:"primaryKey"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt gorm.DeletedAt `gorm:"index"`
+}
+
 // ---------- 后台任务步骤结果 ----------
 
 type TaskStepResult struct {

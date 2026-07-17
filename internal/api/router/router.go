@@ -12,27 +12,37 @@ import (
 
 func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	auth := middleware.JWTAuth()
-
 	api := h.Group("/api/v1")
 
-	// Auth (no JWT required)
+	// Auth
 	api.POST("/login", svc.Login)
 	api.POST("/change-password", auth, svc.ChangePassword)
 
+	// Admin QQ
+	api.GET("/admins", auth, svc.ListAdminQQs)
+	api.POST("/admins", auth, svc.AddAdminQQ)
+	api.DELETE("/admins/:id", auth, svc.DeleteAdminQQ)
+
 	// Adapter
 	api.GET("/adapter", auth, svc.GetAdapterStatus)
+	api.PUT("/adapter", auth, svc.UpdateAdapterConfig)
+	api.POST("/adapter/restart", auth, svc.RestartAdapter)
 
 	// Providers
 	api.GET("/providers", auth, svc.ListProviders)
+	api.GET("/providers/:id", auth, svc.GetProvider)
 	api.POST("/providers", auth, svc.AddProvider)
 	api.PUT("/providers/:id", auth, svc.UpdateProvider)
 	api.DELETE("/providers/:id", auth, svc.DeleteProvider)
+	api.PUT("/providers/:id/toggle", auth, svc.ToggleProvider)
 
 	// MCP
 	api.GET("/mcp", auth, svc.ListMCPServers)
+	api.GET("/mcp/:id", auth, svc.GetMCPServer)
 	api.POST("/mcp", auth, svc.AddMCPServer)
 	api.PUT("/mcp/:id", auth, svc.UpdateMCPServer)
 	api.DELETE("/mcp/:id", auth, svc.DeleteMCPServer)
+	api.PUT("/mcp/:id/toggle", auth, svc.ToggleMCPServer)
 
 	// Memory
 	api.GET("/memory/:chatAreaID/short-term", auth, svc.GetShortTermMemoryConfig)
@@ -48,6 +58,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 
 	// Sessions
 	api.GET("/sessions", auth, svc.ListSessions)
+	api.GET("/sessions/:id", auth, svc.GetSession)
 	api.DELETE("/sessions/:id", auth, svc.DeleteSession)
 
 	// Skills
@@ -62,6 +73,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 
 	// Plugins
 	api.GET("/plugins", auth, svc.ListPlugins)
+	api.POST("/plugins/upload", auth, svc.UploadPlugin)
 	api.PUT("/plugins/:id/toggle", auth, svc.TogglePlugin)
 	api.DELETE("/plugins/:id", auth, svc.DeletePlugin)
 
@@ -72,6 +84,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 
 	// Chat Records
 	api.GET("/chat-records/:chatAreaID", auth, svc.GetChatRecords)
+	api.GET("/chat-records/:chatAreaID/token-usage", auth, svc.GetChatAreaTokenUsage)
 
 	// Overview
 	api.GET("/overview", auth, svc.GetOverview)

@@ -2,7 +2,7 @@
 
 **Base URL:** `http://localhost:8090/api/v1`
 
-**认证:** JWT Bearer Token (有效期 24h)
+**认证:** 除 `/login` 外所有端点需 `Authorization: Bearer <token>` header
 
 ---
 
@@ -10,351 +10,699 @@
 
 ### POST /login
 
-登录获取 JWT Token。
-
+```bash
+curl -X POST http://localhost:8090/api/v1/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"Admin123"}'
 ```
-请求体:
-{
-  "username": "admin",
-  "password": "Admin123"
-}
 
-响应:
+```json
+// response 200
 {
   "code": 0,
-  "data": {
-    "token": "eyJhbGciOiJIUzI1NiIs..."
-  }
+  "data": {"token": "eyJhbGciOiJIUzI1NiIs..."}
 }
-```
 
-### POST /change-password (需认证)
-
-修改管理员密码。
-
-```
-请求头: Authorization: Bearer <token>
-请求体:
+// response 401
 {
-  "old_password": "Admin123",
-  "new_password": "new-password"
+  "code": 401,
+  "msg": "用户名或密码错误"
 }
+```
+
+### POST /change-password
+
+```bash
+curl -X POST http://localhost:8090/api/v1/change-password \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"old_password":"Admin123","new_password":"NewPass456"}'
+```
+
+```json
+{"code": 0, "data": null}
 ```
 
 ---
 
-## 适配器
+## 管理员 QQ 列表
 
-### GET /adapter (需认证)
+动态管理拥有管理员权限的 QQ 号, 无需写死配置文件。
 
-获取 OneBot11 适配器运行状态。
+### GET /admins
 
+```bash
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8090/api/v1/admins
 ```
-响应:
+
+```json
+{
+  "code": 0,
+  "data": [
+    {"ID": 123456789, "CreatedAt": "2026-01-01T00:00:00Z"},
+    {"ID": 987654321, "CreatedAt": "2026-06-01T00:00:00Z"}
+  ]
+}
+```
+
+### POST /admins
+
+```bash
+curl -X POST http://localhost:8090/api/v1/admins \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"qq": 111222333}'
+```
+
+```json
+{"code": 0, "data": null}
+```
+
+### DELETE /admins/:id
+
+```bash
+curl -X DELETE http://localhost:8090/api/v1/admins/111222333 \
+  -H "Authorization: Bearer <token>"
+```
+
+---
+
+## Adapter
+
+### GET /adapter
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8090/api/v1/adapter
+```
+
+```json
 {
   "code": 0,
   "data": {
-    "status": "running"
+    "running": true,
+    "listen_addr": "0.0.0.0:8081",
+    "self_id": 123456789,
+    "conn_count": 1,
+    "conn_ids": [123456789]
   }
 }
+```
+
+### PUT /adapter
+
+```bash
+curl -X PUT http://localhost:8090/api/v1/adapter \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"token":"new-secret-token","admins":[123,456,789]}'
+```
+
+```json
+{
+  "code": 0,
+  "data": {
+    "running": true,
+    "listen_addr": "0.0.0.0:8081",
+    "conn_count": 1,
+    ...
+  }
+}
+```
+
+### POST /adapter/restart
+
+```bash
+curl -X POST http://localhost:8090/api/v1/adapter/restart \
+  -H "Authorization: Bearer <token>"
+```
+
+```json
+{"code": 0, "data": {"running": true, ...}}
 ```
 
 ---
 
 ## Provider 管理
 
-### GET /providers (需认证)
+### GET /providers
 
-列出所有 LLM Provider。
-
-### POST /providers (需认证)
-
-添加 LLM Provider。
-
+```bash
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8090/api/v1/providers
 ```
-请求体:
+
+```json
 {
-  "name": "my-gpt",
-  "type": "text_model",
-  "endpoint": "https://api.openai.com",
-  "token": "sk-xxx",
-  "model": "gpt-4",
-  "temperature": 0.7,
-  "is_active": true
+  "code": 0,
+  "data": [
+    {
+      "id": "a1b2c3d4...",
+      "name": "GPT-4",
+      "type": "text_model",
+      "endpoint": "https://api.openai.com",
+      "token": "sk-****",
+      "model": "gpt-4",
+      "temperature": 0.7,
+      "is_active": true,
+      "created_at": "2026-01-01T00:00:00Z"
+    }
+  ]
 }
 ```
 
-### PUT /providers/:id (需认证)
+### GET /providers/:id
 
-修改 Provider 配置。
+```bash
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8090/api/v1/providers/a1b2c3d4...
+```
 
-### DELETE /providers/:id (需认证)
+### POST /providers
 
-删除 Provider。
+```bash
+curl -X POST http://localhost:8090/api/v1/providers \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":"GPT-4",
+    "type":"text_model",
+    "endpoint":"https://api.openai.com",
+    "token":"sk-xxx",
+    "model":"gpt-4",
+    "temperature":0.7,
+    "is_active":true
+  }'
+```
+
+```json
+{"code": 0, "data": {"id": "a1b2c3d4...", "name": "GPT-4", ...}}
+```
+
+### PUT /providers/:id
+
+```bash
+curl -X PUT http://localhost:8090/api/v1/providers/a1b2c3d4... \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"GPT-4","type":"text_model","endpoint":"https://api.openai.com","token":"sk-new","model":"gpt-4","temperature":0.5}'
+```
+
+### DELETE /providers/:id
+
+```bash
+curl -X DELETE http://localhost:8090/api/v1/providers/a1b2c3d4... \
+  -H "Authorization: Bearer <token>"
+```
+
+### PUT /providers/:id/toggle
+
+```bash
+curl -X PUT http://localhost:8090/api/v1/providers/a1b2c3d4.../toggle \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active":false}'
+```
+
+```json
+{"code": 0, "data": null}
+```
 
 ---
 
 ## MCP 管理
 
-### GET /mcp (需认证)
+### GET /mcp
 
-列出所有 MCP 服务器。
-
-### POST /mcp (需认证)
-
-添加 MCP 服务器。
-
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8090/api/v1/mcp
 ```
-请求体:
+
+```json
 {
-  "name": "my-mcp",
-  "server_url": "http://localhost:3001",
-  "headers": {"X-Key": "value"},
-  "timeout": 30000,
-  "retry_count": 3,
-  "auto_reconnect": true,
-  "is_active": true
+  "code": 0,
+  "data": [
+    {
+      "id": "mcp-001...",
+      "name": "My MCP Server",
+      "server_url": "http://localhost:3001",
+      "headers": {"X-Key": "value"},
+      "timeout": 30000,
+      "retry_count": 3,
+      "tool_filter": [],
+      "auto_reconnect": true,
+      "is_active": true
+    }
+  ]
 }
 ```
 
-### PUT /mcp/:id (需认证)
+### GET /mcp/:id
 
-修改 MCP 配置。
+### POST /mcp
 
-### DELETE /mcp/:id (需认证)
+```bash
+curl -X POST http://localhost:8090/api/v1/mcp \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "My MCP Server",
+    "server_url": "http://localhost:3001",
+    "headers": {},
+    "timeout": 30000,
+    "retry_count": 3,
+    "auto_reconnect": true,
+    "is_active": true
+  }'
+```
 
-删除 MCP 服务器。
+### PUT /mcp/:id
+
+### DELETE /mcp/:id
+
+### PUT /mcp/:id/toggle
+
+```bash
+curl -X PUT http://localhost:8090/api/v1/mcp/mcp-001/toggle \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active":false}'
+```
 
 ---
 
 ## 记忆管理
 
-### GET /memory/:chatAreaID/short-term (需认证)
+### GET /memory/:chatAreaID/short-term
 
-获取某 ChatArea 的短期记忆配置。
-
+```bash
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8090/api/v1/memory/<chat-area-id>/short-term
 ```
-响应:
+
+```json
 {
   "code": 0,
   "data": {
-    "id": "uuid",
-    "chat_area_id": "uuid",
+    "id": "mem-001...",
+    "chat_area_id": "area-001...",
     "window_size": 20,
     "auto_compact": false
   }
 }
 ```
 
-### PUT /memory/:chatAreaID/short-term (需认证)
+### PUT /memory/:chatAreaID/short-term
 
-修改短期记忆配置。
-
+```bash
+curl -X PUT http://localhost:8090/api/v1/memory/<chat-area-id>/short-term \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"window_size":30,"auto_compact":true}'
 ```
-请求体:
+
+### GET /memory/:chatAreaID/long-term
+
+```json
 {
-  "window_size": 30,
-  "auto_compact": true
+  "code": 0,
+  "data": {
+    "id": "lmem-001...",
+    "chat_area_id": "area-001...",
+    "hot_area_size": 10,
+    "hot_memory_ttl": 86400
+  }
 }
 ```
 
-### GET /memory/:chatAreaID/long-term (需认证)
+### PUT /memory/:chatAreaID/long-term
 
-获取长期记忆配置。
-
-### PUT /memory/:chatAreaID/long-term (需认证)
-
-修改长期记忆配置。
-
-```
-请求体:
-{
-  "hot_area_size": 10,
-  "hot_memory_ttl": 86400
-}
+```bash
+curl -X PUT http://localhost:8090/api/v1/memory/<chat-area-id>/long-term \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"hot_area_size":15,"hot_memory_ttl":3600}'
 ```
 
 ---
 
 ## Prompt 管理
 
-### GET /prompts (需认证)
+### GET /prompts
 
-列出所有 Prompt。
-
-### POST /prompts (需认证)
-
-添加 Prompt。
-
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8090/api/v1/prompts
 ```
-请求体:
+
+```json
 {
-  "name": "system-default",
-  "type": "system",
-  "content": "你是一个友好的 QQ 机器人助手...",
-  "is_active": true,
-  "variables": ["UserName", "GroupName"]
+  "code": 0,
+  "data": [
+    {
+      "id": "p-001...",
+      "name": "system-default",
+      "type": "system",
+      "content": "你是一个友好的 QQ 机器人助手...",
+      "is_active": true,
+      "variables": ["UserName", "GroupName"]
+    }
+  ]
 }
 ```
 
-### PUT /prompts/:id (需认证)
+### POST /prompts
 
-修改 Prompt。
+```bash
+curl -X POST http://localhost:8090/api/v1/prompts \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name":"system-default",
+    "type":"system",
+    "content":"你是一个友好的 QQ 机器人助手，名字叫娟娘。",
+    "is_active":true,
+    "variables":["UserName","GroupName","Time"]
+  }'
+```
 
-### DELETE /prompts/:id (需认证)
+### PUT /prompts/:id
 
-删除 Prompt。
+### DELETE /prompts/:id
 
 ---
 
 ## Session 管理
 
-### GET /sessions (需认证)
+### GET /sessions
 
-列出所有 Session (含关联 ChatArea)。
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8090/api/v1/sessions
+```
 
-### DELETE /sessions/:id (需认证)
+```json
+{
+  "code": 0,
+  "data": [
+    {
+      "id": "sess-001...",
+      "chat_area_id": "area-001...",
+      "model": "gpt-4",
+      "token_usage": 12345,
+      "meta_data": {},
+      "chat_area": {
+        "id": "area-001...",
+        "area_type": "group",
+        "target_id": 123456789
+      }
+    }
+  ]
+}
+```
 
-清除 Session (含 Redis 消息历史)。
+### GET /sessions/:id
+
+### DELETE /sessions/:id
+
+```bash
+curl -X DELETE http://localhost:8090/api/v1/sessions/sess-001... \
+  -H "Authorization: Bearer <token>"
+```
 
 ---
 
 ## Skill 管理
 
-### GET /skills (需认证)
+### GET /skills
 
-列出所有 Skill。
-
-### POST /skills (需认证)
-
-添加 Skill。
-
-```
-请求体:
+```json
 {
-  "name": "weather",
-  "description": "天气查询",
-  "keywords": ["天气", "weather"],
-  "regex_pattern": "",
-  "prompt_ref": "weather-prompt-id",
-  "tool_refs": ["browser_search"],
-  "mcp_refs": [],
-  "is_active": true,
-  "is_system": false,
-  "priority": 10
+  "code": 0,
+  "data": [
+    {
+      "id": "sk-001...",
+      "name": "weather",
+      "description": "天气查询",
+      "keywords": ["天气", "weather"],
+      "regex_pattern": "",
+      "prompt_ref": "",
+      "tool_refs": ["browser_search"],
+      "mcp_refs": [],
+      "is_active": true,
+      "is_system": false,
+      "priority": 10
+    }
+  ]
 }
 ```
 
-### PUT /skills/:id (需认证)
+### POST /skills
 
-修改 Skill。
+```bash
+curl -X POST http://localhost:8090/api/v1/skills \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"weather","description":"天气查询","keywords":["天气","weather"],"is_active":true,"priority":10}'
+```
 
-### DELETE /skills/:id (需认证)
+### PUT /skills/:id
 
-删除 Skill。
+### DELETE /skills/:id
 
 ---
 
 ## Tool 管理
 
-### GET /tools (需认证)
+### GET /tools
 
-列出所有 Tool (含内置)。
-
-### PUT /tools/:id/toggle (需认证)
-
-启用/禁用 Tool。
-
-```
-请求体:
+```json
 {
-  "is_active": false
+  "code": 0,
+  "data": [
+    {"id": "t-001", "name": "send_group_msg", "description": "发送群聊消息", "is_active": true, "is_builtin": true},
+    {"id": "t-002", "name": "get_time", "description": "获取当前时间", "is_active": true, "is_builtin": true}
+  ]
 }
+```
+
+### PUT /tools/:id/toggle
+
+```bash
+curl -X PUT http://localhost:8090/api/v1/tools/t-001/toggle \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active":false}'
 ```
 
 ---
 
 ## Plugin 管理
 
-### GET /plugins (需认证)
+### GET /plugins
 
-列出所有已安装插件。
+```json
+{
+  "code": 0,
+  "data": [
+    {"name": "ping", "version": "1.0.0", "author": "JuanNiang", "description": "Ping 插件"}
+  ]
+}
+```
 
-### PUT /plugins/:id/toggle (需认证)
+### POST /plugins/upload
 
-启用/禁用插件。
+```bash
+curl -X POST http://localhost:8090/api/v1/plugins/upload \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@my-plugin.zip"
+```
 
-### DELETE /plugins/:id (需认证)
+```json
+{"code": 0, "data": {"name": "my-plugin", "status": "loaded"}}
+```
 
-删除插件。
+### PUT /plugins/:id/toggle
+
+```bash
+curl -X PUT http://localhost:8090/api/v1/plugins/my-plugin/toggle \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active":false}'
+```
+
+### DELETE /plugins/:id
+
+```bash
+curl -X DELETE http://localhost:8090/api/v1/plugins/my-plugin \
+  -H "Authorization: Bearer <token>"
+```
 
 ---
 
 ## ACL 管理
 
-### GET /acl (需认证)
+### GET /acl
 
-列出所有 ACL 规则。
-
-### POST /acl (需认证)
-
-添加 ACL 规则。
-
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8090/api/v1/acl
 ```
-请求体:
+
+```json
 {
-  "user_id": 123456789,
-  "chat_area_id": "uuid",
-  "permission": "denied",
-  "actions": []
+  "code": 0,
+  "data": [
+    {
+      "id": 1,
+      "user_id": 123456789,
+      "chat_area_id": "area-001...",
+      "permission": "denied",
+      "actions": []
+    }
+  ]
 }
 ```
 
-### DELETE /acl/:id (需认证)
+### POST /acl
 
-删除 ACL 规则。
+```bash
+curl -X POST http://localhost:8090/api/v1/acl \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":123456789,"chat_area_id":"area-001...","permission":"denied","actions":[]}'
+```
+
+### DELETE /acl/:id
+
+```bash
+curl -X DELETE http://localhost:8090/api/v1/acl/1 \
+  -H "Authorization: Bearer <token>"
+```
 
 ---
 
 ## 聊天记录
 
-### GET /chat-records/:chatAreaID (需认证)
+### GET /chat-records/:chatAreaID
 
-获取指定 ChatArea 的聊天记录 (分页)。
+全部记录 (分页)。支持 `role` query 参数过滤:
 
+```bash
+# 全部记录
+curl "http://localhost:8090/api/v1/chat-records/area-001?limit=20&offset=0" \
+  -H "Authorization: Bearer <token>"
+
+# 仅用户消息
+curl "http://localhost:8090/api/v1/chat-records/area-001?role=user&limit=20" \
+  -H "Authorization: Bearer <token>"
+
+# 仅助手回复
+curl "http://localhost:8090/api/v1/chat-records/area-001?role=assistant" \
+  -H "Authorization: Bearer <token>"
+
+# 仅工具调用记录 (含 MCP 调用)
+curl "http://localhost:8090/api/v1/chat-records/area-001?role=tool" \
+  -H "Authorization: Bearer <token>"
 ```
-Query:
-  limit: 20 (default)
-  offset: 0 (default)
 
-响应:
+```json
 {
   "code": 0,
   "data": {
     "total": 150,
-    "list": [...]
+    "list": [
+      {
+        "id": 1001,
+        "chat_area_id": "area-001...",
+        "user_id": 123456789,
+        "role": "user",
+        "content": "今天天气怎么样",
+        "token_count": 5,
+        "tool_calls": {},
+        "created_at": "2026-07-18T12:00:00Z"
+      },
+      {
+        "id": 1002,
+        "chat_area_id": "area-001...",
+        "user_id": 0,
+        "role": "assistant",
+        "content": "今天天气晴朗...",
+        "token_count": 50,
+        "tool_calls": {},
+        "created_at": "2026-07-18T12:00:01Z"
+      },
+      {
+        "id": 1003,
+        "chat_area_id": "area-001...",
+        "user_id": 0,
+        "role": "tool",
+        "content": "browser_search: 搜索结果...",
+        "token_count": 100,
+        "tool_calls": {"tool_name": "browser_search", "status": "done"},
+        "created_at": "2026-07-18T12:00:02Z"
+      }
+    ]
+  }
+}
+```
+
+### GET /chat-records/:chatAreaID/token-usage
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8090/api/v1/chat-records/area-001/token-usage
+```
+
+```json
+{
+  "code": 0,
+  "data": {
+    "chat_area_id": "area-001...",
+    "token_usage": 123456
   }
 }
 ```
 
 ---
 
-## Chat Area
+## Chat Areas
 
-### GET /chat-areas (需认证)
+### GET /chat-areas
 
-列出所有 ChatArea。
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8090/api/v1/chat-areas
+```
+
+```json
+{
+  "code": 0,
+  "data": [
+    {
+      "id": "area-001...",
+      "area_type": "group",
+      "target_id": 123456789,
+      "created_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "area-002...",
+      "area_type": "private",
+      "target_id": 987654321,
+      "created_at": "2026-06-01T00:00:00Z"
+    }
+  ]
+}
+```
 
 ---
 
 ## 全局概览
 
-### GET /overview (需认证)
+### GET /overview
 
-获取系统全局统计。
-
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8090/api/v1/overview
 ```
-响应:
+
+```json
 {
   "code": 0,
   "data": {
@@ -362,9 +710,26 @@ Query:
     "mcp_count": 3,
     "adapter_count": 1,
     "plugin_count": 5,
+    "provider_count": 2,
+    "skill_count": 8,
+    "session_count": 42,
     "total_token_usage": 1234567
   }
 }
+```
+
+---
+
+## 健康检查
+
+### GET /health
+
+```bash
+curl http://localhost:8090/health
+```
+
+```json
+{"status": "ok"}
 ```
 
 ---
@@ -373,14 +738,14 @@ Query:
 
 所有错误统一格式:
 
-```
+```json
 {
-  "code": 4xx/5xx,
-  "msg": "错误描述"
+  "code": 400,
+  "msg": "参数格式错误"
 }
 ```
 
-| Code | 含义 |
+| Code | 说明 |
 |------|------|
 | 400 | 请求参数错误 |
 | 401 | 未认证或 Token 过期 |

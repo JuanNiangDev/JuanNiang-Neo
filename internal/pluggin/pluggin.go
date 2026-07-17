@@ -212,6 +212,21 @@ func (pe *PluginEngine) List() []Manifest {
 	return list
 }
 
+// ListMaps 返回插件列表 (map 格式, 供 Web API 使用)。
+func (pe *PluginEngine) ListMaps() []map[string]any {
+	list := pe.List()
+	out := make([]map[string]any, len(list))
+	for i, m := range list {
+		out[i] = map[string]any{
+			"name":        m.Name,
+			"version":     m.Version,
+			"author":      m.Author,
+			"description": m.Description,
+		}
+	}
+	return out
+}
+
 // ---------- 事件 ----------
 
 type EventData struct {
