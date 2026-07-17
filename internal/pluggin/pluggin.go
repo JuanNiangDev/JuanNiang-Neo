@@ -65,21 +65,60 @@ type SendAdapter interface {
 	GetVersionInfo() (map[string]any, error)
 }
 
+// ---------- Agent 操作接口 ----------
+
+// AgentOperator 插件通过此接口操作 Agent 核心功能。
+type AgentOperator interface {
+	SetProviderActive(ctx context.Context, id string, active bool) error
+	SetMCPActive(ctx context.Context, id string, active bool) error
+	CompactMemory(ctx context.Context, chatAreaID string) error
+	GetChatAreaID(userID, groupID int64, messageType string) string
+	GetProviderGroup() ProviderGroupAccess
+	GetMCPGroup() MCPGroupAccess
+}
+
+// ProviderGroupAccess 暴露给插件的 Provider 管理接口。
+type ProviderGroupAccess interface {
+	List() []ProviderInfo
+	GetActive(id string) bool
+}
+
+// MCPGroupAccess 暴露给插件的 MCP 管理接口。
+type MCPGroupAccess interface {
+	ListMCPs() []MCPInfo
+	IsConnected(id string) bool
+}
+
+type ProviderInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type MCPInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	Active  bool   `json:"active"`
+}
+
 // ---------- 引擎 ----------
 
 type PluginEngine struct {
-	mu       sync.RWMutex
-	plugins  map[string]*LoadedPlugin
-	basePath string
-	adapter  SendAdapter
-	db       *gorm.DB
-	cache    *cache.Cache
-	t2i      *t2icaller.Client
-	sandbox  *sandboxcaller.Client
-	dao      *dao.Bundle
+	mu         sync.RWMutex
+	plugins    map[string]*LoadedPlugin
+	basePath   string
+	adapter    SendAdapter
+	db         *gorm.DB
+	cache      *cache.Cache
+	t2i        *t2icaller.Client
+	sandbox    *sandboxcaller.Client
+	dao        *dao.Bundle
+	agentOp    AgentOperator
+	currentEv  EventData
 }
 
-func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache.Cache, t2i *t2icaller.Client, sb *sandboxcaller.Client, d *dao.Bundle) *PluginEngine {
+func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache.Cache, t2i *t2icaller.Client, sb *sandboxcaller.Client, d *dao.Bundle, ag AgentOperator) *PluginEngine {
 	if basePath == "" {
 		basePath = "data/pluggins"
 	}
@@ -92,6 +131,7 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 		t2i:      t2i,
 		sandbox:  sb,
 		dao:      d,
+		agentOp:  ag,
 	}
 }
 
@@ -185,6 +225,8 @@ type EventData struct {
 func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
+
+	pe.currentEv = event
 
 	for _, p := range pe.plugins {
 		if !p.HasPermission("onebot11") {
@@ -724,9 +766,13 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 
 func (pe *PluginEngine) injectAgent(L *lua.LState) {
 	daoBundle := pe.dao
+	agentOp := pe.agentOp
+	engine := pe
+
 	agentTable := L.NewTable()
 
-	L.SetFuncs(agentTable, map[string]lua.LGFunction{
+	funcs := map[string]lua.LGFunction{
+		// 查询
 		"get_providers": func(L *lua.LState) int {
 			list, err := daoBundle.Provider.List(context.Background(), "")
 			return pushResultJSON(L, list, err)
@@ -755,7 +801,65 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 			list, err := daoBundle.Plugin.List(context.Background())
 			return pushResultJSON(L, list, err)
 		},
-	})
+
+		// Provider 管理
+		"set_provider_active": func(L *lua.LState) int {
+			if agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			id := L.CheckString(1)
+			active := bool(L.CheckBool(2))
+			err := agentOp.SetProviderActive(context.Background(), id, active)
+			return pushResult(L, err)
+		},
+
+		// MCP 管理
+		"set_mcp_active": func(L *lua.LState) int {
+			if agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			id := L.CheckString(1)
+			active := bool(L.CheckBool(2))
+			err := agentOp.SetMCPActive(context.Background(), id, active)
+			return pushResult(L, err)
+		},
+
+		// 当前 Chat-Area
+		"get_current_chat_area": func(L *lua.LState) int {
+			ev := engine.currentEv
+			result := L.NewTable()
+			L.SetField(result, "post_type", lua.LString(ev.PostType))
+			L.SetField(result, "message_type", lua.LString(ev.MessageType))
+			L.SetField(result, "user_id", lua.LNumber(ev.UserID))
+			L.SetField(result, "group_id", lua.LNumber(ev.GroupID))
+			if agentOp != nil {
+				areaID := agentOp.GetChatAreaID(ev.UserID, ev.GroupID, ev.MessageType)
+				L.SetField(result, "chat_area_id", lua.LString(areaID))
+			}
+			L.Push(result)
+			return 1
+		},
+
+		// 短期记忆 Compact
+		"compact_memory": func(L *lua.LState) int {
+			if agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			ev := engine.currentEv
+			areaID := agentOp.GetChatAreaID(ev.UserID, ev.GroupID, ev.MessageType)
+			if areaID == "" {
+				return pushResult(L, fmt.Errorf("无法获取当前 Chat-Area ID"))
+			}
+			err := agentOp.CompactMemory(context.Background(), areaID)
+			if err != nil {
+				return pushResult(L, err)
+			}
+			L.Push(lua.LString("短期记忆已 Compact 并写入长期记忆"))
+			return 1
+		},
+	}
+
+	L.SetFuncs(agentTable, funcs)
 	L.SetGlobal("agent", agentTable)
 }
 

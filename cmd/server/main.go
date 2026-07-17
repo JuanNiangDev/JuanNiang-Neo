@@ -140,6 +140,7 @@ func main() {
 		t2iCli,
 		sandboxCli,
 		coreInst.DAO,
+		hago,
 	)
 	if err := pluginEngine.LoadAll(); err != nil {
 		slog.Error("插件加载失败", "err", err)

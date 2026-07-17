@@ -321,6 +321,47 @@ log.info("stdout: " .. out)
 
 返回所有已安装插件信息。
 
+### `agent.set_provider_active(id, active) → bool [, err]`
+
+启用/停用 LLM Provider。停用时从运行环境中移除，启用的 Provider 会被加载。
+
+```lua
+agent.set_provider_active("uuid", false)  -- 停用
+agent.set_provider_active("uuid", true)   -- 启用
+```
+
+### `agent.set_mcp_active(id, active) → bool [, err]`
+
+启用/停用 MCP 服务器。停用时会断开连接。
+
+### `agent.get_current_chat_area() → table`
+
+返回当前正在处理的消息所属 Chat-Area 信息。
+
+```lua
+local area = agent.get_current_chat_area()
+-- area = {
+--   post_type = "message",
+--   message_type = "group",
+--   user_id = 123456,
+--   group_id = 789012,
+--   chat_area_id = "uuid"
+-- }
+```
+
+### `agent.compact_memory() → string [, err]`
+
+Compact 当前 Chat-Area 的短期记忆：调用 LLM 将窗口内消息压缩为摘要，写入长期记忆并清空窗口。
+
+```lua
+local ok, err = agent.compact_memory()
+if err then
+    log.error("Compact 失败: " .. err)
+end
+```
+
+> **注意:** 需要已配置 Text LLM Provider 才能执行 Compact。
+
 ---
 
 ## 回调: `on_message`

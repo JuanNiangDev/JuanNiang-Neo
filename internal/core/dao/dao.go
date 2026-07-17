@@ -71,6 +71,11 @@ func (d *ProviderDAO) Delete(ctx context.Context, id string) error {
 	return d.db.WithContext(ctx).Where("id = ?", id).Delete(&models.Provider{}).Error
 }
 
+func (d *ProviderDAO) SetActive(ctx context.Context, id string, active bool) error {
+	return d.db.WithContext(ctx).Model(&models.Provider{}).Where("id = ?", id).
+		Update("is_active", active).Error
+}
+
 func (d *ProviderDAO) List(ctx context.Context, typ models.ModelType) ([]models.Provider, error) {
 	var list []models.Provider
 	q := d.db.WithContext(ctx)
@@ -119,6 +124,11 @@ func (d *MCPServerDAO) Update(ctx context.Context, m *models.MCPServer) error {
 
 func (d *MCPServerDAO) Delete(ctx context.Context, id string) error {
 	return d.db.WithContext(ctx).Where("id = ?", id).Delete(&models.MCPServer{}).Error
+}
+
+func (d *MCPServerDAO) SetActive(ctx context.Context, id string, active bool) error {
+	return d.db.WithContext(ctx).Model(&models.MCPServer{}).Where("id = ?", id).
+		Update("is_active", active).Error
 }
 
 func (d *MCPServerDAO) List(ctx context.Context) ([]models.MCPServer, error) {
