@@ -65,7 +65,6 @@ type Onebot11Adapter struct {
 	Addr      string         `gorm:"column:addr;type:varchar(255);not null;comment:连接地址"`
 	Port      int            `gorm:"column:port;not null;comment:连接端口"`
 	Token     string         `gorm:"column:token;type:varchar(255);comment:访问令牌"`
-	Admins    []int64        `gorm:"column:admins;type:json;serializer:json;comment:管理员ID列表"`
 }
 
 // ---------- LLM Provider ----------

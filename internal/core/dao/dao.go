@@ -52,11 +52,10 @@ func NewOnebot11AdapterDao(db *gorm.DB) *Onebot11AdapterDao {
 
 func (d *Onebot11AdapterDao) InitAdapterConfig(ctx context.Context) error {
 	return d.db.Create(&models.Onebot11Adapter{
-		ID:     1,
-		Addr:   "0.0.0.0",
-		Port:   8081,
-		Token:  "wow-a-lovey-juan-niang",
-		Admins: []int64{},
+		ID:    1,
+		Addr:  "0.0.0.0",
+		Port:  8081,
+		Token: "wow-a-lovey-juan-niang",
 	}).WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Error
 }
 

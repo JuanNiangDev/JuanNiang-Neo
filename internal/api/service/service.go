@@ -178,7 +178,7 @@ func (s *Service) UpdateAdapterConfig(ctx context.Context, c *app.RequestContext
 		return
 	}
 
-	if err := s.DAO.Provider
+	if err := s.DAO.Onebot11Adapter.
 
 	conf := s.Adapter.GetCurrentConfig()
 	if conf.Token != data.Token {
