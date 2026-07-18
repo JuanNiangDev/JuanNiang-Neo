@@ -37,3 +37,11 @@ type AdminQQNumbers struct {
 	ID        int64     `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+type ProviderStatus struct {
+	Running    bool    `json:"running"`
+	ListenAddr string  `json:"listen_addr"`
+	SelfID     int64   `json:"self_id"`
+	ConnCount  int     `json:"conn_count"`
+	ConnIDs    []int64 `json:"conn_ids"`
+}

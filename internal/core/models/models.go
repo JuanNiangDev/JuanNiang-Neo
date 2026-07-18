@@ -55,6 +55,19 @@ type AdminUser struct {
 	Role         string `gorm:"default:admin"`
 }
 
+// ---------- Onebot11 Adapter ----------
+
+type Onebot11Adapter struct {
+	ID        uint `gorm:"primarykey"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt gorm.DeletedAt `gorm:"index"`
+	Addr      string         `gorm:"column:addr;type:varchar(255);not null;comment:连接地址"`
+	Port      int            `gorm:"column:port;not null;comment:连接端口"`
+	Token     string         `gorm:"column:token;type:varchar(255);comment:访问令牌"`
+	Admins    []int64        `gorm:"column:admins;type:json;serializer:json;comment:管理员ID列表"`
+}
+
 // ---------- LLM Provider ----------
 
 type ModelType string
@@ -99,8 +112,8 @@ type MCPServer struct {
 // ---------- Skill ----------
 
 type Skill struct {
-	ID           string    `gorm:"primaryKey;type:uuid"`
-	Name         string    `gorm:"not null"`
+	ID           string `gorm:"primaryKey;type:uuid"`
+	Name         string `gorm:"not null"`
 	Description  string
 	Keywords     JSONSlice `gorm:"type:jsonb;default:'[]'"`
 	RegexPattern string
@@ -118,13 +131,13 @@ type Skill struct {
 // ---------- Tool Config ----------
 
 type ToolConfig struct {
-	ID          string       `gorm:"primaryKey;type:uuid"`
-	Name        string       `gorm:"uniqueIndex;not null"`
-	Description string       `gorm:"not null"`
-	Parameters  JSONMap      `gorm:"type:jsonb;default:'{}'"`
-	Timeout     int          `gorm:"default:30000"`
-	IsActive    bool         `gorm:"default:true"`
-	IsBuiltin   bool         `gorm:"default:false"`
+	ID          string  `gorm:"primaryKey;type:uuid"`
+	Name        string  `gorm:"uniqueIndex;not null"`
+	Description string  `gorm:"not null"`
+	Parameters  JSONMap `gorm:"type:jsonb;default:'{}'"`
+	Timeout     int     `gorm:"default:30000"`
+	IsActive    bool    `gorm:"default:true"`
+	IsBuiltin   bool    `gorm:"default:false"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
@@ -141,12 +154,12 @@ const (
 )
 
 type Prompt struct {
-	ID        string         `gorm:"primaryKey;type:uuid"`
-	Name      string         `gorm:"not null"`
-	Content   string         `gorm:"type:text;not null"`
-	Type      PromptType     `gorm:"not null;index"`
-	IsActive  bool           `gorm:"default:true"`
-	Variables JSONSlice      `gorm:"type:jsonb;default:'[]'"`
+	ID        string     `gorm:"primaryKey;type:uuid"`
+	Name      string     `gorm:"not null"`
+	Content   string     `gorm:"type:text;not null"`
+	Type      PromptType `gorm:"not null;index"`
+	IsActive  bool       `gorm:"default:true"`
+	Variables JSONSlice  `gorm:"type:jsonb;default:'[]'"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
@@ -162,9 +175,9 @@ const (
 )
 
 type ChatArea struct {
-	ID        string         `gorm:"primaryKey;type:uuid"`
-	AreaType  AreaType       `gorm:"not null;index"`
-	TargetID  int64          `gorm:"not null;index"`
+	ID        string   `gorm:"primaryKey;type:uuid"`
+	AreaType  AreaType `gorm:"not null;index"`
+	TargetID  int64    `gorm:"not null;index"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
@@ -173,36 +186,36 @@ type ChatArea struct {
 // ---------- Session ----------
 
 type Session struct {
-	ID           string         `gorm:"primaryKey;type:uuid"`
-	ChatAreaID   string         `gorm:"not null;index"`
-	ChatArea     ChatArea       `gorm:"foreignKey:ChatAreaID"`
-	Model        string         `gorm:"default:''"`
-	TokenUsage   int64          `gorm:"default:0"`
-	MetaData     JSONMap        `gorm:"type:jsonb;default:'{}'"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	DeletedAt    gorm.DeletedAt `gorm:"index"`
+	ID         string   `gorm:"primaryKey;type:uuid"`
+	ChatAreaID string   `gorm:"not null;index"`
+	ChatArea   ChatArea `gorm:"foreignKey:ChatAreaID"`
+	Model      string   `gorm:"default:''"`
+	TokenUsage int64    `gorm:"default:0"`
+	MetaData   JSONMap  `gorm:"type:jsonb;default:'{}'"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	DeletedAt  gorm.DeletedAt `gorm:"index"`
 }
 
 // ---------- Memory ----------
 
 type ShortTermMemory struct {
-	ID          string         `gorm:"primaryKey;type:uuid"`
-	ChatAreaID  string         `gorm:"uniqueIndex;not null"`
-	ChatArea    ChatArea       `gorm:"foreignKey:ChatAreaID"`
-	WindowSize  int            `gorm:"default:20"`
-	AutoCompact bool           `gorm:"default:false"`
+	ID          string   `gorm:"primaryKey;type:uuid"`
+	ChatAreaID  string   `gorm:"uniqueIndex;not null"`
+	ChatArea    ChatArea `gorm:"foreignKey:ChatAreaID"`
+	WindowSize  int      `gorm:"default:20"`
+	AutoCompact bool     `gorm:"default:false"`
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
 
 type LongTermMemory struct {
-	ID           string         `gorm:"primaryKey;type:uuid"`
-	ChatAreaID   string         `gorm:"uniqueIndex;not null"`
-	ChatArea     ChatArea       `gorm:"foreignKey:ChatAreaID"`
-	HotAreaSize  int            `gorm:"default:10"`
-	HotMemoryTTL int            `gorm:"default:86400"`
+	ID           string   `gorm:"primaryKey;type:uuid"`
+	ChatAreaID   string   `gorm:"uniqueIndex;not null"`
+	ChatArea     ChatArea `gorm:"foreignKey:ChatAreaID"`
+	HotAreaSize  int      `gorm:"default:10"`
+	HotMemoryTTL int      `gorm:"default:86400"`
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 	DeletedAt    gorm.DeletedAt `gorm:"index"`
@@ -220,12 +233,12 @@ const (
 )
 
 type BackgroundTask struct {
-	ID         string         `gorm:"primaryKey;type:uuid"`
-	ChatAreaID string         `gorm:"not null;index"`
-	ChatArea   ChatArea       `gorm:"foreignKey:ChatAreaID"`
-	Status     TaskStatus     `gorm:"default:pending;index"`
-	Steps      JSONMap        `gorm:"type:jsonb;default:'[]'"`
-	Results    JSONMap        `gorm:"type:jsonb;default:'{}'"`
+	ID         string     `gorm:"primaryKey;type:uuid"`
+	ChatAreaID string     `gorm:"not null;index"`
+	ChatArea   ChatArea   `gorm:"foreignKey:ChatAreaID"`
+	Status     TaskStatus `gorm:"default:pending;index"`
+	Steps      JSONMap    `gorm:"type:jsonb;default:'[]'"`
+	Results    JSONMap    `gorm:"type:jsonb;default:'{}'"`
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	DeletedAt  gorm.DeletedAt `gorm:"index"`
@@ -234,15 +247,15 @@ type BackgroundTask struct {
 // ---------- Chat Record ----------
 
 type ChatRecord struct {
-	ID         int64          `gorm:"primaryKey;autoIncrement"`
-	ChatAreaID string         `gorm:"not null;index"`
-	ChatArea   ChatArea       `gorm:"foreignKey:ChatAreaID"`
-	UserID     int64          `gorm:"not null;index"`
-	Role       string         `gorm:"not null"`
-	Content    string         `gorm:"type:text"`
-	TokenCount int            `gorm:"default:0"`
-	ToolCalls  JSONMap        `gorm:"type:jsonb;default:'{}'"`
-	CreatedAt  time.Time      `gorm:"index"`
+	ID         int64     `gorm:"primaryKey;autoIncrement"`
+	ChatAreaID string    `gorm:"not null;index"`
+	ChatArea   ChatArea  `gorm:"foreignKey:ChatAreaID"`
+	UserID     int64     `gorm:"not null;index"`
+	Role       string    `gorm:"not null"`
+	Content    string    `gorm:"type:text"`
+	TokenCount int       `gorm:"default:0"`
+	ToolCalls  JSONMap   `gorm:"type:jsonb;default:'{}'"`
+	CreatedAt  time.Time `gorm:"index"`
 	UpdatedAt  time.Time
 	DeletedAt  gorm.DeletedAt `gorm:"index"`
 }
@@ -250,12 +263,12 @@ type ChatRecord struct {
 // ---------- Plugin ----------
 
 type Plugin struct {
-	ID        string         `gorm:"primaryKey;type:uuid"`
-	Name      string         `gorm:"uniqueIndex;not null"`
-	Version   string         `gorm:"default:'1.0.0'"`
-	Path      string         `gorm:"not null"`
-	Config    JSONMap        `gorm:"type:jsonb;default:'{}'"`
-	IsActive  bool           `gorm:"default:true"`
+	ID        string  `gorm:"primaryKey;type:uuid"`
+	Name      string  `gorm:"uniqueIndex;not null"`
+	Version   string  `gorm:"default:'1.0.0'"`
+	Path      string  `gorm:"not null"`
+	Config    JSONMap `gorm:"type:jsonb;default:'{}'"`
+	IsActive  bool    `gorm:"default:true"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
@@ -271,11 +284,11 @@ const (
 )
 
 type ACLRule struct {
-	ID         int64          `gorm:"primaryKey;autoIncrement"`
-	UserID     int64          `gorm:"not null;index"`
-	ChatAreaID string         `gorm:"not null;index"`
-	Permission ACLPermission  `gorm:"not null;default:allowed"`
-	Actions    JSONSlice      `gorm:"type:jsonb;default:'[]'"`
+	ID         int64         `gorm:"primaryKey;autoIncrement"`
+	UserID     int64         `gorm:"not null;index"`
+	ChatAreaID string        `gorm:"not null;index"`
+	Permission ACLPermission `gorm:"not null;default:allowed"`
+	Actions    JSONSlice     `gorm:"type:jsonb;default:'[]'"`
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	DeletedAt  gorm.DeletedAt `gorm:"index"`
@@ -295,7 +308,7 @@ type LongTermMemoryItem struct {
 // ---------- 管理员 QQ ----------
 
 type AdminQQ struct {
-	ID        int64          `gorm:"primaryKey"`
+	ID        int64 `gorm:"primaryKey"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
@@ -304,10 +317,10 @@ type AdminQQ struct {
 // ---------- 后台任务步骤结果 ----------
 
 type TaskStepResult struct {
-	TaskID   string
-	StepID   string
+	TaskID     string
+	StepID     string
 	ChatAreaID string
-	Status   TaskStatus
-	Result   string
-	Error    string
+	Status     TaskStatus
+	Result     string
+	Error      string
 }

@@ -13,3 +13,10 @@ type LoginReq struct {
 type AddAdminQQReq struct {
 	QQ int64 `json:"qq"`
 }
+
+type UpdateAdapterConfigReq struct {
+	Addr   string  `json:"addr"`
+	Port   int     `json:"port"`
+	Token  string  `json:"token"`
+	Admins []int64 `json:"admins"`
+}

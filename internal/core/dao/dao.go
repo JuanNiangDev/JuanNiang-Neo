@@ -9,6 +9,7 @@ import (
 	"JuanNiang-Neo/internal/core/models"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ---------- 用户 DAO ----------
@@ -39,6 +40,38 @@ func (d *UserDAO) Exists(ctx context.Context) (bool, error) {
 	var count int64
 	err := d.db.WithContext(ctx).Model(&models.AdminUser{}).Count(&count).Error
 	return count > 0, err
+}
+
+// ---------- Onebot11 Adapter DAO ----------
+
+type Onebot11AdapterDao struct{ db *gorm.DB }
+
+func NewOnebot11AdapterDao(db *gorm.DB) *Onebot11AdapterDao {
+	return &Onebot11AdapterDao{db: db}
+}
+
+func (d *Onebot11AdapterDao) InitAdapterConfig(ctx context.Context) error {
+	return d.db.Create(&models.Onebot11Adapter{
+		ID:     1,
+		Addr:   "0.0.0.0",
+		Port:   8081,
+		Token:  "wow-a-lovey-juan-niang",
+		Admins: []int64{},
+	}).WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Error
+}
+
+func (d *Onebot11AdapterDao) GetAdapterConfig(ctx context.Context) (*models.Onebot11Adapter, error) {
+	var data models.Onebot11Adapter
+
+	if err := d.db.WithContext(ctx).First(&data).Error; err != nil {
+		return nil, err
+	}
+
+	return &data, nil
+}
+
+func (d *Onebot11AdapterDao) UpdateAdapterConfig(ctx context.Context, conf *models.Onebot11Adapter) error {
+	return d.db.WithContext(ctx).Where("id = 1").Updates(conf).Error
 }
 
 // ---------- Admin QQ DAO ----------
@@ -770,41 +803,43 @@ func newUUID() string {
 
 // Bundle 汇聚所有 DAO，方便注入。
 type Bundle struct {
-	User             *UserDAO
-	AdminQQ          *AdminQQDAO
-	Provider         *ProviderDAO
-	MCPServer        *MCPServerDAO
-	Skill            *SkillDAO
-	ToolConfig       *ToolConfigDAO
-	Prompt           *PromptDAO
-	ChatArea         *ChatAreaDAO
-	Session          *SessionDAO
-	ShortTermMemory  *ShortTermMemoryDAO
-	LongTermMemory   *LongTermMemoryDAO
-	LongTermMemItem  *LongTermMemoryItemDAO
-	BackgroundTask   *BackgroundTaskDAO
-	ChatRecord       *ChatRecordDAO
-	Plugin           *PluginDAO
-	ACL              *ACLDAO
+	User            *UserDAO
+	AdminQQ         *AdminQQDAO
+	Provider        *ProviderDAO
+	MCPServer       *MCPServerDAO
+	Skill           *SkillDAO
+	ToolConfig      *ToolConfigDAO
+	Prompt          *PromptDAO
+	ChatArea        *ChatAreaDAO
+	Session         *SessionDAO
+	ShortTermMemory *ShortTermMemoryDAO
+	LongTermMemory  *LongTermMemoryDAO
+	LongTermMemItem *LongTermMemoryItemDAO
+	BackgroundTask  *BackgroundTaskDAO
+	ChatRecord      *ChatRecordDAO
+	Plugin          *PluginDAO
+	ACL             *ACLDAO
+	Onebot11Adapter *Onebot11AdapterDao
 }
 
 func NewBundle(db *gorm.DB) *Bundle {
 	return &Bundle{
-		User:             NewUserDAO(db),
-		AdminQQ:          NewAdminQQDAO(db),
-		Provider:         NewProviderDAO(db),
-		MCPServer:        NewMCPServerDAO(db),
-		Skill:            NewSkillDAO(db),
-		ToolConfig:       NewToolConfigDAO(db),
-		Prompt:           NewPromptDAO(db),
-		ChatArea:         NewChatAreaDAO(db),
-		Session:          NewSessionDAO(db),
-		ShortTermMemory:  NewShortTermMemoryDAO(db),
-		LongTermMemory:   NewLongTermMemoryDAO(db),
-		LongTermMemItem:  NewLongTermMemoryItemDAO(db),
-		BackgroundTask:   NewBackgroundTaskDAO(db),
-		ChatRecord:       NewChatRecordDAO(db),
-		Plugin:           NewPluginDAO(db),
-		ACL:              NewACLDAO(db),
+		User:            NewUserDAO(db),
+		AdminQQ:         NewAdminQQDAO(db),
+		Provider:        NewProviderDAO(db),
+		MCPServer:       NewMCPServerDAO(db),
+		Skill:           NewSkillDAO(db),
+		ToolConfig:      NewToolConfigDAO(db),
+		Prompt:          NewPromptDAO(db),
+		ChatArea:        NewChatAreaDAO(db),
+		Session:         NewSessionDAO(db),
+		ShortTermMemory: NewShortTermMemoryDAO(db),
+		LongTermMemory:  NewLongTermMemoryDAO(db),
+		LongTermMemItem: NewLongTermMemoryItemDAO(db),
+		BackgroundTask:  NewBackgroundTaskDAO(db),
+		ChatRecord:      NewChatRecordDAO(db),
+		Plugin:          NewPluginDAO(db),
+		ACL:             NewACLDAO(db),
+		Onebot11Adapter: NewOnebot11AdapterDao(db),
 	}
 }

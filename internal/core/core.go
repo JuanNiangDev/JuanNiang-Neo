@@ -35,6 +35,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.ChatRecord{},
 		&models.Plugin{},
 		&models.ACLRule{},
+		&models.Onebot11Adapter{},
 	)
 }
 
@@ -68,10 +69,10 @@ func InitAdminUser(ctx context.Context, userDAO *dao.UserDAO) error {
 
 // Core 聚合所有核心模块的初始化结果。
 type Core struct {
-	DB     *gorm.DB
-	Cache  *cache.Cache
-	DAO    *dao.Bundle
-	ACL    *acl.ACL
+	DB    *gorm.DB
+	Cache *cache.Cache
+	DAO   *dao.Bundle
+	ACL   *acl.ACL
 }
 
 var (

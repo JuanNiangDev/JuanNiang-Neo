@@ -157,26 +157,34 @@ func (s *Service) DeleteAdminQQ(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
-	if s.AdapterCb != nil {
-		ok(c, s.AdapterCb.Status())
-		return
+	raw := s.Adapter.Status()
+
+	status := dto.ProviderStatus{
+		Running:    raw.Running,
+		ListenAddr: raw.ListenAddr,
+		SelfID:     raw.SelfID,
+		ConnCount:  raw.ConnCount,
+		ConnIDs:    raw.ConnIDs,
 	}
-	ok(c, map[string]any{"running": false, "listen_addr": ""})
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, status))
 }
 
 func (s *Service) UpdateAdapterConfig(ctx context.Context, c *app.RequestContext) {
-	if s.AdapterCb == nil {
-		fail(c, 500, "adapter 未初始化")
+	var data dto.UpdateAdapterConfigReq
+
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	var req struct {
-		Token  string  `json:"token"`
-		Admins []int64 `json:"admins"`
+
+	if err := s.DAO.Provider
+
+	conf := s.Adapter.GetCurrentConfig()
+	if conf.Token != data.Token {
+		conf.Token
 	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
-		return
-	}
+
 	if err := s.AdapterCb.UpdateConfig(req.Token, req.Admins); err != nil {
 		fail(c, 500, err.Error())
 		return
