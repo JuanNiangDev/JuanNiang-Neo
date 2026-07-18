@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// Config OneBot11 适配器配置。
 type Config struct {
 	Addr   string // 监听地址, 格式 host:port
 	Port   int
@@ -16,9 +15,7 @@ type Config struct {
 	Admins []int64
 }
 
-// Provider 是 OneBot11 协议适配器, 管理 WebSocket 连接并提供 OneBot11 API。
-// Agent 通过 Events() 获取事件流, 通过 API 方法调用 OneBot11 接口。
-type Provider struct {
+type Adapter struct {
 	cfg    Config
 	server *wsServer
 	events chan Event
@@ -26,29 +23,24 @@ type Provider struct {
 	closed bool
 }
 
-// New 创建 Provider 实例。
-func New(cfg Config) *Provider {
-	return &Provider{
+func New(cfg Config) *Adapter {
+	return &Adapter{
 		cfg:    cfg,
 		events: make(chan Event, 128),
 	}
 }
 
-// Start 启动 WebSocket 服务器, 开始接收事件。
-func (p *Provider) Start(ctx context.Context) error {
-	addr := p.resolveAddr()
-
-	srv, err := newWSServer(ctx, addr, p.cfg.Token, p.events)
+func (p *Adapter) Start(ctx context.Context) error {
+	srv, err := newWSServer(ctx, p.cfg.Addr, p.cfg.Token, p.events)
 	if err != nil {
 		return fmt.Errorf("adapter start: %w", err)
 	}
 	p.server = srv
-	slog.Info("adapter 已启动", "addr", addr)
+	slog.Info("adapter 已启动", "addr", p.cfg.Addr)
 	return nil
 }
 
-// Stop 关闭 WebSocket 服务器和事件通道。
-func (p *Provider) Stop(ctx context.Context) error {
+func (p *Adapter) Stop(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -67,22 +59,23 @@ func (p *Provider) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Events 返回只读事件通道, Agent 通过此通道接收所有 OneBot11 事件。
-func (p *Provider) Events() <-chan Event {
+func (p *Adapter) Events() <-chan Event {
 	return p.events
 }
 
-// SelfID 返回当前连接的机器人 QQ 号。
-func (p *Provider) SelfID() int64 {
+func (p *Adapter) SelfID() int64 {
 	if p.server == nil {
 		return 0
 	}
 	return p.server.selfID()
 }
 
-// UpdateConfig 热更新配置。仅 Token 和 Admins 可在运行时更新, Addr/Port 需重启。
-func (p *Provider) UpdateConfig(cfg Config) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func (p *Adapter) GetCurrentConfig() Config {
+	return p.cfg
+}
+
+func (p *Adapter) UpdateConfig(ctx context.Context, cfg Config) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 
 	p.mu.Lock()
 	defer func() {
@@ -112,12 +105,28 @@ func (p *Provider) UpdateConfig(cfg Config) error {
 	return nil
 }
 
-// Status 返回适配器当前运行状态。
-func (p *Provider) Status() ProviderStatus {
+func (p *Adapter) Restart(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	if err := p.Stop(ctx); err != nil {
+		slog.Error("adapter 重启出错 (Stop)", "err", err.Error())
+		return err
+	}
+
+	if err := p.Start(ctx); err != nil {
+		slog.Error("adapter 重启出错 (Start)", "err", err.Error())
+		return err
+	}
+
+	return nil
+}
+
+func (p *Adapter) Status() ProviderStatus {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	s := ProviderStatus{ListenAddr: p.resolveAddr()}
+	s := ProviderStatus{ListenAddr: p.cfg.Addr}
 	if p.server == nil || p.closed {
 		return s
 	}
@@ -129,15 +138,7 @@ func (p *Provider) Status() ProviderStatus {
 	return s
 }
 
-func (p *Provider) resolveAddr() string {
-	if p.cfg.Addr != "" {
-		return p.cfg.Addr
-	}
-	return fmt.Sprintf("0.0.0.0:%d", p.cfg.Port)
-}
-
-// call 向 OneBot11 客户端发送 API 调用并返回原始响应。
-func (p *Provider) call(action string, params map[string]any) (*APIResponse, error) {
+func (p *Adapter) call(action string, params map[string]any) (*APIResponse, error) {
 	if p.server == nil {
 		return nil, fmt.Errorf("adapter 未启动")
 	}

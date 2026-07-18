@@ -1,175 +1,160 @@
 package service
 
 import (
+	"JuanNiang-Neo/internal/api/dto"
 	"archive/zip"
 	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 
 	"JuanNiang-Neo/internal/api/middleware"
-	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
 
 	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"golang.org/x/crypto/bcrypt"
 )
 
-type Service struct {
-	DAO          *dao.Bundle
-	AdapterCb    AdapterCallback
-	PluginEngine PluginEngineCb
-}
-
-type AdapterCallback interface {
-	UpdateConfig(token string, admins []int64) error
-	Restart() error
-	Status() map[string]any
-}
-
-type PluginEngineCb interface {
-	Load(name string) error
-	Unload(name string) error
-	Reload(name string) error
-	List() []map[string]any
-}
-
-func New(dao *dao.Bundle) *Service {
-	return &Service{DAO: dao}
-}
-
-func ok(c *app.RequestContext, data any) {
-	c.JSON(http.StatusOK, map[string]any{"code": 0, "data": data})
-}
-
-func fail(c *app.RequestContext, code int, msg string) {
-	c.JSON(code, map[string]any{"code": code, "msg": msg})
-}
-
-// ====================================================================
-// Auth
-// ====================================================================
-
 func (s *Service) Login(ctx context.Context, c *app.RequestContext) {
-	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.LoginReq
+
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	user, err := s.DAO.User.GetByUsername(ctx, req.Username)
+	user, err := s.DAO.User.GetByUsername(ctx, data.Username)
 	if err != nil {
-		fail(c, 401, "用户名或密码错误")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UserOrPasswordWrong, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
-		fail(c, 401, "用户名或密码错误")
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(data.Password)) != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UserOrPasswordWrong, nil))
 		return
 	}
 	token, err := middleware.GenerateToken(user.ID, user.Username, user.Role)
 	if err != nil {
-		fail(c, 500, "token 生成失败")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.GenTokenFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, map[string]string{"token": token})
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.TokenResp{Token: token}))
 }
 
 func (s *Service) ChangePassword(ctx context.Context, c *app.RequestContext) {
+	var data dto.ChangePasswordReq
+
 	userID := c.GetUint("user_id")
-	var req struct {
-		OldPassword string `json:"old_password"`
-		NewPassword string `json:"new_password"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
+
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
 	user, err := s.DAO.User.GetByUsername(ctx, "admin")
 	if err != nil {
-		fail(c, 404, "用户不存在")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UserNotExists, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.OldPassword)) != nil {
-		fail(c, 400, "原密码错误")
+	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(data.OldPassword)) != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OriginPasswordWrong, nil))
 		return
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	hash, _ := bcrypt.GenerateFromPassword([]byte(data.NewPassword), bcrypt.DefaultCost)
 	if err := s.DAO.User.UpdatePassword(ctx, userID, string(hash)); err != nil {
-		fail(c, 500, "密码更新失败")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UpdatePasswordFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
-// ====================================================================
-// Admin QQ 列表 (动态管理)
-// ====================================================================
-
 func (s *Service) ListAdminQQs(ctx context.Context, c *app.RequestContext) {
-	list, err := s.DAO.AdminQQ.List(ctx)
+	raw, err := s.DAO.AdminQQ.List(ctx)
+
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+
+	list := dto.Model2Resp_AdminQQ(raw)
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, list))
 }
 
 func (s *Service) AddAdminQQ(ctx context.Context, c *app.RequestContext) {
-	var req struct{ QQ int64 `json:"qq"` }
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.AddAdminQQReq
+
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if req.QQ <= 0 {
-		fail(c, 400, "无效的 QQ 号")
+	if data.QQ <= 0 {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidQQNumber, nil))
 		return
 	}
-	if err := s.DAO.AdminQQ.Add(ctx, req.QQ); err != nil {
-		fail(c, 500, err.Error())
+	if err := s.DAO.AdminQQ.Add(ctx, data.QQ); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if s.AdapterCb != nil {
-		admins, _ := s.DAO.AdminQQ.List(ctx)
-		qqs := make([]int64, len(admins))
-		for i, a := range admins {
-			qqs[i] = a.ID
-		}
-		s.AdapterCb.UpdateConfig("", qqs)
+
+	admins, err := s.DAO.AdminQQ.List(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
 	}
-	ok(c, nil)
+
+	qqs := make([]int64, len(admins))
+	for i, a := range admins {
+		qqs[i] = a.ID
+	}
+
+	conf := s.Adapter.GetCurrentConfig()
+	conf.Admins = qqs
+
+	if err := s.Adapter.UpdateConfig(ctx, conf); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 func (s *Service) DeleteAdminQQ(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 	qq, _ := strconv.ParseInt(id, 10, 64)
 	if qq <= 0 {
-		fail(c, 400, "无效的 QQ 号")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidQQNumber, nil))
 		return
 	}
 	if err := s.DAO.AdminQQ.Remove(ctx, qq); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if s.AdapterCb != nil {
-		admins, _ := s.DAO.AdminQQ.List(ctx)
-		qqs := make([]int64, len(admins))
-		for i, a := range admins {
-			qqs[i] = a.ID
-		}
-		s.AdapterCb.UpdateConfig("", qqs)
-	}
-	ok(c, nil)
-}
 
-// ====================================================================
-// Adapter
-// ====================================================================
+	admins, err := s.DAO.AdminQQ.List(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	qqs := make([]int64, len(admins))
+	for i, a := range admins {
+		qqs[i] = a.ID
+	}
+
+	conf := s.Adapter.GetCurrentConfig()
+	conf.Admins = qqs
+
+	if err := s.Adapter.UpdateConfig(ctx, conf); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
 
 func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
 	if s.AdapterCb != nil {
@@ -271,7 +256,9 @@ func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
-	var req struct{ IsActive bool `json:"is_active"` }
+	var req struct {
+		IsActive bool `json:"is_active"`
+	}
 	if err := c.BindJSON(&req); err != nil {
 		fail(c, 400, "参数格式错误")
 		return
@@ -343,7 +330,9 @@ func (s *Service) DeleteMCPServer(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) ToggleMCPServer(ctx context.Context, c *app.RequestContext) {
-	var req struct{ IsActive bool `json:"is_active"` }
+	var req struct {
+		IsActive bool `json:"is_active"`
+	}
 	if err := c.BindJSON(&req); err != nil {
 		fail(c, 400, "参数格式错误")
 		return
@@ -456,7 +445,9 @@ func (s *Service) DeletePrompt(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) TogglePrompt(ctx context.Context, c *app.RequestContext) {
-	var req struct{ IsActive bool `json:"is_active"` }
+	var req struct {
+		IsActive bool `json:"is_active"`
+	}
 	if err := c.BindJSON(&req); err != nil {
 		fail(c, 400, "参数格式错误")
 		return
@@ -482,7 +473,9 @@ func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
-	var req struct{ IsActive bool `json:"is_active"` }
+	var req struct {
+		IsActive bool `json:"is_active"`
+	}
 	if err := c.BindJSON(&req); err != nil {
 		fail(c, 400, "参数格式错误")
 		return
@@ -587,8 +580,8 @@ func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
 		}
 	}
 	if pluginName == "" {
-	pluginName = file.Filename
-	pluginName = pluginName[:len(pluginName)-len(filepath.Ext(pluginName))]
+		pluginName = file.Filename
+		pluginName = pluginName[:len(pluginName)-len(filepath.Ext(pluginName))]
 	}
 
 	destDir := filepath.Join("data/pluggins", pluginName)
@@ -623,7 +616,9 @@ func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
-	var req struct{ IsActive bool `json:"is_active"` }
+	var req struct {
+		IsActive bool `json:"is_active"`
+	}
 	if err := c.BindJSON(&req); err != nil {
 		fail(c, 400, "参数格式错误")
 		return

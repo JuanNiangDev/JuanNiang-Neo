@@ -11,8 +11,8 @@ import (
 )
 
 var (
-	JWTSecret    = []byte("juan-niang-neo-secret-change-me")
-	TokenExpiry  = 24 * time.Hour
+	JWTSecret   = []byte("juan-niang-neo-secret-change-me")
+	TokenExpiry = 72 * time.Hour
 )
 
 type Claims struct {

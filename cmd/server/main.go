@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 
+	"JuanNiang-Neo/infrastructure/postgres"
+	"JuanNiang-Neo/infrastructure/redis"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
 	"JuanNiang-Neo/internal/api/engine"
@@ -16,12 +18,6 @@ import (
 	"JuanNiang-Neo/internal/api/service"
 	"JuanNiang-Neo/internal/core"
 	"JuanNiang-Neo/internal/pluggin"
-	"JuanNiang-Neo/infrastructure/postgres"
-	"JuanNiang-Neo/infrastructure/redis"
-	"JuanNiang-Neo/infrastructure/sandbox"
-	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
-	"JuanNiang-Neo/infrastructure/t2i"
-	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 )
 
 func main() {
@@ -33,8 +29,6 @@ func main() {
 	})))
 
 	slog.Info("JuanNiang-Neo 启动中...")
-
-	// ---------- 1. 基础设施 ----------
 
 	db, err := postgres.NewPostgresClient(
 		postgres.WithHost(env("DB_HOST", "localhost")),
@@ -60,27 +54,6 @@ func main() {
 	}
 	slog.Info("Redis 已连接")
 
-	var sandboxCli *sandboxcaller.Client
-	sandboxCli, err = sandbox.NewClient(
-		sandbox.WithBaseURL(env("SANDBOX_URL", "http://localhost:8080")),
-		sandbox.WithAPIKey(env("SANDBOX_API_KEY", "")),
-	)
-	if err != nil {
-		slog.Warn("Sandbox 不可用", "err", err)
-		sandboxCli = nil
-	}
-
-	var t2iCli *t2icaller.Client
-	t2iCli, err = t2i.NewClient(
-		t2i.WithBaseURL(env("T2I_URL", "http://localhost:8999")),
-	)
-	if err != nil {
-		slog.Warn("T2I 不可用", "err", err)
-		t2iCli = nil
-	}
-
-	// ---------- 2. Core 初始化 ----------
-
 	coreInst, err := core.Init(ctx, db, redisClient)
 	if err != nil {
 		slog.Error("Core 初始化失败", "err", err)
@@ -88,13 +61,9 @@ func main() {
 	}
 	slog.Info("Core 已初始化")
 
-	// ---------- 3. JWT Secret ----------
-
 	if s := os.Getenv("JWT_SECRET"); s != "" {
 		middleware.JWTSecret = []byte(s)
 	}
-
-	// ---------- 4. Adapter ----------
 
 	adapterCfg := adapter.Config{
 		Port:   mustAtoi(env("OB_PORT", "8081")),
@@ -113,8 +82,8 @@ func main() {
 	hago := agent.NewHagoCenter()
 	if err := hago.Init(ctx, agent.Config{
 		Adapter:   adapterProv,
-		Sandbox:   sandboxCli,
-		T2I:       t2iCli,
+		Sandbox:   nil,
+		T2I:       nil,
 		Providers: hago.Providers,
 		MCPGroup:  hago.MCP,
 		DAO:       coreInst.DAO,
@@ -137,8 +106,8 @@ func main() {
 		pluggin.WrapAdapter(adapterProv),
 		db,
 		coreInst.Cache,
-		t2iCli,
-		sandboxCli,
+		nil,
+		nil,
 		coreInst.DAO,
 		hago,
 	)
@@ -149,9 +118,7 @@ func main() {
 
 	// ---------- 7. Web API ----------
 
-	svc := service.New(coreInst.DAO)
-	svc.AdapterCb = &adapterCB{p: adapterProv}
-	svc.PluginEngine = &pluginCB{pe: pluginEngine}
+	svc := service.New(coreInst.DAO, adapterProv, pluginEngine)
 	webEngine := engine.New(env("API_ADDR", ":8090"), svc)
 
 	go func() {
@@ -198,32 +165,10 @@ func parseAdmins(s string) []int64 {
 	return admins
 }
 
-// adapterCB 将 adapter.Provider 包装为 service.AdapterCallback。
-type adapterCB struct{ p *adapter.Provider }
-
-func (a *adapterCB) UpdateConfig(token string, admins []int64) error {
-	return a.p.UpdateConfig(adapter.Config{Token: token, Admins: admins})
-}
-
-func (a *adapterCB) Restart() error {
-	return a.p.UpdateConfig(adapter.Config{})
-}
-
-func (a *adapterCB) Status() map[string]any {
-	s := a.p.Status()
-	return map[string]any{
-		"running":     s.Running,
-		"listen_addr": s.ListenAddr,
-		"self_id":     s.SelfID,
-		"conn_count":  s.ConnCount,
-		"conn_ids":    s.ConnIDs,
-	}
-}
-
 // pluginCB 将 pluggin.PluginEngine 包装为 service.PluginEngineCb。
 type pluginCB struct{ pe *pluggin.PluginEngine }
 
-func (p *pluginCB) Load(name string) error    { return p.pe.Load(name) }
-func (p *pluginCB) Unload(name string) error  { return p.pe.Unload(name) }
-func (p *pluginCB) Reload(name string) error  { return p.pe.Reload(name) }
-func (p *pluginCB) List() []map[string]any    { return p.pe.ListMaps() }
+func (p *pluginCB) Load(name string) error   { return p.pe.Load(name) }
+func (p *pluginCB) Unload(name string) error { return p.pe.Unload(name) }
+func (p *pluginCB) Reload(name string) error { return p.pe.Reload(name) }
+func (p *pluginCB) List() []map[string]any   { return p.pe.ListMaps() }
