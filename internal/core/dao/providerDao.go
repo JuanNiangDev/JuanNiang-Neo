@@ -40,6 +40,13 @@ func (d *ProviderDAO) SetActive(ctx context.Context, id string, active bool) err
 		Update("is_active", active).Error
 }
 
+// DeactivateByType 将指定类型的所有 Provider 设为非激活，排除 exceptID。
+func (d *ProviderDAO) DeactivateByType(ctx context.Context, typ models.ModelType, exceptID string) error {
+	return d.db.WithContext(ctx).Model(&models.Provider{}).
+		Where("type = ? AND id != ?", typ, exceptID).
+		Update("is_active", false).Error
+}
+
 func (d *ProviderDAO) List(ctx context.Context, typ models.ModelType) ([]models.Provider, error) {
 	var list []models.Provider
 	q := d.db.WithContext(ctx)

@@ -119,6 +119,13 @@ func main() {
 	// ---------- 7. Web API ----------
 
 	svc := service.New(coreInst.DAO, adapterProv, pluginEngine)
+	svc.ProviderGroup = hago.Providers
+	svc.MCPGroup = hago.MCP
+	svc.MemoryGroup = hago.Memory
+	svc.SessionMgr = hago.Session
+	svc.ToolRegistry = hago.Tools
+	svc.SkillEngine = hago.Skills
+	svc.ACLMgr = hago.ACL
 	webEngine := engine.New(env("API_ADDR", ":8090"), svc)
 
 	go func() {
@@ -161,11 +168,3 @@ func parseAdmins(s string) []string {
 	}
 	return admins
 }
-
-// pluginCB 将 pluggin.PluginEngine 包装为 service.PluginEngineCb。
-type pluginCB struct{ pe *pluggin.PluginEngine }
-
-func (p *pluginCB) Load(name string) error   { return p.pe.Load(name) }
-func (p *pluginCB) Unload(name string) error { return p.pe.Unload(name) }
-func (p *pluginCB) Reload(name string) error { return p.pe.Reload(name) }
-func (p *pluginCB) List() []map[string]any   { return p.pe.ListMaps() }

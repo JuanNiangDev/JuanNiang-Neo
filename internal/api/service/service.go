@@ -2,7 +2,10 @@ package service
 
 import (
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/mcp"
+	"JuanNiang-Neo/internal/agent/memory"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/agent/skill"
 	"JuanNiang-Neo/internal/api/dto"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/core/models"
@@ -11,9 +14,11 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -124,6 +129,17 @@ func (s *Service) UpdateAdapterConfig(ctx context.Context, c *app.RequestContext
 		Enable: data.Enabled,
 	}
 
+	if err := s.DAO.Onebot11Adapter.UpdateAdapterConfig(ctx, &models.Onebot11Adapter{
+		Addr:           data.Addr,
+		Port:           data.Port,
+		Token:          data.Token,
+		AdminQQNumbers: data.AdminQQNumbers,
+		Enabled:        data.Enabled,
+	}); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
 	if err := s.Adapter.SyncConfig(ctx, conf); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UpdateAdapterConfigFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -184,8 +200,9 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	id := newUUID()
 	providerConfig := models.Provider{
-		ID:          newUUID(),
+		ID:          id,
 		Name:        data.Name,
 		Type:        data.Type,
 		Endpoint:    data.Endpoint,
@@ -195,9 +212,36 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 		IsActive:    data.IsActive,
 	}
 
+	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
+	if data.IsActive {
+		if err := s.DAO.Provider.DeactivateByType(ctx, data.Type, id); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	}
+
 	if err := s.DAO.Provider.Create(ctx, &providerConfig); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
+	}
+
+	// 运行时同步：先移除同类型旧的运行时 Provider，再添加新的
+	if data.IsActive && s.ProviderGroup != nil {
+		provType := provider.ModelType(data.Type)
+		for _, p := range s.ProviderGroup.ListProviders() {
+			if p.Type() == provType {
+				s.ProviderGroup.DelProvider(p.ID())
+			}
+		}
+		s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfig{
+			ID:          id,
+			Name:        data.Name,
+			Type:        provType,
+			Endpoint:    data.Endpoint,
+			Token:       data.Token,
+			Model:       data.Model,
+			Temperature: data.Temperature,
+		}))
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, data))
@@ -213,6 +257,14 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
+	if data.IsActive {
+		if err := s.DAO.Provider.DeactivateByType(ctx, data.Type, id); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	}
+
 	providerConfig := models.Provider{
 		ID:          id,
 		Name:        data.Name,
@@ -224,17 +276,28 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		IsActive:    data.IsActive,
 	}
 
+	provType := provider.ModelType(data.Type)
 	providerConfig_ := provider.ProviderConfig{
 		ID:          id,
 		Name:        data.Name,
-		Type:        provider.ModelType(data.Type),
+		Type:        provType,
 		Endpoint:    data.Endpoint,
 		Token:       data.Token,
 		Model:       data.Model,
 		Temperature: data.Temperature,
 	}
 
-	s.ProviderGroup.SyncConfig(providerConfig_)
+	// 运行时同步：先移除同类型旧的，再同步新配置
+	if s.ProviderGroup != nil {
+		if data.IsActive {
+			for _, p := range s.ProviderGroup.ListProviders() {
+				if p.Type() == provType && p.ID() != id {
+					s.ProviderGroup.DelProvider(p.ID())
+				}
+			}
+		}
+		s.ProviderGroup.SyncConfig(providerConfig_)
+	}
 
 	if err := s.DAO.Provider.Update(ctx, &providerConfig); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -267,31 +330,47 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	if err := s.DAO.Provider.SetActive(ctx, id, data.IsActive); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
 	if data.IsActive {
+		// 获取当前 Provider 信息以确认类型
 		raw, err := s.DAO.Provider.GetByID(ctx, id)
 		if err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ProviderNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+
+		// 同类型只能有一个 Active：先停用同类型其他 Provider
+		if err := s.DAO.Provider.DeactivateByType(ctx, raw.Type, id); err != nil {
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
 
-		provideConfig := provider.ProviderConfig{
-			ID:          id,
-			Name:        raw.Name,
-			Type:        provider.ModelType(raw.Type),
-			Endpoint:    raw.Endpoint,
-			Token:       raw.Token,
-			Model:       raw.Model,
-			Temperature: raw.Temperature,
+		// 运行时：移除同类型旧的，添加新的
+		if s.ProviderGroup != nil {
+			provType := provider.ModelType(raw.Type)
+			for _, p := range s.ProviderGroup.ListProviders() {
+				if p.Type() == provType {
+					s.ProviderGroup.DelProvider(p.ID())
+				}
+			}
+			s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfig{
+				ID:          id,
+				Name:        raw.Name,
+				Type:        provType,
+				Endpoint:    raw.Endpoint,
+				Token:       raw.Token,
+				Model:       raw.Model,
+				Temperature: raw.Temperature,
+			}))
 		}
-
-		s.ProviderGroup.AddProvider(provider.NewProvider(provideConfig))
 	} else {
-		s.ProviderGroup.DelProvider(id)
+		if s.ProviderGroup != nil {
+			s.ProviderGroup.DelProvider(id)
+		}
+	}
+
+	if err := s.DAO.Provider.SetActive(ctx, id, data.IsActive); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
@@ -337,18 +416,31 @@ func (s *Service) AddMCPServer(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// 运行时同步：如果 Active，创建 MCP 客户端并连接
+	if data.IsActive && s.MCPGroup != nil {
+		client := mcp.NewSSEMCPClient(buildMcpSSEConfig(&m))
+		if err := client.Connect(ctx); err != nil {
+			// 连接失败不影响 DB 写入结果，仅记录日志
+			slog.Error("MCP 连接失败", "name", m.Name, "err", err)
+		} else {
+			s.MCPGroup.AddMCP(client)
+		}
+	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawMCPServer2Resp(&m)))
 }
 
 func (s *Service) UpdateMCPServer(ctx context.Context, c *app.RequestContext) {
 	var data dto.UpdateMCPServerReq
+	id := c.Param("id")
 	if err := c.BindJSON(&data); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
 
 	m := models.MCPServer{
-		ID:            c.Param("id"),
+		ID:            id,
 		Name:          data.Name,
 		ServerURL:     data.ServerURL,
 		Headers:       data.Headers,
@@ -362,11 +454,38 @@ func (s *Service) UpdateMCPServer(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// 运行时同步：断开旧连接，若 Active 则重连
+	if s.MCPGroup != nil {
+		if old, ok := s.MCPGroup.GetMCP(id); ok {
+			old.Disconnect()
+			s.MCPGroup.DelMCP(id)
+		}
+		if data.IsActive {
+			client := mcp.NewSSEMCPClient(buildMcpSSEConfig(&m))
+			if err := client.Connect(ctx); err != nil {
+				slog.Error("MCP 重连失败", "name", m.Name, "err", err)
+			} else {
+				s.MCPGroup.AddMCP(client)
+			}
+		}
+	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawMCPServer2Resp(&m)))
 }
 
 func (s *Service) DeleteMCPServer(ctx context.Context, c *app.RequestContext) {
-	if err := s.DAO.MCPServer.Delete(ctx, c.Param("id")); err != nil {
+	id := c.Param("id")
+
+	// 运行时同步：断开连接并移除
+	if s.MCPGroup != nil {
+		if old, ok := s.MCPGroup.GetMCP(id); ok {
+			old.Disconnect()
+			s.MCPGroup.DelMCP(id)
+		}
+	}
+
+	if err := s.DAO.MCPServer.Delete(ctx, id); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -375,11 +494,33 @@ func (s *Service) DeleteMCPServer(ctx context.Context, c *app.RequestContext) {
 
 func (s *Service) ToggleMCPServer(ctx context.Context, c *app.RequestContext) {
 	var data dto.ToggleMCPServerReq
+	id := c.Param("id")
 	if err := c.BindJSON(&data); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.DAO.MCPServer.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+
+	// 运行时同步
+	if s.MCPGroup != nil {
+		if data.IsActive {
+			raw, err := s.DAO.MCPServer.GetByID(ctx, id)
+			if err == nil {
+				client := mcp.NewSSEMCPClient(buildMcpSSEConfig(raw))
+				if err := client.Connect(ctx); err != nil {
+					slog.Error("MCP 连接失败", "id", id, "err", err)
+				} else {
+					s.MCPGroup.AddMCP(client)
+				}
+			}
+		} else {
+			if old, ok := s.MCPGroup.GetMCP(id); ok {
+				old.Disconnect()
+				s.MCPGroup.DelMCP(id)
+			}
+		}
+	}
+
+	if err := s.DAO.MCPServer.SetActive(ctx, id, data.IsActive); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -423,6 +564,12 @@ func (s *Service) AddSkill(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// 运行时同步
+	if s.SkillEngine != nil {
+		s.SkillEngine.AddSkill(buildSkillConfig(&sk))
+	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSkill2Resp(&sk)))
 }
 
@@ -450,11 +597,24 @@ func (s *Service) UpdateSkill(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// 运行时同步：AddSkill 会按 ID 覆盖已有 Skill
+	if s.SkillEngine != nil {
+		s.SkillEngine.AddSkill(buildSkillConfig(&sk))
+	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSkill2Resp(&sk)))
 }
 
 func (s *Service) DeleteSkill(ctx context.Context, c *app.RequestContext) {
-	if err := s.DAO.Skill.Delete(ctx, c.Param("id")); err != nil {
+	id := c.Param("id")
+
+	// 运行时同步
+	if s.SkillEngine != nil {
+		s.SkillEngine.DeleteSkill(id)
+	}
+
+	if err := s.DAO.Skill.Delete(ctx, id); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -554,11 +714,21 @@ func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
 
 func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
 	var data dto.ToggleToolReq
+	id := c.Param("id")
 	if err := c.BindJSON(&data); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.DAO.ToolConfig.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+
+	// 运行时同步：停用时从注册表移除；启用时内置工具已在 init 时注册，无需重复
+	if s.ToolRegistry != nil && !data.IsActive {
+		raw, err := s.DAO.ToolConfig.GetByID(ctx, id)
+		if err == nil {
+			s.ToolRegistry.Unregister(raw.Name)
+		}
+	}
+
+	if err := s.DAO.ToolConfig.SetActive(ctx, id, data.IsActive); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -588,10 +758,21 @@ func (s *Service) GetSession(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) DeleteSession(ctx context.Context, c *app.RequestContext) {
-	if err := s.DAO.Session.Delete(ctx, c.Param("id")); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
+	id := c.Param("id")
+
+	// 使用 SessionManager 删除（同时清除 DB + Redis 缓存）
+	if s.SessionMgr != nil {
+		if err := s.SessionMgr.DeleteSession(ctx, id); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	} else {
+		if err := s.DAO.Session.Delete(ctx, id); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
 	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
@@ -695,7 +876,21 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.DAO.Plugin.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+
+	id := c.Param("id")
+
+	// 运行时同步：启用时加载插件，停用时卸载
+	if s.PluginEngine != nil {
+		if data.IsActive {
+			if err := s.PluginEngine.Load(id); err != nil {
+				slog.Error("插件加载失败", "id", id, "err", err)
+			}
+		} else {
+			s.PluginEngine.Unload(id)
+		}
+	}
+
+	if err := s.DAO.Plugin.SetActive(ctx, id, data.IsActive); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -704,9 +899,12 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 
 func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
+
+	// 运行时同步：先卸载再删除 DB 记录
 	if s.PluginEngine != nil {
 		s.PluginEngine.Unload(id)
 	}
+
 	if err := s.DAO.Plugin.Delete(ctx, id); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -740,10 +938,20 @@ func (s *Service) AddACLRule(ctx context.Context, c *app.RequestContext) {
 		Permission: data.Permission,
 		Actions:    data.Actions,
 	}
-	if err := s.DAO.ACL.Create(ctx, &r); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
+
+	// 运行时同步：使用 ACL.AddRule（存在则更新）
+	if s.ACLMgr != nil {
+		if err := s.ACLMgr.AddRule(ctx, &r); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	} else {
+		if err := s.DAO.ACL.Create(ctx, &r); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
 	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawACLRule2Resp(&r)))
 }
 
@@ -753,10 +961,20 @@ func (s *Service) DeleteACLRule(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidACLID, nil))
 		return
 	}
-	if err := s.DAO.ACL.Delete(ctx, id); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
+
+	// 运行时同步
+	if s.ACLMgr != nil {
+		if err := s.ACLMgr.RemoveRule(ctx, id); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	} else {
+		if err := s.DAO.ACL.Delete(ctx, id); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
 	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
@@ -875,6 +1093,15 @@ func (s *Service) UpdateShortTermMemoryConfig(ctx context.Context, c *app.Reques
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// 运行时同步
+	if s.MemoryGroup != nil {
+		s.MemoryGroup.UpdateShortTermConfig(memory.ShortTermMemoryConfig{
+			WindowSize:  int64(data.WindowSize),
+			AutoCompact: data.AutoCompact,
+		})
+	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawShortTermMemory2Resp(m)))
 }
 
@@ -905,6 +1132,15 @@ func (s *Service) UpdateLongTermMemoryConfig(ctx context.Context, c *app.Request
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// 运行时同步
+	if s.MemoryGroup != nil {
+		s.MemoryGroup.UpdateLongTermConfig(memory.LongTermMemoryConfig{
+			HotAreaSize:  data.HotAreaSize,
+			HotMemoryTTL: time.Duration(data.HotMemoryTTL) * time.Second,
+		})
+	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawLongTermMemory2Resp(m)))
 }
 
@@ -920,4 +1156,41 @@ func atoi(s string) int {
 	var n int
 	fmt.Sscanf(s, "%d", &n)
 	return n
+}
+
+// buildMcpSSEConfig 从 DB model 构建 MCP SSE 客户端配置。
+func buildMcpSSEConfig(m *models.MCPServer) mcp.McpSSEConfig {
+	headers := make(map[string]string)
+	for k, v := range m.Headers {
+		if str, ok := v.(string); ok {
+			headers[k] = str
+		}
+	}
+	return mcp.McpSSEConfig{
+		ID:            m.ID,
+		Name:          m.Name,
+		ServerURL:     m.ServerURL,
+		Headers:       headers,
+		Timeout:       0,
+		RetryCount:    m.RetryCount,
+		ToolFilter:    m.ToolFilter,
+		AutoReconnect: m.AutoReconnect,
+	}
+}
+
+// buildSkillConfig 从 DB model 构建 Skill 运行时配置。
+func buildSkillConfig(s *models.Skill) *skill.SkillConfig {
+	return &skill.SkillConfig{
+		ID:           s.ID,
+		Name:         s.Name,
+		Description:  s.Description,
+		Keywords:     s.Keywords,
+		RegexPattern: s.RegexPattern,
+		PromptRef:    s.PromptRef,
+		ToolRefs:     s.ToolRefs,
+		McpRefs:      s.McpRefs,
+		IsActive:     s.IsActive,
+		IsSystem:     s.IsSystem,
+		Priority:     s.Priority,
+	}
 }
