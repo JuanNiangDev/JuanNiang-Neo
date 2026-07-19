@@ -1,0 +1,25 @@
+@use './variables' as *;
+@use './layout/container';
+@use './layout/sidebar';
+@use './components/shared';
+@use './pages/common';
+
+html, body {
+  overscroll-behavior-y: none;
+  font-family: 'Inter', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(var(--v-theme-primary), 0.3);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(var(--v-theme-primary), 0.5);
+}

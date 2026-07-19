@@ -19,10 +19,10 @@ import (
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 
-	"JuanNiang-Neo/internal/core/cache"
-	"JuanNiang-Neo/internal/core/dao"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
+	"JuanNiang-Neo/internal/core/cache"
+	"JuanNiang-Neo/internal/core/dao"
 )
 
 // ---------- 清单 ----------
@@ -133,18 +133,18 @@ type ToolInfo struct {
 // ---------- 引擎 ----------
 
 type PluginEngine struct {
-	mu         sync.RWMutex
-	plugins    map[string]*LoadedPlugin
-	basePath   string
-	adapter    SendAdapter
-	db         *gorm.DB
-	cache      *cache.Cache
-	t2i        *t2icaller.Client
-	sandbox    *sandboxcaller.Client
-	dao        *dao.Bundle
-	agentOp    AgentOperator
-	currentEv  EventData
-	commands   *CommandRegistry
+	mu        sync.RWMutex
+	plugins   map[string]*LoadedPlugin
+	basePath  string
+	adapter   SendAdapter
+	db        *gorm.DB
+	cache     *cache.Cache
+	t2i       *t2icaller.Client
+	sandbox   *sandboxcaller.Client
+	dao       *dao.Bundle
+	agentOp   AgentOperator
+	currentEv EventData
+	commands  *CommandRegistry
 }
 
 func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache.Cache, t2i *t2icaller.Client, sb *sandboxcaller.Client, d *dao.Bundle, ag AgentOperator) *PluginEngine {
