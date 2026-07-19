@@ -1,0 +1,23 @@
+@use '../variables' as *;
+
+html, body, #app {
+  overflow-x: hidden;
+}
+
+.v-main {
+  background: rgb(var(--v-theme-background));
+}
+
+.page-wrapper {
+  min-height: calc(100vh - $header-height - 16px);
+  padding: 24px;
+}
+
+.top-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3) !important;
+}
+
+@media (max-width: 600px) {
+  .page-wrapper { padding: 12px; }
+}

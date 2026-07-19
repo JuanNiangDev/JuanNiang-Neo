@@ -16,16 +16,15 @@ type Config struct {
 }
 
 // LongTermMemory 长期记忆，Postgres 存储 + 内存 HotArea (LRU)。
+// 按 ChatArea 隔离 HotArea，实例本身可跨 ChatArea 共享。
 type LongTermMemory struct {
-	conf     Config
-	hotArea  map[string]*models.LongTermMemoryItem
-	hotOrder []string
-	mu       sync.RWMutex
-	dao      *dao.LongTermMemoryItemDAO
-	areaID   string
+	conf    Config
+	mu      sync.RWMutex
+	hotArea map[string][]*models.LongTermMemoryItem // areaID -> hot items (最新在前)
+	dao     *dao.LongTermMemoryItemDAO
 }
 
-func New(conf Config, itemDAO *dao.LongTermMemoryItemDAO, areaID string) *LongTermMemory {
+func New(conf Config, itemDAO *dao.LongTermMemoryItemDAO) *LongTermMemory {
 	if conf.HotAreaSize <= 0 {
 		conf.HotAreaSize = 10
 	}
@@ -34,39 +33,38 @@ func New(conf Config, itemDAO *dao.LongTermMemoryItemDAO, areaID string) *LongTe
 	}
 	return &LongTermMemory{
 		conf:    conf,
-		hotArea: make(map[string]*models.LongTermMemoryItem),
+		hotArea: make(map[string][]*models.LongTermMemoryItem),
 		dao:     itemDAO,
-		areaID:  areaID,
 	}
 }
 
-func (m *LongTermMemory) Add(ctx context.Context, content string) error {
+func (m *LongTermMemory) Add(ctx context.Context, areaID, content string) error {
 	item := &models.LongTermMemoryItem{
-		ChatAreaID: m.areaID,
+		ChatAreaID: areaID,
 		Content:    content,
 	}
 	if err := m.dao.Create(ctx, item); err != nil {
 		return err
 	}
-	m.addToHot(item)
+	m.addToHot(areaID, item)
 	return nil
 }
 
-func (m *LongTermMemory) Search(ctx context.Context, query string, limit int) ([]models.LongTermMemoryItem, error) {
+func (m *LongTermMemory) Search(ctx context.Context, areaID, query string, limit int) ([]models.LongTermMemoryItem, error) {
 	if query == "" {
-		return m.dao.ListByChatArea(ctx, m.areaID, limit)
+		return m.dao.ListByChatArea(ctx, areaID, limit)
 	}
-	return m.dao.SearchByContent(ctx, m.areaID, query, limit)
+	return m.dao.SearchByContent(ctx, areaID, query, limit)
 }
 
-func (m *LongTermMemory) GetHot() []models.LongTermMemoryItem {
+// GetHot 返回指定 ChatArea 的热区记忆条目。
+func (m *LongTermMemory) GetHot(areaID string) []models.LongTermMemoryItem {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]models.LongTermMemoryItem, 0, len(m.hotOrder))
-	for _, id := range m.hotOrder {
-		if item, ok := m.hotArea[id]; ok {
-			out = append(out, *item)
-		}
+	items := m.hotArea[areaID]
+	out := make([]models.LongTermMemoryItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, *item)
 	}
 	return out
 }
@@ -77,31 +75,29 @@ func (m *LongTermMemory) UpdateConfig(conf Config) {
 	m.conf = conf
 }
 
-func (m *LongTermMemory) Warmup(ctx context.Context) error {
-	items, err := m.dao.ListByChatArea(ctx, m.areaID, m.conf.HotAreaSize)
+// Warmup 预热指定 ChatArea 的热区。
+func (m *LongTermMemory) Warmup(ctx context.Context, areaID string) error {
+	items, err := m.dao.ListByChatArea(ctx, areaID, m.conf.HotAreaSize)
 	if err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.hotArea = make(map[string]*models.LongTermMemoryItem, m.conf.HotAreaSize)
-	m.hotOrder = make([]string, 0, m.conf.HotAreaSize)
+	hot := make([]*models.LongTermMemoryItem, 0, len(items))
 	for i := range items {
 		item := items[i]
-		m.hotArea[item.ID] = &item
-		m.hotOrder = append(m.hotOrder, item.ID)
+		hot = append(hot, &item)
 	}
+	m.hotArea[areaID] = hot
 	return nil
 }
 
-func (m *LongTermMemory) addToHot(item *models.LongTermMemoryItem) {
+func (m *LongTermMemory) addToHot(areaID string, item *models.LongTermMemoryItem) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.hotArea[item.ID] = item
-	m.hotOrder = append([]string{item.ID}, m.hotOrder...)
-	if len(m.hotOrder) > m.conf.HotAreaSize {
-		evictID := m.hotOrder[len(m.hotOrder)-1]
-		m.hotOrder = m.hotOrder[:len(m.hotOrder)-1]
-		delete(m.hotArea, evictID)
+	items := append([]*models.LongTermMemoryItem{item}, m.hotArea[areaID]...)
+	if len(items) > m.conf.HotAreaSize {
+		items = items[:m.conf.HotAreaSize]
 	}
+	m.hotArea[areaID] = items
 }

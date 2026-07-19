@@ -1,0 +1,31 @@
+@use '../variables' as *;
+
+// Data table customization
+.v-data-table {
+  border-radius: 12px !important;
+  overflow: hidden;
+
+  .v-data-table__th {
+    font-weight: 600 !important;
+    font-size: 12px !important;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+}
+
+// Dialog customization
+.v-dialog .v-card {
+  border-radius: 16px !important;
+}
+
+// Tabs
+.v-tabs .v-tab {
+  text-transform: none !important;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+// Form card
+.form-card {
+  border-radius: 16px !important;
+}

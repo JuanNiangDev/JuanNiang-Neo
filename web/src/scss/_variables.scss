@@ -1,0 +1,10 @@
+@use 'sass:math';
+@use 'sass:map';
+@use 'sass:meta';
+
+$sidebar-width: 260px;
+$sidebar-collapsed-width: 72px;
+$header-height: 64px;
+$border-radius-root: 10px;
+$box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+$card-shadow: 0 1px 6px rgba(0, 0, 0, 0.06);

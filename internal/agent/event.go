@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 
 	"JuanNiang-Neo/internal/adapter"
@@ -17,28 +18,75 @@ import (
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
 func (h *HagoCenter) runEventLoop(ctx context.Context) {
 	slog.Info("事件循环已启动")
-	for ev := range h.Adapter.Events() {
-		if ev.PostType != "message" || ev.Message == nil {
-			continue
-		}
 
-		// Plugin 拦截
-		if h.PluginEngine != nil {
-			pluginEvent := pluggin.EventData{
-				PostType:    "message",
-				MessageType: ev.Message.MessageType,
-				UserID:      ev.Message.UserID,
-				GroupID:     ev.Message.GroupID,
-				RawMessage:  ev.Message.RawMessage,
+	// 处理 webhook 事件
+	var webhookEvents <-chan adapter.Event
+	if h.WebhookAdapter != nil {
+		webhookEvents = h.WebhookAdapter.Events()
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("事件循环已停止")
+			return
+		case ev, ok := <-h.Adapter.Events():
+			if !ok {
+				slog.Info("事件循环已停止")
+				return
 			}
-			if h.PluginEngine.OnMessage(pluginEvent) {
+			// 透传 Admins 列表（来自 adapter 配置）
+			ev.Admins = h.Adapter.Admins()
+			h.processEvent(ctx, ev)
+		case ev, ok := <-webhookEvents:
+			if !ok {
+				webhookEvents = nil
 				continue
 			}
+			h.processEvent(ctx, ev)
 		}
-
-		h.handleMessage(ctx, ev)
 	}
-	slog.Info("事件循环已停止")
+}
+
+// processEvent 派发事件：webhook 走 on_webhook，message 走 handleMessage。
+func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
+	// Webhook 事件交给插件 on_webhook 处理
+	if ev.PostType == "webhook" && ev.Webhook != nil {
+		if h.PluginEngine != nil {
+			pluginEvent := pluggin.EventData{
+				PostType: "webhook",
+				Admins:   ev.Admins,
+				Webhook: map[string]any{
+					"path":    ev.Webhook.Path,
+					"method":  ev.Webhook.Method,
+					"payload": ev.Webhook.Payload,
+				},
+			}
+			h.PluginEngine.OnWebhook(pluginEvent)
+		}
+		return
+	}
+
+	if ev.PostType != "message" || ev.Message == nil {
+		return
+	}
+
+	// Plugin 拦截
+	if h.PluginEngine != nil {
+		pluginEvent := pluggin.EventData{
+			PostType:    "message",
+			MessageType: ev.Message.MessageType,
+			UserID:      ev.Message.UserID,
+			GroupID:     ev.Message.GroupID,
+			RawMessage:  ev.Message.RawMessage,
+			Admins:      ev.Admins,
+		}
+		if h.PluginEngine.OnMessage(pluginEvent) {
+			return
+		}
+	}
+
+	h.handleMessage(ctx, ev)
 }
 
 func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
@@ -64,8 +112,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	if !h.ACL.Check(ctx, userID, chatArea.ID, "chat") {
-		slog.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID)
+	// ACL 检查：admin 自动绕过
+	if !isAdmin(userID, ev.Admins) && !h.ACL.CheckChat(ctx, userID, chatArea.ID) {
+		slog.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID, "scope", "chat")
 		return
 	}
 
@@ -92,9 +141,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 
 	var longTermMems []string
 	if h.Memory != nil {
-		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, "", 5)
+		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, chatArea.ID, "", 5)
 	}
-	toolList := h.Tools.GetOpenAITools()
+	toolList := h.buildToolList(ctx)
 
 	toolDescs := ""
 	for _, t := range toolList {
@@ -117,16 +166,22 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		}
 	}
 
-	stMsgs, err := h.Memory.GetShortTermMessages(ctx)
-	if err == nil {
-		for _, m := range stMsgs {
-			messages = append(messages, provider.ChatMessage{Role: m.Role, Content: m.Content, Name: m.Name})
+	if h.Memory != nil {
+		stMsgs, err := h.Memory.GetShortTermMessages(ctx, chatArea.ID)
+		if err == nil {
+			for _, m := range stMsgs {
+				messages = append(messages, provider.ChatMessage{Role: m.Role, Content: m.Content, Name: m.Name})
+			}
 		}
 	}
 
 	messages = append(messages, provider.ChatMessage{Role: "user", Content: userMsg})
 
-	h.Memory.AddShortTermMessage(ctx, shortterm.ChatMessage{Role: "user", Content: userMsg})
+	if h.Memory != nil {
+		h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "user", Content: userMsg})
+	}
+	// 持久化原始聊天记录到 DB (与短期记忆解耦, 不受 Redis 重启或 Compact 影响)
+	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0)
 
 	req := provider.ChatRequest{
 		Messages:    messages,
@@ -145,11 +200,13 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	if resp.Message.Content != "" {
 		h.sendReply(msg, resp.Message.Content)
 		h.recordChat(ctx, chatArea.ID, userID, "assistant", resp.Message.Content, 0)
-		h.Memory.AddShortTermMessage(ctx, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
+		if h.Memory != nil {
+			h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
+		}
 	}
 
 	if len(resp.Message.ToolCalls) > 0 {
-		h.handleToolCalls(ctx, msg, chatArea.ID, userID, sess.ID, messages, resp)
+		h.handleToolCalls(ctx, msg, chatArea.ID, userID, sess.ID, messages, resp, ev.Admins)
 	}
 }
 
@@ -157,56 +214,109 @@ func (h *HagoCenter) handleToolCalls(
 	ctx context.Context, msg *adapter.MessageEvent,
 	chatAreaID string, userID int64, sessionID string,
 	history []provider.ChatMessage, resp *provider.ChatResponse,
+	admins []string,
 ) {
 	llm := h.Providers.SelectModel(provider.ModelTypeText)
 	if llm == nil {
 		return
 	}
 
+	userIsAdmin := isAdmin(userID, admins)
 	history = append(history, resp.Message)
 
 	for _, tc := range resp.Message.ToolCalls {
 		toolName := tc.Function.Name
 		args := tc.Function.Arguments
 
-		if h.Tools.IsLongRunning(toolName) {
-			steps := []TaskStep{
-				{ID: tc.ID, ToolName: toolName, Args: args},
+		// 判断是注册工具还是 MCP 工具
+		_, isRegistryTool := h.Tools.Get(toolName)
+
+		if isRegistryTool {
+			// ACL 检查：工具调用权限（admin 自动绕过）
+			if !userIsAdmin {
+				allowed, denialMsg := h.ACL.CheckTool(ctx, userID, chatAreaID, toolName)
+				if !allowed {
+					history = append(history, provider.ChatMessage{
+						Role:       "tool",
+						Content:    denialMsg,
+						ToolCallID: tc.ID,
+						Name:       toolName,
+					})
+					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0)
+					slog.Info("ACL 拒绝工具调用", "user_id", userID, "tool", toolName)
+					continue
+				}
 			}
-			taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, steps)
-			if err != nil {
-				slog.Error("提交后台任务失败", "err", err)
+
+			if h.Tools.IsLongRunning(toolName) {
+				steps := []TaskStep{
+					{ID: tc.ID, ToolName: toolName, Args: args},
+				}
+				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, steps)
+				if err != nil {
+					slog.Error("提交后台任务失败", "err", err)
+					continue
+				}
+
+				h.sendReply(msg, fmt.Sprintf("任务 %s 已提交后台执行...", toolName))
+				history = append(history, provider.ChatMessage{
+					Role:       "tool",
+					Content:    fmt.Sprintf("任务已提交后台执行，task_id: %s", taskID),
+					ToolCallID: tc.ID,
+				})
+				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("任务 %s -> 后台执行: %s", toolName, taskID), 0)
 				continue
 			}
 
-			h.sendReply(msg, fmt.Sprintf("任务 %s 已提交后台执行...", toolName))
+			result, err := h.Tools.Execute(ctx, toolName, args)
+			if err != nil {
+				result = fmt.Sprintf("工具执行失败: %s", err.Error())
+				slog.Error("工具执行失败", "tool", toolName, "err", err)
+			}
+
 			history = append(history, provider.ChatMessage{
 				Role:       "tool",
-				Content:    fmt.Sprintf("任务已提交后台执行，task_id: %s", taskID),
+				Content:    result,
 				ToolCallID: tc.ID,
+				Name:       toolName,
 			})
-			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("任务 %s -> 后台执行: %s", toolName, taskID), 0)
-			continue
-		}
+			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0)
+		} else {
+			// MCP 工具调用
+			if !userIsAdmin {
+				allowed, denialMsg := h.ACL.CheckMCP(ctx, userID, chatAreaID, toolName)
+				if !allowed {
+					history = append(history, provider.ChatMessage{
+						Role:       "tool",
+						Content:    denialMsg,
+						ToolCallID: tc.ID,
+						Name:       toolName,
+					})
+					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0)
+					slog.Info("ACL 拒绝 MCP 调用", "user_id", userID, "tool", toolName)
+					continue
+				}
+			}
 
-		result, err := h.Tools.Execute(ctx, toolName, args)
-		if err != nil {
-			result = fmt.Sprintf("工具执行失败: %s", err.Error())
-			slog.Error("工具执行失败", "tool", toolName, "err", err)
-		}
+			result, err := h.MCP.CallTool(ctx, toolName, args)
+			if err != nil {
+				result = fmt.Sprintf("MCP调用失败: %s", err.Error())
+				slog.Error("MCP调用失败", "tool", toolName, "err", err)
+			}
 
-		history = append(history, provider.ChatMessage{
-			Role:       "tool",
-			Content:    result,
-			ToolCallID: tc.ID,
-			Name:       toolName,
-		})
-		h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0)
+			history = append(history, provider.ChatMessage{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+				Name:       toolName,
+			})
+			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0)
+		}
 	}
 
 	followUp, err := llm.Chat(ctx, provider.ChatRequest{
 		Messages:    history,
-		Tools:       h.Tools.GetOpenAITools(),
+		Tools:       h.buildToolList(ctx),
 		Temperature: 0.7,
 	})
 	if err != nil {
@@ -219,13 +329,29 @@ func (h *HagoCenter) handleToolCalls(
 	if followUp.Message.Content != "" {
 		h.sendReply(msg, followUp.Message.Content)
 		h.recordChat(ctx, chatAreaID, userID, "assistant", followUp.Message.Content, followUp.TokenUsage)
-		h.Memory.AddShortTermMessage(ctx, shortterm.ChatMessage{Role: "assistant", Content: followUp.Message.Content})
+		if h.Memory != nil {
+			h.Memory.AddShortTermMessage(ctx, chatAreaID, shortterm.ChatMessage{Role: "assistant", Content: followUp.Message.Content})
+		}
 	}
 
 	// 递归处理可能的后续 tool calls
 	if len(followUp.Message.ToolCalls) > 0 {
-		h.handleToolCalls(ctx, msg, chatAreaID, userID, sessionID, history, followUp)
+		h.handleToolCalls(ctx, msg, chatAreaID, userID, sessionID, history, followUp, admins)
 	}
+}
+
+// isAdmin 检查 userID 是否在 admins 列表中（admins 元素为字符串形式的 QQ 号）。
+func isAdmin(userID int64, admins []string) bool {
+	if len(admins) == 0 {
+		return false
+	}
+	uidStr := strconv.FormatInt(userID, 10)
+	for _, a := range admins {
+		if a == uidStr {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
@@ -242,14 +368,7 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
 }
 
 func (h *HagoCenter) recordChat(ctx context.Context, chatAreaID string, userID int64, role, content string, tokens int) {
-	record := &models.ChatRecord{
-		ChatAreaID: chatAreaID,
-		UserID:     userID,
-		Role:       role,
-		Content:    content,
-		TokenCount: tokens,
-	}
-	if err := h.DAO.ChatRecord.Create(ctx, record); err != nil {
+	if err := h.Session.AppendRecord(ctx, chatAreaID, userID, role, content, tokens); err != nil {
 		slog.Error("记录聊天失败", "err", err)
 	}
 }

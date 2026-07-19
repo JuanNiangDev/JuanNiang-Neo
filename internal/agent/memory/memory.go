@@ -26,20 +26,22 @@ func NewMemoryGroup(st *shortterm.ShortTermMemory, lt *longterm.LongTermMemory, 
 	}
 }
 
-func (m *MemoryGroup) GetShortTermMessages(ctx context.Context) ([]shortterm.ChatMessage, error) {
-	return m.ShortTerm.GetAll(ctx)
+// GetShortTermMessages 返回指定 ChatArea 当前短期记忆窗口内的消息。
+func (m *MemoryGroup) GetShortTermMessages(ctx context.Context, areaID string) ([]shortterm.ChatMessage, error) {
+	return m.ShortTerm.GetAll(ctx, areaID)
 }
 
-func (m *MemoryGroup) AddShortTermMessage(ctx context.Context, msg shortterm.ChatMessage) error {
-	return m.ShortTerm.Add(ctx, msg)
+// AddShortTermMessage 向指定 ChatArea 的短期记忆追加一条消息。
+func (m *MemoryGroup) AddShortTermMessage(ctx context.Context, areaID string, msg shortterm.ChatMessage) error {
+	return m.ShortTerm.Add(ctx, areaID, msg)
 }
 
-func (m *MemoryGroup) OverwriteShortTermMemory(ctx context.Context, msgs []shortterm.ChatMessage) error {
-	return m.ShortTerm.Overwrite(ctx, msgs)
+func (m *MemoryGroup) OverwriteShortTermMemory(ctx context.Context, areaID string, msgs []shortterm.ChatMessage) error {
+	return m.ShortTerm.Overwrite(ctx, areaID, msgs)
 }
 
-func (m *MemoryGroup) CompactShortTermMemory(ctx context.Context, llm provider.Provider) error {
-	return m.ShortTerm.Compact(ctx, llm, m)
+func (m *MemoryGroup) CompactShortTermMemory(ctx context.Context, areaID string, llm provider.Provider) error {
+	return m.ShortTerm.Compact(ctx, areaID, llm, m)
 }
 
 func (m *MemoryGroup) UpdateShortTermConfig(conf ShortTermMemoryConfig) {
@@ -48,11 +50,11 @@ func (m *MemoryGroup) UpdateShortTermConfig(conf ShortTermMemoryConfig) {
 }
 
 func (m *MemoryGroup) AddLongTermMemory(ctx context.Context, areaID, content string) error {
-	return m.LongTerm.Add(ctx, content)
+	return m.LongTerm.Add(ctx, areaID, content)
 }
 
-func (m *MemoryGroup) GetLongTermMemory(ctx context.Context, query string, limit int) ([]string, error) {
-	items, err := m.LongTerm.Search(ctx, query, limit)
+func (m *MemoryGroup) GetLongTermMemory(ctx context.Context, areaID, query string, limit int) ([]string, error) {
+	items, err := m.LongTerm.Search(ctx, areaID, query, limit)
 	if err != nil {
 		return nil, err
 	}

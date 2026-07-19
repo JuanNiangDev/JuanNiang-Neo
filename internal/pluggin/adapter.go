@@ -9,10 +9,10 @@ import (
 
 // AdapterWrapper 将 adapter.Provider 包装为 SendAdapter 接口。
 type AdapterWrapper struct {
-	p *adapter.Provider
+	p *adapter.Adapter
 }
 
-func WrapAdapter(p *adapter.Provider) SendAdapter {
+func WrapAdapter(p *adapter.Adapter) SendAdapter {
 	return &AdapterWrapper{p: p}
 }
 

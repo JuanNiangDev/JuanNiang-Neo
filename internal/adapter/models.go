@@ -15,10 +15,11 @@ type Segment struct {
 // Event 是所有 OneBot11 事件的通用表示。
 // PostType 决定具体填充哪个子类型字段。
 type Event struct {
-	PostType string          `json:"post_type"` // message / notice / request / meta_event
+	PostType string          `json:"post_type"` // message / notice / request / meta_event / webhook
 	Time     int64           `json:"time"`
 	SelfID   int64           `json:"self_id"`
 	Raw      json.RawMessage `json:"-"` // 原始 JSON
+	Admins   []string        `json:"-"` // 透传给 plugin/agent 的管理员列表
 
 	// 消息事件
 	Message *MessageEvent `json:"message,omitempty"`
@@ -28,6 +29,15 @@ type Event struct {
 	Request *RequestEvent `json:"request,omitempty"`
 	// 元事件
 	Meta *MetaEvent `json:"meta_event,omitempty"`
+	// Webhook 事件
+	Webhook *WebhookEvent `json:"webhook,omitempty"`
+}
+
+// WebhookEvent 由 webhook adapter 发出的事件。
+type WebhookEvent struct {
+	Path    string         `json:"path,omitempty"`
+	Method  string         `json:"method,omitempty"`
+	Payload map[string]any `json:"payload,omitempty"`
 }
 
 // MessageEvent 消息事件。

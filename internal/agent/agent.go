@@ -3,18 +3,23 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
+	"JuanNiang-Neo/internal/agent/memory/bgtask"
+	"JuanNiang-Neo/internal/agent/memory/longterm"
+	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/session"
 	"JuanNiang-Neo/internal/agent/skill"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/acl"
+	"JuanNiang-Neo/internal/core/cache"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/pluggin"
 )
@@ -22,6 +27,7 @@ import (
 // HagoCenter 是 Agent 系统的中央调度器，聚合所有子模块。
 type HagoCenter struct {
 	Adapter   *adapter.Adapter
+	WebhookAdapter *adapter.WebhookAdapter
 	Providers *provider.ProviderGroup
 	MCP       *mcp.MCPGroup
 	Memory    *memory.MemoryGroup
@@ -32,6 +38,10 @@ type HagoCenter struct {
 	ACL       *acl.ACL
 	DAO       *dao.Bundle
 
+	// T2I 和 Sandbox 运行时客户端（可通过 API 热更新）
+	SandboxClient *sandboxcaller.Client
+	T2IClient     *t2icaller.Client
+
 	BgTaskExecutor *BackgroundTaskExecutor
 	Drainer        *DrainerAgent
 	OutputChan     chan DrainerOutput
@@ -40,16 +50,15 @@ type HagoCenter struct {
 
 // Config HagoCenter 初始化配置。
 type Config struct {
-	Adapter   *adapter.Adapter
-	Sandbox   *sandboxcaller.Client
-	T2I       *t2icaller.Client
-	Providers *provider.ProviderGroup
-	MCPGroup  *mcp.MCPGroup
-	DAO       *dao.Bundle
-	ACL       *acl.ACL
-	Cache     interface {
-		Client() interface{}
-	}
+	Adapter        *adapter.Adapter
+	WebhookAdapter *adapter.WebhookAdapter
+	Sandbox        *sandboxcaller.Client
+	T2I            *t2icaller.Client
+	Providers      *provider.ProviderGroup
+	MCPGroup       *mcp.MCPGroup
+	DAO            *dao.Bundle
+	ACL            *acl.ACL
+	Cache          *cache.Cache
 }
 
 // NewHagoCenter 创建并初始化 HagoCenter。
@@ -66,16 +75,40 @@ func NewHagoCenter() *HagoCenter {
 // Init 从 DB 加载配置并初始化所有子模块。
 func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Adapter = cfg.Adapter
+	h.WebhookAdapter = cfg.WebhookAdapter
 	h.DAO = cfg.DAO
 	h.ACL = cfg.ACL
 	h.Providers = cfg.Providers
 	h.MCP = cfg.MCPGroup
 
-	h.Session = session.NewSessionManager(cfg.DAO.Session, nil)
+	// 存储 T2I/Sandbox 运行时客户端
+	h.SandboxClient = cfg.Sandbox
+	h.T2IClient = cfg.T2I
+
+	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径)
+	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.Cache)
+
+	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea) + 后台任务记忆
+	stConf := shortterm.Config{WindowSize: 20, AutoCompact: false}
+	ltConf := longterm.Config{HotAreaSize: 10, HotMemoryTTL: 24 * time.Hour}
+	st := shortterm.New(stConf, cfg.Cache)
+	lt := longterm.New(ltConf, cfg.DAO.LongTermMemItem)
+	bgt := bgtask.New()
+	h.Memory = memory.NewMemoryGroup(st, lt, bgt)
+
 	h.Prompt = prompt.NewPromptManager(cfg.DAO.Prompt)
 	h.Skills = skill.NewSkillEngine()
 
-	tool.RegisterBuiltinTools(h.Tools, cfg.Adapter, cfg.Sandbox, cfg.T2I, h.Providers.SelectModel(provider.ModelTypeImage))
+	// 启动时种子系统锁定提示词（幂等：已存在则同步内容）
+	if err := h.Prompt.EnsureSystemPrompt(ctx); err != nil {
+		slog.Warn("系统锁定提示词种子失败", "err", err)
+	}
+
+	// 使用函数 getter 注册工具，支持运行时客户端热更新
+	tool.RegisterBuiltinTools(h.Tools, cfg.Adapter,
+		func() *sandboxcaller.Client { return h.SandboxClient },
+		func() *t2icaller.Client { return h.T2IClient },
+		h.Providers.SelectModel(provider.ModelTypeImage))
 
 	if err := h.loadProviders(ctx); err != nil {
 		return err
@@ -183,6 +216,24 @@ func (h *HagoCenter) Start(ctx context.Context) error {
 	go h.runEventLoop(ctx)
 	slog.Info("HagoCenter 已启动")
 	return nil
+}
+
+// buildToolList 构建完整的工具列表（注册工具 + MCP 工具），供 LLM 使用。
+func (h *HagoCenter) buildToolList(ctx context.Context) []provider.ToolDef {
+	tools := h.Tools.GetOpenAITools()
+	if h.MCP != nil {
+		for _, t := range h.MCP.ListTools(ctx) {
+			tools = append(tools, provider.ToolDef{
+				Type: "function",
+				Function: provider.ToolDefFunc{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.InputSchema,
+				},
+			})
+		}
+	}
+	return tools
 }
 
 // Stop 停止 Agent 系统。

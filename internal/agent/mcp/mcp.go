@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -87,6 +88,7 @@ func (g *MCPGroup) ListMCPs() []MCP {
 	return list
 }
 
+// ListTools 列出所有已连接 MCP 的工具定义。
 func (g *MCPGroup) ListTools(ctx context.Context) []ToolDefinition {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -103,6 +105,27 @@ func (g *MCPGroup) ListTools(ctx context.Context) []ToolDefinition {
 		all = append(all, tools...)
 	}
 	return all
+}
+
+// CallTool 按工具名分发调用到拥有该工具的 MCP 服务器。
+func (g *MCPGroup) CallTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for _, m := range g.mcps {
+		if !m.IsConnected() {
+			continue
+		}
+		tools, err := m.ListTools(ctx)
+		if err != nil {
+			continue
+		}
+		for _, t := range tools {
+			if t.Name == name {
+				return m.CallTool(ctx, name, args)
+			}
+		}
+	}
+	return "", fmt.Errorf("MCP tool %q not found", name)
 }
 
 // ---------- SDK 客户端封装 ----------

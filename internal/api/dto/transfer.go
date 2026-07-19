@@ -2,6 +2,7 @@ package dto
 
 import (
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/logging"
 )
 
 func RawProviderList2Resp(raw []models.Provider) []ProviderResp {
@@ -77,6 +78,7 @@ func RawPrompt2Resp(raw *models.Prompt) PromptResp {
 		Content:   raw.Content,
 		Type:      raw.Type,
 		IsActive:  raw.IsActive,
+		IsSystem:  raw.IsSystem,
 		Variables: raw.Variables,
 		CreatedAt: raw.CreatedAt,
 	}
@@ -130,10 +132,11 @@ func RawPluginList2Resp(raw []models.Plugin) []PluginResp {
 func RawACLRule2Resp(raw *models.ACLRule) ACLRuleResp {
 	return ACLRuleResp{
 		ID:         raw.ID,
-		UserID:     raw.UserID,
 		ChatAreaID: raw.ChatAreaID,
+		Scope:      raw.Scope,
 		Permission: raw.Permission,
-		Actions:    raw.Actions,
+		TargetType: raw.TargetType,
+		UserIDs:    raw.UserIDs,
 		CreatedAt:  raw.CreatedAt,
 	}
 }
@@ -217,4 +220,42 @@ func RawLongTermMemory2Resp(raw *models.LongTermMemory) LongTermMemoryResp {
 		HotMemoryTTL: raw.HotMemoryTTL,
 		CreatedAt:    raw.CreatedAt,
 	}
+}
+
+func RawT2IConfig2Resp(raw *models.T2IConfig, healthy bool) T2IConfigResp {
+	return T2IConfigResp{
+		BaseURL:  raw.BaseURL,
+		Timeout:  raw.Timeout,
+		IsActive: raw.IsActive,
+		Healthy:  healthy,
+	}
+}
+
+func RawSandboxConfig2Resp(raw *models.SandboxConfig, healthy bool) SandboxConfigResp {
+	return SandboxConfigResp{
+		BaseURL:  raw.BaseURL,
+		APIKey:   raw.APIKey,
+		Timeout:  raw.Timeout,
+		IsActive: raw.IsActive,
+		Healthy:  healthy,
+	}
+}
+
+// RawLogEntry2Resp 把 internal/logging.Entry 转为前端响应。
+func RawLogEntry2Resp(raw logging.Entry) LogEntryResp {
+	return LogEntryResp{
+		Time:    raw.Time,
+		Level:   raw.Level,
+		Message: raw.Message,
+		Attrs:   raw.Attrs,
+	}
+}
+
+// RawLogEntryList2Resp 批量转换。
+func RawLogEntryList2Resp(raw []logging.Entry) []LogEntryResp {
+	res := make([]LogEntryResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawLogEntry2Resp(item)
+	}
+	return res
 }

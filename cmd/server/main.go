@@ -8,15 +8,23 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"JuanNiang-Neo/infrastructure/postgres"
 	"JuanNiang-Neo/infrastructure/redis"
+	sandbox "JuanNiang-Neo/infrastructure/sandbox"
+	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
+	t2i "JuanNiang-Neo/infrastructure/t2i"
+	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
 	"JuanNiang-Neo/internal/api/engine"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/api/service"
 	"JuanNiang-Neo/internal/core"
+	"JuanNiang-Neo/internal/core/dao"
+	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
 )
 
@@ -24,7 +32,8 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	// 日志：同时输出到 stdio 与前端（Hub），Hub 维护最近 250 条 + SSE 实时推送。
+	slog.SetDefault(slog.New(logging.NewHandler(os.Stdout, logging.Default, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})))
 
@@ -77,17 +86,40 @@ func main() {
 	}
 	defer adapterProv.Stop(context.Background())
 
+	// ---------- 4b. Webhook Adapter ----------
+	webhookEvents := make(chan adapter.Event, 128)
+	webhookCfg, err := loadWebhookConfig(ctx, coreInst.DAO)
+	if err != nil {
+		slog.Warn("Webhook 配置加载失败", "err", err)
+	}
+	webhookAdapter := adapter.NewWebhookAdapter(adapter.WebhookConfig{
+		Addr:   webhookCfg.Addr,
+		Port:   webhookCfg.Port,
+		Token:  webhookCfg.Token,
+		Admins: adapterCfg.Admins,
+		Enable: webhookCfg.Enabled,
+	}, webhookEvents)
+	if webhookCfg.Enabled {
+		if err := webhookAdapter.Start(ctx); err != nil {
+			slog.Error("Webhook adapter 启动失败", "err", err)
+			os.Exit(1)
+		}
+	}
+	defer webhookAdapter.Stop(context.Background())
+
 	// ---------- 5. Agent ----------
 
 	hago := agent.NewHagoCenter()
 	if err := hago.Init(ctx, agent.Config{
-		Adapter:   adapterProv,
-		Sandbox:   nil,
-		T2I:       nil,
-		Providers: hago.Providers,
-		MCPGroup:  hago.MCP,
-		DAO:       coreInst.DAO,
-		ACL:       coreInst.ACL,
+		Adapter:        adapterProv,
+		WebhookAdapter: webhookAdapter,
+		Sandbox:        nil,
+		T2I:            nil,
+		Providers:      hago.Providers,
+		MCPGroup:       hago.MCP,
+		DAO:            coreInst.DAO,
+		ACL:            coreInst.ACL,
+		Cache:          coreInst.Cache,
 	}); err != nil {
 		slog.Error("Agent 初始化失败", "err", err)
 		os.Exit(1)
@@ -118,7 +150,20 @@ func main() {
 
 	// ---------- 7. Web API ----------
 
-	svc := service.New(coreInst.DAO, adapterProv, pluginEngine)
+	svc := service.New(coreInst.DAO, adapterProv, webhookAdapter, pluginEngine)
+	svc.ProviderGroup = hago.Providers
+	svc.MCPGroup = hago.MCP
+	svc.MemoryGroup = hago.Memory
+	svc.SessionMgr = hago.Session
+	svc.ToolRegistry = hago.Tools
+	svc.SkillEngine = hago.Skills
+	svc.ACLMgr = hago.ACL
+
+	// T2I / Sandbox 运行时同步：从 DB 加载配置并设置回调
+	loadT2IFromDB(ctx, svc, coreInst.DAO, hago)
+	loadSandboxFromDB(ctx, svc, coreInst.DAO, hago)
+	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
+	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
 	webEngine := engine.New(env("API_ADDR", ":8090"), svc)
 
 	go func() {
@@ -162,10 +207,66 @@ func parseAdmins(s string) []string {
 	return admins
 }
 
-// pluginCB 将 pluggin.PluginEngine 包装为 service.PluginEngineCb。
-type pluginCB struct{ pe *pluggin.PluginEngine }
+func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
+	cfg, err := daos.T2I.GetConfig(ctx)
+	if err != nil {
+		slog.Warn("T2I 配置加载失败，使用默认", "err", err)
+		return
+	}
+	if !cfg.IsActive {
+		slog.Info("T2I 未启用")
+		return
+	}
+	client, err := t2i.NewClient(
+		t2i.WithBaseURL(cfg.BaseURL),
+		t2i.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
+	)
+	if err != nil {
+		slog.Warn("T2I 客户端创建失败", "err", err)
+		return
+	}
+	svc.T2IClient = client
+	hago.T2IClient = client
+	slog.Info("T2I 客户端已就绪", "base_url", cfg.BaseURL)
+}
 
-func (p *pluginCB) Load(name string) error   { return p.pe.Load(name) }
-func (p *pluginCB) Unload(name string) error { return p.pe.Unload(name) }
-func (p *pluginCB) Reload(name string) error { return p.pe.Reload(name) }
-func (p *pluginCB) List() []map[string]any   { return p.pe.ListMaps() }
+func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
+	cfg, err := daos.Sandbox.GetConfig(ctx)
+	if err != nil {
+		slog.Warn("Sandbox 配置加载失败，使用默认", "err", err)
+		return
+	}
+	if !cfg.IsActive {
+		slog.Info("Sandbox 未启用")
+		return
+	}
+	client, err := sandbox.NewClient(
+		sandbox.WithBaseURL(cfg.BaseURL),
+		sandbox.WithAPIKey(cfg.APIKey),
+		sandbox.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
+	)
+	if err != nil {
+		slog.Warn("Sandbox 客户端创建失败", "err", err)
+		return
+	}
+	svc.SandboxClient = client
+	hago.SandboxClient = client
+	slog.Info("Sandbox 客户端已就绪", "base_url", cfg.BaseURL)
+}
+
+// loadWebhookConfig 从 DB 加载 Webhook 配置；若不存在则使用默认值并初始化 DB。
+func loadWebhookConfig(ctx context.Context, daos *dao.Bundle) (models.WebhookConfig, error) {
+	cfg, err := daos.Webhook.GetConfig(ctx)
+	if err != nil {
+		// 初始化默认配置
+		defaultCfg := models.WebhookConfig{
+			ID:      1,
+			Addr:    "0.0.0.0",
+			Port:    8091,
+			Enabled: false,
+		}
+		_ = daos.Webhook.InitConfig(ctx)
+		return defaultCfg, nil
+	}
+	return *cfg, nil
+}

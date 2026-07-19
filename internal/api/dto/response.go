@@ -33,6 +33,10 @@ var (
 	ChatAreaNotFound        = Response{Status: 40023, Info: "ChatArea 不存在"}
 	MemoryConfigNotFound    = Response{Status: 40024, Info: "Memory 配置不存在"}
 	AdapterConfigNotFound   = Response{Status: 40025, Info: "adapter 配置不存在"}
+	T2IConfigNotFound       = Response{Status: 40026, Info: "T2I 配置不存在"}
+	SandboxConfigNotFound   = Response{Status: 40027, Info: "Sandbox 配置不存在"}
+	PluginIsSystem          = Response{Status: 40028, Info: "系统插件不允许删除或停用"}
+	PromptIsSystem          = Response{Status: 40029, Info: "系统提示词不允许修改或删除"}
 )
 
 type TokenResp struct {
@@ -105,6 +109,7 @@ type PromptResp struct {
 	Content   string            `json:"content"`
 	Type      models.PromptType `json:"type"`
 	IsActive  bool              `json:"is_active"`
+	IsSystem  bool              `json:"is_system"`
 	Variables models.JSONSlice  `json:"variables"`
 	CreatedAt time.Time         `json:"created_at"`
 }
@@ -132,10 +137,11 @@ type PluginResp struct {
 
 type ACLRuleResp struct {
 	ID         int64                `json:"id"`
-	UserID     int64                `json:"user_id"`
 	ChatAreaID string               `json:"chat_area_id"`
+	Scope      models.ACLScope      `json:"scope"`
 	Permission models.ACLPermission `json:"permission"`
-	Actions    models.JSONSlice     `json:"actions"`
+	TargetType models.ACLTargetType `json:"target_type"`
+	UserIDs    models.JSONSlice     `json:"user_ids"`
 	CreatedAt  time.Time            `json:"created_at"`
 }
 
@@ -191,6 +197,20 @@ type OverviewResp struct {
 	SkillCount      int   `json:"skill_count"`
 	SessionCount    int   `json:"session_count"`
 	TotalTokenUsage int64 `json:"total_token_usage"`
+
+	// 系统状态
+	CPUCount          int    `json:"cpu_count"`            // 逻辑 CPU 核数
+	GoroutineNum      int    `json:"goroutine_num"`        // 当前 goroutine 数
+	MemAllocBytes     uint64 `json:"mem_alloc_bytes"`      // 堆已分配 (活跃对象)
+	MemSysBytes       uint64 `json:"mem_sys_bytes"`        // 从 OS 获取的内存总量
+	MemHeapInUseBytes uint64 `json:"mem_heap_inuse_bytes"` // 堆中正在使用
+	GoVersion         string `json:"go_version"`          // Go 版本
+
+	// T2I / Sandbox 状态
+	T2IActive       bool `json:"t2i_active"`        // 客户端已加载
+	T2IHealthy      bool `json:"t2i_healthy"`       // HealthCheck 通过
+	SandboxActive   bool `json:"sandbox_active"`   // 客户端已加载
+	SandboxHealthy  bool `json:"sandbox_healthy"`  // HealthCheck 通过
 }
 
 type ChatRecordListResp struct {
@@ -201,4 +221,37 @@ type ChatRecordListResp struct {
 type PluginUploadResp struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
+}
+
+type T2IConfigResp struct {
+	BaseURL  string `json:"base_url"`
+	Timeout  int    `json:"timeout"`
+	IsActive bool   `json:"is_active"`
+	Healthy  bool   `json:"healthy"`
+}
+
+type SandboxConfigResp struct {
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	Timeout  int    `json:"timeout"`
+	IsActive bool   `json:"is_active"`
+	Healthy  bool   `json:"healthy"`
+}
+
+type WebhookConfigResp struct {
+	Addr    string `json:"addr"`
+	Port    int    `json:"port"`
+	Token   string `json:"token"`
+	Enabled bool   `json:"enabled"`
+	Running bool   `json:"running"`
+}
+
+// ---------- Logs ----------
+
+// LogEntryResp 对应 internal/logging.Entry 的前端响应结构。
+type LogEntryResp struct {
+	Time    time.Time      `json:"time"`
+	Level   string         `json:"level"`
+	Message string         `json:"message"`
+	Attrs   map[string]any `json:"attrs,omitempty"`
 }

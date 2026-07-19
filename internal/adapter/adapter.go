@@ -71,6 +71,13 @@ func (p *Adapter) Events() <-chan Event {
 	return p.events
 }
 
+// Admins 返回当前配置的管理员列表（供事件透传使用）。
+func (p *Adapter) Admins() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.cfg.Admins
+}
+
 func (p *Adapter) SelfID() int64 {
 	if p.server == nil {
 		return 0

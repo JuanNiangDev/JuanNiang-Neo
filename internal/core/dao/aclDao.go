@@ -25,13 +25,11 @@ func (d *ACLDAO) List(ctx context.Context) ([]models.ACLRule, error) {
 	return list, err
 }
 
-func (d *ACLDAO) GetByUserAndChatArea(ctx context.Context, userID int64, chatAreaID string) (*models.ACLRule, error) {
-	var r models.ACLRule
+// GetByChatAreaAndScope 获取指定 ChatArea + Scope 的所有 ACL 规则。
+func (d *ACLDAO) GetByChatAreaAndScope(ctx context.Context, chatAreaID string, scope models.ACLScope) ([]models.ACLRule, error) {
+	var list []models.ACLRule
 	err := d.db.WithContext(ctx).
-		Where("user_id = ? AND chat_area_id = ?", userID, chatAreaID).
-		First(&r).Error
-	if err != nil {
-		return nil, err
-	}
-	return &r, nil
+		Where("chat_area_id = ? AND scope = ?", chatAreaID, scope).
+		Find(&list).Error
+	return list, err
 }
