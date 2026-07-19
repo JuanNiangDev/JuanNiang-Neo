@@ -143,10 +143,11 @@ type TogglePluginReq struct {
 // ---------- ACL ----------
 
 type AddACLRuleReq struct {
-	UserID     int64                `json:"user_id"`
 	ChatAreaID string               `json:"chat_area_id"`
+	Scope      models.ACLScope      `json:"scope"`
 	Permission models.ACLPermission `json:"permission"`
-	Actions    models.JSONSlice     `json:"actions"`
+	TargetType models.ACLTargetType `json:"target_type"`
+	UserIDs    models.JSONSlice     `json:"user_ids"`
 }
 
 // ---------- Memory ----------

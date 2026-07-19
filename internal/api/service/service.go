@@ -933,10 +933,11 @@ func (s *Service) AddACLRule(ctx context.Context, c *app.RequestContext) {
 	}
 
 	r := models.ACLRule{
-		UserID:     data.UserID,
 		ChatAreaID: data.ChatAreaID,
+		Scope:      data.Scope,
 		Permission: data.Permission,
-		Actions:    data.Actions,
+		TargetType: data.TargetType,
+		UserIDs:    data.UserIDs,
 	}
 
 	// 运行时同步：使用 ACL.AddRule（存在则更新）

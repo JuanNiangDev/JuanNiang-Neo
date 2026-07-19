@@ -130,10 +130,11 @@ func RawPluginList2Resp(raw []models.Plugin) []PluginResp {
 func RawACLRule2Resp(raw *models.ACLRule) ACLRuleResp {
 	return ACLRuleResp{
 		ID:         raw.ID,
-		UserID:     raw.UserID,
 		ChatAreaID: raw.ChatAreaID,
+		Scope:      raw.Scope,
 		Permission: raw.Permission,
-		Actions:    raw.Actions,
+		TargetType: raw.TargetType,
+		UserIDs:    raw.UserIDs,
 		CreatedAt:  raw.CreatedAt,
 	}
 }

@@ -197,6 +197,24 @@ func (h *HagoCenter) Start(ctx context.Context) error {
 	return nil
 }
 
+// buildToolList 构建完整的工具列表（注册工具 + MCP 工具），供 LLM 使用。
+func (h *HagoCenter) buildToolList(ctx context.Context) []provider.ToolDef {
+	tools := h.Tools.GetOpenAITools()
+	if h.MCP != nil {
+		for _, t := range h.MCP.ListTools(ctx) {
+			tools = append(tools, provider.ToolDef{
+				Type: "function",
+				Function: provider.ToolDefFunc{
+					Name:        t.Name,
+					Description: t.Description,
+					Parameters:  t.InputSchema,
+				},
+			})
+		}
+	}
+	return tools
+}
+
 // Stop 停止 Agent 系统。
 func (h *HagoCenter) Stop() {
 	close(h.OutputChan)

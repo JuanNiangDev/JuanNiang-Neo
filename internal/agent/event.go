@@ -64,8 +64,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	if !h.ACL.Check(ctx, userID, chatArea.ID, "chat") {
-		slog.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID)
+	if !h.ACL.CheckChat(ctx, userID, chatArea.ID) {
+		slog.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID, "scope", "chat")
 		return
 	}
 
@@ -94,7 +94,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	if h.Memory != nil {
 		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, "", 5)
 	}
-	toolList := h.Tools.GetOpenAITools()
+	toolList := h.buildToolList(ctx)
 
 	toolDescs := ""
 	for _, t := range toolList {
@@ -169,44 +169,91 @@ func (h *HagoCenter) handleToolCalls(
 		toolName := tc.Function.Name
 		args := tc.Function.Arguments
 
-		if h.Tools.IsLongRunning(toolName) {
-			steps := []TaskStep{
-				{ID: tc.ID, ToolName: toolName, Args: args},
-			}
-			taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, steps)
-			if err != nil {
-				slog.Error("提交后台任务失败", "err", err)
+		// 判断是注册工具还是 MCP 工具
+		_, isRegistryTool := h.Tools.Get(toolName)
+
+		if isRegistryTool {
+			// ACL 检查：工具调用权限
+			allowed, denialMsg := h.ACL.CheckTool(ctx, userID, chatAreaID, toolName)
+			if !allowed {
+				history = append(history, provider.ChatMessage{
+					Role:       "tool",
+					Content:    denialMsg,
+					ToolCallID: tc.ID,
+					Name:       toolName,
+				})
+				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0)
+				slog.Info("ACL 拒绝工具调用", "user_id", userID, "tool", toolName)
 				continue
 			}
 
-			h.sendReply(msg, fmt.Sprintf("任务 %s 已提交后台执行...", toolName))
+			if h.Tools.IsLongRunning(toolName) {
+				steps := []TaskStep{
+					{ID: tc.ID, ToolName: toolName, Args: args},
+				}
+				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, steps)
+				if err != nil {
+					slog.Error("提交后台任务失败", "err", err)
+					continue
+				}
+
+				h.sendReply(msg, fmt.Sprintf("任务 %s 已提交后台执行...", toolName))
+				history = append(history, provider.ChatMessage{
+					Role:       "tool",
+					Content:    fmt.Sprintf("任务已提交后台执行，task_id: %s", taskID),
+					ToolCallID: tc.ID,
+				})
+				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("任务 %s -> 后台执行: %s", toolName, taskID), 0)
+				continue
+			}
+
+			result, err := h.Tools.Execute(ctx, toolName, args)
+			if err != nil {
+				result = fmt.Sprintf("工具执行失败: %s", err.Error())
+				slog.Error("工具执行失败", "tool", toolName, "err", err)
+			}
+
 			history = append(history, provider.ChatMessage{
 				Role:       "tool",
-				Content:    fmt.Sprintf("任务已提交后台执行，task_id: %s", taskID),
+				Content:    result,
 				ToolCallID: tc.ID,
+				Name:       toolName,
 			})
-			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("任务 %s -> 后台执行: %s", toolName, taskID), 0)
-			continue
-		}
+			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0)
+		} else {
+			// MCP 工具调用
+			allowed, denialMsg := h.ACL.CheckMCP(ctx, userID, chatAreaID, toolName)
+			if !allowed {
+				history = append(history, provider.ChatMessage{
+					Role:       "tool",
+					Content:    denialMsg,
+					ToolCallID: tc.ID,
+					Name:       toolName,
+				})
+				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0)
+				slog.Info("ACL 拒绝 MCP 调用", "user_id", userID, "tool", toolName)
+				continue
+			}
 
-		result, err := h.Tools.Execute(ctx, toolName, args)
-		if err != nil {
-			result = fmt.Sprintf("工具执行失败: %s", err.Error())
-			slog.Error("工具执行失败", "tool", toolName, "err", err)
-		}
+			result, err := h.MCP.CallTool(ctx, toolName, args)
+			if err != nil {
+				result = fmt.Sprintf("MCP调用失败: %s", err.Error())
+				slog.Error("MCP调用失败", "tool", toolName, "err", err)
+			}
 
-		history = append(history, provider.ChatMessage{
-			Role:       "tool",
-			Content:    result,
-			ToolCallID: tc.ID,
-			Name:       toolName,
-		})
-		h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0)
+			history = append(history, provider.ChatMessage{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+				Name:       toolName,
+			})
+			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0)
+		}
 	}
 
 	followUp, err := llm.Chat(ctx, provider.ChatRequest{
 		Messages:    history,
-		Tools:       h.Tools.GetOpenAITools(),
+		Tools:       h.buildToolList(ctx),
 		Temperature: 0.7,
 	})
 	if err != nil {

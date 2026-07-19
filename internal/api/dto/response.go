@@ -134,10 +134,11 @@ type PluginResp struct {
 
 type ACLRuleResp struct {
 	ID         int64                `json:"id"`
-	UserID     int64                `json:"user_id"`
 	ChatAreaID string               `json:"chat_area_id"`
+	Scope      models.ACLScope      `json:"scope"`
 	Permission models.ACLPermission `json:"permission"`
-	Actions    models.JSONSlice     `json:"actions"`
+	TargetType models.ACLTargetType `json:"target_type"`
+	UserIDs    models.JSONSlice     `json:"user_ids"`
 	CreatedAt  time.Time            `json:"created_at"`
 }
 
