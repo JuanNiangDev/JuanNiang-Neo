@@ -33,6 +33,8 @@ var (
 	ChatAreaNotFound        = Response{Status: 40023, Info: "ChatArea 不存在"}
 	MemoryConfigNotFound    = Response{Status: 40024, Info: "Memory 配置不存在"}
 	AdapterConfigNotFound   = Response{Status: 40025, Info: "adapter 配置不存在"}
+	T2IConfigNotFound       = Response{Status: 40026, Info: "T2I 配置不存在"}
+	SandboxConfigNotFound   = Response{Status: 40027, Info: "Sandbox 配置不存在"}
 )
 
 type TokenResp struct {
@@ -201,4 +203,19 @@ type ChatRecordListResp struct {
 type PluginUploadResp struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
+}
+
+type T2IConfigResp struct {
+	BaseURL  string `json:"base_url"`
+	Timeout  int    `json:"timeout"`
+	IsActive bool   `json:"is_active"`
+	Healthy  bool   `json:"healthy"`
+}
+
+type SandboxConfigResp struct {
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	Timeout  int    `json:"timeout"`
+	IsActive bool   `json:"is_active"`
+	Healthy  bool   `json:"healthy"`
 }

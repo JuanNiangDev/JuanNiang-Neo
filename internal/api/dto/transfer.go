@@ -218,3 +218,22 @@ func RawLongTermMemory2Resp(raw *models.LongTermMemory) LongTermMemoryResp {
 		CreatedAt:    raw.CreatedAt,
 	}
 }
+
+func RawT2IConfig2Resp(raw *models.T2IConfig, healthy bool) T2IConfigResp {
+	return T2IConfigResp{
+		BaseURL:  raw.BaseURL,
+		Timeout:  raw.Timeout,
+		IsActive: raw.IsActive,
+		Healthy:  healthy,
+	}
+}
+
+func RawSandboxConfig2Resp(raw *models.SandboxConfig, healthy bool) SandboxConfigResp {
+	return SandboxConfigResp{
+		BaseURL:  raw.BaseURL,
+		APIKey:   raw.APIKey,
+		Timeout:  raw.Timeout,
+		IsActive: raw.IsActive,
+		Healthy:  healthy,
+	}
+}

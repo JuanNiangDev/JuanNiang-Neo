@@ -92,4 +92,14 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	h.GET("/health", func(ctx context.Context, c *app.RequestContext) {
 		c.JSON(200, map[string]string{"status": "ok"})
 	})
+
+	// T2I
+	api.GET("/t2i/config", auth, svc.GetT2IConfig)
+	api.PUT("/t2i/config", auth, svc.UpdateT2IConfig)
+	api.GET("/t2i/health", auth, svc.CheckT2IHealth)
+
+	// Sandbox
+	api.GET("/sandbox/config", auth, svc.GetSandboxConfig)
+	api.PUT("/sandbox/config", auth, svc.UpdateSandboxConfig)
+	api.GET("/sandbox/health", auth, svc.CheckSandboxHealth)
 }

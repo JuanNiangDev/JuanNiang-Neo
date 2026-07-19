@@ -33,6 +33,8 @@ type Bundle struct {
 	Plugin          *PluginDAO
 	ACL             *ACLDAO
 	Onebot11Adapter *Onebot11AdapterDao
+	Sandbox         *SandboxConfigDAO
+	T2I             *T2IConfigDAO
 }
 
 func NewBundle(db *gorm.DB) *Bundle {
@@ -53,5 +55,7 @@ func NewBundle(db *gorm.DB) *Bundle {
 		Plugin:          NewPluginDAO(db),
 		ACL:             NewACLDAO(db),
 		Onebot11Adapter: NewOnebot11AdapterDao(db),
+		Sandbox:         NewSandboxConfigDAO(db),
+		T2I:             NewT2IConfigDAO(db),
 	}
 }

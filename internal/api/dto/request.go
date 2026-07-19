@@ -160,3 +160,20 @@ type UpdateLongTermMemoryReq struct {
 	HotAreaSize  int `json:"hot_area_size"`
 	HotMemoryTTL int `json:"hot_memory_ttl"`
 }
+
+// ---------- T2I ----------
+
+type UpdateT2IConfigReq struct {
+	BaseURL  string `json:"base_url"`
+	Timeout  int    `json:"timeout"`
+	IsActive bool   `json:"is_active"`
+}
+
+// ---------- Sandbox ----------
+
+type UpdateSandboxConfigReq struct {
+	BaseURL  string `json:"base_url"`
+	APIKey   string `json:"api_key"`
+	Timeout  int    `json:"timeout"`
+	IsActive bool   `json:"is_active"`
+}

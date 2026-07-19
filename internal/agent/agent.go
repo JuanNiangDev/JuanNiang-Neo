@@ -32,6 +32,10 @@ type HagoCenter struct {
 	ACL       *acl.ACL
 	DAO       *dao.Bundle
 
+	// T2I 和 Sandbox 运行时客户端（可通过 API 热更新）
+	SandboxClient *sandboxcaller.Client
+	T2IClient     *t2icaller.Client
+
 	BgTaskExecutor *BackgroundTaskExecutor
 	Drainer        *DrainerAgent
 	OutputChan     chan DrainerOutput
@@ -71,11 +75,19 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Providers = cfg.Providers
 	h.MCP = cfg.MCPGroup
 
+	// 存储 T2I/Sandbox 运行时客户端
+	h.SandboxClient = cfg.Sandbox
+	h.T2IClient = cfg.T2I
+
 	h.Session = session.NewSessionManager(cfg.DAO.Session, nil)
 	h.Prompt = prompt.NewPromptManager(cfg.DAO.Prompt)
 	h.Skills = skill.NewSkillEngine()
 
-	tool.RegisterBuiltinTools(h.Tools, cfg.Adapter, cfg.Sandbox, cfg.T2I, h.Providers.SelectModel(provider.ModelTypeImage))
+	// 使用函数 getter 注册工具，支持运行时客户端热更新
+	tool.RegisterBuiltinTools(h.Tools, cfg.Adapter,
+		func() *sandboxcaller.Client { return h.SandboxClient },
+		func() *t2icaller.Client { return h.T2IClient },
+		h.Providers.SelectModel(provider.ModelTypeImage))
 
 	if err := h.loadProviders(ctx); err != nil {
 		return err

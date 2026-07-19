@@ -1,6 +1,12 @@
 package service
 
 import (
+	"time"
+
+	sandbox "JuanNiang-Neo/infrastructure/sandbox"
+	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
+	t2i "JuanNiang-Neo/infrastructure/t2i"
+	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
@@ -24,8 +30,40 @@ type Service struct {
 	ToolRegistry  *tool.ToolRegistry
 	SkillEngine   *skill.SkillEngine
 	ACLMgr        *acl.ACL
+
+	// T2I / Sandbox 运行时客户端 + 同步回调
+	T2IClient     *t2icaller.Client
+	SandboxClient *sandboxcaller.Client
+	// OnUpdateT2I 在 T2I 配置变更时调用，用于同步到 HagoCenter。
+	OnUpdateT2I     func(client *t2icaller.Client)
+	OnUpdateSandbox func(client *sandboxcaller.Client)
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, pluginEngine *pluggin.PluginEngine) *Service {
 	return &Service{DAO: dao, Adapter: adapter, PluginEngine: pluginEngine}
+}
+
+// t2iClientFactory 根据配置创建 T2I 客户端。
+func t2iClientFactory(baseURL string, timeoutSec int) *t2icaller.Client {
+	client, err := t2i.NewClient(
+		t2i.WithBaseURL(baseURL),
+		t2i.WithTimeout(time.Duration(timeoutSec)*time.Second),
+	)
+	if err != nil {
+		return nil
+	}
+	return client
+}
+
+// sandboxClientFactory 根据配置创建 Sandbox 客户端。
+func sandboxClientFactory(baseURL, apiKey string, timeoutSec int) *sandboxcaller.Client {
+	client, err := sandbox.NewClient(
+		sandbox.WithBaseURL(baseURL),
+		sandbox.WithAPIKey(apiKey),
+		sandbox.WithTimeout(time.Duration(timeoutSec)*time.Second),
+	)
+	if err != nil {
+		return nil
+	}
+	return client
 }

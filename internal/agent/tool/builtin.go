@@ -41,11 +41,12 @@ func (t *onebotTool) Execute(ctx context.Context, args json.RawMessage) (string,
 }
 
 // RegisterBuiltinTools 注册所有内置工具到注册表。
+// getSandbox / getT2I 使用 function getter 以支持运行时客户端热更新。
 func RegisterBuiltinTools(
 	registry *ToolRegistry,
 	adapter AdapterProvider,
-	sandbox *sandboxcaller.Client,
-	t2i *t2icaller.Client,
+	getSandbox func() *sandboxcaller.Client,
+	getT2I func() *t2icaller.Client,
 	imageModel provider.Provider,
 ) {
 	tools := []Tool{}
@@ -320,7 +321,7 @@ func RegisterBuiltinTools(
 
 	// --- 沙箱工具 (长耗时, 需要 sandbox_id) ---
 
-	if sandbox != nil {
+	if getSandbox != nil {
 		tools = append(tools, &onebotTool{
 			BaseTool: NewTool("", "browser_search", "在沙箱中执行浏览器搜索(长耗时)",
 				openai.FunctionParameters{
@@ -332,6 +333,10 @@ func RegisterBuiltinTools(
 					"required": []string{"sandbox_id", "query"},
 				}, true, true),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+				sandbox := getSandbox()
+				if sandbox == nil {
+					return "", fmt.Errorf("沙箱服务未启用")
+				}
 				var p struct {
 					SandboxID string `json:"sandbox_id"`
 					Query     string `json:"query"`
@@ -359,6 +364,10 @@ func RegisterBuiltinTools(
 					"required": []string{"sandbox_id", "command"},
 				}, true, true),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+				sandbox := getSandbox()
+				if sandbox == nil {
+					return "", fmt.Errorf("沙箱服务未启用")
+				}
 				var p struct {
 					SandboxID string `json:"sandbox_id"`
 					Command   string `json:"command"`
@@ -386,6 +395,10 @@ func RegisterBuiltinTools(
 					"required": []string{"sandbox_id", "code"},
 				}, true, true),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+				sandbox := getSandbox()
+				if sandbox == nil {
+					return "", fmt.Errorf("沙箱服务未启用")
+				}
 				var p struct {
 					SandboxID string `json:"sandbox_id"`
 					Code      string `json:"code"`
@@ -405,7 +418,7 @@ func RegisterBuiltinTools(
 
 	// --- 文生图 (长耗时) ---
 
-	if t2i != nil {
+	if getT2I != nil {
 		tools = append(tools, &onebotTool{
 			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片(长耗时)",
 				openai.FunctionParameters{
@@ -416,6 +429,10 @@ func RegisterBuiltinTools(
 					"required": []string{"html"},
 				}, true, true),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+				t2i := getT2I()
+				if t2i == nil {
+					return "", fmt.Errorf("T2I 服务未启用")
+				}
 				var p struct{ HTML string `json:"html"` }
 				json.Unmarshal(args, &p)
 				resp, err := t2i.Generate(ctx, t2icaller.GenerateRequest{

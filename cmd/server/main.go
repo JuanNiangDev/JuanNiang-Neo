@@ -8,15 +8,21 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"JuanNiang-Neo/infrastructure/postgres"
 	"JuanNiang-Neo/infrastructure/redis"
+	sandbox "JuanNiang-Neo/infrastructure/sandbox"
+	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
+	t2i "JuanNiang-Neo/infrastructure/t2i"
+	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
 	"JuanNiang-Neo/internal/api/engine"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/api/service"
 	"JuanNiang-Neo/internal/core"
+	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/pluggin"
 )
 
@@ -126,6 +132,12 @@ func main() {
 	svc.ToolRegistry = hago.Tools
 	svc.SkillEngine = hago.Skills
 	svc.ACLMgr = hago.ACL
+
+	// T2I / Sandbox 运行时同步：从 DB 加载配置并设置回调
+	loadT2IFromDB(ctx, svc, coreInst.DAO, hago)
+	loadSandboxFromDB(ctx, svc, coreInst.DAO, hago)
+	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
+	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
 	webEngine := engine.New(env("API_ADDR", ":8090"), svc)
 
 	go func() {
@@ -167,4 +179,51 @@ func parseAdmins(s string) []string {
 		admins = append(admins, id)
 	}
 	return admins
+}
+
+func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
+	cfg, err := daos.T2I.GetConfig(ctx)
+	if err != nil {
+		slog.Warn("T2I 配置加载失败，使用默认", "err", err)
+		return
+	}
+	if !cfg.IsActive {
+		slog.Info("T2I 未启用")
+		return
+	}
+	client, err := t2i.NewClient(
+		t2i.WithBaseURL(cfg.BaseURL),
+		t2i.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
+	)
+	if err != nil {
+		slog.Warn("T2I 客户端创建失败", "err", err)
+		return
+	}
+	svc.T2IClient = client
+	hago.T2IClient = client
+	slog.Info("T2I 客户端已就绪", "base_url", cfg.BaseURL)
+}
+
+func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
+	cfg, err := daos.Sandbox.GetConfig(ctx)
+	if err != nil {
+		slog.Warn("Sandbox 配置加载失败，使用默认", "err", err)
+		return
+	}
+	if !cfg.IsActive {
+		slog.Info("Sandbox 未启用")
+		return
+	}
+	client, err := sandbox.NewClient(
+		sandbox.WithBaseURL(cfg.BaseURL),
+		sandbox.WithAPIKey(cfg.APIKey),
+		sandbox.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
+	)
+	if err != nil {
+		slog.Warn("Sandbox 客户端创建失败", "err", err)
+		return
+	}
+	svc.SandboxClient = client
+	hago.SandboxClient = client
+	slog.Info("Sandbox 客户端已就绪", "base_url", cfg.BaseURL)
 }

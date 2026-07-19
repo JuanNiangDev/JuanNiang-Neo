@@ -1144,7 +1144,134 @@ func (s *Service) UpdateLongTermMemoryConfig(ctx context.Context, c *app.Request
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawLongTermMemory2Resp(m)))
 }
 
-// helpers
+// ---------- T2I ----------
+
+func (s *Service) GetT2IConfig(ctx context.Context, c *app.RequestContext) {
+	cfg, err := s.DAO.T2I.GetConfig(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.T2IConfigNotFound, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	healthy := false
+	if s.T2IClient != nil {
+		healthy = s.T2IClient.HealthCheck() == nil
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawT2IConfig2Resp(cfg, healthy)))
+}
+
+func (s *Service) UpdateT2IConfig(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateT2IConfigReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	cfg := &models.T2IConfig{
+		ID:       1,
+		BaseURL:  data.BaseURL,
+		Timeout:  data.Timeout,
+		IsActive: data.IsActive,
+	}
+	if err := s.DAO.T2I.UpdateConfig(ctx, cfg); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 运行时同步：创建新客户端并同步到 HagoCenter
+	if data.IsActive {
+		client := t2iClientFactory(data.BaseURL, data.Timeout)
+		s.T2IClient = client
+		if s.OnUpdateT2I != nil {
+			s.OnUpdateT2I(client)
+		}
+	} else {
+		s.T2IClient = nil
+		if s.OnUpdateT2I != nil {
+			s.OnUpdateT2I(nil)
+		}
+	}
+
+	healthy := false
+	if s.T2IClient != nil {
+		healthy = s.T2IClient.HealthCheck() == nil
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawT2IConfig2Resp(cfg, healthy)))
+}
+
+func (s *Service) CheckT2IHealth(ctx context.Context, c *app.RequestContext) {
+	if s.T2IClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": false}))
+		return
+	}
+	err := s.T2IClient.HealthCheck()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": err == nil}))
+}
+
+// ---------- Sandbox ----------
+
+func (s *Service) GetSandboxConfig(ctx context.Context, c *app.RequestContext) {
+	cfg, err := s.DAO.Sandbox.GetConfig(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.SandboxConfigNotFound, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	healthy := false
+	if s.SandboxClient != nil {
+		healthy = s.SandboxClient.HealthCheck() == nil
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSandboxConfig2Resp(cfg, healthy)))
+}
+
+func (s *Service) UpdateSandboxConfig(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateSandboxConfigReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	cfg := &models.SandboxConfig{
+		ID:       1,
+		BaseURL:  data.BaseURL,
+		APIKey:   data.APIKey,
+		Timeout:  data.Timeout,
+		IsActive: data.IsActive,
+	}
+	if err := s.DAO.Sandbox.UpdateConfig(ctx, cfg); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 运行时同步：创建新客户端并同步到 HagoCenter
+	if data.IsActive {
+		client := sandboxClientFactory(data.BaseURL, data.APIKey, data.Timeout)
+		s.SandboxClient = client
+		if s.OnUpdateSandbox != nil {
+			s.OnUpdateSandbox(client)
+		}
+	} else {
+		s.SandboxClient = nil
+		if s.OnUpdateSandbox != nil {
+			s.OnUpdateSandbox(nil)
+		}
+	}
+
+	healthy := false
+	if s.SandboxClient != nil {
+		healthy = s.SandboxClient.HealthCheck() == nil
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSandboxConfig2Resp(cfg, healthy)))
+}
+
+func (s *Service) CheckSandboxHealth(ctx context.Context, c *app.RequestContext) {
+	if s.SandboxClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": false}))
+		return
+	}
+	err := s.SandboxClient.HealthCheck()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": err == nil}))
+}
+
+// ---------- helpers ----------
 
 func newUUID() string {
 	b := make([]byte, 16)
