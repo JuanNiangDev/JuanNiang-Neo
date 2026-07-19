@@ -667,8 +667,16 @@ func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 系统锁定提示词禁止修改
+	id := c.Param("id")
+	existing, err := s.DAO.Prompt.GetByID(ctx, id)
+	if err == nil && existing != nil && existing.IsSystem {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PromptIsSystem, dto.ErrorDetail{ErrorDetail: "系统锁定提示词不允许修改"}))
+		return
+	}
+
 	p := models.Prompt{
-		ID:        c.Param("id"),
+		ID:        id,
 		Name:      data.Name,
 		Content:   data.Content,
 		Type:      data.Type,
@@ -683,7 +691,16 @@ func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) DeletePrompt(ctx context.Context, c *app.RequestContext) {
-	if err := s.DAO.Prompt.Delete(ctx, c.Param("id")); err != nil {
+	id := c.Param("id")
+
+	// 系统锁定提示词禁止删除
+	existing, err := s.DAO.Prompt.GetByID(ctx, id)
+	if err == nil && existing != nil && existing.IsSystem {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PromptIsSystem, dto.ErrorDetail{ErrorDetail: "系统锁定提示词不允许删除"}))
+		return
+	}
+
+	if err := s.DAO.Prompt.Delete(ctx, id); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -696,7 +713,18 @@ func (s *Service) TogglePrompt(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.DAO.Prompt.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+
+	// 系统锁定提示词禁止停用（但允许启用）
+	id := c.Param("id")
+	if !data.IsActive {
+		existing, err := s.DAO.Prompt.GetByID(ctx, id)
+		if err == nil && existing != nil && existing.IsSystem {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PromptIsSystem, dto.ErrorDetail{ErrorDetail: "系统锁定提示词不允许停用"}))
+			return
+		}
+	}
+
+	if err := s.DAO.Prompt.SetActive(ctx, id, data.IsActive); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -785,6 +813,12 @@ func (s *Service) DeleteSession(ctx context.Context, c *app.RequestContext) {
 // ====================================================================
 
 func (s *Service) ListPlugins(ctx context.Context, c *app.RequestContext) {
+	// 优先使用 PluginEngine 的运行时列表（包含 manifest 信息与 is_system 标志）
+	if s.PluginEngine != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, s.PluginEngine.ListMaps()))
+		return
+	}
+	// 回退到 DB（仅静态记录）
 	list, err := s.DAO.Plugin.List(ctx)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -883,6 +917,12 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 
 	id := c.Param("id")
 
+	// 系统插件禁止停用（但允许"启用"——幂等场景）
+	if !data.IsActive && s.PluginEngine != nil && s.PluginEngine.IsSystem(id) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginIsSystem, dto.ErrorDetail{ErrorDetail: "系统插件不允许停用"}))
+		return
+	}
+
 	// 运行时同步：启用时加载插件，停用时卸载
 	if s.PluginEngine != nil {
 		if data.IsActive {
@@ -890,7 +930,9 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 				slog.Error("插件加载失败", "id", id, "err", err)
 			}
 		} else {
-			s.PluginEngine.Unload(id)
+			if err := s.PluginEngine.Unload(id); err != nil {
+				slog.Error("插件卸载失败", "id", id, "err", err)
+			}
 		}
 	}
 
@@ -904,9 +946,18 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 
+	// 系统插件禁止删除
+	if s.PluginEngine != nil && s.PluginEngine.IsSystem(id) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginIsSystem, dto.ErrorDetail{ErrorDetail: "系统插件不允许删除"}))
+		return
+	}
+
 	// 运行时同步：先卸载再删除 DB 记录
 	if s.PluginEngine != nil {
-		s.PluginEngine.Unload(id)
+		if err := s.PluginEngine.Unload(id); err != nil {
+			// 非系统插件的卸载错误仅记录，不阻断删除流程
+			slog.Warn("插件卸载失败（继续删除 DB 记录）", "id", id, "err", err)
+		}
 	}
 
 	if err := s.DAO.Plugin.Delete(ctx, id); err != nil {

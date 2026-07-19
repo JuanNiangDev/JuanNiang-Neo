@@ -99,6 +99,11 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Prompt = prompt.NewPromptManager(cfg.DAO.Prompt)
 	h.Skills = skill.NewSkillEngine()
 
+	// 启动时种子系统锁定提示词（幂等：已存在则同步内容）
+	if err := h.Prompt.EnsureSystemPrompt(ctx); err != nil {
+		slog.Warn("系统锁定提示词种子失败", "err", err)
+	}
+
 	// 使用函数 getter 注册工具，支持运行时客户端热更新
 	tool.RegisterBuiltinTools(h.Tools, cfg.Adapter,
 		func() *sandboxcaller.Client { return h.SandboxClient },

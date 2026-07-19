@@ -1,0 +1,11 @@
+name: system
+version: "1.0.0"
+author: JuanNiang-Neo
+description: "系统插件，封装 Agent/Provider/MCP/Tool/T2I/Sandbox/Session 管理命令"
+entry: main.lua
+system: true
+permissions:
+  - onebot11
+  - agent
+  - t2i
+  - sandbox

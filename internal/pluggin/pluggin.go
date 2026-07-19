@@ -3,6 +3,7 @@ package pluggin
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,9 @@ type Manifest struct {
 	Description string   `yaml:"description"`
 	Entry       string   `yaml:"entry"`
 	Permissions []string `yaml:"permissions"`
+	// System=true 表示系统内置插件，禁止通过 API 删除或停用。
+	// 这类插件通常随二进制分发，由 PluginEngine 启动时自动写入磁盘并加载。
+	System bool `yaml:"system"`
 }
 
 type LoadedPlugin struct {
@@ -139,13 +144,14 @@ type PluginEngine struct {
 	dao        *dao.Bundle
 	agentOp    AgentOperator
 	currentEv  EventData
+	commands   *CommandRegistry
 }
 
 func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache.Cache, t2i *t2icaller.Client, sb *sandboxcaller.Client, d *dao.Bundle, ag AgentOperator) *PluginEngine {
 	if basePath == "" {
 		basePath = "data/pluggins"
 	}
-	return &PluginEngine{
+	pe := &PluginEngine{
 		plugins:  make(map[string]*LoadedPlugin),
 		basePath: basePath,
 		adapter:  adapter,
@@ -155,10 +161,43 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 		sandbox:  sb,
 		dao:      d,
 		agentOp:  ag,
+		commands: NewCommandRegistry(),
 	}
+	// 注册内置 /help 命令
+	pe.registerBuiltinCommands()
+	return pe
+}
+
+// Commands 返回命令注册表（供外部读取，如 Web API 查询命令列表）。
+func (pe *PluginEngine) Commands() *CommandRegistry { return pe.commands }
+
+// IsSystem 查询指定插件是否为系统插件（按已加载 manifest 的 System 字段）。
+func (pe *PluginEngine) IsSystem(name string) bool {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	p, ok := pe.plugins[name]
+	if !ok {
+		return false
+	}
+	return p.Manifest.System
+}
+
+// registerBuiltinCommands 注册内置命令（/help）。
+func (pe *PluginEngine) registerBuiltinCommands() {
+	pe.commands.Register("system", []string{"help"}, CommandOpts{
+		Description: "查看所有可用命令，或查看某个命令的子命令与用法",
+		Usage:       "/help [命令路径...]",
+	}, func(args []string, event EventData) (bool, string, error) {
+		// /help 或 /help <cmd> [sub...]
+		reply := pe.commands.FormatHelp(args)
+		return true, reply, nil
+	})
 }
 
 func (pe *PluginEngine) LoadAll() error {
+	// 确保内置 SDK 与 system 插件已落盘
+	pe.ensureEmbeddedAssets()
+
 	entries, err := os.ReadDir(pe.basePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -168,6 +207,10 @@ func (pe *PluginEngine) LoadAll() error {
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
+			continue
+		}
+		// 跳过 sdk 目录（不是插件）
+		if entry.Name() == "sdk" {
 			continue
 		}
 		if err := pe.Load(entry.Name()); err != nil {
@@ -192,7 +235,11 @@ func (pe *PluginEngine) Load(name string) error {
 	}
 
 	L := lua.NewState()
+	// 先注入 SDK：让插件可以使用 require("jn")
+	pe.injectSDK(L, name)
 	pe.injectBaseAPI(L, name, manifest.Permissions)
+	// 注入命令注册 API（依赖当前 plugin name）
+	pe.injectCommandAPI(L, name)
 
 	entryFile := filepath.Join(pluginDir, manifest.Entry)
 	if err := L.DoFile(entryFile); err != nil {
@@ -201,7 +248,7 @@ func (pe *PluginEngine) Load(name string) error {
 	}
 
 	pe.plugins[name] = &LoadedPlugin{Manifest: *manifest, State: L, Dir: pluginDir}
-	slog.Info("插件加载成功", "name", name, "version", manifest.Version)
+	slog.Info("插件加载成功", "name", name, "version", manifest.Version, "system", manifest.System)
 	return nil
 }
 
@@ -212,6 +259,13 @@ func (pe *PluginEngine) Unload(name string) error {
 	if !ok {
 		return fmt.Errorf("plugin %q not loaded", name)
 	}
+	// 系统插件禁止卸载
+	if p.Manifest.System {
+		return fmt.Errorf("system 插件 %q 不允许卸载", name)
+	}
+	// 移除该插件注册的所有命令
+	pe.commands.UnregisterPlugin(name)
+
 	p.State.Close()
 	delete(pe.plugins, name)
 	slog.Info("插件已卸载", "name", name)
@@ -245,6 +299,8 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 			"version":     m.Version,
 			"author":      m.Author,
 			"description": m.Description,
+			"is_system":   m.System,
+			"is_active":   true, // 已加载即视为 active
 		}
 	}
 	return out
@@ -268,6 +324,21 @@ func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 
 	pe.currentEv = event
 
+	// 1. 优先派发给命令注册表（/cmd subcmd ...）
+	if strings.HasPrefix(strings.TrimSpace(event.RawMessage), "/") {
+		c, reply, err := pe.commands.Dispatch(event.RawMessage, event)
+		if err != nil {
+			slog.Error("命令派发错误", "raw", event.RawMessage, "err", err)
+		}
+		if c {
+			if reply != "" {
+				pe.sendReply(event, reply)
+			}
+			return true
+		}
+	}
+
+	// 2. 没有命令命中，按原逻辑派发给插件的 on_message
 	for _, p := range pe.plugins {
 		if !p.HasPermission("onebot11") {
 			continue
@@ -290,6 +361,20 @@ func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 		}
 	}
 	return false
+}
+
+// sendReply 内部辅助：根据 event 的 message_type 回复到对应会话。
+// 仅当 PluginEngine 持有 adapter 时有效。
+func (pe *PluginEngine) sendReply(event EventData, content string) {
+	if pe.adapter == nil {
+		return
+	}
+	switch event.MessageType {
+	case "private":
+		_, _ = pe.adapter.SendPrivateMsg(event.UserID, content)
+	case "group":
+		_, _ = pe.adapter.SendGroupMsg(event.GroupID, content)
+	}
 }
 
 // OnWebhook 触发插件的 on_webhook 回调。
@@ -403,6 +488,107 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 	if hasPerm("agent") && pe.dao != nil {
 		pe.injectAgent(L)
 	}
+}
+
+// injectSDK 将 jn.lua 内容写入 package.preload["jn"]，
+// 插件后续 require("jn") 时即获得带类型注解的 SDK 表。
+// SDK 内部捕获此处注入的全局 (log/json/onebot11/...) 作为字段。
+func (pe *PluginEngine) injectSDK(L *lua.LState, pluginName string) {
+	sdkDir := filepath.Join(pe.basePath, "sdk")
+	// 添加到 package.path，使 IDE 与 require 都能找到
+	pathScript := fmt.Sprintf(`package.path = "%s/?.lua;" .. (package.path or "")`,
+		strings.ReplaceAll(sdkDir, "\\", "/"))
+	if err := L.DoString(pathScript); err != nil {
+		slog.Warn("设置 package.path 失败", "plugin", pluginName, "err", err)
+	}
+}
+
+// injectCommandAPI 注入 jn.command.register 的底层绑定。
+// SDK (jn.lua) 通过此全局函数注册命令到 PluginEngine.commands。
+func (pe *PluginEngine) injectCommandAPI(L *lua.LState, pluginName string) {
+	registry := pe.commands
+	internal := L.NewTable()
+	L.SetFuncs(internal, map[string]lua.LGFunction{
+		"register_command": func(L *lua.LState) int {
+			// 参数: path (string|table), handler (function), opts (table, optional)
+			pathArg := L.Get(1)
+			handlerFn := L.Get(2)
+			optsArg := L.Get(3)
+
+			var path []string
+			switch p := pathArg.(type) {
+			case lua.LString:
+				path = strings.Fields(string(p))
+			case *lua.LTable:
+				p.ForEach(func(_, v lua.LValue) {
+					path = append(path, v.String())
+				})
+			default:
+				L.Push(lua.LBool(false))
+				L.Push(lua.LString("path 必须是字符串或字符串数组"))
+				return 2
+			}
+			if len(path) == 0 {
+				L.Push(lua.LBool(false))
+				L.Push(lua.LString("path 不能为空"))
+				return 2
+			}
+			if handlerFn.Type() != lua.LTFunction {
+				L.Push(lua.LBool(false))
+				L.Push(lua.LString("handler 必须是函数"))
+				return 2
+			}
+
+			opts := CommandOpts{}
+			if optsArg.Type() == lua.LTTable {
+				t := optsArg.(*lua.LTable)
+				if d := t.RawGetString("description"); d.Type() == lua.LTString {
+					opts.Description = string(d.(lua.LString))
+				}
+				if u := t.RawGetString("usage"); u.Type() == lua.LTString {
+					opts.Usage = string(u.(lua.LString))
+				}
+			}
+
+			// 保留 handler 引用，防止被 GC
+			refKey := fmt.Sprintf("__jn_cmd_handler_%s_%s", pluginName, strings.Join(path, "_"))
+			L.SetGlobal(refKey, handlerFn)
+
+			plugin := pluginName
+			handler := CommandHandler(func(args []string, event EventData) (bool, string, error) {
+				// 在插件 LState 中调用 handler
+				argTable := L.NewTable()
+				for i, a := range args {
+					L.SetTable(argTable, lua.LNumber(i+1), lua.LString(a))
+				}
+				evTable := eventToLuaTable(L, event)
+				if err := L.CallByParam(lua.P{
+					Fn:      handlerFn,
+					NRet:    2,
+					Protect: true,
+				}, argTable, evTable); err != nil {
+					return true, "", err
+				}
+				retConsumed := L.Get(-2)
+				retReply := L.Get(-1)
+				L.Pop(2)
+				consumed := false
+				if retConsumed.Type() == lua.LTBool {
+					consumed = bool(retConsumed.(lua.LBool))
+				}
+				reply := ""
+				if retReply.Type() == lua.LTString {
+					reply = string(retReply.(lua.LString))
+				}
+				return consumed, reply, nil
+			})
+
+			registry.Register(plugin, path, opts, handler)
+			L.Push(lua.LBool(true))
+			return 1
+		},
+	})
+	L.SetGlobal("__jn_internal", internal)
 }
 
 // ---------- JSON ----------
@@ -1196,5 +1382,50 @@ func luaValueToGo(v lua.LValue) any {
 		return nil
 	default:
 		return v.String()
+	}
+}
+
+// ====================================================================
+// 内嵌资源：SDK 与 system 插件
+// ====================================================================
+
+//go:embed sdk/jn.lua
+var jnSDKSource string
+
+//go:embed systemplugin/pluggin.yaml
+var systemPluginManifest string
+
+//go:embed systemplugin/main.lua
+var systemPluginMain string
+
+// ensureEmbeddedAssets 在启动时把内嵌的 SDK 与 system 插件落盘到 data/pluggins/。
+// - SDK 始终覆盖（保持与二进制版本一致，IDE 类型与运行时同步）
+// - system 插件仅在不存在时写入（允许用户自定义修改）
+func (pe *PluginEngine) ensureEmbeddedAssets() {
+	// 1. SDK 总是覆盖
+	sdkDir := filepath.Join(pe.basePath, "sdk")
+	if err := os.MkdirAll(sdkDir, 0o755); err != nil {
+		slog.Warn("创建 SDK 目录失败", "err", err)
+	} else {
+		sdkFile := filepath.Join(sdkDir, "jn.lua")
+		if err := os.WriteFile(sdkFile, []byte(jnSDKSource), 0o644); err != nil {
+			slog.Warn("写入 SDK 文件失败", "err", err)
+		}
+	}
+
+	// 2. system 插件仅在不存在时写入
+	sysDir := filepath.Join(pe.basePath, "system")
+	if _, err := os.Stat(filepath.Join(sysDir, "pluggin.yaml")); os.IsNotExist(err) {
+		if mkErr := os.MkdirAll(sysDir, 0o755); mkErr != nil {
+			slog.Warn("创建 system 插件目录失败", "err", mkErr)
+			return
+		}
+		if err := os.WriteFile(filepath.Join(sysDir, "pluggin.yaml"), []byte(systemPluginManifest), 0o644); err != nil {
+			slog.Warn("写入 system pluggin.yaml 失败", "err", err)
+		}
+		if err := os.WriteFile(filepath.Join(sysDir, "main.lua"), []byte(systemPluginMain), 0o644); err != nil {
+			slog.Warn("写入 system main.lua 失败", "err", err)
+		}
+		slog.Info("system 插件已落盘")
 	}
 }
