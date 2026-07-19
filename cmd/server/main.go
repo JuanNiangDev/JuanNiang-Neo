@@ -150,17 +150,14 @@ func mustAtoi(s string) int {
 	return n
 }
 
-func parseAdmins(s string) []int64 {
+func parseAdmins(s string) []string {
 	if s == "" {
 		return nil
 	}
 	parts := strings.Split(s, ",")
-	var admins []int64
-	for _, p := range parts {
-		id, err := strconv.ParseInt(strings.TrimSpace(p), 10, 64)
-		if err == nil {
-			admins = append(admins, id)
-		}
+	var admins []string
+	for _, id := range parts {
+		admins = append(admins, id)
 	}
 	return admins
 }

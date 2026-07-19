@@ -38,9 +38,9 @@ type ChatMessage struct {
 }
 
 type ToolCall struct {
-	ID       string          `json:"id"`
-	Type     string          `json:"type"`
-	Function ToolCallFunc    `json:"function"`
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function ToolCallFunc `json:"function"`
 }
 
 type ToolCallFunc struct {
@@ -56,8 +56,8 @@ type ChatRequest struct {
 }
 
 type ToolDef struct {
-	Type     string             `json:"type"`
-	Function ToolDefFunc        `json:"function"`
+	Type     string      `json:"type"`
+	Function ToolDefFunc `json:"function"`
 }
 
 type ToolDefFunc struct {
@@ -67,9 +67,9 @@ type ToolDefFunc struct {
 }
 
 type ChatResponse struct {
-	Message    ChatMessage `json:"message"`
-	TokenUsage int         `json:"token_usage"`
-	FinishReason string   `json:"finish_reason"`
+	Message      ChatMessage `json:"message"`
+	TokenUsage   int         `json:"token_usage"`
+	FinishReason string      `json:"finish_reason"`
 }
 
 type ChatStreamChunk struct {
@@ -147,4 +147,16 @@ func (pg *ProviderGroup) SelectModel(typ ModelType) Provider {
 // HasImageModel 检查是否配置了识图模型。
 func (pg *ProviderGroup) HasImageModel() bool {
 	return pg.SelectModel(ModelTypeImage) != nil
+}
+
+func (pg *ProviderGroup) SyncConfig(conf ProviderConfig) {
+	pg.mu.RLock()
+	defer pg.mu.RUnlock()
+
+	_, ok := pg.providers[conf.ID]
+	if ok {
+		delete(pg.providers, conf.ID)
+	}
+
+	pg.providers[conf.ID] = NewProvider(conf)
 }

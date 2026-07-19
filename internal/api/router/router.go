@@ -18,11 +18,6 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.POST("/login", svc.Login)
 	api.POST("/change-password", auth, svc.ChangePassword)
 
-	// Admin QQ
-	api.GET("/admins", auth, svc.ListAdminQQs)
-	api.POST("/admins", auth, svc.AddAdminQQ)
-	api.DELETE("/admins/:id", auth, svc.DeleteAdminQQ)
-
 	// Adapter
 	api.GET("/adapter", auth, svc.GetAdapterStatus)
 	api.PUT("/adapter", auth, svc.UpdateAdapterConfig)
