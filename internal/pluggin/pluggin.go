@@ -71,10 +71,13 @@ type SendAdapter interface {
 type AgentOperator interface {
 	SetProviderActive(ctx context.Context, id string, active bool) error
 	SetMCPActive(ctx context.Context, id string, active bool) error
+	SetToolActive(ctx context.Context, name string, active bool) error
+	SwitchProvider(ctx context.Context, id string) error
 	CompactMemory(ctx context.Context, chatAreaID string) error
 	GetChatAreaID(userID, groupID int64, messageType string) string
 	GetProviderGroup() ProviderGroupAccess
 	GetMCPGroup() MCPGroupAccess
+	GetToolRegistry() ToolRegistryAccess
 }
 
 // ProviderGroupAccess 暴露给插件的 Provider 管理接口。
@@ -89,17 +92,33 @@ type MCPGroupAccess interface {
 	IsConnected(id string) bool
 }
 
+// ToolRegistryAccess 暴露给插件的 Tool 管理接口。
+type ToolRegistryAccess interface {
+	ListTools() []ToolInfo
+	IsActive(name string) bool
+}
+
 type ProviderInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Type string `json:"type"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Model  string `json:"model"`
+	Active bool   `json:"active"`
 }
 
 type MCPInfo struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	URL     string `json:"url"`
-	Active  bool   `json:"active"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	URL    string `json:"url"`
+	Active bool   `json:"active"`
+}
+
+type ToolInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Builtin     bool   `json:"builtin"`
+	LongRunning bool   `json:"long_running"`
+	Active      bool   `json:"active"`
 }
 
 // ---------- 引擎 ----------
@@ -836,6 +855,60 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 			id := L.CheckString(1)
 			active := bool(L.CheckBool(2))
 			err := agentOp.SetMCPActive(context.Background(), id, active)
+			return pushResult(L, err)
+		},
+		"list_mcps": func(L *lua.LState) int {
+			if agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			mcpGroup := agentOp.GetMCPGroup()
+			list := mcpGroup.ListMCPs()
+			return pushResultJSON(L, list, nil)
+		},
+		"toggle_mcp": func(L *lua.LState) int {
+			if agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			id := L.CheckString(1)
+			active := bool(L.CheckBool(2))
+			err := agentOp.SetMCPActive(context.Background(), id, active)
+			return pushResult(L, err)
+		},
+
+		// Tool 管理
+		"list_tools": func(L *lua.LState) int {
+			if agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			toolReg := agentOp.GetToolRegistry()
+			list := toolReg.ListTools()
+			return pushResultJSON(L, list, nil)
+		},
+		"toggle_tool": func(L *lua.LState) int {
+			if agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			name := L.CheckString(1)
+			active := bool(L.CheckBool(2))
+			err := agentOp.SetToolActive(context.Background(), name, active)
+			return pushResult(L, err)
+		},
+
+		// Provider 运行时查询与切换
+		"list_runtime_providers": func(L *lua.LState) int {
+			if agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			pg := agentOp.GetProviderGroup()
+			list := pg.List()
+			return pushResultJSON(L, list, nil)
+		},
+		"switch_provider": func(L *lua.LState) int {
+			if agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			id := L.CheckString(1)
+			err := agentOp.SwitchProvider(context.Background(), id)
 			return pushResult(L, err)
 		},
 
