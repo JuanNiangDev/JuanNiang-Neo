@@ -141,7 +141,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 
 	var longTermMems []string
 	if h.Memory != nil {
-		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, "", 5)
+		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, chatArea.ID, "", 5)
 	}
 	toolList := h.buildToolList(ctx)
 
@@ -166,16 +166,22 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		}
 	}
 
-	stMsgs, err := h.Memory.GetShortTermMessages(ctx)
-	if err == nil {
-		for _, m := range stMsgs {
-			messages = append(messages, provider.ChatMessage{Role: m.Role, Content: m.Content, Name: m.Name})
+	if h.Memory != nil {
+		stMsgs, err := h.Memory.GetShortTermMessages(ctx, chatArea.ID)
+		if err == nil {
+			for _, m := range stMsgs {
+				messages = append(messages, provider.ChatMessage{Role: m.Role, Content: m.Content, Name: m.Name})
+			}
 		}
 	}
 
 	messages = append(messages, provider.ChatMessage{Role: "user", Content: userMsg})
 
-	h.Memory.AddShortTermMessage(ctx, shortterm.ChatMessage{Role: "user", Content: userMsg})
+	if h.Memory != nil {
+		h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "user", Content: userMsg})
+	}
+	// 持久化原始聊天记录到 DB (与短期记忆解耦, 不受 Redis 重启或 Compact 影响)
+	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0)
 
 	req := provider.ChatRequest{
 		Messages:    messages,
@@ -194,7 +200,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	if resp.Message.Content != "" {
 		h.sendReply(msg, resp.Message.Content)
 		h.recordChat(ctx, chatArea.ID, userID, "assistant", resp.Message.Content, 0)
-		h.Memory.AddShortTermMessage(ctx, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
+		if h.Memory != nil {
+			h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
+		}
 	}
 
 	if len(resp.Message.ToolCalls) > 0 {
@@ -321,7 +329,9 @@ func (h *HagoCenter) handleToolCalls(
 	if followUp.Message.Content != "" {
 		h.sendReply(msg, followUp.Message.Content)
 		h.recordChat(ctx, chatAreaID, userID, "assistant", followUp.Message.Content, followUp.TokenUsage)
-		h.Memory.AddShortTermMessage(ctx, shortterm.ChatMessage{Role: "assistant", Content: followUp.Message.Content})
+		if h.Memory != nil {
+			h.Memory.AddShortTermMessage(ctx, chatAreaID, shortterm.ChatMessage{Role: "assistant", Content: followUp.Message.Content})
+		}
 	}
 
 	// 递归处理可能的后续 tool calls
@@ -358,14 +368,7 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
 }
 
 func (h *HagoCenter) recordChat(ctx context.Context, chatAreaID string, userID int64, role, content string, tokens int) {
-	record := &models.ChatRecord{
-		ChatAreaID: chatAreaID,
-		UserID:     userID,
-		Role:       role,
-		Content:    content,
-		TokenCount: tokens,
-	}
-	if err := h.DAO.ChatRecord.Create(ctx, record); err != nil {
+	if err := h.Session.AppendRecord(ctx, chatAreaID, userID, role, content, tokens); err != nil {
 		slog.Error("记录聊天失败", "err", err)
 	}
 }

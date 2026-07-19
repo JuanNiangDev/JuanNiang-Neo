@@ -7,8 +7,7 @@ import (
 	"log/slog"
 
 	"JuanNiang-Neo/internal/agent/provider"
-	"JuanNiang-Neo/internal/core/dao"
-	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/core/cache"
 )
 
 // ChatMessage 聊天消息模型。
@@ -24,65 +23,87 @@ type Config struct {
 	AutoCompact bool
 }
 
-// ShortTermMemory 基于 Postgres 的短期记忆，通过 ChatRecord 实现滑动窗口。
+// ShortTermMemory 基于 Redis 的短期记忆，使用 List 实现滑动窗口。
+// 所有方法按 areaID 隔离，实例本身无状态，可跨 ChatArea 共享。
 type ShortTermMemory struct {
-	conf   Config
-	dao    *dao.ChatRecordDAO
-	areaID string
+	conf  Config
+	cache *cache.Cache
 }
 
-func New(conf Config, chatRecordDAO *dao.ChatRecordDAO, areaID string) *ShortTermMemory {
+func New(conf Config, c *cache.Cache) *ShortTermMemory {
 	if conf.WindowSize <= 0 {
 		conf.WindowSize = 20
 	}
-	return &ShortTermMemory{conf: conf, dao: chatRecordDAO, areaID: areaID}
+	return &ShortTermMemory{conf: conf, cache: c}
 }
 
-func (m *ShortTermMemory) WindowSize() int64    { return m.conf.WindowSize }
-func (m *ShortTermMemory) SetWindowSize(n int64) { m.conf.WindowSize = n }
+func (m *ShortTermMemory) WindowSize() int64     { return m.conf.WindowSize }
+func (m *ShortTermMemory) SetWindowSize(n int64)  { m.conf.WindowSize = n }
 func (m *ShortTermMemory) AutoCompact() bool     { return m.conf.AutoCompact }
 func (m *ShortTermMemory) SetAutoCompact(v bool) { m.conf.AutoCompact = v }
 
-func (m *ShortTermMemory) Add(ctx context.Context, msg ChatMessage) error {
-	record := &models.ChatRecord{
-		ChatAreaID: m.areaID,
-		UserID:     0,
-		Role:       msg.Role,
-		Content:    msg.Content,
-	}
-	return m.dao.Create(ctx, record)
+func (m *ShortTermMemory) key(areaID string) string {
+	return "shortterm:msgs:" + areaID
 }
 
-func (m *ShortTermMemory) GetAll(ctx context.Context) ([]ChatMessage, error) {
-	records, _, err := m.dao.ListByChatArea(ctx, m.areaID, int(m.conf.WindowSize), 0)
-	if err != nil {
-		return nil, fmt.Errorf("shortterm getall: %w", err)
+// Add 追加一条消息并维护滑动窗口（保留最近 WindowSize 条，最早在前）。
+func (m *ShortTermMemory) Add(ctx context.Context, areaID string, msg ChatMessage) error {
+	if m.cache == nil {
+		return fmt.Errorf("shortterm cache 未初始化")
 	}
+	key := m.key(areaID)
+	if err := m.cache.RPush(ctx, key, msg); err != nil {
+		return err
+	}
+	// 仅保留最近 WindowSize 条
+	return m.cache.LTrim(ctx, key, -m.conf.WindowSize, -1)
+}
 
-	msgs := make([]ChatMessage, 0, len(records))
-	for i := len(records) - 1; i >= 0; i-- {
-		r := records[i]
-		msgs = append(msgs, ChatMessage{
-			Role:    r.Role,
-			Content: r.Content,
-		})
+// GetAll 返回该 ChatArea 当前窗口内的全部消息（按时间最早→最新）。
+func (m *ShortTermMemory) GetAll(ctx context.Context, areaID string) ([]ChatMessage, error) {
+	if m.cache == nil {
+		return nil, fmt.Errorf("shortterm cache 未初始化")
+	}
+	var msgs []ChatMessage
+	if err := m.cache.LRange(ctx, m.key(areaID), 0, -1, &msgs); err != nil {
+		return nil, fmt.Errorf("shortterm getall: %w", err)
 	}
 	return msgs, nil
 }
 
-func (m *ShortTermMemory) Overwrite(ctx context.Context, msgs []ChatMessage) error {
-	// 简单实现：追加新消息，旧消息自然被窗口大小限制
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if err := m.Add(ctx, msgs[i]); err != nil {
-			return err
-		}
+// Overwrite 用新列表覆盖窗口（先清空后追加）。
+func (m *ShortTermMemory) Overwrite(ctx context.Context, areaID string, msgs []ChatMessage) error {
+	if m.cache == nil {
+		return fmt.Errorf("shortterm cache 未初始化")
 	}
-	return nil
+	key := m.key(areaID)
+	if err := m.cache.Del(ctx, key); err != nil {
+		return err
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	args := make([]any, len(msgs))
+	for i, mm := range msgs {
+		args[i] = mm
+	}
+	if err := m.cache.RPush(ctx, key, args...); err != nil {
+		return err
+	}
+	return m.cache.LTrim(ctx, key, -m.conf.WindowSize, -1)
+}
+
+// Clear 清空窗口。
+func (m *ShortTermMemory) Clear(ctx context.Context, areaID string) error {
+	if m.cache == nil {
+		return fmt.Errorf("shortterm cache 未初始化")
+	}
+	return m.cache.Del(ctx, m.key(areaID))
 }
 
 // Compact 压缩短期记忆: 调用 LLM 摘要后写入长期记忆。
-func (m *ShortTermMemory) Compact(ctx context.Context, llm provider.Provider, store LongTermStore) error {
-	msgs, err := m.GetAll(ctx)
+func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provider.Provider, store LongTermStore) error {
+	msgs, err := m.GetAll(ctx, areaID)
 	if err != nil {
 		return err
 	}
@@ -105,11 +126,11 @@ func (m *ShortTermMemory) Compact(ctx context.Context, llm provider.Provider, st
 	}
 
 	summary := resp.Message.Content
-	if err := store.AddLongTermMemory(ctx, m.areaID, summary); err != nil {
+	if err := store.AddLongTermMemory(ctx, areaID, summary); err != nil {
 		return fmt.Errorf("compact 写入长期记忆失败: %w", err)
 	}
 
-	slog.Info("短期记忆 Compact 完成", "area_id", m.areaID, "summary_len", len(summary))
+	slog.Info("短期记忆 Compact 完成", "area_id", areaID, "summary_len", len(summary))
 	return nil
 }
 
@@ -125,8 +146,8 @@ func buildCompactContent(msgs []ChatMessage) string {
 	return out
 }
 
-func (m *ShortTermMemory) Export(ctx context.Context) ([]provider.ChatMessage, error) {
-	msgs, err := m.GetAll(ctx)
+func (m *ShortTermMemory) Export(ctx context.Context, areaID string) ([]provider.ChatMessage, error) {
+	msgs, err := m.GetAll(ctx, areaID)
 	if err != nil {
 		return nil, err
 	}
@@ -141,8 +162,8 @@ func (m *ShortTermMemory) Export(ctx context.Context) ([]provider.ChatMessage, e
 	return out, nil
 }
 
-func (m *ShortTermMemory) ExportJSON(ctx context.Context) ([]byte, error) {
-	msgs, err := m.GetAll(ctx)
+func (m *ShortTermMemory) ExportJSON(ctx context.Context, areaID string) ([]byte, error) {
+	msgs, err := m.GetAll(ctx, areaID)
 	if err != nil {
 		return nil, err
 	}

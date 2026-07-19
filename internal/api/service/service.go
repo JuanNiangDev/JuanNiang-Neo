@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -1054,6 +1055,22 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	skillList, _ := s.DAO.Skill.List(ctx)
 	sessionList, _ := s.DAO.Session.List(ctx)
 
+	// 系统状态
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	// T2I / Sandbox 状态
+	t2iActive := s.T2IClient != nil
+	t2iHealthy := false
+	if t2iActive {
+		t2iHealthy = s.T2IClient.HealthCheck() == nil
+	}
+	sandboxActive := s.SandboxClient != nil
+	sandboxHealthy := false
+	if sandboxActive {
+		sandboxHealthy = s.SandboxClient.HealthCheck() == nil
+	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.OverviewResp{
 		ChatAreaCount:   chatAreaCount,
 		MCPCount:        mcpCount,
@@ -1063,6 +1080,18 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 		SkillCount:      len(skillList),
 		SessionCount:    len(sessionList),
 		TotalTokenUsage: totalTokens,
+
+		CPUCount:          runtime.NumCPU(),
+		GoroutineNum:      runtime.NumGoroutine(),
+		MemAllocBytes:     memStats.Alloc,
+		MemSysBytes:       memStats.Sys,
+		MemHeapInUseBytes: memStats.HeapInuse,
+		GoVersion:         runtime.Version(),
+
+		T2IActive:      t2iActive,
+		T2IHealthy:     t2iHealthy,
+		SandboxActive:  sandboxActive,
+		SandboxHealthy: sandboxHealthy,
 	}))
 }
 

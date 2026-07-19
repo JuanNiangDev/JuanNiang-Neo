@@ -194,6 +194,20 @@ type OverviewResp struct {
 	SkillCount      int   `json:"skill_count"`
 	SessionCount    int   `json:"session_count"`
 	TotalTokenUsage int64 `json:"total_token_usage"`
+
+	// 系统状态
+	CPUCount          int    `json:"cpu_count"`            // 逻辑 CPU 核数
+	GoroutineNum      int    `json:"goroutine_num"`        // 当前 goroutine 数
+	MemAllocBytes     uint64 `json:"mem_alloc_bytes"`      // 堆已分配 (活跃对象)
+	MemSysBytes       uint64 `json:"mem_sys_bytes"`        // 从 OS 获取的内存总量
+	MemHeapInUseBytes uint64 `json:"mem_heap_inuse_bytes"` // 堆中正在使用
+	GoVersion         string `json:"go_version"`          // Go 版本
+
+	// T2I / Sandbox 状态
+	T2IActive       bool `json:"t2i_active"`        // 客户端已加载
+	T2IHealthy      bool `json:"t2i_healthy"`       // HealthCheck 通过
+	SandboxActive   bool `json:"sandbox_active"`   // 客户端已加载
+	SandboxHealthy  bool `json:"sandbox_healthy"`  // HealthCheck 通过
 }
 
 type ChatRecordListResp struct {

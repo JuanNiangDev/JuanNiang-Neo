@@ -155,7 +155,7 @@ func (h *HagoCenter) CompactMemory(ctx context.Context, chatAreaID string) error
 	if llm == nil {
 		return fmt.Errorf("无可用 Text 模型")
 	}
-	return h.Memory.CompactShortTermMemory(ctx, llm)
+	return h.Memory.CompactShortTermMemory(ctx, chatAreaID, llm)
 }
 
 func (h *HagoCenter) GetChatAreaID(userID, groupID int64, messageType string) string {

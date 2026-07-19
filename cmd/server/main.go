@@ -119,6 +119,7 @@ func main() {
 		MCPGroup:       hago.MCP,
 		DAO:            coreInst.DAO,
 		ACL:            coreInst.ACL,
+		Cache:          coreInst.Cache,
 	}); err != nil {
 		slog.Error("Agent 初始化失败", "err", err)
 		os.Exit(1)

@@ -3,18 +3,23 @@ package agent
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
+	"JuanNiang-Neo/internal/agent/memory/bgtask"
+	"JuanNiang-Neo/internal/agent/memory/longterm"
+	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/session"
 	"JuanNiang-Neo/internal/agent/skill"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/acl"
+	"JuanNiang-Neo/internal/core/cache"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/pluggin"
 )
@@ -53,9 +58,7 @@ type Config struct {
 	MCPGroup       *mcp.MCPGroup
 	DAO            *dao.Bundle
 	ACL            *acl.ACL
-	Cache          interface {
-		Client() interface{}
-	}
+	Cache          *cache.Cache
 }
 
 // NewHagoCenter 创建并初始化 HagoCenter。
@@ -82,7 +85,17 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.SandboxClient = cfg.Sandbox
 	h.T2IClient = cfg.T2I
 
-	h.Session = session.NewSessionManager(cfg.DAO.Session, nil)
+	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径)
+	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.Cache)
+
+	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea) + 后台任务记忆
+	stConf := shortterm.Config{WindowSize: 20, AutoCompact: false}
+	ltConf := longterm.Config{HotAreaSize: 10, HotMemoryTTL: 24 * time.Hour}
+	st := shortterm.New(stConf, cfg.Cache)
+	lt := longterm.New(ltConf, cfg.DAO.LongTermMemItem)
+	bgt := bgtask.New()
+	h.Memory = memory.NewMemoryGroup(st, lt, bgt)
+
 	h.Prompt = prompt.NewPromptManager(cfg.DAO.Prompt)
 	h.Skills = skill.NewSkillEngine()
 
