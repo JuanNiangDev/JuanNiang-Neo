@@ -3,6 +3,8 @@ package service
 import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/api/dto"
+	"JuanNiang-Neo/internal/api/middleware"
+	"JuanNiang-Neo/internal/core/models"
 	"archive/zip"
 	"context"
 	"crypto/rand"
@@ -11,9 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-
-	"JuanNiang-Neo/internal/api/middleware"
-	"JuanNiang-Neo/internal/core/models"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -142,147 +141,207 @@ func (s *Service) RestartAdapter(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) ListProviders(ctx context.Context, c *app.RequestContext) {
-	list, err := s.DAO.Provider.List(ctx, "")
+	raw, err := s.DAO.Provider.List(ctx, "")
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+
+	list := dto.RawProviderList2Resp(raw)
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, list))
 }
 
 func (s *Service) GetProvider(ctx context.Context, c *app.RequestContext) {
-	p, err := s.DAO.Provider.GetByID(ctx, c.Param("id"))
+	raw, err := s.DAO.Provider.GetByID(ctx, c.Param("id"))
+
 	if err != nil {
-		fail(c, 404, "Provider 不存在")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ProviderNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, p)
+
+	data := dto.ProviderResp{
+		ID:          raw.ID,
+		CreatedAt:   raw.CreatedAt,
+		Name:        raw.Name,
+		Type:        raw.Type,
+		Endpoint:    raw.Endpoint,
+		Token:       raw.Token,
+		Model:       raw.Model,
+		Temperature: raw.Temperature,
+		IsActive:    raw.IsActive,
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, data))
 }
 
 func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
-	var p models.Provider
-	if err := c.BindJSON(&p); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.AddProviderReq
+
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	p.ID = newUUID()
-	if err := s.DAO.Provider.Create(ctx, &p); err != nil {
-		fail(c, 500, err.Error())
+
+	providerConfig := models.Provider{
+		ID:          newUUID(),
+		Name:        data.Name,
+		Type:        data.Type,
+		Endpoint:    data.Endpoint,
+		Token:       data.Token,
+		Model:       data.Model,
+		Temperature: data.Temperature,
+		IsActive:    data.IsActive,
+	}
+
+	if err := s.DAO.Provider.Create(ctx, &providerConfig); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, p)
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, data))
 }
 
 func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateProviderReq
+
 	id := c.Param("id")
-	var p models.Provider
-	if err := c.BindJSON(&p); err != nil {
-		fail(c, 400, "参数格式错误")
+
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	p.ID = id
-	if err := s.DAO.Provider.Update(ctx, &p); err != nil {
-		fail(c, 500, err.Error())
+
+	providerConfig := models.Provider{
+		ID:          id,
+		Name:        data.Name,
+		Type:        data.Type,
+		Endpoint:    data.Endpoint,
+		Token:       data.Token,
+		Model:       data.Model,
+		Temperature: data.Temperature,
+		IsActive:    data.IsActive,
+	}
+
+	if err := s.DAO.Provider.Update(ctx, &providerConfig); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, p)
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
 	if err := s.DAO.Provider.Delete(ctx, c.Param("id")); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
-	var req struct {
-		IsActive bool `json:"is_active"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
-		return
-	}
-	if err := s.DAO.Provider.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
-		fail(c, 500, err.Error())
-		return
-	}
-	ok(c, nil)
-}
+	var data dto.ToggleProviderReq
 
-// ====================================================================
-// MCP
-// ====================================================================
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.DAO.Provider.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
 
 func (s *Service) ListMCPServers(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.MCPServer.List(ctx)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawMCPServerList2Resp(list)))
 }
 
 func (s *Service) GetMCPServer(ctx context.Context, c *app.RequestContext) {
-	m, err := s.DAO.MCPServer.GetByID(ctx, c.Param("id"))
+	raw, err := s.DAO.MCPServer.GetByID(ctx, c.Param("id"))
 	if err != nil {
-		fail(c, 404, "MCP 服务器不存在")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.MCPNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, m)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawMCPServer2Resp(raw)))
 }
 
 func (s *Service) AddMCPServer(ctx context.Context, c *app.RequestContext) {
-	var m models.MCPServer
-	if err := c.BindJSON(&m); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.AddMCPServerReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	m.ID = newUUID()
+
+	m := models.MCPServer{
+		ID:            newUUID(),
+		Name:          data.Name,
+		ServerURL:     data.ServerURL,
+		Headers:       data.Headers,
+		Timeout:       data.Timeout,
+		RetryCount:    data.RetryCount,
+		ToolFilter:    data.ToolFilter,
+		AutoReconnect: data.AutoReconnect,
+		IsActive:      data.IsActive,
+	}
 	if err := s.DAO.MCPServer.Create(ctx, &m); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, m)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawMCPServer2Resp(&m)))
 }
 
 func (s *Service) UpdateMCPServer(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	var m models.MCPServer
-	if err := c.BindJSON(&m); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.UpdateMCPServerReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	m.ID = id
+
+	m := models.MCPServer{
+		ID:            c.Param("id"),
+		Name:          data.Name,
+		ServerURL:     data.ServerURL,
+		Headers:       data.Headers,
+		Timeout:       data.Timeout,
+		RetryCount:    data.RetryCount,
+		ToolFilter:    data.ToolFilter,
+		AutoReconnect: data.AutoReconnect,
+		IsActive:      data.IsActive,
+	}
 	if err := s.DAO.MCPServer.Update(ctx, &m); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, m)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawMCPServer2Resp(&m)))
 }
 
 func (s *Service) DeleteMCPServer(ctx context.Context, c *app.RequestContext) {
 	if err := s.DAO.MCPServer.Delete(ctx, c.Param("id")); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 func (s *Service) ToggleMCPServer(ctx context.Context, c *app.RequestContext) {
-	var req struct {
-		IsActive bool `json:"is_active"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.ToggleMCPServerReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.DAO.MCPServer.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
-		fail(c, 500, err.Error())
+	if err := s.DAO.MCPServer.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 // ====================================================================
@@ -292,47 +351,72 @@ func (s *Service) ToggleMCPServer(ctx context.Context, c *app.RequestContext) {
 func (s *Service) ListSkills(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.Skill.List(ctx)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSkillList2Resp(list)))
 }
 
 func (s *Service) AddSkill(ctx context.Context, c *app.RequestContext) {
-	var sk models.Skill
-	if err := c.BindJSON(&sk); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.AddSkillReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	sk.ID = newUUID()
+
+	sk := models.Skill{
+		ID:           newUUID(),
+		Name:         data.Name,
+		Description:  data.Description,
+		Keywords:     data.Keywords,
+		RegexPattern: data.RegexPattern,
+		PromptRef:    data.PromptRef,
+		ToolRefs:     data.ToolRefs,
+		McpRefs:      data.McpRefs,
+		IsActive:     data.IsActive,
+		IsSystem:     data.IsSystem,
+		Priority:     data.Priority,
+	}
 	if err := s.DAO.Skill.Create(ctx, &sk); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, sk)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSkill2Resp(&sk)))
 }
 
 func (s *Service) UpdateSkill(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	var sk models.Skill
-	if err := c.BindJSON(&sk); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.UpdateSkillReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	sk.ID = id
+
+	sk := models.Skill{
+		ID:           c.Param("id"),
+		Name:         data.Name,
+		Description:  data.Description,
+		Keywords:     data.Keywords,
+		RegexPattern: data.RegexPattern,
+		PromptRef:    data.PromptRef,
+		ToolRefs:     data.ToolRefs,
+		McpRefs:      data.McpRefs,
+		IsActive:     data.IsActive,
+		IsSystem:     data.IsSystem,
+		Priority:     data.Priority,
+	}
 	if err := s.DAO.Skill.Update(ctx, &sk); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, sk)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSkill2Resp(&sk)))
 }
 
 func (s *Service) DeleteSkill(ctx context.Context, c *app.RequestContext) {
 	if err := s.DAO.Skill.Delete(ctx, c.Param("id")); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 // ====================================================================
@@ -342,62 +426,75 @@ func (s *Service) DeleteSkill(ctx context.Context, c *app.RequestContext) {
 func (s *Service) ListPrompts(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.Prompt.List(ctx)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawPromptList2Resp(list)))
 }
 
 func (s *Service) AddPrompt(ctx context.Context, c *app.RequestContext) {
-	var p models.Prompt
-	if err := c.BindJSON(&p); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.AddPromptReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	p.ID = newUUID()
+
+	p := models.Prompt{
+		ID:        newUUID(),
+		Name:      data.Name,
+		Content:   data.Content,
+		Type:      data.Type,
+		IsActive:  data.IsActive,
+		Variables: data.Variables,
+	}
 	if err := s.DAO.Prompt.Create(ctx, &p); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, p)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawPrompt2Resp(&p)))
 }
 
 func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	var p models.Prompt
-	if err := c.BindJSON(&p); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.UpdatePromptReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	p.ID = id
+
+	p := models.Prompt{
+		ID:        c.Param("id"),
+		Name:      data.Name,
+		Content:   data.Content,
+		Type:      data.Type,
+		IsActive:  data.IsActive,
+		Variables: data.Variables,
+	}
 	if err := s.DAO.Prompt.Update(ctx, &p); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, p)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawPrompt2Resp(&p)))
 }
 
 func (s *Service) DeletePrompt(ctx context.Context, c *app.RequestContext) {
 	if err := s.DAO.Prompt.Delete(ctx, c.Param("id")); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 func (s *Service) TogglePrompt(ctx context.Context, c *app.RequestContext) {
-	var req struct {
-		IsActive bool `json:"is_active"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.TogglePromptReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.DAO.Prompt.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
-		fail(c, 500, err.Error())
+	if err := s.DAO.Prompt.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 // ====================================================================
@@ -407,25 +504,23 @@ func (s *Service) TogglePrompt(ctx context.Context, c *app.RequestContext) {
 func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.ToolConfig.List(ctx)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawToolConfigList2Resp(list)))
 }
 
 func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
-	var req struct {
-		IsActive bool `json:"is_active"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.ToggleToolReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.DAO.ToolConfig.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
-		fail(c, 500, err.Error())
+	if err := s.DAO.ToolConfig.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 // ====================================================================
@@ -435,27 +530,27 @@ func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
 func (s *Service) ListSessions(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.Session.List(ctx)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSessionList2Resp(list)))
 }
 
 func (s *Service) GetSession(ctx context.Context, c *app.RequestContext) {
-	sess, err := s.DAO.Session.GetByID(ctx, c.Param("id"))
+	raw, err := s.DAO.Session.GetByID(ctx, c.Param("id"))
 	if err != nil {
-		fail(c, 404, "Session 不存在")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.SessionNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, sess)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSession2Resp(raw)))
 }
 
 func (s *Service) DeleteSession(ctx context.Context, c *app.RequestContext) {
 	if err := s.DAO.Session.Delete(ctx, c.Param("id")); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 // ====================================================================
@@ -463,48 +558,44 @@ func (s *Service) DeleteSession(ctx context.Context, c *app.RequestContext) {
 // ====================================================================
 
 func (s *Service) ListPlugins(ctx context.Context, c *app.RequestContext) {
-	if s.PluginEngine != nil {
-		ok(c, s.PluginEngine.List())
-		return
-	}
 	list, err := s.DAO.Plugin.List(ctx)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawPluginList2Resp(list)))
 }
 
 func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
 	file, err := c.FormFile("file")
 	if err != nil {
-		fail(c, 400, "缺少上传文件")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.EmptyFileToUpload, nil))
 		return
 	}
 
 	src, err := file.Open()
 	if err != nil {
-		fail(c, 500, "无法打开文件")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "无法打开文件"}))
 		return
 	}
 	defer src.Close()
 
 	tmpFile, err := os.CreateTemp("", "pluggin-*.zip")
 	if err != nil {
-		fail(c, 500, "临时文件创建失败")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.TempFileCreateFail, nil))
 		return
 	}
 	defer os.Remove(tmpFile.Name())
 
 	if _, err := io.Copy(tmpFile, src); err != nil {
-		fail(c, 500, "文件写入失败")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WriteFileFail, nil))
 		return
 	}
 	tmpFile.Close()
 
 	reader, err := zip.OpenReader(tmpFile.Name())
 	if err != nil {
-		fail(c, 400, "无效的 ZIP 文件")
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidZipFile, nil))
 		return
 	}
 	defer reader.Close()
@@ -548,27 +639,25 @@ func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
 
 	if s.PluginEngine != nil {
 		if err := s.PluginEngine.Load(pluginName); err != nil {
-			fail(c, 500, "插件加载失败: "+err.Error())
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
 	}
 
-	ok(c, map[string]string{"name": pluginName, "status": "loaded"})
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.PluginUploadResp{Name: pluginName, Status: "loaded"}))
 }
 
 func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
-	var req struct {
-		IsActive bool `json:"is_active"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.TogglePluginReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.DAO.Plugin.SetActive(ctx, c.Param("id"), req.IsActive); err != nil {
-		fail(c, 500, err.Error())
+	if err := s.DAO.Plugin.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
@@ -577,10 +666,10 @@ func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 		s.PluginEngine.Unload(id)
 	}
 	if err := s.DAO.Plugin.Delete(ctx, id); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 // ====================================================================
@@ -590,36 +679,43 @@ func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 func (s *Service) ListACLRules(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.ACL.List(ctx)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawACLRuleList2Resp(list)))
 }
 
 func (s *Service) AddACLRule(ctx context.Context, c *app.RequestContext) {
-	var r models.ACLRule
-	if err := c.BindJSON(&r); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.AddACLRuleReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
+	}
+
+	r := models.ACLRule{
+		UserID:     data.UserID,
+		ChatAreaID: data.ChatAreaID,
+		Permission: data.Permission,
+		Actions:    data.Actions,
 	}
 	if err := s.DAO.ACL.Create(ctx, &r); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, r)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawACLRule2Resp(&r)))
 }
 
 func (s *Service) DeleteACLRule(ctx context.Context, c *app.RequestContext) {
-	id, _ := strconv.ParseInt(c.Param("id"), 10, 64)
-	if id <= 0 {
-		fail(c, 400, "无效的 ID")
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidACLID, nil))
 		return
 	}
 	if err := s.DAO.ACL.Delete(ctx, id); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, nil)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 // ====================================================================
@@ -635,38 +731,44 @@ func (s *Service) GetChatRecords(ctx context.Context, c *app.RequestContext) {
 	if role != "" {
 		list, total, err := s.DAO.ChatRecord.ListByChatAreaAndRole(ctx, chatAreaID, role, limit, offset)
 		if err != nil {
-			fail(c, 500, err.Error())
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
-		ok(c, map[string]any{"total": total, "list": list})
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ChatRecordListResp{
+			Total: total,
+			List:  dto.RawChatRecordList2Resp(list),
+		}))
 		return
 	}
 
 	list, total, err := s.DAO.ChatRecord.ListByChatArea(ctx, chatAreaID, limit, offset)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, map[string]any{"total": total, "list": list})
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ChatRecordListResp{
+		Total: total,
+		List:  dto.RawChatRecordList2Resp(list),
+	}))
 }
 
 func (s *Service) GetChatAreaTokenUsage(ctx context.Context, c *app.RequestContext) {
 	chatAreaID := c.Param("chatAreaID")
 	sess, err := s.DAO.Session.GetOrCreate(ctx, chatAreaID)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, map[string]any{"chat_area_id": chatAreaID, "token_usage": sess.TokenUsage})
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSession2Resp(sess)))
 }
 
 func (s *Service) GetChatAreas(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.ChatArea.List(ctx)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, list)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawChatAreaList2Resp(list)))
 }
 
 // ====================================================================
@@ -684,20 +786,20 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 
 	totalTokens, _ := s.DAO.ChatRecord.TotalTokenUsage(ctx)
 
-	providerCount, _ := s.DAO.Provider.List(ctx, "")
-	skillCount, _ := s.DAO.Skill.List(ctx)
-	sessionCount, _ := s.DAO.Session.List(ctx)
+	providerList, _ := s.DAO.Provider.List(ctx, "")
+	skillList, _ := s.DAO.Skill.List(ctx)
+	sessionList, _ := s.DAO.Session.List(ctx)
 
-	ok(c, map[string]any{
-		"chat_area_count":   chatAreaCount,
-		"mcp_count":         mcpCount,
-		"adapter_count":     1,
-		"plugin_count":      pluginCount,
-		"provider_count":    len(providerCount),
-		"skill_count":       len(skillCount),
-		"session_count":     len(sessionCount),
-		"total_token_usage": totalTokens,
-	})
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.OverviewResp{
+		ChatAreaCount:   chatAreaCount,
+		MCPCount:        mcpCount,
+		AdapterCount:    1,
+		PluginCount:     pluginCount,
+		ProviderCount:   len(providerList),
+		SkillCount:      len(skillList),
+		SessionCount:    len(sessionList),
+		TotalTokenUsage: totalTokens,
+	}))
 }
 
 // ====================================================================
@@ -707,67 +809,61 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 func (s *Service) GetShortTermMemoryConfig(ctx context.Context, c *app.RequestContext) {
 	m, err := s.DAO.ShortTermMemory.GetOrCreate(ctx, c.Param("chatAreaID"))
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, m)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawShortTermMemory2Resp(m)))
 }
 
 func (s *Service) UpdateShortTermMemoryConfig(ctx context.Context, c *app.RequestContext) {
 	chatAreaID := c.Param("chatAreaID")
 	m, err := s.DAO.ShortTermMemory.GetOrCreate(ctx, chatAreaID)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	var req struct {
-		WindowSize  int  `json:"window_size"`
-		AutoCompact bool `json:"auto_compact"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.UpdateShortTermMemoryReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	m.WindowSize = req.WindowSize
-	m.AutoCompact = req.AutoCompact
+	m.WindowSize = data.WindowSize
+	m.AutoCompact = data.AutoCompact
 	if err := s.DAO.ShortTermMemory.Update(ctx, m); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, m)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawShortTermMemory2Resp(m)))
 }
 
 func (s *Service) GetLongTermMemoryConfig(ctx context.Context, c *app.RequestContext) {
 	m, err := s.DAO.LongTermMemory.GetOrCreate(ctx, c.Param("chatAreaID"))
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, m)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawLongTermMemory2Resp(m)))
 }
 
 func (s *Service) UpdateLongTermMemoryConfig(ctx context.Context, c *app.RequestContext) {
 	chatAreaID := c.Param("chatAreaID")
 	m, err := s.DAO.LongTermMemory.GetOrCreate(ctx, chatAreaID)
 	if err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	var req struct {
-		HotAreaSize  int `json:"hot_area_size"`
-		HotMemoryTTL int `json:"hot_memory_ttl"`
-	}
-	if err := c.BindJSON(&req); err != nil {
-		fail(c, 400, "参数格式错误")
+	var data dto.UpdateLongTermMemoryReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	m.HotAreaSize = req.HotAreaSize
-	m.HotMemoryTTL = req.HotMemoryTTL
+	m.HotAreaSize = data.HotAreaSize
+	m.HotMemoryTTL = data.HotMemoryTTL
 	if err := s.DAO.LongTermMemory.Update(ctx, m); err != nil {
-		fail(c, 500, err.Error())
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, m)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawLongTermMemory2Resp(m)))
 }
 
 // helpers

@@ -1,5 +1,10 @@
 package dto
 
+import (
+	"JuanNiang-Neo/internal/core/models"
+	"time"
+)
+
 var (
 	OK                      = Response{Status: 0, Info: "OK"}
 	ServerInternalErr       = Response{Status: 50000, Info: "服务器内部错误"}
@@ -20,6 +25,14 @@ var (
 	InvalidZipFile          = Response{Status: 40015, Info: "无效的 ZIP 文件"}
 	InvalidACLID            = Response{Status: 40016, Info: "无效的 ACL ID"}
 	UpdateAdapterConfigFail = Response{Status: 40017, Info: "onebot11 适配器配置更新失败"}
+	SkillNotExist           = Response{Status: 40018, Info: "Skill 不存在"}
+	PromptNotExist          = Response{Status: 40019, Info: "Prompt 不存在"}
+	ToolNotExist            = Response{Status: 40020, Info: "Tool 不存在"}
+	PluginNotExist          = Response{Status: 40021, Info: "Plugin 不存在"}
+	PluginLoadFail          = Response{Status: 40022, Info: "插件加载失败"}
+	ChatAreaNotFound        = Response{Status: 40023, Info: "ChatArea 不存在"}
+	MemoryConfigNotFound    = Response{Status: 40024, Info: "Memory 配置不存在"}
+	AdapterConfigNotFound   = Response{Status: 40025, Info: "adapter 配置不存在"}
 )
 
 type TokenResp struct {
@@ -44,4 +57,148 @@ type AdapterConfig struct {
 	Token          string   `json:"token"`
 	AdminQQNumbers []string `json:"admin_qq_numbers"`
 	Enabled        bool     `json:"enabled"`
+}
+
+type ProviderResp struct {
+	ID          string           `json:"id"`
+	CreatedAt   time.Time        `json:"created_at"`
+	Name        string           `json:"name"`
+	Type        models.ModelType `json:"type"`
+	Endpoint    string           `json:"endpoint"`
+	Token       string           `json:"token"`
+	Model       string           `json:"model"`
+	Temperature float32          `json:"temperature"`
+	IsActive    bool             `json:"is_active"`
+}
+
+type MCPServerResp struct {
+	ID            string           `json:"id"`
+	Name          string           `json:"name"`
+	ServerURL     string           `json:"server_url"`
+	Headers       models.JSONMap   `json:"headers"`
+	Timeout       int              `json:"timeout"`
+	RetryCount    int              `json:"retry_count"`
+	ToolFilter    models.JSONSlice `json:"tool_filter"`
+	AutoReconnect bool             `json:"auto_reconnect"`
+	IsActive      bool             `json:"is_active"`
+	CreatedAt     time.Time        `json:"created_at"`
+}
+
+type SkillResp struct {
+	ID           string           `json:"id"`
+	Name         string           `json:"name"`
+	Description  string           `json:"description"`
+	Keywords     models.JSONSlice `json:"keywords"`
+	RegexPattern string           `json:"regex_pattern"`
+	PromptRef    string           `json:"prompt_ref"`
+	ToolRefs     models.JSONSlice `json:"tool_refs"`
+	McpRefs      models.JSONSlice `json:"mcp_refs"`
+	IsActive     bool             `json:"is_active"`
+	IsSystem     bool             `json:"is_system"`
+	Priority     int              `json:"priority"`
+	CreatedAt    time.Time        `json:"created_at"`
+}
+
+type PromptResp struct {
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Content   string            `json:"content"`
+	Type      models.PromptType `json:"type"`
+	IsActive  bool              `json:"is_active"`
+	Variables models.JSONSlice  `json:"variables"`
+	CreatedAt time.Time         `json:"created_at"`
+}
+
+type ToolConfigResp struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  models.JSONMap `json:"parameters"`
+	Timeout     int            `json:"timeout"`
+	IsActive    bool           `json:"is_active"`
+	IsBuiltin   bool           `json:"is_builtin"`
+	CreatedAt   time.Time      `json:"created_at"`
+}
+
+type PluginResp struct {
+	ID        string         `json:"id"`
+	Name      string         `json:"name"`
+	Version   string         `json:"version"`
+	Path      string         `json:"path"`
+	Config    models.JSONMap `json:"config"`
+	IsActive  bool           `json:"is_active"`
+	CreatedAt time.Time      `json:"created_at"`
+}
+
+type ACLRuleResp struct {
+	ID         int64                `json:"id"`
+	UserID     int64                `json:"user_id"`
+	ChatAreaID string               `json:"chat_area_id"`
+	Permission models.ACLPermission `json:"permission"`
+	Actions    models.JSONSlice     `json:"actions"`
+	CreatedAt  time.Time            `json:"created_at"`
+}
+
+type SessionResp struct {
+	ID         string         `json:"id"`
+	ChatAreaID string         `json:"chat_area_id"`
+	Model      string         `json:"model"`
+	TokenUsage int64          `json:"token_usage"`
+	MetaData   models.JSONMap `json:"meta_data"`
+	CreatedAt  time.Time      `json:"created_at"`
+}
+
+type ShortTermMemoryResp struct {
+	ID          string    `json:"id"`
+	ChatAreaID  string    `json:"chat_area_id"`
+	WindowSize  int       `json:"window_size"`
+	AutoCompact bool      `json:"auto_compact"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type LongTermMemoryResp struct {
+	ID           string    `json:"id"`
+	ChatAreaID   string    `json:"chat_area_id"`
+	HotAreaSize  int       `json:"hot_area_size"`
+	HotMemoryTTL int       `json:"hot_memory_ttl"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type ChatAreaResp struct {
+	ID        string          `json:"id"`
+	AreaType  models.AreaType `json:"area_type"`
+	TargetID  int64           `json:"target_id"`
+	CreatedAt time.Time       `json:"created_at"`
+}
+
+type ChatRecordResp struct {
+	ID         int64          `json:"id"`
+	ChatAreaID string         `json:"chat_area_id"`
+	UserID     int64          `json:"user_id"`
+	Role       string         `json:"role"`
+	Content    string         `json:"content"`
+	TokenCount int            `json:"token_count"`
+	ToolCalls  models.JSONMap `json:"tool_calls"`
+	CreatedAt  time.Time      `json:"created_at"`
+}
+
+type OverviewResp struct {
+	ChatAreaCount   int64 `json:"chat_area_count"`
+	MCPCount        int64 `json:"mcp_count"`
+	AdapterCount    int64 `json:"adapter_count"`
+	PluginCount     int64 `json:"plugin_count"`
+	ProviderCount   int   `json:"provider_count"`
+	SkillCount      int   `json:"skill_count"`
+	SessionCount    int   `json:"session_count"`
+	TotalTokenUsage int64 `json:"total_token_usage"`
+}
+
+type ChatRecordListResp struct {
+	Total int64            `json:"total"`
+	List  []ChatRecordResp `json:"list"`
+}
+
+type PluginUploadResp struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 
+	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
+	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
@@ -15,13 +17,11 @@ import (
 	"JuanNiang-Neo/internal/core/acl"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/pluggin"
-	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
-	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 )
 
 // HagoCenter 是 Agent 系统的中央调度器，聚合所有子模块。
 type HagoCenter struct {
-	Adapter   *adapter.Provider
+	Adapter   *adapter.Adapter
 	Providers *provider.ProviderGroup
 	MCP       *mcp.MCPGroup
 	Memory    *memory.MemoryGroup
@@ -40,7 +40,7 @@ type HagoCenter struct {
 
 // Config HagoCenter 初始化配置。
 type Config struct {
-	Adapter   *adapter.Provider
+	Adapter   *adapter.Adapter
 	Sandbox   *sandboxcaller.Client
 	T2I       *t2icaller.Client
 	Providers *provider.ProviderGroup

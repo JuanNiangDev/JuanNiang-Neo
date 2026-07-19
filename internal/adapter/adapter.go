@@ -108,7 +108,6 @@ func (p *Adapter) Status() ProviderStatus {
 	s.SelfID = p.server.selfID()
 	s.ConnCount = p.server.connCount()
 	s.ConnIDs = p.server.connIDs()
-	s
 	return s
 }
 

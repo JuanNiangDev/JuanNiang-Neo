@@ -1,14 +1,220 @@
 package dto
 
-import "JuanNiang-Neo/internal/core/models"
+import (
+	"JuanNiang-Neo/internal/core/models"
+)
 
-func Model2Resp_AdminQQ(raw []models.AdminQQ) []AdminQQNumbers {
-	res := make([]AdminQQNumbers, len(raw))
+func RawProviderList2Resp(raw []models.Provider) []ProviderResp {
+	res := make([]ProviderResp, len(raw))
 
 	for i, item := range raw {
-		res[i].CreatedAt = item.CreatedAt
 		res[i].ID = item.ID
+		res[i].CreatedAt = item.CreatedAt
+		res[i].Name = item.Name
+		res[i].Type = item.Type
+		res[i].Endpoint = item.Endpoint
+		res[i].Token = item.Token
+		res[i].Model = item.Model
+		res[i].Temperature = item.Temperature
+		res[i].IsActive = item.IsActive
 	}
 
 	return res
+}
+
+func RawMCPServer2Resp(raw *models.MCPServer) MCPServerResp {
+	return MCPServerResp{
+		ID:            raw.ID,
+		Name:          raw.Name,
+		ServerURL:     raw.ServerURL,
+		Headers:       raw.Headers,
+		Timeout:       raw.Timeout,
+		RetryCount:    raw.RetryCount,
+		ToolFilter:    raw.ToolFilter,
+		AutoReconnect: raw.AutoReconnect,
+		IsActive:      raw.IsActive,
+		CreatedAt:     raw.CreatedAt,
+	}
+}
+
+func RawMCPServerList2Resp(raw []models.MCPServer) []MCPServerResp {
+	res := make([]MCPServerResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawMCPServer2Resp(&item)
+	}
+	return res
+}
+
+func RawSkill2Resp(raw *models.Skill) SkillResp {
+	return SkillResp{
+		ID:           raw.ID,
+		Name:         raw.Name,
+		Description:  raw.Description,
+		Keywords:     raw.Keywords,
+		RegexPattern: raw.RegexPattern,
+		PromptRef:    raw.PromptRef,
+		ToolRefs:     raw.ToolRefs,
+		McpRefs:      raw.McpRefs,
+		IsActive:     raw.IsActive,
+		IsSystem:     raw.IsSystem,
+		Priority:     raw.Priority,
+		CreatedAt:    raw.CreatedAt,
+	}
+}
+
+func RawSkillList2Resp(raw []models.Skill) []SkillResp {
+	res := make([]SkillResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawSkill2Resp(&item)
+	}
+	return res
+}
+
+func RawPrompt2Resp(raw *models.Prompt) PromptResp {
+	return PromptResp{
+		ID:        raw.ID,
+		Name:      raw.Name,
+		Content:   raw.Content,
+		Type:      raw.Type,
+		IsActive:  raw.IsActive,
+		Variables: raw.Variables,
+		CreatedAt: raw.CreatedAt,
+	}
+}
+
+func RawPromptList2Resp(raw []models.Prompt) []PromptResp {
+	res := make([]PromptResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawPrompt2Resp(&item)
+	}
+	return res
+}
+
+func RawToolConfigList2Resp(raw []models.ToolConfig) []ToolConfigResp {
+	res := make([]ToolConfigResp, len(raw))
+	for i, item := range raw {
+		res[i] = ToolConfigResp{
+			ID:          item.ID,
+			Name:        item.Name,
+			Description: item.Description,
+			Parameters:  item.Parameters,
+			Timeout:     item.Timeout,
+			IsActive:    item.IsActive,
+			IsBuiltin:   item.IsBuiltin,
+			CreatedAt:   item.CreatedAt,
+		}
+	}
+	return res
+}
+
+func RawPlugin2Resp(raw *models.Plugin) PluginResp {
+	return PluginResp{
+		ID:        raw.ID,
+		Name:      raw.Name,
+		Version:   raw.Version,
+		Path:      raw.Path,
+		Config:    raw.Config,
+		IsActive:  raw.IsActive,
+		CreatedAt: raw.CreatedAt,
+	}
+}
+
+func RawPluginList2Resp(raw []models.Plugin) []PluginResp {
+	res := make([]PluginResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawPlugin2Resp(&item)
+	}
+	return res
+}
+
+func RawACLRule2Resp(raw *models.ACLRule) ACLRuleResp {
+	return ACLRuleResp{
+		ID:         raw.ID,
+		UserID:     raw.UserID,
+		ChatAreaID: raw.ChatAreaID,
+		Permission: raw.Permission,
+		Actions:    raw.Actions,
+		CreatedAt:  raw.CreatedAt,
+	}
+}
+
+func RawACLRuleList2Resp(raw []models.ACLRule) []ACLRuleResp {
+	res := make([]ACLRuleResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawACLRule2Resp(&item)
+	}
+	return res
+}
+
+func RawSession2Resp(raw *models.Session) SessionResp {
+	return SessionResp{
+		ID:         raw.ID,
+		ChatAreaID: raw.ChatAreaID,
+		Model:      raw.Model,
+		TokenUsage: raw.TokenUsage,
+		MetaData:   raw.MetaData,
+		CreatedAt:  raw.CreatedAt,
+	}
+}
+
+func RawSessionList2Resp(raw []models.Session) []SessionResp {
+	res := make([]SessionResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawSession2Resp(&item)
+	}
+	return res
+}
+
+func RawChatAreaList2Resp(raw []models.ChatArea) []ChatAreaResp {
+	res := make([]ChatAreaResp, len(raw))
+	for i, item := range raw {
+		res[i] = ChatAreaResp{
+			ID:        item.ID,
+			AreaType:  item.AreaType,
+			TargetID:  item.TargetID,
+			CreatedAt: item.CreatedAt,
+		}
+	}
+	return res
+}
+
+func RawChatRecord2Resp(raw *models.ChatRecord) ChatRecordResp {
+	return ChatRecordResp{
+		ID:         raw.ID,
+		ChatAreaID: raw.ChatAreaID,
+		UserID:     raw.UserID,
+		Role:       raw.Role,
+		Content:    raw.Content,
+		TokenCount: raw.TokenCount,
+		ToolCalls:  raw.ToolCalls,
+		CreatedAt:  raw.CreatedAt,
+	}
+}
+
+func RawChatRecordList2Resp(raw []models.ChatRecord) []ChatRecordResp {
+	res := make([]ChatRecordResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawChatRecord2Resp(&item)
+	}
+	return res
+}
+
+func RawShortTermMemory2Resp(raw *models.ShortTermMemory) ShortTermMemoryResp {
+	return ShortTermMemoryResp{
+		ID:          raw.ID,
+		ChatAreaID:  raw.ChatAreaID,
+		WindowSize:  raw.WindowSize,
+		AutoCompact: raw.AutoCompact,
+		CreatedAt:   raw.CreatedAt,
+	}
+}
+
+func RawLongTermMemory2Resp(raw *models.LongTermMemory) LongTermMemoryResp {
+	return LongTermMemoryResp{
+		ID:           raw.ID,
+		ChatAreaID:   raw.ChatAreaID,
+		HotAreaSize:  raw.HotAreaSize,
+		HotMemoryTTL: raw.HotMemoryTTL,
+		CreatedAt:    raw.CreatedAt,
+	}
 }

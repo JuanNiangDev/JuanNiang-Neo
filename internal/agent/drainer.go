@@ -25,12 +25,12 @@ type DrainerOutput struct {
 
 // DrainerAgent 排水 Agent，消费后台任务结果缓冲区，整合后发送 QQ 消息。
 type DrainerAgent struct {
-	inputChan  <-chan DrainerOutput
-	providers  *provider.ProviderGroup
-	adapter    *adapter.Provider
-	session    *session.SessionManager
-	prompt     *prompt.PromptManager
-	memory     *memory.MemoryGroup
+	inputChan <-chan DrainerOutput
+	providers *provider.ProviderGroup
+	adapter   *adapter.Adapter
+	session   *session.SessionManager
+	prompt    *prompt.PromptManager
+	memory    *memory.MemoryGroup
 
 	// 按 ChatArea 分组累积结果
 	pending map[string][]DrainerOutput
@@ -39,7 +39,7 @@ type DrainerAgent struct {
 func NewDrainerAgent(
 	inputChan <-chan DrainerOutput,
 	providers *provider.ProviderGroup,
-	adapter *adapter.Provider,
+	adapter *adapter.Adapter,
 	sessionMgr *session.SessionManager,
 	promptMgr *prompt.PromptManager,
 	memGrp *memory.MemoryGroup,
