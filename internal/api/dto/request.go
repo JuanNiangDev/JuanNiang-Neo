@@ -178,3 +178,12 @@ type UpdateSandboxConfigReq struct {
 	Timeout  int    `json:"timeout"`
 	IsActive bool   `json:"is_active"`
 }
+
+// ---------- Webhook ----------
+
+type UpdateWebhookConfigReq struct {
+	Addr    string `json:"addr"`
+	Port    int    `json:"port"`
+	Token   string `json:"token"`
+	Enabled bool   `json:"enabled"`
+}

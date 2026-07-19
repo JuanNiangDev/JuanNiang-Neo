@@ -220,3 +220,21 @@ type SandboxConfigResp struct {
 	IsActive bool   `json:"is_active"`
 	Healthy  bool   `json:"healthy"`
 }
+
+type WebhookConfigResp struct {
+	Addr    string `json:"addr"`
+	Port    int    `json:"port"`
+	Token   string `json:"token"`
+	Enabled bool   `json:"enabled"`
+	Running bool   `json:"running"`
+}
+
+// ---------- Logs ----------
+
+// LogEntryResp 对应 internal/logging.Entry 的前端响应结构。
+type LogEntryResp struct {
+	Time    time.Time      `json:"time"`
+	Level   string         `json:"level"`
+	Message string         `json:"message"`
+	Attrs   map[string]any `json:"attrs,omitempty"`
+}

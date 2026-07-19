@@ -9,9 +9,11 @@ import (
 	"JuanNiang-Neo/internal/api/dto"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/logging"
 	"archive/zip"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/cloudwego/hertz/pkg/protocol/sse"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -1270,6 +1273,143 @@ func (s *Service) CheckSandboxHealth(ctx context.Context, c *app.RequestContext)
 	}
 	err := s.SandboxClient.HealthCheck()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": err == nil}))
+}
+
+// ---------- Webhook ----------
+
+func (s *Service) GetWebhookConfig(ctx context.Context, c *app.RequestContext) {
+	cfg, err := s.DAO.Webhook.GetConfig(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	running := s.WebhookAdapter != nil && s.WebhookAdapter.IsRunning()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.WebhookConfigResp{
+		Addr:    cfg.Addr,
+		Port:    cfg.Port,
+		Token:   cfg.Token,
+		Enabled: cfg.Enabled,
+		Running: running,
+	}))
+}
+
+func (s *Service) UpdateWebhookConfig(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateWebhookConfigReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	cfg := &models.WebhookConfig{
+		ID:      1,
+		Addr:    data.Addr,
+		Port:    data.Port,
+		Token:   data.Token,
+		Enabled: data.Enabled,
+	}
+	if err := s.DAO.Webhook.UpdateConfig(ctx, cfg); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 运行时同步
+	if s.WebhookAdapter != nil {
+		conf := adapter.WebhookConfig{
+			Addr:    data.Addr,
+			Port:    data.Port,
+			Token:   data.Token,
+			Enable:  data.Enabled,
+			Admins:  s.Adapter.Admins(),
+		}
+		if err := s.WebhookAdapter.SyncConfig(ctx, conf); err != nil {
+			slog.Error("webhook adapter 配置同步失败", "err", err)
+		}
+	}
+
+	running := s.WebhookAdapter != nil && s.WebhookAdapter.IsRunning()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.WebhookConfigResp{
+		Addr:    cfg.Addr,
+		Port:    cfg.Port,
+		Token:   cfg.Token,
+		Enabled: cfg.Enabled,
+		Running: running,
+	}))
+}
+
+// ---------- Logs ----------
+
+// GetLogs 返回最近 250 条日志。
+func (s *Service) GetLogs(ctx context.Context, c *app.RequestContext) {
+	if s.LogHub == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, []dto.LogEntryResp{}))
+		return
+	}
+	entries := s.LogHub.Recent()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawLogEntryList2Resp(entries)))
+}
+
+// StreamLogs 通过 SSE 推送实时日志。
+//
+// 连接建立后：
+//  1. 先发送最近 250 条历史日志（按时间顺序）
+//  2. 然后订阅 Hub，实时推送新日志
+//  3. 客户端断开或服务停止时退出
+func (s *Service) StreamLogs(ctx context.Context, c *app.RequestContext) {
+	if s.LogHub == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "log hub 未初始化"}))
+		return
+	}
+
+	w := sse.NewWriter(c)
+	defer w.Close()
+
+	// 1. 推送历史日志
+	for _, entry := range s.LogHub.Recent() {
+		if err := writeLogEvent(w, entry); err != nil {
+			return
+		}
+	}
+
+	// 2. 订阅新日志
+	ch := s.LogHub.Subscribe()
+	defer s.LogHub.Unsubscribe(ch)
+
+	// 心跳定时器：保持代理/中间件不会因为空闲而关连接，
+	// 同时让写失败能被快速检测到（客户端已断开）。
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case entry, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := writeLogEvent(w, entry); err != nil {
+				return
+			}
+		case <-ticker.C:
+			if err := w.WriteKeepAlive(); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// writeLogEvent 把单条日志序列化为 JSON 并通过 SSE 发出。
+func writeLogEvent(w *sse.Writer, entry logging.Entry) error {
+	data, err := json.Marshal(dto.LogEntryResp{
+		Time:    entry.Time,
+		Level:   entry.Level,
+		Message: entry.Message,
+		Attrs:   entry.Attrs,
+	})
+	if err != nil {
+		return err
+	}
+	return w.WriteEvent("", "log", data)
 }
 
 // ---------- helpers ----------

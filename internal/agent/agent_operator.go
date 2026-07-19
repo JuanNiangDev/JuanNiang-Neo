@@ -4,7 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
+	sandbox "JuanNiang-Neo/infrastructure/sandbox"
+	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
+	t2i "JuanNiang-Neo/infrastructure/t2i"
+	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/models"
@@ -183,6 +188,79 @@ func (h *HagoCenter) GetMCPGroup() pluggin.MCPGroupAccess {
 // GetToolRegistry 返回 Tool 访问接口。
 func (h *HagoCenter) GetToolRegistry() pluggin.ToolRegistryAccess {
 	return &toolRegistryAccess{h: h}
+}
+
+// GetT2IClient 返回当前 T2I 客户端。
+func (h *HagoCenter) GetT2IClient() *t2icaller.Client {
+	return h.T2IClient
+}
+
+// GetSandboxClient 返回当前 Sandbox 客户端。
+func (h *HagoCenter) GetSandboxClient() *sandboxcaller.Client {
+	return h.SandboxClient
+}
+
+// SetT2IActive 启用/停用 T2I 服务。
+// 启用时根据 DB 配置创建新客户端；停用时清空运行时客户端。
+func (h *HagoCenter) SetT2IActive(ctx context.Context, active bool) error {
+	cfg, err := h.DAO.T2I.GetConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("读取 T2I 配置失败: %w", err)
+	}
+	cfg.IsActive = active
+	if err := h.DAO.T2I.UpdateConfig(ctx, cfg); err != nil {
+		return fmt.Errorf("更新 T2I 配置失败: %w", err)
+	}
+
+	if active {
+		client, err := t2i.NewClient(
+			t2i.WithBaseURL(cfg.BaseURL),
+			t2i.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
+		)
+		if err != nil {
+			slog.Warn("T2I 客户端创建失败", "err", err)
+			h.T2IClient = nil
+			return fmt.Errorf("T2I 客户端创建失败: %w", err)
+		}
+		h.T2IClient = client
+		slog.Info("T2I 服务已启用", "base_url", cfg.BaseURL)
+	} else {
+		h.T2IClient = nil
+		slog.Info("T2I 服务已停用")
+	}
+	return nil
+}
+
+// SetSandboxActive 启用/停用 Sandbox 服务。
+// 启用时根据 DB 配置创建新客户端；停用时清空运行时客户端。
+func (h *HagoCenter) SetSandboxActive(ctx context.Context, active bool) error {
+	cfg, err := h.DAO.Sandbox.GetConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("读取 Sandbox 配置失败: %w", err)
+	}
+	cfg.IsActive = active
+	if err := h.DAO.Sandbox.UpdateConfig(ctx, cfg); err != nil {
+		return fmt.Errorf("更新 Sandbox 配置失败: %w", err)
+	}
+
+	if active {
+		client, err := sandbox.NewClient(
+			sandbox.WithBaseURL(cfg.BaseURL),
+			sandbox.WithAPIKey(cfg.APIKey),
+			sandbox.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
+		)
+		if err != nil {
+			slog.Warn("Sandbox 客户端创建失败", "err", err)
+			h.SandboxClient = nil
+			return fmt.Errorf("Sandbox 客户端创建失败: %w", err)
+		}
+		h.SandboxClient = client
+		slog.Info("Sandbox 服务已启用", "base_url", cfg.BaseURL)
+	} else {
+		h.SandboxClient = nil
+		slog.Info("Sandbox 服务已停用")
+	}
+	return nil
 }
 
 // ---------- ProviderGroupAccess ----------

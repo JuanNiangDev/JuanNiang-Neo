@@ -73,11 +73,15 @@ type AgentOperator interface {
 	SetMCPActive(ctx context.Context, id string, active bool) error
 	SetToolActive(ctx context.Context, name string, active bool) error
 	SwitchProvider(ctx context.Context, id string) error
+	SetT2IActive(ctx context.Context, active bool) error
+	SetSandboxActive(ctx context.Context, active bool) error
 	CompactMemory(ctx context.Context, chatAreaID string) error
 	GetChatAreaID(userID, groupID int64, messageType string) string
 	GetProviderGroup() ProviderGroupAccess
 	GetMCPGroup() MCPGroupAccess
 	GetToolRegistry() ToolRegistryAccess
+	GetT2IClient() *t2icaller.Client
+	GetSandboxClient() *sandboxcaller.Client
 }
 
 // ProviderGroupAccess 暴露给插件的 Provider 管理接口。
@@ -249,11 +253,13 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 // ---------- 事件 ----------
 
 type EventData struct {
-	PostType    string `json:"post_type"`
-	MessageType string `json:"message_type"`
-	UserID      int64  `json:"user_id"`
-	GroupID     int64  `json:"group_id"`
-	RawMessage  string `json:"raw_message"`
+	PostType    string         `json:"post_type"`
+	MessageType string         `json:"message_type"`
+	UserID      int64          `json:"user_id"`
+	GroupID     int64          `json:"group_id"`
+	RawMessage  string         `json:"raw_message"`
+	Admins      []string       `json:"admins"`
+	Webhook     map[string]any `json:"webhook,omitempty"`
 }
 
 func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
@@ -275,6 +281,39 @@ func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 		p.State.Push(table)
 		if err := p.State.PCall(1, 2, nil); err != nil {
 			slog.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
+			continue
+		}
+		consumedRet := p.State.Get(-2)
+		p.State.Pop(2)
+		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
+			return true
+		}
+	}
+	return false
+}
+
+// OnWebhook 触发插件的 on_webhook 回调。
+// 当 webhook adapter 收到事件时调用此方法。
+// 插件可以在 on_webhook 中返回 true 表示已消费事件。
+func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+
+	pe.currentEv = event
+
+	for _, p := range pe.plugins {
+		if !p.HasPermission("webhook") {
+			continue
+		}
+		fn := p.State.GetGlobal("on_webhook")
+		if fn.Type() != lua.LTFunction {
+			continue
+		}
+		table := eventToLuaTable(p.State, event)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 2, nil); err != nil {
+			slog.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
 			continue
 		}
 		consumedRet := p.State.Get(-2)
@@ -670,23 +709,24 @@ func (pe *PluginEngine) injectCache(L *lua.LState, pluginName string) {
 func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 	t2iTable := L.NewTable()
 
-	if pe.t2i == nil {
-		L.SetFuncs(t2iTable, map[string]lua.LGFunction{
-			"generate": func(L *lua.LState) int {
+	// 获取当前 T2I 客户端：优先从 agentOp 获取最新运行时实例，否则使用注入时的实例
+	getCurrentClient := func() *t2icaller.Client {
+		if pe.agentOp != nil {
+			return pe.agentOp.GetT2IClient()
+		}
+		return pe.t2i
+	}
+
+	L.SetFuncs(t2iTable, map[string]lua.LGFunction{
+		"generate": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
 				L.Push(lua.LNil)
 				L.Push(lua.LString("T2I 服务未启用"))
 				return 2
-			},
-		})
-		L.SetGlobal("t2i", t2iTable)
-		return
-	}
-
-	t2i := pe.t2i
-	L.SetFuncs(t2iTable, map[string]lua.LGFunction{
-		"generate": func(L *lua.LState) int {
+			}
 			html := L.CheckString(1)
-			resp, err := t2i.Generate(context.Background(), t2icaller.GenerateRequest{
+			resp, err := client.Generate(context.Background(), t2icaller.GenerateRequest{
 				HTML:   html,
 				AsJSON: true,
 			})
@@ -699,8 +739,14 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 			return 1
 		},
 		"generate_url": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString("T2I 服务未启用"))
+				return 2
+			}
 			html := L.CheckString(1)
-			url, err := t2i.GenerateURL(context.Background(), t2icaller.GenerateRequest{
+			url, err := client.GenerateURL(context.Background(), t2icaller.GenerateRequest{
 				HTML:   html,
 				AsJSON: true,
 			})
@@ -712,6 +758,35 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 			L.Push(lua.LString(url))
 			return 1
 		},
+		// 开关管理
+		"toggle": func(L *lua.LState) int {
+			if pe.agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			active := bool(L.CheckBool(1))
+			err := pe.agentOp.SetT2IActive(context.Background(), active)
+			return pushResult(L, err)
+		},
+		"is_active": func(L *lua.LState) int {
+			if pe.dao == nil {
+				L.Push(lua.LBool(false))
+				return 1
+			}
+			cfg, err := pe.dao.T2I.GetConfig(context.Background())
+			if err != nil {
+				L.Push(lua.LBool(false))
+				return 1
+			}
+			L.Push(lua.LBool(cfg.IsActive))
+			return 1
+		},
+		"get_config": func(L *lua.LState) int {
+			if pe.dao == nil {
+				return pushResult(L, fmt.Errorf("dao 不可用"))
+			}
+			cfg, err := pe.dao.T2I.GetConfig(context.Background())
+			return pushResultJSON(L, cfg, err)
+		},
 	})
 	L.SetGlobal("t2i", t2iTable)
 }
@@ -721,32 +796,23 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 	sbTable := L.NewTable()
 
-	if pe.sandbox == nil {
-		L.SetFuncs(sbTable, map[string]lua.LGFunction{
-			"exec_shell": func(L *lua.LState) int {
-				L.Push(lua.LNil)
-				L.Push(lua.LString("Sandbox 服务未启用"))
-				return 2
-			},
-			"exec_python": func(L *lua.LState) int {
-				L.Push(lua.LNil)
-				L.Push(lua.LString("Sandbox 服务未启用"))
-				return 2
-			},
-			"create": func(L *lua.LState) int {
-				L.Push(lua.LNil)
-				L.Push(lua.LString("Sandbox 服务未启用"))
-				return 2
-			},
-		})
-		L.SetGlobal("sandbox", sbTable)
-		return
+	// 获取当前 Sandbox 客户端：优先从 agentOp 获取最新运行时实例
+	getCurrentClient := func() *sandboxcaller.Client {
+		if pe.agentOp != nil {
+			return pe.agentOp.GetSandboxClient()
+		}
+		return pe.sandbox
 	}
 
-	sb := pe.sandbox
 	L.SetFuncs(sbTable, map[string]lua.LGFunction{
 		"create": func(L *lua.LState) int {
-			sbox, err := sb.CreateSandbox(context.Background(), sandboxcaller.CreateSandboxRequest{})
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString("Sandbox 服务未启用"))
+				return 2
+			}
+			sbox, err := client.CreateSandbox(context.Background(), sandboxcaller.CreateSandboxRequest{})
 			if err != nil {
 				L.Push(lua.LNil)
 				L.Push(lua.LString(err.Error()))
@@ -759,9 +825,15 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 			return 1
 		},
 		"exec_shell": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString("Sandbox 服务未启用"))
+				return 2
+			}
 			sid := L.CheckString(1)
 			cmd := L.CheckString(2)
-			result, err := sb.ExecShell(context.Background(), sid, sandboxcaller.ShellExecRequest{Command: cmd})
+			result, err := client.ExecShell(context.Background(), sid, sandboxcaller.ShellExecRequest{Command: cmd})
 			if err != nil {
 				L.Push(lua.LNil)
 				L.Push(lua.LString(err.Error()))
@@ -776,9 +848,15 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 			return 2
 		},
 		"exec_python": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString("Sandbox 服务未启用"))
+				return 2
+			}
 			sid := L.CheckString(1)
 			code := L.CheckString(2)
-			result, err := sb.ExecPython(context.Background(), sid, sandboxcaller.PythonExecRequest{Code: code})
+			result, err := client.ExecPython(context.Background(), sid, sandboxcaller.PythonExecRequest{Code: code})
 			if err != nil {
 				L.Push(lua.LNil)
 				L.Push(lua.LString(err.Error()))
@@ -791,6 +869,35 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(""))
 			}
 			return 2
+		},
+		// 开关管理
+		"toggle": func(L *lua.LState) int {
+			if pe.agentOp == nil {
+				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			}
+			active := bool(L.CheckBool(1))
+			err := pe.agentOp.SetSandboxActive(context.Background(), active)
+			return pushResult(L, err)
+		},
+		"is_active": func(L *lua.LState) int {
+			if pe.dao == nil {
+				L.Push(lua.LBool(false))
+				return 1
+			}
+			cfg, err := pe.dao.Sandbox.GetConfig(context.Background())
+			if err != nil {
+				L.Push(lua.LBool(false))
+				return 1
+			}
+			L.Push(lua.LBool(cfg.IsActive))
+			return 1
+		},
+		"get_config": func(L *lua.LState) int {
+			if pe.dao == nil {
+				return pushResult(L, fmt.Errorf("dao 不可用"))
+			}
+			cfg, err := pe.dao.Sandbox.GetConfig(context.Background())
+			return pushResultJSON(L, cfg, err)
 		},
 	})
 	L.SetGlobal("sandbox", sbTable)
@@ -1013,6 +1120,16 @@ func eventToLuaTable(L *lua.LState, ev EventData) *lua.LTable {
 	L.SetField(t, "user_id", lua.LNumber(ev.UserID))
 	L.SetField(t, "group_id", lua.LNumber(ev.GroupID))
 	L.SetField(t, "raw_message", lua.LString(ev.RawMessage))
+	if len(ev.Admins) > 0 {
+		admins := L.NewTable()
+		for _, a := range ev.Admins {
+			admins.Append(lua.LString(a))
+		}
+		L.SetField(t, "admins", admins)
+	}
+	if len(ev.Webhook) > 0 {
+		L.SetField(t, "webhook", goToLuaValue(L, ev.Webhook))
+	}
 	return t
 }
 

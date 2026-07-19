@@ -22,6 +22,7 @@ import (
 // HagoCenter 是 Agent 系统的中央调度器，聚合所有子模块。
 type HagoCenter struct {
 	Adapter   *adapter.Adapter
+	WebhookAdapter *adapter.WebhookAdapter
 	Providers *provider.ProviderGroup
 	MCP       *mcp.MCPGroup
 	Memory    *memory.MemoryGroup
@@ -44,14 +45,15 @@ type HagoCenter struct {
 
 // Config HagoCenter 初始化配置。
 type Config struct {
-	Adapter   *adapter.Adapter
-	Sandbox   *sandboxcaller.Client
-	T2I       *t2icaller.Client
-	Providers *provider.ProviderGroup
-	MCPGroup  *mcp.MCPGroup
-	DAO       *dao.Bundle
-	ACL       *acl.ACL
-	Cache     interface {
+	Adapter        *adapter.Adapter
+	WebhookAdapter *adapter.WebhookAdapter
+	Sandbox        *sandboxcaller.Client
+	T2I            *t2icaller.Client
+	Providers      *provider.ProviderGroup
+	MCPGroup       *mcp.MCPGroup
+	DAO            *dao.Bundle
+	ACL            *acl.ACL
+	Cache          interface {
 		Client() interface{}
 	}
 }
@@ -70,6 +72,7 @@ func NewHagoCenter() *HagoCenter {
 // Init 从 DB 加载配置并初始化所有子模块。
 func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Adapter = cfg.Adapter
+	h.WebhookAdapter = cfg.WebhookAdapter
 	h.DAO = cfg.DAO
 	h.ACL = cfg.ACL
 	h.Providers = cfg.Providers

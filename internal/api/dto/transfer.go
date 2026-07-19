@@ -2,6 +2,7 @@ package dto
 
 import (
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/logging"
 )
 
 func RawProviderList2Resp(raw []models.Provider) []ProviderResp {
@@ -237,4 +238,23 @@ func RawSandboxConfig2Resp(raw *models.SandboxConfig, healthy bool) SandboxConfi
 		IsActive: raw.IsActive,
 		Healthy:  healthy,
 	}
+}
+
+// RawLogEntry2Resp 把 internal/logging.Entry 转为前端响应。
+func RawLogEntry2Resp(raw logging.Entry) LogEntryResp {
+	return LogEntryResp{
+		Time:    raw.Time,
+		Level:   raw.Level,
+		Message: raw.Message,
+		Attrs:   raw.Attrs,
+	}
+}
+
+// RawLogEntryList2Resp 批量转换。
+func RawLogEntryList2Resp(raw []logging.Entry) []LogEntryResp {
+	res := make([]LogEntryResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawLogEntry2Resp(item)
+	}
+	return res
 }

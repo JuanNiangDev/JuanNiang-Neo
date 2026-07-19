@@ -102,4 +102,12 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.GET("/sandbox/config", auth, svc.GetSandboxConfig)
 	api.PUT("/sandbox/config", auth, svc.UpdateSandboxConfig)
 	api.GET("/sandbox/health", auth, svc.CheckSandboxHealth)
+
+	// Webhook
+	api.GET("/webhook/config", auth, svc.GetWebhookConfig)
+	api.PUT("/webhook/config", auth, svc.UpdateWebhookConfig)
+
+	// Logs
+	api.GET("/logs", auth, svc.GetLogs)
+	api.GET("/logs/stream", auth, svc.StreamLogs)
 }

@@ -35,6 +35,7 @@ type Bundle struct {
 	Onebot11Adapter *Onebot11AdapterDao
 	Sandbox         *SandboxConfigDAO
 	T2I             *T2IConfigDAO
+	Webhook         *WebhookConfigDAO
 }
 
 func NewBundle(db *gorm.DB) *Bundle {
@@ -57,5 +58,6 @@ func NewBundle(db *gorm.DB) *Bundle {
 		Onebot11Adapter: NewOnebot11AdapterDao(db),
 		Sandbox:         NewSandboxConfigDAO(db),
 		T2I:             NewT2IConfigDAO(db),
+		Webhook:         NewWebhookConfigDAO(db),
 	}
 }

@@ -16,20 +16,25 @@ import (
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/acl"
 	"JuanNiang-Neo/internal/core/dao"
+	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
 )
 
 type Service struct {
-	DAO           *dao.Bundle
-	Adapter       *adapter.Adapter
-	PluginEngine  *pluggin.PluginEngine
-	ProviderGroup *provider.ProviderGroup
-	MCPGroup      *mcp.MCPGroup
-	MemoryGroup   *memory.MemoryGroup
-	SessionMgr    *session.SessionManager
-	ToolRegistry  *tool.ToolRegistry
-	SkillEngine   *skill.SkillEngine
-	ACLMgr        *acl.ACL
+	DAO            *dao.Bundle
+	Adapter        *adapter.Adapter
+	WebhookAdapter *adapter.WebhookAdapter
+	PluginEngine   *pluggin.PluginEngine
+	ProviderGroup  *provider.ProviderGroup
+	MCPGroup       *mcp.MCPGroup
+	MemoryGroup    *memory.MemoryGroup
+	SessionMgr     *session.SessionManager
+	ToolRegistry   *tool.ToolRegistry
+	SkillEngine    *skill.SkillEngine
+	ACLMgr         *acl.ACL
+
+	// LogHub 是日志广播中心；前端通过 GET /logs 与 GET /logs/stream 消费。
+	LogHub *logging.Hub
 
 	// T2I / Sandbox 运行时客户端 + 同步回调
 	T2IClient     *t2icaller.Client
@@ -39,8 +44,8 @@ type Service struct {
 	OnUpdateSandbox func(client *sandboxcaller.Client)
 }
 
-func New(dao *dao.Bundle, adapter *adapter.Adapter, pluginEngine *pluggin.PluginEngine) *Service {
-	return &Service{DAO: dao, Adapter: adapter, PluginEngine: pluginEngine}
+func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {
+	return &Service{DAO: dao, Adapter: adapter, WebhookAdapter: webhookAdapter, PluginEngine: pluginEngine, LogHub: logging.Default}
 }
 
 // t2iClientFactory 根据配置创建 T2I 客户端。
