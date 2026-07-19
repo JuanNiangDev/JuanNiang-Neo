@@ -1,75 +1,1471 @@
 openapi: "3.0.3"
 info:
   title: JuanNiang-Neo API
-  description: JuanNiang-Neo Web 管理面板 API
-  version: "1.0.0"
+  description: |
+    JuanNiang-Neo Web 管理面板 API。
 
+    ## 通用响应格式
+
+    所有接口都返回 `FinalResponse`:
+    ```json
+    {"status": 0, "info": "OK", "data": <任意类型或 null>}
+    ```
+
+    - `status`: 0 表示成功，非 0 为错误码
+    - `info`: 状态描述
+    - `data`: 业务数据，失败时可为 null 或 `{"error_detail": "..."}`
+
+    ## 认证
+
+    除 `POST /login` 和 `GET /health` 外所有接口都需要 `Authorization: Bearer <token>` header。
+    通过 `POST /login` 获取 token，默认账号 `admin / Admin123`。
+
+    ## 错误码
+
+    | Code | 说明 |
+    |------|------|
+    | 0 | 成功 |
+    | 40001 | 参数格式错误 |
+    | 40002 | 用户名或密码错误 |
+    | 40003 | token 生成失败 |
+    | 40004 | 用户不存在 |
+    | 40005 | 原密码错误 |
+    | 40006 | 密码更新失败 |
+    | 40007 | 无效的 QQ 号 |
+    | 40008 | adapter 未初始化 |
+    | 40009 | provider 不存在 |
+    | 40010 | MCP 服务器不存在 |
+    | 40011 | Session 不存在 |
+    | 40012 | 缺少上传文件 |
+    | 40013 | 临时文件创建失败 |
+    | 40014 | 文件写入失败 |
+    | 40015 | 无效的 ZIP 文件 |
+    | 40016 | 无效的 ACL ID |
+    | 40017 | onebot11 适配器配置更新失败 |
+    | 40018 | Skill 不存在 |
+    | 40019 | Prompt 不存在 |
+    | 40020 | Tool 不存在 |
+    | 40021 | Plugin 不存在 |
+    | 40022 | 插件加载失败 |
+    | 40023 | ChatArea 不存在 |
+    | 40024 | Memory 配置不存在 |
+    | 40025 | adapter 配置不存在 |
+    | 40026 | T2I 配置不存在 |
+    | 40027 | Sandbox 配置不存在 |
+    | 50000 | 服务器内部错误 |
+
+    ## ACL 规则语义
+
+    - 无规则 = 允许所有（默认）
+    - `deny` + `all` = 拒绝所有用户
+    - `deny` + `list` = 拒绝指定用户
+    - `allow` + `all` = 允许所有用户
+    - `allow` + `list` = 仅允许指定用户（白名单）
+
+    检查优先级: `deny` > `allow`；存在 `allow` 规则时未命中即拒绝。
+    Admins 列表中的用户绕过所有 ACL 检查。
+  version: "1.0.0"
+  contact:
+    name: JuanNiang-Neo
 servers:
   - url: http://localhost:8090/api/v1
-    description: 本地开发服务器
+    description: 本地开发
+tags:
+  - name: Auth
+    description: 认证
+  - name: Adapter
+    description: OneBot11 适配器
+  - name: Provider
+    description: LLM Provider
+  - name: MCP
+    description: MCP 服务器
+  - name: Memory
+    description: 记忆配置
+  - name: Prompt
+    description: Prompt 模板
+  - name: Session
+    description: 会话
+  - name: Skill
+    description: Skill 配置
+  - name: Tool
+    description: Tool 配置
+  - name: Plugin
+    description: Lua 插件
+  - name: ACL
+    description: 访问控制
+  - name: ChatRecord
+    description: 聊天记录
+  - name: ChatArea
+    description: 聊天区域
+  - name: Overview
+    description: 全局概览
+  - name: T2I
+    description: Text-to-Image
+  - name: Sandbox
+    description: 代码沙箱
+  - name: Webhook
+    description: Webhook 适配器
+  - name: Log
+    description: 日志
+  - name: Health
+    description: 健康检查
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ============================================================
+  # Auth
+  # ============================================================
+  /login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: 管理员登录
+      description: 管理员登录，获取 JWT token。系统初始化时默认账号 `admin / Admin123`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginReq'
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TokenResp'
+
+  /change-password:
+    post:
+      tags: [Auth]
+      summary: 修改密码
+      description: 修改当前登录用户密码（实际查 `admin` 用户）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordReq'
+      responses:
+        '200':
+          description: 修改成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # Adapter
+  # ============================================================
+  /adapter:
+    get:
+      tags: [Adapter]
+      summary: 获取 Adapter 状态
+      description: 获取 OneBot11 适配器当前运行状态（不含配置）。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AdapterStatus'
+    put:
+      tags: [Adapter]
+      summary: 更新 Adapter 配置
+      description: 更新 OneBot11 适配器配置（地址、Token、管理员列表、启用状态），同步到运行时。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAdapterConfigReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /adapter/restart:
+    post:
+      tags: [Adapter]
+      summary: 重启 Adapter
+      description: 重启 OneBot11 适配器。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # Provider
+  # ============================================================
+  /providers:
+    get:
+      tags: [Provider]
+      summary: 列出所有 Provider
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ProviderResp'
+    post:
+      tags: [Provider]
+      summary: 新增 Provider
+      description: 新增 Provider。若 `is_active=true`，自动停用同类型其他 Provider。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddProviderReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AddProviderReq'
+
+  /providers/{id}:
+    get:
+      tags: [Provider]
+      summary: 获取单个 Provider
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ProviderResp'
+    put:
+      tags: [Provider]
+      summary: 更新 Provider
+      description: 覆盖更新指定 Provider。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProviderReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+    delete:
+      tags: [Provider]
+      summary: 删除 Provider
+      description: 删除 Provider，同时从运行时 ProviderGroup 移除。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /providers/{id}/toggle:
+    put:
+      tags: [Provider]
+      summary: 启用/停用 Provider
+      description: 启用时自动停用同类型其他 Provider。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # MCP
+  # ============================================================
+  /mcp:
+    get:
+      tags: [MCP]
+      summary: 列出所有 MCP 服务器
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MCPServerResp'
+    post:
+      tags: [MCP]
+      summary: 新增 MCP 服务器
+      description: 新增 MCP 配置，若 `is_active=true` 立即建立 SSE 连接。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMCPServerReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MCPServerResp'
+
+  /mcp/{id}:
+    get:
+      tags: [MCP]
+      summary: 获取单个 MCP 服务器
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MCPServerResp'
+    put:
+      tags: [MCP]
+      summary: 更新 MCP 服务器
+      description: 覆盖更新，断开旧连接，若 `is_active=true` 重新建立 SSE 连接。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMCPServerReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MCPServerResp'
+    delete:
+      tags: [MCP]
+      summary: 删除 MCP 服务器
+      description: 断开连接并删除配置。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /mcp/{id}/toggle:
+    put:
+      tags: [MCP]
+      summary: 启用/停用 MCP 服务器
+      description: 启用对应建立 SSE 连接，停用对应断开连接。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # Memory
+  # ============================================================
+  /memory/{chatAreaID}/short-term:
+    get:
+      tags: [Memory]
+      summary: 获取短期记忆配置
+      description: 获取指定 ChatArea 的短期记忆配置，不存在则自动创建（默认 `window_size=20, auto_compact=false`）。
+      parameters:
+        - $ref: '#/components/parameters/PathChatAreaID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ShortTermMemoryResp'
+    put:
+      tags: [Memory]
+      summary: 更新短期记忆配置
+      description: 更新短期记忆配置，同步到运行时 MemoryGroup。
+      parameters:
+        - $ref: '#/components/parameters/PathChatAreaID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateShortTermMemoryReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ShortTermMemoryResp'
+
+  /memory/{chatAreaID}/long-term:
+    get:
+      tags: [Memory]
+      summary: 获取长期记忆配置
+      description: 获取长期记忆配置，不存在则自动创建（默认 `hot_area_size=10, hot_memory_ttl=86400`）。
+      parameters:
+        - $ref: '#/components/parameters/PathChatAreaID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LongTermMemoryResp'
+    put:
+      tags: [Memory]
+      summary: 更新长期记忆配置
+      description: 更新长期记忆配置，同步到运行时 MemoryGroup。
+      parameters:
+        - $ref: '#/components/parameters/PathChatAreaID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateLongTermMemoryReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LongTermMemoryResp'
+
+  # ============================================================
+  # Prompt
+  # ============================================================
+  /prompts:
+    get:
+      tags: [Prompt]
+      summary: 列出所有 Prompt
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PromptResp'
+    post:
+      tags: [Prompt]
+      summary: 新增 Prompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddPromptReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PromptResp'
+
+  /prompts/{id}:
+    put:
+      tags: [Prompt]
+      summary: 更新 Prompt
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePromptReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PromptResp'
+    delete:
+      tags: [Prompt]
+      summary: 删除 Prompt
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /prompts/{id}/toggle:
+    put:
+      tags: [Prompt]
+      summary: 启用/停用 Prompt
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # Session
+  # ============================================================
+  /sessions:
+    get:
+      tags: [Session]
+      summary: 列出所有 Session
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SessionResp'
+
+  /sessions/{id}:
+    get:
+      tags: [Session]
+      summary: 获取单个 Session
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SessionResp'
+    delete:
+      tags: [Session]
+      summary: 删除 Session
+      description: 删除 Session，同时清除 Redis 中的消息缓存。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # Skill
+  # ============================================================
+  /skills:
+    get:
+      tags: [Skill]
+      summary: 列出所有 Skill
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/SkillResp'
+    post:
+      tags: [Skill]
+      summary: 新增 Skill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddSkillReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SkillResp'
+
+  /skills/{id}:
+    put:
+      tags: [Skill]
+      summary: 更新 Skill
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSkillReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SkillResp'
+    delete:
+      tags: [Skill]
+      summary: 删除 Skill
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # Tool
+  # ============================================================
+  /tools:
+    get:
+      tags: [Tool]
+      summary: 列出所有 Tool 配置
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ToolConfigResp'
+
+  /tools/{id}/toggle:
+    put:
+      tags: [Tool]
+      summary: 启用/停用 Tool
+      description: 停用时从注册表移除；启用时内置工具已在 init 时注册，无需重复。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # Plugin
+  # ============================================================
+  /plugins:
+    get:
+      tags: [Plugin]
+      summary: 列出所有插件
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/PluginResp'
+
+  /plugins/upload:
+    post:
+      tags: [Plugin]
+      summary: 上传 ZIP 插件包
+      description: 解压到 `data/pluggins/<name>/`，自动调用 `PluginEngine.Load`。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required: [file]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PluginUploadResp'
+
+  /plugins/{id}/toggle:
+    put:
+      tags: [Plugin]
+      summary: 启用/停用插件
+      description: 启用时调用 `PluginEngine.Load`，停用时 `Unload`。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /plugins/{id}:
+    delete:
+      tags: [Plugin]
+      summary: 删除插件
+      description: 卸载并删除插件配置（不删除文件）。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # ACL
+  # ============================================================
+  /acl:
+    get:
+      tags: [ACL]
+      summary: 列出所有 ACL 规则
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ACLRuleResp'
+    post:
+      tags: [ACL]
+      summary: 新增或更新 ACL 规则
+      description: 同 ChatArea + Scope 已存在则覆盖。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddACLRuleReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ACLRuleResp'
+
+  /acl/{id}:
+    delete:
+      tags: [ACL]
+      summary: 删除 ACL 规则
+      description: 删除 ACL 规则，同步到运行时 ACL 管理器。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+          description: ACL 规则 ID（自增整数，非 UUID）
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  # ============================================================
+  # Chat Records
+  # ============================================================
+  /chat-records/{chatAreaID}:
+    get:
+      tags: [ChatRecord]
+      summary: 分页查询聊天记录
+      description: 分页查询指定 ChatArea 的聊天记录，支持按 role 过滤。
+      parameters:
+        - $ref: '#/components/parameters/PathChatAreaID'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+          description: 每页数量（默认 20）
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: 偏移量（默认 0）
+        - name: role
+          in: query
+          schema:
+            type: string
+            enum: [user, assistant, tool]
+          description: 可选过滤角色
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ChatRecordListResp'
+
+  /chat-records/{chatAreaID}/token-usage:
+    get:
+      tags: [ChatRecord]
+      summary: 获取 ChatArea Token 用量
+      description: 获取指定 ChatArea 的会话 Token 用量（实际返回 Session 信息）。
+      parameters:
+        - $ref: '#/components/parameters/PathChatAreaID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SessionResp'
+
+  # ============================================================
+  # Chat Area
+  # ============================================================
+  /chat-areas:
+    get:
+      tags: [ChatArea]
+      summary: 列出所有 ChatArea
+      description: ChatArea 由消息驱动自动创建（私聊/群聊各一个），无手动创建接口。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ChatAreaResp'
+
+  # ============================================================
+  # Overview
+  # ============================================================
+  /overview:
+    get:
+      tags: [Overview]
+      summary: 全局概览
+      description: |
+        返回系统全局概览，包括资源计数、系统状态、T2I/Sandbox 健康状态。
+
+        - 系统状态来自 `runtime.MemStats`、`runtime.NumCPU`、`runtime.NumGoroutine`
+        - T2I/Sandbox 的 `*_active` 表示客户端已加载，`*_healthy` 表示 `HealthCheck` 通过
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/OverviewResp'
+
+  # ============================================================
+  # T2I
+  # ============================================================
+  /t2i/config:
+    get:
+      tags: [T2I]
+      summary: 获取 T2I 配置
+      description: 获取 T2I 配置与当前健康状态。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/T2IConfigResp'
+    put:
+      tags: [T2I]
+      summary: 更新 T2I 配置
+      description: 运行时同步客户端（启用则创建新客户端并注入 HagoCenter，停用则置空）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateT2IConfigReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/T2IConfigResp'
+
+  /t2i/health:
+    get:
+      tags: [T2I]
+      summary: 检查 T2I 健康
+      description: 实时检查 T2I 服务健康状态（调用客户端 `HealthCheck`）。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          healthy:
+                            type: boolean
+
+  # ============================================================
+  # Sandbox
+  # ============================================================
+  /sandbox/config:
+    get:
+      tags: [Sandbox]
+      summary: 获取 Sandbox 配置
+      description: 获取 Sandbox 配置与当前健康状态。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SandboxConfigResp'
+    put:
+      tags: [Sandbox]
+      summary: 更新 Sandbox 配置
+      description: 运行时同步客户端。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSandboxConfigReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SandboxConfigResp'
+
+  /sandbox/health:
+    get:
+      tags: [Sandbox]
+      summary: 检查 Sandbox 健康
+      description: 实时检查 Sandbox 健康状态。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          healthy:
+                            type: boolean
+
+  # ============================================================
+  # Webhook
+  # ============================================================
+  /webhook/config:
+    get:
+      tags: [Webhook]
+      summary: 获取 Webhook 配置
+      description: 获取 Webhook 配置与运行状态。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/WebhookConfigResp'
+    put:
+      tags: [Webhook]
+      summary: 更新 Webhook 配置
+      description: 同步到运行时 WebhookAdapter。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWebhookConfigReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/WebhookConfigResp'
+
+  # ============================================================
+  # Logs
+  # ============================================================
+  /logs:
+    get:
+      tags: [Log]
+      summary: 获取最近日志
+      description: 返回最近 250 条日志（按时间顺序，最早→最新）。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/LogEntryResp'
+
+  /logs/stream:
+    get:
+      tags: [Log]
+      summary: SSE 实时日志流
+      description: |
+        通过 SSE 推送实时日志。
+
+        - 连接建立后先发送最近 250 条历史日志（每个一条 `log` 事件）
+        - 然后订阅 Hub，实时推送新日志
+        - 每 15 秒发送一次 keepalive 心跳
+        - 客户端断开或服务停止时退出
+
+        事件格式:
+        ```
+        event: log
+        data: {"time":"2026-07-20T12:00:00Z","level":"INFO","message":"...","attrs":{}}
+        ```
+      responses:
+        '200':
+          description: SSE 流
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE 事件流
+
+# ============================================================
+# GET /health (注意不在 /api/v1 前缀下，无需认证)
+# 直接访问 http://localhost:8090/health 即可，响应: 200, body: {"status":"ok"}
+# 由于 OpenAPI servers 限定为 /api/v1，此处仅在描述中说明，未在 paths 中定义
+# ============================================================
 
 components:
   securitySchemes:
-    bearerAuth:
+    BearerAuth:
       type: http
       scheme: bearer
       bearerFormat: JWT
 
+  parameters:
+    PathID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 资源 UUID (部分接口为插件名)
+    PathChatAreaID:
+      name: chatAreaID
+      in: path
+      required: true
+      schema:
+        type: string
+      description: ChatArea UUID
+
   schemas:
-    Error:
+    # ---------- 通用 ----------
+    FinalResponse:
       type: object
       properties:
-        code:
+        status:
           type: integer
-        msg:
+          format: uint
+          description: 0=成功，非 0=错误码
+          example: 0
+        info:
+          type: string
+          description: 状态描述
+          example: OK
+        data:
+          description: 业务数据，可为任意类型或 null
+      required: [status, info]
+
+    ErrorDetail:
+      type: object
+      properties:
+        error_detail:
           type: string
 
-    Success:
+    ToggleReq:
       type: object
       properties:
-        code:
-          type: integer
-        data: {}
+        is_active:
+          type: boolean
+      required: [is_active]
 
-    LoginRequest:
+    # ---------- Auth ----------
+    LoginReq:
       type: object
-      required: [username, password]
       properties:
         username:
           type: string
         password:
           type: string
+      required: [username, password]
 
-    LoginResponse:
+    ChangePasswordReq:
       type: object
-      properties:
-        token:
-          type: string
-
-    ChangePasswordRequest:
-      type: object
-      required: [old_password, new_password]
       properties:
         old_password:
           type: string
         new_password:
           type: string
+      required: [old_password, new_password]
 
-    Provider:
+    TokenResp:
       type: object
-      required: [name, type, endpoint, token, model]
+      properties:
+        token:
+          type: string
+          description: JWT token
+      required: [token]
+
+    # ---------- Adapter ----------
+    AdapterStatus:
+      type: object
+      properties:
+        running:
+          type: boolean
+          description: 适配器是否在运行
+        listen_addr:
+          type: string
+          description: 监听地址 host:port
+        self_id:
+          type: integer
+          format: int64
+          description: 机器人 QQ 号
+        conn_count:
+          type: integer
+          description: 当前 WebSocket 连接数
+        conn_ids:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: 已连接客户端 QQ 号列表
+
+    UpdateAdapterConfigReq:
+      type: object
+      properties:
+        addr:
+          type: string
+          description: 监听地址
+        port:
+          type: integer
+          description: 监听端口
+        token:
+          type: string
+          description: OneBot access token
+        admin_qq_numbers:
+          type: array
+          items:
+            type: string
+          description: 管理员 QQ 号列表
+        enabled:
+          type: boolean
+          description: 是否启用
+      required: [addr, port, token, admin_qq_numbers, enabled]
+
+    # ---------- Provider ----------
+    ProviderResp:
+      type: object
       properties:
         id:
           type: string
           format: uuid
+        created_at:
+          type: string
+          format: date-time
         name:
           type: string
         type:
-          type: string
-          enum: [text_model, image_model, embedding_model]
+          $ref: '#/components/schemas/ModelType'
         endpoint:
           type: string
-          format: uri
+        token:
+          type: string
+        model:
+          type: string
+        temperature:
+          type: number
+          format: float
+        is_active:
+          type: boolean
+
+    AddProviderReq:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          $ref: '#/components/schemas/ModelType'
+        endpoint:
+          type: string
         token:
           type: string
         model:
@@ -78,13 +1474,21 @@ components:
           type: number
           format: float
           default: 0.7
-        is_active:
+        isActive:
           type: boolean
-          default: true
+      required: [name, type, endpoint, token, model, isActive]
 
-    MCPServer:
+    UpdateProviderReq:
+      allOf:
+        - $ref: '#/components/schemas/AddProviderReq'
+
+    ModelType:
+      type: string
+      enum: [text_model, image_model, embedding_model]
+
+    # ---------- MCP ----------
+    MCPServerResp:
       type: object
-      required: [name, server_url]
       properties:
         id:
           type: string
@@ -93,32 +1497,218 @@ components:
           type: string
         server_url:
           type: string
+          description: SSE 端点 URL
         headers:
-          type: object
+          $ref: '#/components/schemas/JSONMap'
         timeout:
           type: integer
-          default: 30000
+          description: 超时毫秒
         retry_count:
           type: integer
-          default: 3
+        tool_filter:
+          type: array
+          items:
+            type: string
+          description: 工具白名单（空表示全量）
+        auto_reconnect:
+          type: boolean
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    AddMCPServerReq:
+      type: object
+      properties:
+        name:
+          type: string
+        server_url:
+          type: string
+        headers:
+          $ref: '#/components/schemas/JSONMap'
+        timeout:
+          type: integer
+        retry_count:
+          type: integer
         tool_filter:
           type: array
           items:
             type: string
         auto_reconnect:
           type: boolean
-          default: true
         is_active:
           type: boolean
-          default: true
+      required: [name, server_url, is_active]
 
-    Skill:
+    UpdateMCPServerReq:
+      allOf:
+        - $ref: '#/components/schemas/AddMCPServerReq'
+
+    # ---------- Memory ----------
+    ShortTermMemoryResp:
       type: object
-      required: [name]
       properties:
         id:
           type: string
           format: uuid
+        chat_area_id:
+          type: string
+        window_size:
+          type: integer
+          description: 滑动窗口大小
+        auto_compact:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    UpdateShortTermMemoryReq:
+      type: object
+      properties:
+        window_size:
+          type: integer
+        auto_compact:
+          type: boolean
+      required: [window_size, auto_compact]
+
+    LongTermMemoryResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        chat_area_id:
+          type: string
+        hot_area_size:
+          type: integer
+        hot_memory_ttl:
+          type: integer
+          description: 热区 TTL（秒）
+        created_at:
+          type: string
+          format: date-time
+
+    UpdateLongTermMemoryReq:
+      type: object
+      properties:
+        hot_area_size:
+          type: integer
+        hot_memory_ttl:
+          type: integer
+          description: 热区 TTL（秒）
+      required: [hot_area_size, hot_memory_ttl]
+
+    # ---------- Prompt ----------
+    PromptResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        content:
+          type: string
+        type:
+          $ref: '#/components/schemas/PromptType'
+        is_active:
+          type: boolean
+        variables:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+
+    AddPromptReq:
+      type: object
+      properties:
+        name:
+          type: string
+        content:
+          type: string
+        type:
+          $ref: '#/components/schemas/PromptType'
+        is_active:
+          type: boolean
+        variables:
+          type: array
+          items:
+            type: string
+      required: [name, content, type, is_active]
+
+    UpdatePromptReq:
+      allOf:
+        - $ref: '#/components/schemas/AddPromptReq'
+
+    PromptType:
+      type: string
+      enum: [system, personality, custom]
+
+    # ---------- Session ----------
+    SessionResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        chat_area_id:
+          type: string
+        model:
+          type: string
+        token_usage:
+          type: integer
+          format: int64
+        meta_data:
+          $ref: '#/components/schemas/JSONMap'
+        created_at:
+          type: string
+          format: date-time
+
+    # ---------- Skill ----------
+    SkillResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        regex_pattern:
+          type: string
+        prompt_ref:
+          type: string
+          description: 关联 Prompt UUID
+        tool_refs:
+          type: array
+          items:
+            type: string
+        mcp_refs:
+          type: array
+          items:
+            type: string
+        is_active:
+          type: boolean
+        is_system:
+          type: boolean
+        priority:
+          type: integer
+          description: 优先级（数字越大越优先）
+        created_at:
+          type: string
+          format: date-time
+
+    AddSkillReq:
+      type: object
+      properties:
         name:
           type: string
         description:
@@ -141,115 +1731,18 @@ components:
             type: string
         is_active:
           type: boolean
-          default: true
         is_system:
           type: boolean
-          default: false
         priority:
           type: integer
-          default: 0
+      required: [name, is_active]
 
-    Prompt:
-      type: object
-      required: [name, type, content]
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        type:
-          type: string
-          enum: [system, personality, custom]
-        content:
-          type: string
-        is_active:
-          type: boolean
-          default: true
-        variables:
-          type: array
-          items:
-            type: string
+    UpdateSkillReq:
+      allOf:
+        - $ref: '#/components/schemas/AddSkillReq'
 
-    ShortTermMemoryConfig:
-      type: object
-      properties:
-        id:
-          type: string
-        chat_area_id:
-          type: string
-        window_size:
-          type: integer
-        auto_compact:
-          type: boolean
-
-    LongTermMemoryConfig:
-      type: object
-      properties:
-        id:
-          type: string
-        chat_area_id:
-          type: string
-        hot_area_size:
-          type: integer
-        hot_memory_ttl:
-          type: integer
-
-    ACLRule:
-      type: object
-      required: [user_id, chat_area_id, permission]
-      properties:
-        id:
-          type: integer
-        user_id:
-          type: integer
-          format: int64
-        chat_area_id:
-          type: string
-        permission:
-          type: string
-          enum: [allowed, denied]
-        actions:
-          type: array
-          items:
-            type: string
-
-    ToggleRequest:
-      type: object
-      required: [is_active]
-      properties:
-        is_active:
-          type: boolean
-
-    Overview:
-      type: object
-      properties:
-        chat_area_count:
-          type: integer
-        mcp_count:
-          type: integer
-        adapter_count:
-          type: integer
-        plugin_count:
-          type: integer
-        total_token_usage:
-          type: integer
-
-    Session:
-      type: object
-      properties:
-        id:
-          type: string
-        chat_area_id:
-          type: string
-        model:
-          type: string
-        token_usage:
-          type: integer
-        meta_data:
-          type: object
-
-    ToolConfig:
+    # ---------- Tool ----------
+    ToolConfigResp:
       type: object
       properties:
         id:
@@ -258,20 +1751,148 @@ components:
           type: string
         description:
           type: string
+        parameters:
+          $ref: '#/components/schemas/JSONMap'
+          description: JSON Schema 参数定义
+        timeout:
+          type: integer
+          description: 超时毫秒
         is_active:
           type: boolean
         is_builtin:
           type: boolean
+        created_at:
+          type: string
+          format: date-time
 
-    ChatRecord:
+    # ---------- Plugin ----------
+    PluginResp:
+      type: object
+      properties:
+        id:
+          type: string
+          description: 插件名（非 UUID）
+        name:
+          type: string
+        version:
+          type: string
+        path:
+          type: string
+        config:
+          $ref: '#/components/schemas/JSONMap'
+        is_active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    PluginUploadResp:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          example: loaded
+
+    # ---------- ACL ----------
+    ACLRuleResp:
       type: object
       properties:
         id:
           type: integer
+          format: int64
+        chat_area_id:
+          type: string
+        scope:
+          $ref: '#/components/schemas/ACLScope'
+        permission:
+          $ref: '#/components/schemas/ACLPermission'
+        target_type:
+          $ref: '#/components/schemas/ACLTargetType'
+        user_ids:
+          type: array
+          items:
+            type: string
+          description: 目标用户列表（target_type=list 时有效）
+        created_at:
+          type: string
+          format: date-time
+
+    AddACLRuleReq:
+      type: object
+      properties:
+        chat_area_id:
+          type: string
+        scope:
+          $ref: '#/components/schemas/ACLScope'
+        permission:
+          $ref: '#/components/schemas/ACLPermission'
+        target_type:
+          $ref: '#/components/schemas/ACLTargetType'
+        user_ids:
+          type: array
+          items:
+            type: string
+      required: [chat_area_id, scope, permission, target_type]
+
+    ACLScope:
+      type: string
+      enum: [chat, tool, mcp]
+
+    ACLPermission:
+      type: string
+      enum: [allow, deny]
+
+    ACLTargetType:
+      type: string
+      enum: [all, list]
+
+    # ---------- ChatArea ----------
+    ChatAreaResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        area_type:
+          $ref: '#/components/schemas/AreaType'
+        target_id:
+          type: integer
+          format: int64
+          description: 私聊=用户QQ，群聊=群号
+        created_at:
+          type: string
+          format: date-time
+
+    AreaType:
+      type: string
+      enum: [private, group]
+
+    # ---------- ChatRecord ----------
+    ChatRecordListResp:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int64
+        list:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatRecordResp'
+
+    ChatRecordResp:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
         chat_area_id:
           type: string
         user_id:
           type: integer
+          format: int64
+          description: 发送者 QQ（assistant/tool 为 0）
         role:
           type: string
           enum: [user, assistant, tool]
@@ -279,636 +1900,175 @@ components:
           type: string
         token_count:
           type: integer
+        tool_calls:
+          $ref: '#/components/schemas/JSONMap'
+          description: 工具调用详情（role=tool 时有效）
         created_at:
           type: string
           format: date-time
 
-    ChatRecordList:
+    # ---------- Overview ----------
+    OverviewResp:
       type: object
       properties:
-        total:
+        chat_area_count:
           type: integer
-        list:
-          type: array
-          items:
-            $ref: '#/components/schemas/ChatRecord'
-
-    ChatArea:
-      type: object
-      properties:
-        id:
-          type: string
-        area_type:
-          type: string
-          enum: [private, group]
-        target_id:
+          format: int64
+        mcp_count:
           type: integer
+          format: int64
+        adapter_count:
+          type: integer
+          format: int64
+          description: 固定 1
+        plugin_count:
+          type: integer
+          format: int64
+        provider_count:
+          type: integer
+        skill_count:
+          type: integer
+        session_count:
+          type: integer
+        total_token_usage:
+          type: integer
+          format: int64
+        cpu_count:
+          type: integer
+          description: 逻辑 CPU 核数
+        goroutine_num:
+          type: integer
+          description: 当前 goroutine 数
+        mem_alloc_bytes:
+          type: integer
+          format: int64
+          description: 堆已分配（活跃对象）
+        mem_sys_bytes:
+          type: integer
+          format: int64
+          description: 从 OS 获取的内存总量
+        mem_heap_inuse_bytes:
+          type: integer
+          format: int64
+          description: 堆中正在使用
+        go_version:
+          type: string
+        t2i_active:
+          type: boolean
+          description: T2I 客户端已加载
+        t2i_healthy:
+          type: boolean
+          description: T2I HealthCheck 通过
+        sandbox_active:
+          type: boolean
+          description: Sandbox 客户端已加载
+        sandbox_healthy:
+          type: boolean
+          description: Sandbox HealthCheck 通过
 
-    Plugin:
+    # ---------- T2I ----------
+    T2IConfigResp:
       type: object
       properties:
-        id:
+        base_url:
           type: string
-        name:
-          type: string
-        version:
-          type: string
-        path:
-          type: string
+        timeout:
+          type: integer
+          description: 超时毫秒
         is_active:
           type: boolean
+        healthy:
+          type: boolean
+          description: 当前健康状态
 
-security:
-  - bearerAuth: []
+    UpdateT2IConfigReq:
+      type: object
+      properties:
+        base_url:
+          type: string
+        timeout:
+          type: integer
+        is_active:
+          type: boolean
+      required: [base_url, is_active]
 
-paths:
-  /login:
-    post:
-      tags: [Auth]
-      summary: 登录
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LoginRequest'
-      responses:
-        200:
-          description: 登录成功
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/Success'
-                  - properties:
-                      data:
-                        $ref: '#/components/schemas/LoginResponse'
+    # ---------- Sandbox ----------
+    SandboxConfigResp:
+      type: object
+      properties:
+        base_url:
+          type: string
+        api_key:
+          type: string
+        timeout:
+          type: integer
+          description: 超时毫秒
+        is_active:
+          type: boolean
+        healthy:
+          type: boolean
 
-  /change-password:
-    post:
-      tags: [Auth]
-      summary: 修改密码
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ChangePasswordRequest'
-      responses:
-        200:
-          description: 修改成功
+    UpdateSandboxConfigReq:
+      type: object
+      properties:
+        base_url:
+          type: string
+        api_key:
+          type: string
+        timeout:
+          type: integer
+        is_active:
+          type: boolean
+      required: [base_url, api_key, is_active]
 
-  /adapter:
-    get:
-      tags: [Adapter]
-      summary: 获取适配器状态
-      responses:
-        200:
-          description: 运行状态
+    # ---------- Webhook ----------
+    WebhookConfigResp:
+      type: object
+      properties:
+        addr:
+          type: string
+        port:
+          type: integer
+        token:
+          type: string
+        enabled:
+          type: boolean
+        running:
+          type: boolean
+          description: 当前是否在运行
 
-  /providers:
-    get:
-      tags: [Providers]
-      summary: 列出所有 Provider
-      responses:
-        200:
-          description: Provider 列表
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Provider'
-    post:
-      tags: [Providers]
-      summary: 添加 Provider
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/Provider'
-      responses:
-        200:
-          description: 添加成功
+    UpdateWebhookConfigReq:
+      type: object
+      properties:
+        addr:
+          type: string
+        port:
+          type: integer
+        token:
+          type: string
+        enabled:
+          type: boolean
+      required: [addr, port, token, enabled]
 
-  /providers/{id}:
-    put:
-      tags: [Providers]
-      summary: 修改 Provider
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/Provider'
-      responses:
-        200:
-          description: 修改成功
-    delete:
-      tags: [Providers]
-      summary: 删除 Provider
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        200:
-          description: 删除成功
+    # ---------- Logs ----------
+    LogEntryResp:
+      type: object
+      properties:
+        time:
+          type: string
+          format: date-time
+        level:
+          type: string
+          description: INFO/WARN/ERROR 等
+        message:
+          type: string
+        attrs:
+          type: object
+          additionalProperties: true
+          description: 结构化字段（可选）
 
-  /mcp:
-    get:
-      tags: [MCP]
-      summary: 列出所有 MCP 服务器
-      responses:
-        200:
-          description: MCP 列表
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/MCPServer'
-    post:
-      tags: [MCP]
-      summary: 添加 MCP 服务器
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/MCPServer'
-      responses:
-        200:
-          description: 添加成功
-
-  /mcp/{id}:
-    put:
-      tags: [MCP]
-      summary: 修改 MCP 配置
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/MCPServer'
-      responses:
-        200:
-          description: 修改成功
-    delete:
-      tags: [MCP]
-      summary: 删除 MCP 服务器
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        200:
-          description: 删除成功
-
-  /memory/{chatAreaID}/short-term:
-    get:
-      tags: [Memory]
-      summary: 获取短期记忆配置
-      parameters:
-        - name: chatAreaID
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        200:
-          description: 配置
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    $ref: '#/components/schemas/ShortTermMemoryConfig'
-    put:
-      tags: [Memory]
-      summary: 修改短期记忆配置
-      parameters:
-        - name: chatAreaID
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                window_size:
-                  type: integer
-                auto_compact:
-                  type: boolean
-      responses:
-        200:
-          description: 修改成功
-
-  /memory/{chatAreaID}/long-term:
-    get:
-      tags: [Memory]
-      summary: 获取长期记忆配置
-      parameters:
-        - name: chatAreaID
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        200:
-          description: 配置
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    $ref: '#/components/schemas/LongTermMemoryConfig'
-    put:
-      tags: [Memory]
-      summary: 修改长期记忆配置
-      parameters:
-        - name: chatAreaID
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                hot_area_size:
-                  type: integer
-                hot_memory_ttl:
-                  type: integer
-      responses:
-        200:
-          description: 修改成功
-
-  /prompts:
-    get:
-      tags: [Prompts]
-      summary: 列出所有 Prompt
-      responses:
-        200:
-          description: Prompt 列表
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Prompt'
-    post:
-      tags: [Prompts]
-      summary: 添加 Prompt
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/Prompt'
-      responses:
-        200:
-          description: 添加成功
-
-  /prompts/{id}:
-    put:
-      tags: [Prompts]
-      summary: 修改 Prompt
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/Prompt'
-      responses:
-        200:
-          description: 修改成功
-    delete:
-      tags: [Prompts]
-      summary: 删除 Prompt
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        200:
-          description: 删除成功
-
-  /sessions:
-    get:
-      tags: [Sessions]
-      summary: 列出所有 Session
-      responses:
-        200:
-          description: Session 列表
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Session'
-
-  /sessions/{id}:
-    delete:
-      tags: [Sessions]
-      summary: 清除 Session
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        200:
-          description: 删除成功
-
-  /skills:
-    get:
-      tags: [Skills]
-      summary: 列出所有 Skill
-      responses:
-        200:
-          description: Skill 列表
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Skill'
-    post:
-      tags: [Skills]
-      summary: 添加 Skill
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/Skill'
-      responses:
-        200:
-          description: 添加成功
-
-  /skills/{id}:
-    put:
-      tags: [Skills]
-      summary: 修改 Skill
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/Skill'
-      responses:
-        200:
-          description: 修改成功
-    delete:
-      tags: [Skills]
-      summary: 删除 Skill
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        200:
-          description: 删除成功
-
-  /tools:
-    get:
-      tags: [Tools]
-      summary: 列出所有 Tool
-      responses:
-        200:
-          description: Tool 列表
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ToolConfig'
-
-  /tools/{id}/toggle:
-    put:
-      tags: [Tools]
-      summary: 启用/禁用 Tool
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ToggleRequest'
-      responses:
-        200:
-          description: 操作成功
-
-  /plugins:
-    get:
-      tags: [Plugins]
-      summary: 列出所有插件
-      responses:
-        200:
-          description: 插件列表
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/Plugin'
-
-  /plugins/{id}/toggle:
-    put:
-      tags: [Plugins]
-      summary: 启用/禁用插件
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ToggleRequest'
-      responses:
-        200:
-          description: 操作成功
-
-  /plugins/{id}:
-    delete:
-      tags: [Plugins]
-      summary: 删除插件
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        200:
-          description: 删除成功
-
-  /acl:
-    get:
-      tags: [ACL]
-      summary: 列出所有 ACL 规则
-      responses:
-        200:
-          description: ACL 规则列表
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ACLRule'
-    post:
-      tags: [ACL]
-      summary: 添加 ACL 规则
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ACLRule'
-      responses:
-        200:
-          description: 添加成功
-
-  /acl/{id}:
-    delete:
-      tags: [ACL]
-      summary: 删除 ACL 规则
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
-      responses:
-        200:
-          description: 删除成功
-
-  /chat-records/{chatAreaID}:
-    get:
-      tags: [ChatRecords]
-      summary: 获取聊天记录
-      parameters:
-        - name: chatAreaID
-          in: path
-          required: true
-          schema:
-            type: string
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            default: 20
-        - name: offset
-          in: query
-          schema:
-            type: integer
-            default: 0
-      responses:
-        200:
-          description: 聊天记录
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    $ref: '#/components/schemas/ChatRecordList'
-
-  /chat-areas:
-    get:
-      tags: [ChatAreas]
-      summary: 列出所有 ChatArea
-      responses:
-        200:
-          description: ChatArea 列表
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ChatArea'
-
-  /overview:
-    get:
-      tags: [Overview]
-      summary: 全局概览
-      responses:
-        200:
-          description: 全局统计
-          content:
-            application/json:
-              schema:
-                properties:
-                  data:
-                    $ref: '#/components/schemas/Overview'
+    # ---------- 通用 JSON 类型 ----------
+    JSONMap:
+      type: object
+      additionalProperties: true
+      description: 任意键值对
