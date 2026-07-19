@@ -26,6 +26,7 @@ func (s *Service) Login(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
 	user, err := s.DAO.User.GetByUsername(ctx, data.Username)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UserOrPasswordWrong, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -35,6 +36,7 @@ func (s *Service) Login(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UserOrPasswordWrong, nil))
 		return
 	}
+
 	token, err := middleware.GenerateToken(user.ID, user.Username, user.Role)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.GenTokenFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -53,6 +55,7 @@ func (s *Service) ChangePassword(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
 	user, err := s.DAO.User.GetByUsername(ctx, "admin")
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UserNotExists, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -62,6 +65,7 @@ func (s *Service) ChangePassword(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OriginPasswordWrong, nil))
 		return
 	}
+
 	hash, _ := bcrypt.GenerateFromPassword([]byte(data.NewPassword), bcrypt.DefaultCost)
 	if err := s.DAO.User.UpdatePassword(ctx, userID, string(hash)); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UpdatePasswordFail, dto.ErrorDetail{ErrorDetail: err.Error()}))

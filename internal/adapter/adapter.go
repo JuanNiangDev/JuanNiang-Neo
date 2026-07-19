@@ -138,6 +138,8 @@ func (p *Adapter) Status() ProviderStatus {
 	return s
 }
 
+func (p *Adapter) SyncConfig
+
 func (p *Adapter) call(action string, params map[string]any) (*APIResponse, error) {
 	if p.server == nil {
 		return nil, fmt.Errorf("adapter 未启动")
