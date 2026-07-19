@@ -25,3 +25,7 @@ type ACLRule struct {
 	UpdatedAt  time.Time
 	DeletedAt  gorm.DeletedAt `gorm:"index"`
 }
+
+func (ACLRule) TableName() string {
+	return "acl_rules"
+}

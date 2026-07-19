@@ -29,3 +29,7 @@ type Provider struct {
 	UpdatedAt   time.Time
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
+
+func (Provider) TableName() string {
+	return "providers"
+}

@@ -29,6 +29,10 @@ type BackgroundTask struct {
 	DeletedAt  gorm.DeletedAt `gorm:"index"`
 }
 
+func (BackgroundTask) TableName() string {
+	return "background_tasks"
+}
+
 // ---------- 后台任务步骤结果 ----------
 
 type TaskStepResult struct {

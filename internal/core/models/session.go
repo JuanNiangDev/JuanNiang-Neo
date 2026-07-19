@@ -19,3 +19,7 @@ type Session struct {
 	UpdatedAt  time.Time
 	DeletedAt  gorm.DeletedAt `gorm:"index"`
 }
+
+func (Session) TableName() string {
+	return "sessions"
+}

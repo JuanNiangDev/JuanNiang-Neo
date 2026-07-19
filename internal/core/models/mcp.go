@@ -22,3 +22,7 @@ type MCPServer struct {
 	UpdatedAt     time.Time
 	DeletedAt     gorm.DeletedAt `gorm:"index"`
 }
+
+func (MCPServer) TableName() string {
+	return "mcp_servers"
+}

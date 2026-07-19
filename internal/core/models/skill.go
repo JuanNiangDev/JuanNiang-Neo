@@ -24,3 +24,7 @@ type Skill struct {
 	UpdatedAt    time.Time
 	DeletedAt    gorm.DeletedAt `gorm:"index"`
 }
+
+func (Skill) TableName() string {
+	return "skills"
+}

@@ -23,3 +23,7 @@ type ChatArea struct {
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
+
+func (ChatArea) TableName() string {
+	return "chat_areas"
+}

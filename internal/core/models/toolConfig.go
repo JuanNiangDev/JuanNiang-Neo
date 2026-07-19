@@ -20,3 +20,7 @@ type ToolConfig struct {
 	UpdatedAt   time.Time
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
+
+func (ToolConfig) TableName() string {
+	return "tool_configs"
+}

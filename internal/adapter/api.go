@@ -12,17 +12,17 @@ import (
 
 // SendPrivateMsg 发送私聊消息。message 可以是 string / Segment / []Segment。
 // 返回发送成功后的消息 ID。
-func (p *Provider) SendPrivateMsg(userID int64, message any) (int64, error) {
+func (p *Adapter) SendPrivateMsg(userID int64, message any) (int64, error) {
 	return p.sendMsg("private", userID, message)
 }
 
 // SendGroupMsg 发送群聊消息。
-func (p *Provider) SendGroupMsg(groupID int64, message any) (int64, error) {
+func (p *Adapter) SendGroupMsg(groupID int64, message any) (int64, error) {
 	return p.sendMsg("group", groupID, message)
 }
 
 // sendMsg 通用消息发送。
-func (p *Provider) sendMsg(msgType string, id int64, message any) (int64, error) {
+func (p *Adapter) sendMsg(msgType string, id int64, message any) (int64, error) {
 	params := map[string]any{
 		"message_type": msgType,
 		"message":      normalizeMessage(message),
@@ -49,19 +49,19 @@ func (p *Provider) sendMsg(msgType string, id int64, message any) (int64, error)
 }
 
 // DeleteMsg 撤回消息。
-func (p *Provider) DeleteMsg(messageID int64) error {
+func (p *Adapter) DeleteMsg(messageID int64) error {
 	_, err := p.call("delete_msg", map[string]any{"message_id": messageID})
 	return err
 }
 
 // MarkMsgRead 标记消息已读。
-func (p *Provider) MarkMsgRead(messageID int64) error {
+func (p *Adapter) MarkMsgRead(messageID int64) error {
 	_, err := p.call("mark_msg_as_read", map[string]any{"message_id": messageID})
 	return err
 }
 
 // GetMsg 获取消息内容。
-func (p *Provider) GetMsg(messageID int64) (*MessageEvent, error) {
+func (p *Adapter) GetMsg(messageID int64) (*MessageEvent, error) {
 	rsp, err := p.call("get_msg", map[string]any{"message_id": messageID})
 	if err != nil {
 		return nil, err
@@ -78,17 +78,17 @@ func (p *Provider) GetMsg(messageID int64) (*MessageEvent, error) {
 // ============================================================
 
 // GetLoginInfo 获取登录号信息。
-func (p *Provider) GetLoginInfo() (*LoginInfo, error) {
+func (p *Adapter) GetLoginInfo() (*LoginInfo, error) {
 	return callAndParse[LoginInfo](p, "get_login_info", nil)
 }
 
 // GetStrangerInfo 获取陌生人信息。
-func (p *Provider) GetStrangerInfo(userID int64) (*StrangerInfo, error) {
+func (p *Adapter) GetStrangerInfo(userID int64) (*StrangerInfo, error) {
 	return callAndParse[StrangerInfo](p, "get_stranger_info", map[string]any{"user_id": userID})
 }
 
 // GetFriendList 获取好友列表。
-func (p *Provider) GetFriendList() ([]FriendInfo, error) {
+func (p *Adapter) GetFriendList() ([]FriendInfo, error) {
 	return callAndParseSlice[FriendInfo](p, "get_friend_list", nil)
 }
 
@@ -97,17 +97,17 @@ func (p *Provider) GetFriendList() ([]FriendInfo, error) {
 // ============================================================
 
 // GetGroupInfo 获取群信息。
-func (p *Provider) GetGroupInfo(groupID int64) (*GroupInfo, error) {
+func (p *Adapter) GetGroupInfo(groupID int64) (*GroupInfo, error) {
 	return callAndParse[GroupInfo](p, "get_group_info", map[string]any{"group_id": groupID})
 }
 
 // GetGroupList 获取群列表。
-func (p *Provider) GetGroupList() ([]GroupInfo, error) {
+func (p *Adapter) GetGroupList() ([]GroupInfo, error) {
 	return callAndParseSlice[GroupInfo](p, "get_group_list", nil)
 }
 
 // GetGroupMemberInfo 获取群成员信息。
-func (p *Provider) GetGroupMemberInfo(groupID, userID int64) (*GroupMemberInfo, error) {
+func (p *Adapter) GetGroupMemberInfo(groupID, userID int64) (*GroupMemberInfo, error) {
 	return callAndParse[GroupMemberInfo](p, "get_group_member_info", map[string]any{
 		"group_id": groupID,
 		"user_id":  userID,
@@ -115,12 +115,12 @@ func (p *Provider) GetGroupMemberInfo(groupID, userID int64) (*GroupMemberInfo, 
 }
 
 // GetGroupMemberList 获取群成员列表。
-func (p *Provider) GetGroupMemberList(groupID int64) ([]GroupMemberInfo, error) {
+func (p *Adapter) GetGroupMemberList(groupID int64) ([]GroupMemberInfo, error) {
 	return callAndParseSlice[GroupMemberInfo](p, "get_group_member_list", map[string]any{"group_id": groupID})
 }
 
 // GetGroupHonorInfo 获取群荣誉信息。
-func (p *Provider) GetGroupHonorInfo(groupID int64) (*GroupHonorInfo, error) {
+func (p *Adapter) GetGroupHonorInfo(groupID int64) (*GroupHonorInfo, error) {
 	return callAndParse[GroupHonorInfo](p, "get_group_honor_info", map[string]any{"group_id": groupID})
 }
 
@@ -129,7 +129,7 @@ func (p *Provider) GetGroupHonorInfo(groupID int64) (*GroupHonorInfo, error) {
 // ============================================================
 
 // KickGroupMember 踢出群成员。rejectAdd 为 true 时不再接收加群申请。
-func (p *Provider) KickGroupMember(groupID, userID int64, rejectAdd bool) error {
+func (p *Adapter) KickGroupMember(groupID, userID int64, rejectAdd bool) error {
 	_, err := p.call("set_group_kick", map[string]any{
 		"group_id":           groupID,
 		"user_id":            userID,
@@ -139,7 +139,7 @@ func (p *Provider) KickGroupMember(groupID, userID int64, rejectAdd bool) error 
 }
 
 // BanGroupMember 禁言群成员。duration 秒数, 0 表示解除。
-func (p *Provider) BanGroupMember(groupID, userID int64, duration int) error {
+func (p *Adapter) BanGroupMember(groupID, userID int64, duration int) error {
 	_, err := p.call("set_group_ban", map[string]any{
 		"group_id": groupID,
 		"user_id":  userID,
@@ -149,7 +149,7 @@ func (p *Provider) BanGroupMember(groupID, userID int64, duration int) error {
 }
 
 // SetGroupWholeBan 全员禁言。
-func (p *Provider) SetGroupWholeBan(groupID int64, enable bool) error {
+func (p *Adapter) SetGroupWholeBan(groupID int64, enable bool) error {
 	_, err := p.call("set_group_whole_ban", map[string]any{
 		"group_id": groupID,
 		"enable":   enable,
@@ -158,7 +158,7 @@ func (p *Provider) SetGroupWholeBan(groupID int64, enable bool) error {
 }
 
 // SetGroupAdmin 设置/取消管理员。
-func (p *Provider) SetGroupAdmin(groupID, userID int64, enable bool) error {
+func (p *Adapter) SetGroupAdmin(groupID, userID int64, enable bool) error {
 	_, err := p.call("set_group_admin", map[string]any{
 		"group_id": groupID,
 		"user_id":  userID,
@@ -168,7 +168,7 @@ func (p *Provider) SetGroupAdmin(groupID, userID int64, enable bool) error {
 }
 
 // SetGroupCard 设置群名片。
-func (p *Provider) SetGroupCard(groupID, userID int64, card string) error {
+func (p *Adapter) SetGroupCard(groupID, userID int64, card string) error {
 	_, err := p.call("set_group_card", map[string]any{
 		"group_id": groupID,
 		"user_id":  userID,
@@ -178,7 +178,7 @@ func (p *Provider) SetGroupCard(groupID, userID int64, card string) error {
 }
 
 // SetGroupName 设置群名。
-func (p *Provider) SetGroupName(groupID int64, name string) error {
+func (p *Adapter) SetGroupName(groupID int64, name string) error {
 	_, err := p.call("set_group_name", map[string]any{
 		"group_id":   groupID,
 		"group_name": name,
@@ -187,13 +187,13 @@ func (p *Provider) SetGroupName(groupID int64, name string) error {
 }
 
 // LeaveGroup 退出群。
-func (p *Provider) LeaveGroup(groupID int64) error {
+func (p *Adapter) LeaveGroup(groupID int64) error {
 	_, err := p.call("set_group_leave", map[string]any{"group_id": groupID})
 	return err
 }
 
 // SetGroupSpecialTitle 设置群专属头衔。
-func (p *Provider) SetGroupSpecialTitle(groupID, userID int64, title string) error {
+func (p *Adapter) SetGroupSpecialTitle(groupID, userID int64, title string) error {
 	_, err := p.call("set_group_special_title", map[string]any{
 		"group_id":      groupID,
 		"user_id":       userID,
@@ -207,7 +207,7 @@ func (p *Provider) SetGroupSpecialTitle(groupID, userID int64, title string) err
 // ============================================================
 
 // HandleFriendRequest 处理好友请求。flag 来自请求事件。
-func (p *Provider) HandleFriendRequest(flag string, approve bool, remark string) error {
+func (p *Adapter) HandleFriendRequest(flag string, approve bool, remark string) error {
 	_, err := p.call("set_friend_add_request", map[string]any{
 		"flag":    flag,
 		"approve": approve,
@@ -217,7 +217,7 @@ func (p *Provider) HandleFriendRequest(flag string, approve bool, remark string)
 }
 
 // HandleGroupRequest 处理群请求 (加群/邀请)。subType: add / invite。
-func (p *Provider) HandleGroupRequest(flag, subType string, approve bool, reason string) error {
+func (p *Adapter) HandleGroupRequest(flag, subType string, approve bool, reason string) error {
 	_, err := p.call("set_group_add_request", map[string]any{
 		"flag":     flag,
 		"sub_type": subType,
@@ -232,22 +232,22 @@ func (p *Provider) HandleGroupRequest(flag, subType string, approve bool, reason
 // ============================================================
 
 // GetImage 获取图片信息。
-func (p *Provider) GetImage(file string) (*FileInfo, error) {
+func (p *Adapter) GetImage(file string) (*FileInfo, error) {
 	return callAndParse[FileInfo](p, "get_image", map[string]any{"file": file})
 }
 
 // GetRecord 获取语音信息。
-func (p *Provider) GetRecord(file string) (*FileInfo, error) {
+func (p *Adapter) GetRecord(file string) (*FileInfo, error) {
 	return callAndParse[FileInfo](p, "get_record", map[string]any{"file": file})
 }
 
 // CanSendImage 检查是否可以发送图片。
-func (p *Provider) CanSendImage() (bool, error) {
+func (p *Adapter) CanSendImage() (bool, error) {
 	return callAndCheckYes(p, "can_send_image")
 }
 
 // CanSendRecord 检查是否可以发送语音。
-func (p *Provider) CanSendRecord() (bool, error) {
+func (p *Adapter) CanSendRecord() (bool, error) {
 	return callAndCheckYes(p, "can_send_record")
 }
 
@@ -256,7 +256,7 @@ func (p *Provider) CanSendRecord() (bool, error) {
 // ============================================================
 
 // SendLike 发送赞。
-func (p *Provider) SendLike(userID int64, times int) error {
+func (p *Adapter) SendLike(userID int64, times int) error {
 	if times <= 0 {
 		times = 1
 	}
@@ -268,27 +268,27 @@ func (p *Provider) SendLike(userID int64, times int) error {
 }
 
 // GetCookies 获取 cookies。
-func (p *Provider) GetCookies() (*Cookies, error) {
+func (p *Adapter) GetCookies() (*Cookies, error) {
 	return callAndParse[Cookies](p, "get_cookies", nil)
 }
 
 // GetCSRFToken 获取 CSRF token。
-func (p *Provider) GetCSRFToken() (*CSRF, error) {
+func (p *Adapter) GetCSRFToken() (*CSRF, error) {
 	return callAndParse[CSRF](p, "get_csrf_token", nil)
 }
 
 // GetCredentials 获取 cookies + CSRF token。
-func (p *Provider) GetCredentials() (*Credentials, error) {
+func (p *Adapter) GetCredentials() (*Credentials, error) {
 	return callAndParse[Credentials](p, "get_credentials", nil)
 }
 
 // GetStatus 获取运行状态。
-func (p *Provider) GetStatus() (*Status, error) {
+func (p *Adapter) GetStatus() (*Status, error) {
 	return callAndParse[Status](p, "get_status", nil)
 }
 
 // GetVersionInfo 获取版本信息。
-func (p *Provider) GetVersionInfo() (*VersionInfo, error) {
+func (p *Adapter) GetVersionInfo() (*VersionInfo, error) {
 	return callAndParse[VersionInfo](p, "get_version_info", nil)
 }
 
@@ -297,12 +297,12 @@ func (p *Provider) GetVersionInfo() (*VersionInfo, error) {
 // ============================================================
 
 // GetForwardMsg 获取合并转发消息内容。
-func (p *Provider) GetForwardMsg(messageID string) ([]ForwardNode, error) {
+func (p *Adapter) GetForwardMsg(messageID string) ([]ForwardNode, error) {
 	return callAndParseSlice[ForwardNode](p, "get_forward_msg", map[string]any{"message_id": messageID})
 }
 
 // SendGroupForwardMsg 发送合并转发消息到群。
-func (p *Provider) SendGroupForwardMsg(groupID int64, nodes []ForwardNode) (int64, error) {
+func (p *Adapter) SendGroupForwardMsg(groupID int64, nodes []ForwardNode) (int64, error) {
 	rsp, err := p.call("send_group_forward_msg", map[string]any{
 		"group_id": groupID,
 		"messages": nodes,
@@ -341,7 +341,7 @@ func normalizeMessage(msg any) any {
 }
 
 // callAndParse 调用 API 并解析单个对象响应。
-func callAndParse[T any](p *Provider, action string, params map[string]any) (*T, error) {
+func callAndParse[T any](p *Adapter, action string, params map[string]any) (*T, error) {
 	rsp, err := p.call(action, params)
 	if err != nil {
 		return nil, err
@@ -361,7 +361,7 @@ func callAndParse[T any](p *Provider, action string, params map[string]any) (*T,
 }
 
 // callAndParseSlice 调用 API 并解析数组响应。
-func callAndParseSlice[T any](p *Provider, action string, params map[string]any) ([]T, error) {
+func callAndParseSlice[T any](p *Adapter, action string, params map[string]any) ([]T, error) {
 	rsp, err := p.call(action, params)
 	if err != nil {
 		return nil, err
@@ -381,7 +381,7 @@ func callAndParseSlice[T any](p *Provider, action string, params map[string]any)
 }
 
 // callAndCheckYes 检查 API 响应 data 中 yes 字段是否为 true。
-func callAndCheckYes(p *Provider, action string) (bool, error) {
+func callAndCheckYes(p *Adapter, action string) (bool, error) {
 	rsp, err := p.call(action, nil)
 	if err != nil {
 		return false, err

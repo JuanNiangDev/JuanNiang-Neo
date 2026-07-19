@@ -21,3 +21,7 @@ type ChatRecord struct {
 	UpdatedAt  time.Time
 	DeletedAt  gorm.DeletedAt `gorm:"index"`
 }
+
+func (ChatRecord) TableName() string {
+	return "chat_records"
+}

@@ -15,6 +15,10 @@ type AdminUser struct {
 	Role         string `gorm:"default:admin"`
 }
 
+func (AdminUser) TableName() string {
+	return "admin_users"
+}
+
 // ---------- 管理员 QQ ----------
 
 type AdminQQ struct {
@@ -22,4 +26,8 @@ type AdminQQ struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
+}
+
+func (AdminQQ) TableName() string {
+	return "admin_qqs"
 }

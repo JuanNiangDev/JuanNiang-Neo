@@ -19,3 +19,7 @@ type Plugin struct {
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
+
+func (Plugin) TableName() string {
+	return "plugins"
+}

@@ -18,3 +18,7 @@ type ShortTermMemory struct {
 	UpdatedAt   time.Time
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
 }
+
+func (ShortTermMemory) TableName() string {
+	return "short_term_memories"
+}

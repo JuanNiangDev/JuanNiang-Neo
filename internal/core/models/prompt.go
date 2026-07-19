@@ -27,3 +27,7 @@ type Prompt struct {
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
+
+func (Prompt) TableName() string {
+	return "prompts"
+}

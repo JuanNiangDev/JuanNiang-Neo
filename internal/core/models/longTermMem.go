@@ -19,6 +19,10 @@ type LongTermMemory struct {
 	DeletedAt    gorm.DeletedAt `gorm:"index"`
 }
 
+func (LongTermMemory) TableName() string {
+	return "long_term_memories"
+}
+
 // ---------- 长期记忆条目 ----------
 
 type LongTermMemoryItem struct {
@@ -28,4 +32,8 @@ type LongTermMemoryItem struct {
 	Embedding  []byte    `gorm:"type:bytea"`
 	Metadata   JSONMap   `gorm:"type:jsonb;default:'{}'"`
 	CreatedAt  time.Time `gorm:"index"`
+}
+
+func (LongTermMemoryItem) TableName() string {
+	return "long_term_memory_items"
 }

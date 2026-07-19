@@ -35,7 +35,10 @@ func (p *Adapter) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("adapter start: %w", err)
 	}
+	p.mu.Lock()
 	p.server = srv
+	p.closed = false
+	p.mu.Unlock()
 	slog.Info("adapter 已启动", "addr", p.cfg.Addr)
 	return nil
 }
@@ -68,41 +71,6 @@ func (p *Adapter) SelfID() int64 {
 		return 0
 	}
 	return p.server.selfID()
-}
-
-func (p *Adapter) GetCurrentConfig() Config {
-	return p.cfg
-}
-
-func (p *Adapter) UpdateConfig(ctx context.Context, cfg Config) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-
-	p.mu.Lock()
-	defer func() {
-		cancel()
-		p.mu.Unlock()
-	}()
-
-	p.cfg.Token = cfg.Token
-	if cfg.Admins != nil {
-		p.cfg.Admins = append([]int64{}, cfg.Admins...)
-	}
-
-	slog.Info("adapter 重启中")
-
-	if err := p.Stop(ctx); err != nil {
-		slog.Error("adapter 配置更新出错 (Stop)", "err", err.Error())
-		return err
-	}
-
-	if err := p.Start(ctx); err != nil {
-		slog.Error("adapter 配置更新出错 (Start)", "err", err.Error())
-		return err
-	}
-
-	slog.Info("adapter 配置已更新")
-
-	return nil
 }
 
 func (p *Adapter) Restart(ctx context.Context) error {
@@ -138,7 +106,30 @@ func (p *Adapter) Status() ProviderStatus {
 	return s
 }
 
-func (p *Adapter) SyncConfig
+func (p *Adapter) SyncConfig(ctx context.Context, conf Config) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	p.mu.Lock()
+	p.cfg = conf
+	p.mu.Unlock()
+
+	slog.Info("adapter 重启中")
+
+	if err := p.Stop(ctx); err != nil {
+		slog.Error("adapter 配置更新出错 (Stop)", "err", err.Error())
+		return err
+	}
+
+	if err := p.Start(ctx); err != nil {
+		slog.Error("adapter 配置更新出错 (Start)", "err", err.Error())
+		return err
+	}
+
+	slog.Info("adapter 配置已更新")
+
+	return nil
+}
 
 func (p *Adapter) call(action string, params map[string]any) (*APIResponse, error) {
 	if p.server == nil {
