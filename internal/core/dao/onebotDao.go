@@ -36,3 +36,40 @@ func (d *Onebot11AdapterDao) GetAdapterConfig(ctx context.Context) (*models.Oneb
 func (d *Onebot11AdapterDao) UpdateAdapterConfig(ctx context.Context, conf *models.Onebot11Adapter) error {
 	return d.db.WithContext(ctx).Where("id = 1").Updates(conf).Error
 }
+
+// AddAdminQQ 添加管理员 QQ 号，已存在则忽略。
+func (d *Onebot11AdapterDao) AddAdminQQ(ctx context.Context, qq string) error {
+	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var conf models.Onebot11Adapter
+		if err := tx.First(&conf).Error; err != nil {
+			return err
+		}
+		for _, v := range conf.AdminQQNumbers {
+			if v == qq {
+				return nil
+			}
+		}
+		conf.AdminQQNumbers = append(conf.AdminQQNumbers, qq)
+		return tx.Where("id = 1").Update("admin_qq_numbers", conf.AdminQQNumbers).Error
+	})
+}
+
+// RemoveAdminQQ 移除管理员 QQ 号。
+func (d *Onebot11AdapterDao) RemoveAdminQQ(ctx context.Context, qq string) error {
+	return d.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var conf models.Onebot11Adapter
+		if err := tx.First(&conf).Error; err != nil {
+			return err
+		}
+		list := make([]string, 0, len(conf.AdminQQNumbers))
+		for _, v := range conf.AdminQQNumbers {
+			if v != qq {
+				list = append(list, v)
+			}
+		}
+		if len(list) == len(conf.AdminQQNumbers) {
+			return nil // 未找到，无需更新
+		}
+		return tx.Where("id = 1").Update("admin_qq_numbers", list).Error
+	})
+}

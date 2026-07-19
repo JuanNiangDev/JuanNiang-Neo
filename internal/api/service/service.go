@@ -1,6 +1,7 @@
 package service
 
 import (
+	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/api/dto"
 	"archive/zip"
 	"context"
@@ -75,95 +76,10 @@ func (s *Service) ChangePassword(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
-func (s *Service) ListAdminQQs(ctx context.Context, c *app.RequestContext) {
-	raw, err := s.DAO.AdminQQ.List(ctx)
-
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
-	list := dto.Model2Resp_AdminQQ(raw)
-
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, list))
-}
-
-func (s *Service) AddAdminQQ(ctx context.Context, c *app.RequestContext) {
-	var data dto.AddAdminQQReq
-
-	if err := c.BindJSON(&data); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	if data.QQ <= 0 {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidQQNumber, nil))
-		return
-	}
-	if err := s.DAO.AdminQQ.Add(ctx, data.QQ); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
-	admins, err := s.DAO.AdminQQ.List(ctx)
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
-	qqs := make([]int64, len(admins))
-	for i, a := range admins {
-		qqs[i] = a.ID
-	}
-
-	conf := s.Adapter.GetCurrentConfig()
-	conf.Admins = qqs
-
-	if err := s.Adapter.UpdateConfig(ctx, conf); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
-}
-
-func (s *Service) DeleteAdminQQ(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
-	qq, _ := strconv.ParseInt(id, 10, 64)
-	if qq <= 0 {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidQQNumber, nil))
-		return
-	}
-	if err := s.DAO.AdminQQ.Remove(ctx, qq); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
-	admins, err := s.DAO.AdminQQ.List(ctx)
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
-	qqs := make([]int64, len(admins))
-	for i, a := range admins {
-		qqs[i] = a.ID
-	}
-
-	conf := s.Adapter.GetCurrentConfig()
-	conf.Admins = qqs
-
-	if err := s.Adapter.UpdateConfig(ctx, conf); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
-}
-
 func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
 	raw := s.Adapter.Status()
 
-	status := dto.ProviderStatus{
+	status := dto.AdapterStatus{
 		Running:    raw.Running,
 		ListenAddr: raw.ListenAddr,
 		SelfID:     raw.SelfID,
@@ -174,6 +90,24 @@ func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, status))
 }
 
+func (s *Service) GetAdapterConfig(ctx context.Context, c *app.RequestContext) {
+	raw, err := s.DAO.Onebot11Adapter.GetAdapterConfig(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	data := dto.AdapterConfig{
+		Addr:           raw.Addr,
+		Port:           raw.Port,
+		Token:          raw.Token,
+		AdminQQNumbers: raw.AdminQQNumbers,
+		Enabled:        raw.Enabled,
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, data))
+}
+
 func (s *Service) UpdateAdapterConfig(ctx context.Context, c *app.RequestContext) {
 	var data dto.UpdateAdapterConfigReq
 
@@ -182,35 +116,30 @@ func (s *Service) UpdateAdapterConfig(ctx context.Context, c *app.RequestContext
 		return
 	}
 
-	if err := s.DAO.Onebot11Adapter.
-
-	conf := s.Adapter.GetCurrentConfig()
-	if conf.Token != data.Token {
-		conf.Token
+	conf := adapter.Config{
+		Addr:   data.Addr,
+		Port:   data.Port,
+		Token:  data.Token,
+		Admins: data.AdminQQNumbers,
+		Enable: data.Enabled,
 	}
 
-	if err := s.AdapterCb.UpdateConfig(req.Token, req.Admins); err != nil {
-		fail(c, 500, err.Error())
+	if err := s.Adapter.SyncConfig(ctx, conf); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.UpdateAdapterConfigFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	ok(c, s.AdapterCb.Status())
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
 func (s *Service) RestartAdapter(ctx context.Context, c *app.RequestContext) {
-	if s.AdapterCb == nil {
-		fail(c, 500, "adapter 未初始化")
+	if err := s.Adapter.Restart(ctx); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.AdapterCb.Restart(); err != nil {
-		fail(c, 500, err.Error())
-		return
-	}
-	ok(c, s.AdapterCb.Status())
-}
 
-// ====================================================================
-// Provider
-// ====================================================================
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
 
 func (s *Service) ListProviders(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.Provider.List(ctx, "")

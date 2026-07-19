@@ -20,7 +20,6 @@ import (
 func AutoMigrate(db *gorm.DB) error {
 	return db.AutoMigrate(
 		&models.AdminUser{},
-		&models.AdminQQ{},
 		&models.Provider{},
 		&models.MCPServer{},
 		&models.Skill{},

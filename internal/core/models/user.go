@@ -1,8 +1,6 @@
 package models
 
 import (
-	"time"
-
 	"gorm.io/gorm"
 )
 
@@ -17,17 +15,4 @@ type AdminUser struct {
 
 func (AdminUser) TableName() string {
 	return "admin_users"
-}
-
-// ---------- 管理员 QQ ----------
-
-type AdminQQ struct {
-	ID        int64 `gorm:"primaryKey"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index"`
-}
-
-func (AdminQQ) TableName() string {
-	return "admin_qqs"
 }

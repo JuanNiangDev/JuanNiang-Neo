@@ -12,7 +12,8 @@ type Config struct {
 	Addr   string // 监听地址, 格式 host:port
 	Port   int
 	Token  string
-	Admins []int64
+	Admins []string
+	Enable bool
 }
 
 type Adapter struct {
@@ -36,8 +37,12 @@ func (p *Adapter) Start(ctx context.Context) error {
 		return fmt.Errorf("adapter start: %w", err)
 	}
 	p.mu.Lock()
-	p.server = srv
-	p.closed = false
+	if !p.closed {
+		return nil
+	} else {
+		p.server = srv
+		p.closed = false
+	}
 	p.mu.Unlock()
 	slog.Info("adapter 已启动", "addr", p.cfg.Addr)
 	return nil
@@ -103,6 +108,7 @@ func (p *Adapter) Status() ProviderStatus {
 	s.SelfID = p.server.selfID()
 	s.ConnCount = p.server.connCount()
 	s.ConnIDs = p.server.connIDs()
+	s
 	return s
 }
 
@@ -113,6 +119,20 @@ func (p *Adapter) SyncConfig(ctx context.Context, conf Config) error {
 	p.mu.Lock()
 	p.cfg = conf
 	p.mu.Unlock()
+
+	if conf.Enable {
+		if err := p.Start(ctx); err != nil {
+			slog.Error("adapter 启动Adapter出错", "err", err.Error())
+			return err
+		}
+	}
+
+	if !conf.Enable {
+		if err := p.Stop(ctx); err != nil {
+			slog.Error("adapter 停止Adapter出错", "err", err.Error())
+			return err
+		}
+	}
 
 	slog.Info("adapter 重启中")
 
