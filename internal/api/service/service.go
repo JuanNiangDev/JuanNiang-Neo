@@ -2,6 +2,7 @@ package service
 
 import (
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/api/dto"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/core/models"
@@ -223,6 +224,18 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		IsActive:    data.IsActive,
 	}
 
+	providerConfig_ := provider.ProviderConfig{
+		ID:          id,
+		Name:        data.Name,
+		Type:        provider.ModelType(data.Type),
+		Endpoint:    data.Endpoint,
+		Token:       data.Token,
+		Model:       data.Model,
+		Temperature: data.Temperature,
+	}
+
+	s.ProviderGroup.SyncConfig(providerConfig_)
+
 	if err := s.DAO.Provider.Update(ctx, &providerConfig); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -232,10 +245,14 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
-	if err := s.DAO.Provider.Delete(ctx, c.Param("id")); err != nil {
+	id := c.Param("id")
+
+	if err := s.DAO.Provider.Delete(ctx, id); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	s.ProviderGroup.DelProvider(id)
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
@@ -243,13 +260,38 @@ func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
 func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 	var data dto.ToggleProviderReq
 
+	id := c.Param("id")
+
 	if err := c.BindJSON(&data); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	if err := s.DAO.Provider.SetActive(ctx, c.Param("id"), data.IsActive); err != nil {
+
+	if err := s.DAO.Provider.SetActive(ctx, id, data.IsActive); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
+	}
+
+	if data.IsActive {
+		raw, err := s.DAO.Provider.GetByID(ctx, id)
+		if err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+
+		provideConfig := provider.ProviderConfig{
+			ID:          id,
+			Name:        raw.Name,
+			Type:        provider.ModelType(raw.Type),
+			Endpoint:    raw.Endpoint,
+			Token:       raw.Token,
+			Model:       raw.Model,
+			Temperature: raw.Temperature,
+		}
+
+		s.ProviderGroup.AddProvider(provider.NewProvider(provideConfig))
+	} else {
+		s.ProviderGroup.DelProvider(id)
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
