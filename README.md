@@ -1,5 +1,7 @@
 # JuanNiang-Neo
 
+![banner](docs/img/banner.png)
+
 > 复活吧卷娘 — 基于 OneBot11 协议的 LLM QQ 聊天 Agent
 
 ***JuanNiang-Neo 是一个以 Go 1.25 构建的 QQ 机器人项目，红岩网校的吉祥物卷娘。***
