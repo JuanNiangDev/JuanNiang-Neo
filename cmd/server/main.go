@@ -274,8 +274,16 @@ func parseAdmins(s string) []string {
 func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
 	cfg, err := daos.T2I.GetConfig(ctx)
 	if err != nil {
-		slog.Warn("T2I 配置加载失败，使用默认", "err", err)
-		return
+		// 数据库无配置 → 初始化默认配置，保证前端读取不报错
+		if initErr := daos.T2I.InitConfig(ctx); initErr != nil {
+			slog.Warn("T2I 默认配置初始化失败", "err", initErr)
+			return
+		}
+		cfg, err = daos.T2I.GetConfig(ctx)
+		if err != nil {
+			slog.Warn("T2I 配置加载失败，使用默认", "err", err)
+			return
+		}
 	}
 	if !cfg.IsActive {
 		slog.Info("T2I 未启用")
@@ -297,8 +305,16 @@ func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, 
 func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
 	cfg, err := daos.Sandbox.GetConfig(ctx)
 	if err != nil {
-		slog.Warn("Sandbox 配置加载失败，使用默认", "err", err)
-		return
+		// 数据库无配置 → 初始化默认配置，保证前端读取不报错
+		if initErr := daos.Sandbox.InitConfig(ctx); initErr != nil {
+			slog.Warn("Sandbox 默认配置初始化失败", "err", initErr)
+			return
+		}
+		cfg, err = daos.Sandbox.GetConfig(ctx)
+		if err != nil {
+			slog.Warn("Sandbox 配置加载失败，使用默认", "err", err)
+			return
+		}
 	}
 	if !cfg.IsActive {
 		slog.Info("Sandbox 未启用")
