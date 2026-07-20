@@ -1,8 +1,10 @@
 # JuanNiang-Neo
 
-> 复活吧卷娘 — 基于 OneBot11 协议的 LLM QQ 聊天 Agent 系统
+> 复活吧卷娘 — 基于 OneBot11 协议的 LLM QQ 聊天 Agent
 
-JuanNiang-Neo 是一个以 Go 1.25 构建的 QQ 机器人项目，模块路径 `JuanNiang-Neo`。核心由 LLM 驱动的对话 Agent（`HagoCenter` 聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成，长任务以 errgroup 风格在后台执行，再由独立 Drainer Agent 排空缓冲并发送 QQ 消息。项目同时包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
+***JuanNiang-Neo 是一个以 Go 1.25 构建的 QQ 机器人项目，红岩网校的吉祥物卷娘。***
+
+核心由 LLM 驱动的对话 Agent（`HagoCenter` 聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成，长任务以 errgroup 风格在后台执行，再由独立 Drainer Agent 排空缓冲并发送 QQ 消息。项目同时包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
 
 ## 主要特性
 
@@ -22,7 +24,6 @@ JuanNiang-Neo 是一个以 Go 1.25 构建的 QQ 机器人项目，模块路径 `
 | [call-stack.md](docs/call-stack.md) | 调用栈 |
 | [implementation.md](docs/implementation.md) | 实现细节 |
 | [api.md](docs/api.md) | Web API 文档 |
-| [guidance.md](docs/guidance.md) | 设计指引（源真规则） |
 | [provider.md](docs/provider.md) | Provider 设计 |
 | [deployment.md](docs/deployment.md) | 部署与调试指南 |
 | [pluggin/architecture.md](docs/pluggin/architecture.md) | 插件系统架构 |
