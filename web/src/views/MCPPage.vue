@@ -9,7 +9,7 @@
     </div>
     <v-data-table :headers="headers" :items="items" :loading="loading">
       <template #item.is_active="{ item }">
-        <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details @update:model-value="(v: boolean) => toggle(item.id, v)" />
+        <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details @update:model-value="(v) => toggle(item.id, !!v)" />
       </template>
       <template #item.auto_reconnect="{ item }">
         <v-chip :color="item.auto_reconnect ? 'success' : 'grey'" size="small" variant="tonal">{{ item.auto_reconnect ? '是' : '否' }}</v-chip>

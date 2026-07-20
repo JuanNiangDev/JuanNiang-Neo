@@ -1,0 +1,44 @@
+# .dockerignore - 减少 docker build context
+# 不影响 git 行为, 只影响 docker 构建时上传的上下文
+
+# VCS
+.git
+.gitignore
+.github
+.idea/
+.vscode/
+.opencode/
+
+# Go 构建产物 / 工作区
+bin/
+*.test
+*.out
+*.coverprofile
+profile.cov
+go.work
+go.work.sum
+
+# 前端构建产物与依赖 (容器内重新构建)
+web/node_modules/
+web/dist/
+web/.vite/
+web/*.local
+
+# 运行时数据/日志
+data/
+*.log
+
+# 文档与编排本身不需进镜像 (Dockerfile 仍会读取 context)
+docs/
+README.md
+AGENTS.md
+LICENSE
+Makefile
+.env
+.env.example
+
+# OS / Editor
+.DS_Store
+*.swp
+*.swo
+*~

@@ -17,7 +17,7 @@ export interface AddMCPServerReq { name: string; server_url: string; headers?: R
 export interface ShortTermMemoryResp { id: string; chat_area_id: string; window_size: number; auto_compact: boolean; created_at: string }
 export interface LongTermMemoryResp { id: string; chat_area_id: string; hot_area_size: number; hot_memory_ttl: number; created_at: string }
 
-export interface PromptResp { id: string; name: string; content: string; type: string; is_active: boolean; variables: string[]; created_at: string }
+export interface PromptResp { id: string; name: string; content: string; type: string; is_active: boolean; is_system: boolean; variables: string[]; created_at: string }
 export interface AddPromptReq { name: string; content: string; type: string; is_active: boolean; variables?: string[] }
 
 export interface SessionResp { id: string; chat_area_id: string; model: string; token_usage: number; meta_data: Record<string, any>; created_at: string }

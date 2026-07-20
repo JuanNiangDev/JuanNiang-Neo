@@ -1,38 +1,85 @@
-# JuanNiang-Neo 配置文件
+# =============================================================================
+# JuanNiang-Neo 参考配置文件 (advisory only)
+# =============================================================================
+# 二进制运行时**只读环境变量**, 不读这个文件。本文件只是 env var 的速查表
+# 与默认值快照。请把它视为文档, 而非真正的运行配置。
+#
+# 部署时可任选其一:
+#   1. .env + docker compose    (compose 自动读取同目录 .env, 见 .env.example)
+#   2. systemd EnvironmentFile= (env 文件每行 KEY=VALUE)
+#   3. 直接 export KEY=VALUE
+#
+# 字段命名规则: 与环境变量一一对应, 全小写下划线, 不带前缀。
+# =============================================================================
 
-server:
-  # OneBot11 反向 WebSocket 监听端口
-  ob_port: 8081
-  # Web 管理面板 API 监听地址
-  api_addr: ":8090"
 
-# 数据库
-database:
-  host: localhost
-  port: 5432
-  user: postgres
-  password: postgres
-  db: juan
+# ---------- Web 管理面板 (Hertz) ----------
+# API_ADDR: 监听地址; 生产裸跑可改 ":8090", 容器内通常保持 ":8090"
+# WEB_DIR:  前端构建产物目录; 留空表示后端不服务 SPA (开发模式走 Vite :3000)
+#           生产/容器默认 "web/dist", 容器内 "/app/web/dist"
+API_ADDR: ":8090"
+WEB_DIR: "web/dist"
 
-# 缓存
-redis:
-  addr: localhost:6379
-  password: root
-  db: 0
 
-# 鉴权
-auth:
-  jwt_secret: "change-me-in-production"
-  ob_token: ""
+# ---------- OneBot11 反向 WebSocket 适配器 ----------
+# OB_PORT:   反向 WS 服务端端口, QQ 机器人客户端连这里
+# OB_TOKEN:  接入校验 token; 客户端必须带同样 token; 留空 = 不校验
+# OB_ADMINS: 管理员 QQ 号, 逗号分隔 (列表); 命中后允许接搜 OneBot11 上行指令
+OB_PORT: 8081
+OB_TOKEN: ""
+OB_ADMINS: ""  # 例: "10001,10002"
 
-# 管理员
-  admins: []
 
-# 基础设施
-infra:
-  sandbox_url: "http://localhost:8080"
-  sandbox_api_key: ""
-  t2i_url: "http://localhost:8999"
+# ---------- 鉴权 (Web 面板) ----------
+# JWT_SECRET: JWT HS256 签名密钥; 生产必须改
+# 默认管理员 用户名 admin / 密码 Admin123 (首登必改, 在 Web 面板「设置」页)
+JWT_SECRET: "change-me-in-production"
 
-# 默认 LLM Provider (启动后通过 Web API 管理)
+
+# ---------- Postgres (GORM) ----------
+DB_HOST: "localhost"
+DB_PORT: "5432"
+DB_USER: "postgres"
+DB_PASSWORD: "postgres"
+DB_NAME: "juan"
+# 注: 表结构由 GORM AutoMigrate 自动创建, 无需手动执行 sql/init.sql
+
+
+# ---------- Redis (cache + session 历史) ----------
+REDIS_ADDR: "localhost:6379"
+REDIS_PASSWORD: "root"
+REDIS_DB: 0
+
+
+# ---------- 可选基础设施 (T2I / Sandbox) ----------
+# 这两项是"未启用时的参考默认值"; 实际启用请在 Web 面板操作,
+# 配置持久化在 Postgres, 由后端在启动时从 DB 加载, 不再读这里的值。
+# 留空或不写均可。
+#
+# T2I_BASE_URL:    文生图服务 BaseURL
+# SANDBOX_BASE_URL: 代码沙箱服务 BaseURL
+# SANDBOX_API_KEY:  代码沙箱 API Key
+T2I_BASE_URL: ""
+SANDBOX_BASE_URL: ""
+SANDBOX_API_KEY: ""
+
+
+# ---------- 已弃用字段 (仅用于历史兼容提示, 二进制不读) ----------
+# 下列字段曾在旧版 config.yaml 中出现, 现已迁移到环境变量或 Web API:
+#   server.ob_port      -> OB_PORT
+#   server.api_addr     -> API_ADDR
+#   database.*          -> DB_*
+#   redis.*             -> REDIS_*
+#   auth.jwt_secret     -> JWT_SECRET
+#   auth.ob_token       -> OB_TOKEN
+#   administrators       -> OB_ADMINS
+#   infra.sandbox_url   -> SANDBOX_BASE_URL (参考, 实际配走 Web API)
+#   infra.sandbox_api_key -> SANDBOX_API_KEY (参考, 实际配走 Web API)
+#   infra.t2i_url       -> T2I_BASE_URL (参考, 实际配走 Web API)
+#   providers           -> 通过 Web API /api/v1/providers 管理 (Postgres 持久化)
+
+
+# ---------- LLM Provider 配置 ----------
+# 启动后通过 Web API 管理 (POST /api/v1/providers), 持久化在 Postgres。
+# 不再在此静态声明。
 providers: []

@@ -1113,3 +1113,36 @@ es.addEventListener('log', (e) => {
 - Memory 接口只管理配置；实际短期消息在 Redis、长期条目在 Postgres
 - ChatArea 由系统自动创建（消息驱动），无手动创建接口
 - T2I/Sandbox/Webhook 都是单行配置（ID=1）
+
+---
+
+## 20. 前端 SPA 静态服务
+
+后端通过 Hertz `NoRoute` 兜底, 同端口 (`:8090`) 服务 Vue 前端 SPA, 路径与 API 互不冲突:
+
+| 请求路径模式            | 行为                                                    |
+|-------------------------|---------------------------------------------------------|
+| `/api/v1/<已注册路由>`   | 走 Hertz 路由, JWT 鉴权 (除 `/login`)                   |
+| `/health`                | 内联健康检查 (root, 不需鉴权)                            |
+| `/api/*` (未命中)        | 标准信封 404: `{status:40400, info:"资源不存在", data:null}` |
+| 其它任何路径             | 文件存在 → serve 文件; 不存在 → 回退 `index.html` (Vue Router history 模式) |
+| 前端未构建 (`index.html` 缺失) | 返回 200 + 文本引导页 ("请先构建前端")                |
+
+**入口与配置:**
+
+- 启动: `cmd/server/main.go` 读取环境变量 `WEB_DIR` (默认 `web/dist`), 传入 `engine.New(addr, webDir, svc)`。
+- 实现: `internal/web/web.go` 的 `SPAHandler(webDir)`, 在 `internal/api/engine/engine.go` 中通过 `h.NoRoute(...)` 注册。
+- 路径穿越防护: 通过 `filepath.Rel` 校验, 文件必须落在 `webDir` 之内。
+- **不嵌入二进制**: 前端是磁盘文件, 便于只换前端不重编 Go 的部署节奏。
+- 开发模式: Vite `:3000` 热更新, `vite.config.ts` 代理 `/api` → `:8090`, 因此开发期 Go 的 SPA fallback 不会被触发。
+- 生产模式: 容器内 `WEB_DIR=/app/web/dist`, 单端口暴露 Web 面板 + API + 前端。
+
+**404 信封示例** (未命中的 `/api/*`):
+
+```json
+{
+  "status": 40400,
+  "info": "资源不存在",
+  "data": null
+}
+```

@@ -26,6 +26,7 @@ import (
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
+	"JuanNiang-Neo/internal/web"
 )
 
 func main() {
@@ -164,7 +165,16 @@ func main() {
 	loadSandboxFromDB(ctx, svc, coreInst.DAO, hago)
 	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
 	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
-	webEngine := engine.New(env("API_ADDR", ":8090"), svc)
+
+	// 前端静态资源目录: 默认 web/dist (构建产物), 可通过 WEB_DIR 覆盖。
+	//   - 开发模式: 前端走 Vite (:3000) 代理 /api 到 :8090, 后端无需服务前端。
+	//   - 生产/裸跑: make web-build 后, 后端直接 serve web/dist 作为 SPA。
+	//   - 目录不存在或未构建时, 后端走引导提示页, 不影响 API 与 /health。
+	webDir := env("WEB_DIR", "web/dist")
+	if err := web.EnsureDir(webDir); err != nil {
+		slog.Warn("WEB_DIR 校验失败", "dir", webDir, "err", err)
+	}
+	webEngine := engine.New(env("API_ADDR", ":8090"), webDir, svc)
 
 	go func() {
 		slog.Info("Web API 已启动", "addr", env("API_ADDR", ":8090"))

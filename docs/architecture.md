@@ -99,3 +99,25 @@ LongTermMemory (1) ──< LongTermMemoryItem (1:N)
 - **例外**: Lua 插件配置由 `data/pluggins/<name>/pluggin.yaml` 管理
 - **服务开关**: T2I 和 Sandbox 为可插拔服务, 未配置时自动返回未启用提示, 无需手动配置
 - **原则**: 内存中的有状态模块 (Agent/Memory/Skill) 最终与 DB 同步
+
+## 前端 SPA 静态服务
+
+后端复用 Hertz 引擎同端口 (默认 `:8090`) 服务前端 SPA, 不引入额外前端服务器:
+
+```
+浏览器 ──> :8090
+              ├── /api/v1/*    -> Hertz 路由 (业务 API, JWT 鉴权)
+              ├── /health       -> 内联健康检查
+              └── 其它路径      -> internal/web.SPAHandler
+                                   ├── /api/* (未命中) -> 标准 404 信封
+                                   ├── 文件存在       -> serve 文件
+                                   ├── 文件缺失        -> 回退 index.html (Vue Router history)
+                                   └── 无 index.html  -> 200 引导提示页
+```
+
+- 入口: `cmd/server/main.go` 读取 `WEB_DIR` (默认 `web/dist`) 并传入 `engine.New(addr, webDir, svc)`。
+- 实现: `internal/web/web.go` 的 `SPAHandler(webDir)`。挂在 `h.NoRoute(...)` 上, 兜底所有未命中路由。
+- **不嵌入二进制**: 前端以磁盘文件形式存在 `WEB_DIR`, 便于"只换前端不重编 Go"的部署节奏; 与项目"配置在盘上"哲学一致。
+- **开发模式**: 前端走 Vite `:3000` 热更新, `vite.config.ts` 代理 `/api` → `:8090`, 因此开发期 Go 的 SPA fallback 不会被触发。
+- **生产模式 (容器)**: `deployments/Dockerfile` 多阶段构建把 `web/dist` 拷到 `/app/web/dist`, `ENV WEB_DIR=/app/web/dist`, 单容器同端口暴露 Web 面板 + API + 前端。
+- 路径穿越防护: `SPAHandler` 通过 `filepath.Rel` 校验目标文件必须落在 `webDir` 之内。

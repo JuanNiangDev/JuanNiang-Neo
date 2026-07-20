@@ -8,16 +8,17 @@
     <v-data-table :headers="headers" :items="items" :loading="loading">
       <template #item.type="{ item }">
         <v-chip size="small" variant="tonal" :color="item.type==='system'?'primary':item.type==='personality'?'warning':'info'">{{ item.type }}</v-chip>
+        <v-chip v-if="item.is_system" size="small" variant="flat" color="secondary" class="ml-2">系统</v-chip>
       </template>
       <template #item.is_active="{ item }">
-        <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details @update:model-value="(v: boolean) => toggle(item.id, v)" />
+        <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details :disabled="item.is_system" @update:model-value="(v) => toggle(item.id, !!v)" />
       </template>
       <template #item.content="{ item }">
         <div style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" class="text-caption">{{ item.content }}</div>
       </template>
       <template #item.actions="{ item }">
-        <v-btn icon="mdi-pencil" size="small" variant="text" color="primary" @click="openEdit(item)" />
-        <v-btn icon="mdi-delete" size="small" variant="text" color="error" @click="confirmDelete(item)" />
+        <v-btn icon="mdi-pencil" size="small" variant="text" color="primary" :disabled="item.is_system" @click="openEdit(item)" />
+        <v-btn icon="mdi-delete" size="small" variant="text" color="error" :disabled="item.is_system" @click="confirmDelete(item)" />
       </template>
     </v-data-table>
 

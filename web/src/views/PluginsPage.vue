@@ -10,7 +10,7 @@
     </div>
     <v-data-table :headers="headers" :items="items" :loading="loading">
       <template #item.is_active="{ item }">
-        <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details @update:model-value="(v: boolean) => toggle(item.id, v)" />
+        <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details @update:model-value="(v) => toggle(item.id, !!v)" />
       </template>
       <template #item.config="{ item }">
         <v-chip v-if="item.config && Object.keys(item.config).length > 0" size="small" variant="tonal" color="info" @click="showConfig(item)">查看配置</v-chip>

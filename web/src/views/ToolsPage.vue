@@ -7,7 +7,7 @@
     <v-data-table :headers="headers" :items="items" :loading="loading">
       <template #item.is_builtin="{ item }"><v-chip size="small" :color="item.is_builtin?'primary':'grey'" variant="tonal">{{ item.is_builtin ? '内置' : '自定义' }}</v-chip></template>
       <template #item.is_active="{ item }">
-        <v-switch :model-value="item.is_active" :disabled="!item.is_builtin" color="primary" density="compact" hide-details @update:model-value="(v: boolean) => toggle(item.id, v)" />
+        <v-switch :model-value="item.is_active" :disabled="!item.is_builtin" color="primary" density="compact" hide-details @update:model-value="(v) => toggle(item.id, !!v)" />
       </template>
       <template #item.parameters="{ item }">
         <v-btn size="x-small" variant="tonal" color="info" @click="showParams(item)">查看 Schema</v-btn>
