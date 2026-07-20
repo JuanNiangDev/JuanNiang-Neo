@@ -9,7 +9,6 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
-	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/pluggin"
@@ -134,11 +133,6 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	vars := prompt.GetDefaultVars(
-		fmt.Sprintf("%d", userID),
-		fmt.Sprintf("%d", msg.GroupID),
-	)
-
 	var longTermMems []string
 	if h.Memory != nil {
 		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, chatArea.ID, "", 5)
@@ -150,7 +144,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		toolDescs += fmt.Sprintf("- %s: %s\n", t.Function.Name, t.Function.Description)
 	}
 
-	systemCtx, _ := h.Prompt.BuildFullContext(ctx, vars, longTermMems, toolDescs)
+	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs)
 
 	messages := []provider.ChatMessage{
 		{Role: "system", Content: systemCtx},
@@ -159,9 +153,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	if skillMatched && matchedSkill.PromptRef != "" {
 		skillPrompt, err := h.Prompt.GetByID(ctx, matchedSkill.PromptRef)
 		if err == nil {
-			rendered, _ := h.Prompt.RenderTemplate(skillPrompt.Content, vars)
 			messages = append(messages, provider.ChatMessage{
-				Role: "system", Content: "[Active Skill: " + matchedSkill.Name + "]\n" + rendered,
+				Role: "system", Content: "[Active Skill: " + matchedSkill.Name + "]\n" + skillPrompt.Content,
 			})
 		}
 	}

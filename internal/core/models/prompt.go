@@ -25,7 +25,6 @@ type Prompt struct {
 	// IsSystem=true 表示系统内置锁定提示词：每次构建 SystemPrompt 时强制拼接，
 	// 不允许通过 API 修改或删除（仅允许查看）。AutoMigrate 会自动添加该列。
 	IsSystem  bool       `gorm:"default:false;comment:系统锁定提示词"`
-	Variables JSONSlice  `gorm:"type:jsonb;default:'[]'"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`

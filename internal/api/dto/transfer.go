@@ -79,7 +79,6 @@ func RawPrompt2Resp(raw *models.Prompt) PromptResp {
 		Type:      raw.Type,
 		IsActive:  raw.IsActive,
 		IsSystem:  raw.IsSystem,
-		Variables: raw.Variables,
 		CreatedAt: raw.CreatedAt,
 	}
 }

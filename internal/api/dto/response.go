@@ -110,7 +110,6 @@ type PromptResp struct {
 	Type      models.PromptType `json:"type"`
 	IsActive  bool              `json:"is_active"`
 	IsSystem  bool              `json:"is_system"`
-	Variables models.JSONSlice  `json:"variables"`
 	CreatedAt time.Time         `json:"created_at"`
 }
 

@@ -645,13 +645,18 @@ func (s *Service) AddPrompt(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 禁止用户创建 system 类型（system 类型仅由系统锁定提示词使用）
+	if data.Type == models.PromptTypeSystem {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PromptIsSystem, dto.ErrorDetail{ErrorDetail: "system 类型由系统保留，请使用 personality 或 custom"}))
+		return
+	}
+
 	p := models.Prompt{
 		ID:        newUUID(),
 		Name:      data.Name,
 		Content:   data.Content,
 		Type:      data.Type,
 		IsActive:  data.IsActive,
-		Variables: data.Variables,
 	}
 	if err := s.DAO.Prompt.Create(ctx, &p); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -675,13 +680,18 @@ func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 禁止用户将类型改为 system
+	if data.Type == models.PromptTypeSystem {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PromptIsSystem, dto.ErrorDetail{ErrorDetail: "system 类型由系统保留，请使用 personality 或 custom"}))
+		return
+	}
+
 	p := models.Prompt{
 		ID:        id,
 		Name:      data.Name,
 		Content:   data.Content,
 		Type:      data.Type,
 		IsActive:  data.IsActive,
-		Variables: data.Variables,
 	}
 	if err := s.DAO.Prompt.Update(ctx, &p); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -1097,8 +1107,15 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	mcpList, _ := s.DAO.MCPServer.List(ctx)
 	mcpCount := int64(len(mcpList))
 
-	pluginList, _ := s.DAO.Plugin.List(ctx)
-	pluginCount := int64(len(pluginList))
+	// Plugin 数量优先取运行时 PluginEngine (包含 manifest 加载的插件)，
+	// 否则回退到 DB 记录数。
+	var pluginCount int64
+	if s.PluginEngine != nil {
+		pluginCount = int64(len(s.PluginEngine.ListMaps()))
+	} else {
+		pluginList, _ := s.DAO.Plugin.List(ctx)
+		pluginCount = int64(len(pluginList))
+	}
 
 	totalTokens, _ := s.DAO.ChatRecord.TotalTokenUsage(ctx)
 

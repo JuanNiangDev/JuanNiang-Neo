@@ -113,7 +113,6 @@ type AddPromptReq struct {
 	Content   string            `json:"content"`
 	Type      models.PromptType `json:"type"`
 	IsActive  bool              `json:"is_active"`
-	Variables models.JSONSlice  `json:"variables"`
 }
 
 type UpdatePromptReq struct {
@@ -121,7 +120,6 @@ type UpdatePromptReq struct {
 	Content   string            `json:"content"`
 	Type      models.PromptType `json:"type"`
 	IsActive  bool              `json:"is_active"`
-	Variables models.JSONSlice  `json:"variables"`
 }
 
 type TogglePromptReq struct {
