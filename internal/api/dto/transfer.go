@@ -94,18 +94,22 @@ func RawPromptList2Resp(raw []models.Prompt) []PromptResp {
 func RawToolConfigList2Resp(raw []models.ToolConfig) []ToolConfigResp {
 	res := make([]ToolConfigResp, len(raw))
 	for i, item := range raw {
-		res[i] = ToolConfigResp{
-			ID:          item.ID,
-			Name:        item.Name,
-			Description: item.Description,
-			Parameters:  item.Parameters,
-			Timeout:     item.Timeout,
-			IsActive:    item.IsActive,
-			IsBuiltin:   item.IsBuiltin,
-			CreatedAt:   item.CreatedAt,
-		}
+		res[i] = RawToolConfig2Resp(&item)
 	}
 	return res
+}
+
+func RawToolConfig2Resp(raw *models.ToolConfig) ToolConfigResp {
+	return ToolConfigResp{
+		ID:          raw.ID,
+		Name:        raw.Name,
+		Description: raw.Description,
+		Parameters:  raw.Parameters,
+		Timeout:     raw.Timeout,
+		IsActive:    raw.IsActive,
+		IsBuiltin:   raw.IsBuiltin,
+		CreatedAt:   raw.CreatedAt,
+	}
 }
 
 func RawPlugin2Resp(raw *models.Plugin) PluginResp {

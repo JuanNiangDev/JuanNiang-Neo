@@ -30,24 +30,16 @@
               <v-list-item>
                 <template #prepend><v-icon color="orange" class="me-3">mdi-lan-connect</v-icon></template>
                 <v-list-item-title>WebSocket 连接数</v-list-item-title>
-                <v-list-item-subtitle>
-                  {{ status.conn_count }}
-                  <v-btn
-                    v-if="status.conns && status.conns.length > 0"
-                    size="x-small"
-                    variant="tonal"
-                    color="info"
-                    class="ml-2"
-                    prepend-icon="mdi-eye"
-                    @click="connDialog = true"
-                  >查看连接</v-btn>
-                </v-list-item-subtitle>
+                <v-list-item-subtitle>{{ status.conn_count }}</v-list-item-subtitle>
               </v-list-item>
             </v-list>
             <v-btn color="primary" variant="tonal" class="mt-3 me-2" @click="restart" :loading="restarting">
               <v-icon class="me-1">mdi-restart</v-icon> 重启 Adapter
             </v-btn>
-            <v-btn variant="tonal" @click="fetchStatus" :loading="loading">
+            <v-btn color="info" variant="tonal" class="mt-3 me-2" @click="connDialog = true" :disabled="!status.conns || status.conns.length === 0">
+              <v-icon class="me-1">mdi-eye</v-icon> 查看连接
+            </v-btn>
+            <v-btn variant="tonal" class="mt-3" @click="fetchStatus" :loading="loading">
               <v-icon class="me-1">mdi-refresh</v-icon> 刷新
             </v-btn>
           </v-card-text>

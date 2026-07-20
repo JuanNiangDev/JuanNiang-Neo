@@ -35,6 +35,14 @@ func New(cfg Config) *Adapter {
 
 func (p *Adapter) Start(ctx context.Context) error {
 	listenAddr := p.listenAddr()
+	p.mu.Lock()
+	// 若 events 已被 Stop 关闭, 重建一个新的 channel, 否则后续推送会 panic
+	// (向已关闭 channel 发送 panic)。
+	if p.events == nil {
+		p.events = make(chan Event, 128)
+	}
+	p.mu.Unlock()
+
 	srv, err := newWSServer(ctx, listenAddr, p.cfg.Token, p.events)
 	if err != nil {
 		return fmt.Errorf("adapter start: %w", err)
@@ -93,7 +101,12 @@ func (p *Adapter) Stop(ctx context.Context) error {
 			p.server.stop()
 			p.server = nil
 		}
-		close(p.events)
+		// 关闭 events channel 通知消费者停止, 并置 nil 避免二次 close panic。
+		// Start 时会重新创建 events channel。
+		if p.events != nil {
+			close(p.events)
+			p.events = nil
+		}
 
 		slog.Info("adapter 已停止")
 		done <- nil

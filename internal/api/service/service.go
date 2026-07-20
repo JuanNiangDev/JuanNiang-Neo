@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -103,8 +104,16 @@ func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
 func (s *Service) GetAdapterConfig(ctx context.Context, c *app.RequestContext) {
 	raw, err := s.DAO.Onebot11Adapter.GetAdapterConfig(ctx)
 	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
+		// 数据库无配置 → 初始化默认配置再读取一次, 避免前端报 "record not found"
+		if initErr := s.DAO.Onebot11Adapter.InitAdapterConfig(ctx); initErr != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: fmt.Sprintf("init: %v; query: %v", initErr, err)}))
+			return
+		}
+		raw, err = s.DAO.Onebot11Adapter.GetAdapterConfig(ctx)
+		if err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
 	}
 
 	data := dto.AdapterConfig{
@@ -747,12 +756,58 @@ func (s *Service) TogglePrompt(ctx context.Context, c *app.RequestContext) {
 // ====================================================================
 
 func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
-	list, err := s.DAO.ToolConfig.List(ctx)
+	// 1. 读取数据库中所有 ToolConfig (代表可启用/停用的条目, 包括用户自定义与历史保存的内置工具条目)
+	dbList, err := s.DAO.ToolConfig.List(ctx)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawToolConfigList2Resp(list)))
+	// name → resp, 便于运行时内置工具查表合并 DB 状态
+	byName := make(map[string]dto.ToolConfigResp, len(dbList))
+	for _, item := range dbList {
+		byName[item.Name] = dto.RawToolConfig2Resp(&item)
+	}
+
+	// 2. 合并运行时 ToolRegistry 中的内置工具 (这部分工具始终启用, 不由 DB 控制启停)
+	out := make([]dto.ToolConfigResp, 0, len(dbList)+8)
+	seen := make(map[string]bool)
+	if s.ToolRegistry != nil {
+		for _, t := range s.ToolRegistry.List() {
+			if !t.IsBuiltin() {
+				continue
+			}
+			name := t.Name()
+			seen[name] = true
+			paramsJSON, _ := json.Marshal(t.Parameters())
+			resp := dto.ToolConfigResp{
+				ID:          "builtin:" + name,
+				Name:        name,
+				Description: t.Description(),
+				Parameters:  models.JSONMap{},
+				Timeout:     0,
+				IsActive:    true, // 内置工具运行时常驻
+				IsBuiltin:   true,
+			}
+			_ = json.Unmarshal(paramsJSON, &resp.Parameters)
+			// 若 DB 中有对应 name 的 ToolConfig, 合并其状态
+			if db, ok := byName[name]; ok {
+				resp.ID = db.ID
+				resp.IsActive = db.IsActive
+				resp.CreatedAt = db.CreatedAt
+			}
+			out = append(out, resp)
+		}
+	}
+
+	// 3. 追加 DB 中的非内置条目 (用户自定义工具)
+	for _, item := range dbList {
+		if seen[item.Name] {
+			continue
+		}
+		out = append(out, dto.RawToolConfig2Resp(&item))
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, out))
 }
 
 func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
@@ -760,6 +815,13 @@ func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 	if err := c.BindJSON(&data); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 内置工具: DB 不一定有对应记录, 仅当存在记录时才切换 DB 状态。
+	// 内置工具运行时始终在注册表中, 不允许真正"停用"——DB 拒绝切换。
+	if strings.HasPrefix(id, "builtin:") {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ToolIsBuiltin, dto.ErrorDetail{ErrorDetail: "内置工具运行时常驻, 不支持启停"}))
 		return
 	}
 

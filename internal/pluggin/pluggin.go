@@ -290,18 +290,29 @@ func (pe *PluginEngine) List() []Manifest {
 }
 
 // ListMaps 返回插件列表 (map 格式, 供 Web API 使用)。
+// 包含 manifest 元数据 + 权限列表 + 该插件注册的命令。
 func (pe *PluginEngine) ListMaps() []map[string]any {
-	list := pe.List()
-	out := make([]map[string]any, len(list))
-	for i, m := range list {
-		out[i] = map[string]any{
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	out := make([]map[string]any, 0, len(pe.plugins))
+	for _, p := range pe.plugins {
+		m := p.Manifest
+		entry := map[string]any{
 			"name":        m.Name,
 			"version":     m.Version,
 			"author":      m.Author,
 			"description": m.Description,
+			"permissions": m.Permissions,
 			"is_system":   m.System,
 			"is_active":   true, // 已加载即视为 active
 		}
+		// 附加该插件注册的命令列表
+		if pe.commands != nil {
+			entry["commands"] = pe.commands.ListByPlugin(m.Name)
+		} else {
+			entry["commands"] = []map[string]any{}
+		}
+		out = append(out, entry)
 	}
 	return out
 }
