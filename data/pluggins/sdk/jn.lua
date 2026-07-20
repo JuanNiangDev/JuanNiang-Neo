@@ -10,6 +10,9 @@
 -- 委托到 Go 侧的 __jn_internal.register_command 实现。
 -- ====================================================================
 
+-- Go 运行时注入的全局变量，IDE 无法感知，关闭 undefined-global 检查。
+---@diagnostic disable: undefined-global
+
 local M = {}
 
 -- ====================================================================
@@ -188,6 +191,8 @@ M.agent = agent
 ---@field description string 命令描述（用于 /help）
 ---@field usage string 用法示例 (如 "/system provider switch <id>")
 
+---@alias jn.CommandHandler fun(args: string[], event: jn.Event):boolean, string?
+
 ---@class jn.Command
 -- 注册一条命令。path 可以是字符串 ("foo bar") 或字符串数组 ({"foo", "bar"})。
 -- handler 签名: function(args: string[], event: jn.Event): consumed: boolean, reply: string?
@@ -195,7 +200,7 @@ M.agent = agent
 --   - event: 触发命令的事件上下文
 --   - consumed: 是否消费此命令 (true 跳过 Agent 处理)
 --   - reply: 若非空，由系统自动回复给用户
----@field register fun(path: string|string[], handler: fun(args: string[], event: jn.Event):boolean, string?, opts?: jn.CommandOpts): boolean, string?
+---@field register fun(path: string|string[], handler: jn.CommandHandler, opts?: jn.CommandOpts): boolean, string?
 M.command = {
     register = function(path, handler, opts)
         if __jn_internal and __jn_internal.register_command then
