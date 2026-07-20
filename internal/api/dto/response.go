@@ -206,6 +206,9 @@ type OverviewResp struct {
 	MemHeapInUseBytes uint64 `json:"mem_heap_inuse_bytes"` // 堆中正在使用
 	GoVersion         string `json:"go_version"`          // Go 版本
 
+	// Adapter 运行状态
+	AdapterRunning bool `json:"adapter_running"` // OneBot11 反向 WS 是否运行中
+
 	// T2I / Sandbox 状态
 	T2IActive       bool `json:"t2i_active"`        // 客户端已加载
 	T2IHealthy      bool `json:"t2i_healthy"`       // HealthCheck 通过

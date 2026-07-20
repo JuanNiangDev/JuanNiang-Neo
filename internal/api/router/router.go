@@ -20,6 +20,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 
 	// Adapter
 	api.GET("/adapter", auth, svc.GetAdapterStatus)
+	api.GET("/adapter/config", auth, svc.GetAdapterConfig)
 	api.PUT("/adapter", auth, svc.UpdateAdapterConfig)
 	api.POST("/adapter/restart", auth, svc.RestartAdapter)
 

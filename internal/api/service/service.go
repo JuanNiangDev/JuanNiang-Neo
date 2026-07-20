@@ -1122,6 +1122,9 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 		sandboxHealthy = s.SandboxClient.HealthCheck() == nil
 	}
 
+	// Adapter 运行状态
+	adapterRunning := s.Adapter.Status().Running
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.OverviewResp{
 		ChatAreaCount:   chatAreaCount,
 		MCPCount:        mcpCount,
@@ -1139,6 +1142,7 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 		MemHeapInUseBytes: memStats.HeapInuse,
 		GoVersion:         runtime.Version(),
 
+		AdapterRunning:  adapterRunning,
 		T2IActive:      t2iActive,
 		T2IHealthy:     t2iHealthy,
 		SandboxActive:  sandboxActive,

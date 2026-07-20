@@ -28,6 +28,7 @@ func New(cfg Config) *Adapter {
 	return &Adapter{
 		cfg:    cfg,
 		events: make(chan Event, 128),
+		closed: true, // 初始为"已停止"状态, 允许 Start
 	}
 }
 
@@ -38,33 +39,48 @@ func (p *Adapter) Start(ctx context.Context) error {
 	}
 	p.mu.Lock()
 	if !p.closed {
+		// 已经在运行, 把多余启动的 srv 关掉, 不替换现有 server。
+		p.mu.Unlock()
+		srv.stop()
 		return nil
-	} else {
-		p.server = srv
-		p.closed = false
 	}
+	p.server = srv
+	p.closed = false
 	p.mu.Unlock()
 	slog.Info("adapter 已启动", "addr", p.cfg.Addr)
 	return nil
 }
 
 func (p *Adapter) Stop(ctx context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	// 整个 Stop 操作放入 goroutine，用 context 控制超时，避免死锁。
+	done := make(chan error, 1)
+	go func() {
+		p.mu.Lock()
+		defer p.mu.Unlock()
 
-	if p.closed {
-		return nil
+		if p.closed {
+			done <- nil
+			return
+		}
+		p.closed = true
+
+		if p.server != nil {
+			p.server.stop()
+			p.server = nil
+		}
+		close(p.events)
+
+		slog.Info("adapter 已停止")
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		slog.Warn("adapter Stop 超时, 强制退出", "err", ctx.Err())
+		return ctx.Err()
 	}
-	p.closed = true
-
-	if p.server != nil {
-		p.server.stop()
-		p.server = nil
-	}
-	close(p.events)
-
-	slog.Info("adapter 已停止")
-	return nil
 }
 
 func (p *Adapter) Events() <-chan Event {
