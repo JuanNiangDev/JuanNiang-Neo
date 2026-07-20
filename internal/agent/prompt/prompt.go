@@ -1,13 +1,10 @@
 package prompt
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"log/slog"
 	"strings"
-	"text/template"
-	"time"
 
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
@@ -62,22 +59,13 @@ func NewPromptManager(dao *dao.PromptDAO) *PromptManager {
 	return &PromptManager{dao: dao}
 }
 
-// RenderTemplate 渲染单个模板。
-func (pm *PromptManager) RenderTemplate(tmpl string, vars map[string]any) (string, error) {
-	t, err := template.New("prompt").Parse(tmpl)
-	if err != nil {
-		return "", err
-	}
-	var buf bytes.Buffer
-	if err := t.Execute(&buf, vars); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
-}
-
-// BuildSystemPrompt 构建系统提示词 (system + personality prompts)。
-// 同时强制拼接所有 IsSystem=true 的锁定提示词（无视 IsActive）。
-func (pm *PromptManager) BuildSystemPrompt(ctx context.Context, vars map[string]any) (string, error) {
+// BuildSystemPrompt 构建系统提示词，按优先级拼接：
+//   1. SystemLocked (IsSystem=true)  最优先，强制拼接，不受 IsActive 影响
+//   2. system 类型                    常规系统提示词
+//   3. personality 类型               人格设定
+//   4. custom 类型                    用户自定义补充
+// 提示词内容直接拼接，不再进行模板渲染。
+func (pm *PromptManager) BuildSystemPrompt(ctx context.Context) (string, error) {
 	var parts []string
 
 	// 1. 系统锁定提示词（最优先，确保始终生效）
@@ -86,28 +74,20 @@ func (pm *PromptManager) BuildSystemPrompt(ctx context.Context, vars map[string]
 		slog.Warn("加载系统锁定提示词失败", "err", err)
 	} else {
 		for _, p := range locked {
-			rendered, err := pm.RenderTemplate(p.Content, vars)
-			if err != nil {
-				return "", err
-			}
-			parts = append(parts, rendered)
+			parts = append(parts, p.Content)
 		}
 	}
 
-	// 2. 常规 system 提示词
+	// 2. 常规 system 提示词（跳过 IsSystem 的，避免与锁定组重复）
 	systemPrompts, err := pm.dao.ListByType(ctx, models.PromptTypeSystem)
 	if err != nil {
 		return "", err
 	}
 	for _, p := range systemPrompts {
 		if p.IsSystem {
-			continue // 已在锁定组拼接
+			continue
 		}
-		rendered, err := pm.RenderTemplate(p.Content, vars)
-		if err != nil {
-			return "", err
-		}
-		parts = append(parts, rendered)
+		parts = append(parts, p.Content)
 	}
 
 	// 3. personality 提示词
@@ -119,19 +99,27 @@ func (pm *PromptManager) BuildSystemPrompt(ctx context.Context, vars map[string]
 		if p.IsSystem {
 			continue
 		}
-		rendered, err := pm.RenderTemplate(p.Content, vars)
-		if err != nil {
-			return "", err
+		parts = append(parts, p.Content)
+	}
+
+	// 4. custom 自定义提示词
+	customPrompts, err := pm.dao.ListByType(ctx, models.PromptTypeCustom)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range customPrompts {
+		if p.IsSystem {
+			continue
 		}
-		parts = append(parts, rendered)
+		parts = append(parts, p.Content)
 	}
 
 	return strings.Join(parts, "\n\n"), nil
 }
 
 // BuildFullContext 构建完整上下文 (system prompts + 长期记忆 + 工具/技能描述)。
-func (pm *PromptManager) BuildFullContext(ctx context.Context, vars map[string]any, longTermMemories []string, toolDescriptions string) (string, error) {
-	systemPrompt, err := pm.BuildSystemPrompt(ctx, vars)
+func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories []string, toolDescriptions string) (string, error) {
+	systemPrompt, err := pm.BuildSystemPrompt(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -143,9 +131,8 @@ func (pm *PromptManager) BuildFullContext(ctx context.Context, vars map[string]a
 
 	if len(longTermMemories) > 0 {
 		parts = append(parts, "以下是相关的长期记忆：")
-		for i, mem := range longTermMemories {
+		for _, mem := range longTermMemories {
 			parts = append(parts, mem)
-			_ = i
 		}
 	}
 
@@ -154,15 +141,6 @@ func (pm *PromptManager) BuildFullContext(ctx context.Context, vars map[string]a
 	}
 
 	return strings.Join(parts, "\n\n"), nil
-}
-
-// GetDefaultVars 获取默认模板变量。
-func GetDefaultVars(userName, groupName string) map[string]any {
-	return map[string]any{
-		"Time":      time.Now().Format("2006-01-02 15:04:05"),
-		"UserName":  userName,
-		"GroupName": groupName,
-	}
 }
 
 // GetByID 获取指定 Prompt。

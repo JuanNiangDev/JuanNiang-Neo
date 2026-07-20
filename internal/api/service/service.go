@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
@@ -94,6 +95,7 @@ func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
 		SelfID:     raw.SelfID,
 		ConnCount:  raw.ConnCount,
 		ConnIDs:    raw.ConnIDs,
+		Conns:      raw.Conns,
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, status))
@@ -102,8 +104,16 @@ func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
 func (s *Service) GetAdapterConfig(ctx context.Context, c *app.RequestContext) {
 	raw, err := s.DAO.Onebot11Adapter.GetAdapterConfig(ctx)
 	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
+		// 数据库无配置 → 初始化默认配置再读取一次, 避免前端报 "record not found"
+		if initErr := s.DAO.Onebot11Adapter.InitAdapterConfig(ctx); initErr != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: fmt.Sprintf("init: %v; query: %v", initErr, err)}))
+			return
+		}
+		raw, err = s.DAO.Onebot11Adapter.GetAdapterConfig(ctx)
+		if err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
 	}
 
 	data := dto.AdapterConfig{
@@ -645,13 +655,18 @@ func (s *Service) AddPrompt(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 禁止用户创建 system 类型（system 类型仅由系统锁定提示词使用）
+	if data.Type == models.PromptTypeSystem {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PromptIsSystem, dto.ErrorDetail{ErrorDetail: "system 类型由系统保留，请使用 personality 或 custom"}))
+		return
+	}
+
 	p := models.Prompt{
-		ID:        newUUID(),
-		Name:      data.Name,
-		Content:   data.Content,
-		Type:      data.Type,
-		IsActive:  data.IsActive,
-		Variables: data.Variables,
+		ID:       newUUID(),
+		Name:     data.Name,
+		Content:  data.Content,
+		Type:     data.Type,
+		IsActive: data.IsActive,
 	}
 	if err := s.DAO.Prompt.Create(ctx, &p); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -675,13 +690,18 @@ func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 禁止用户将类型改为 system
+	if data.Type == models.PromptTypeSystem {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PromptIsSystem, dto.ErrorDetail{ErrorDetail: "system 类型由系统保留，请使用 personality 或 custom"}))
+		return
+	}
+
 	p := models.Prompt{
-		ID:        id,
-		Name:      data.Name,
-		Content:   data.Content,
-		Type:      data.Type,
-		IsActive:  data.IsActive,
-		Variables: data.Variables,
+		ID:       id,
+		Name:     data.Name,
+		Content:  data.Content,
+		Type:     data.Type,
+		IsActive: data.IsActive,
 	}
 	if err := s.DAO.Prompt.Update(ctx, &p); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -736,12 +756,58 @@ func (s *Service) TogglePrompt(ctx context.Context, c *app.RequestContext) {
 // ====================================================================
 
 func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
-	list, err := s.DAO.ToolConfig.List(ctx)
+	// 1. 读取数据库中所有 ToolConfig (代表可启用/停用的条目, 包括用户自定义与历史保存的内置工具条目)
+	dbList, err := s.DAO.ToolConfig.List(ctx)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawToolConfigList2Resp(list)))
+	// name → resp, 便于运行时内置工具查表合并 DB 状态
+	byName := make(map[string]dto.ToolConfigResp, len(dbList))
+	for _, item := range dbList {
+		byName[item.Name] = dto.RawToolConfig2Resp(&item)
+	}
+
+	// 2. 合并运行时 ToolRegistry 中的内置工具 (这部分工具始终启用, 不由 DB 控制启停)
+	out := make([]dto.ToolConfigResp, 0, len(dbList)+8)
+	seen := make(map[string]bool)
+	if s.ToolRegistry != nil {
+		for _, t := range s.ToolRegistry.List() {
+			if !t.IsBuiltin() {
+				continue
+			}
+			name := t.Name()
+			seen[name] = true
+			paramsJSON, _ := json.Marshal(t.Parameters())
+			resp := dto.ToolConfigResp{
+				ID:          "builtin:" + name,
+				Name:        name,
+				Description: t.Description(),
+				Parameters:  models.JSONMap{},
+				Timeout:     0,
+				IsActive:    true, // 内置工具运行时常驻
+				IsBuiltin:   true,
+			}
+			_ = json.Unmarshal(paramsJSON, &resp.Parameters)
+			// 若 DB 中有对应 name 的 ToolConfig, 合并其状态
+			if db, ok := byName[name]; ok {
+				resp.ID = db.ID
+				resp.IsActive = db.IsActive
+				resp.CreatedAt = db.CreatedAt
+			}
+			out = append(out, resp)
+		}
+	}
+
+	// 3. 追加 DB 中的非内置条目 (用户自定义工具)
+	for _, item := range dbList {
+		if seen[item.Name] {
+			continue
+		}
+		out = append(out, dto.RawToolConfig2Resp(&item))
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, out))
 }
 
 func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
@@ -749,6 +815,13 @@ func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 	if err := c.BindJSON(&data); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 内置工具: DB 不一定有对应记录, 仅当存在记录时才切换 DB 状态。
+	// 内置工具运行时始终在注册表中, 不允许真正"停用"——DB 拒绝切换。
+	if strings.HasPrefix(id, "builtin:") {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ToolIsBuiltin, dto.ErrorDetail{ErrorDetail: "内置工具运行时常驻, 不支持启停"}))
 		return
 	}
 
@@ -1097,8 +1170,15 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	mcpList, _ := s.DAO.MCPServer.List(ctx)
 	mcpCount := int64(len(mcpList))
 
-	pluginList, _ := s.DAO.Plugin.List(ctx)
-	pluginCount := int64(len(pluginList))
+	// Plugin 数量优先取运行时 PluginEngine (包含 manifest 加载的插件)，
+	// 否则回退到 DB 记录数。
+	var pluginCount int64
+	if s.PluginEngine != nil {
+		pluginCount = int64(len(s.PluginEngine.ListMaps()))
+	} else {
+		pluginList, _ := s.DAO.Plugin.List(ctx)
+		pluginCount = int64(len(pluginList))
+	}
 
 	totalTokens, _ := s.DAO.ChatRecord.TotalTokenUsage(ctx)
 
@@ -1122,6 +1202,9 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 		sandboxHealthy = s.SandboxClient.HealthCheck() == nil
 	}
 
+	// Adapter 运行状态
+	adapterRunning := s.Adapter.Status().Running
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.OverviewResp{
 		ChatAreaCount:   chatAreaCount,
 		MCPCount:        mcpCount,
@@ -1139,6 +1222,7 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 		MemHeapInUseBytes: memStats.HeapInuse,
 		GoVersion:         runtime.Version(),
 
+		AdapterRunning: adapterRunning,
 		T2IActive:      t2iActive,
 		T2IHealthy:     t2iHealthy,
 		SandboxActive:  sandboxActive,
@@ -1395,11 +1479,11 @@ func (s *Service) UpdateWebhookConfig(ctx context.Context, c *app.RequestContext
 	// 运行时同步
 	if s.WebhookAdapter != nil {
 		conf := adapter.WebhookConfig{
-			Addr:    data.Addr,
-			Port:    data.Port,
-			Token:   data.Token,
-			Enable:  data.Enabled,
-			Admins:  s.Adapter.Admins(),
+			Addr:   data.Addr,
+			Port:   data.Port,
+			Token:  data.Token,
+			Enable: data.Enabled,
+			Admins: s.Adapter.Admins(),
 		}
 		if err := s.WebhookAdapter.SyncConfig(ctx, conf); err != nil {
 			slog.Error("webhook adapter 配置同步失败", "err", err)
@@ -1418,13 +1502,17 @@ func (s *Service) UpdateWebhookConfig(ctx context.Context, c *app.RequestContext
 
 // ---------- Logs ----------
 
-// GetLogs 返回最近 250 条日志。
+// GetLogs 返回最近 250 条日志，最新的在最前。
 func (s *Service) GetLogs(ctx context.Context, c *app.RequestContext) {
 	if s.LogHub == nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, []dto.LogEntryResp{}))
 		return
 	}
 	entries := s.LogHub.Recent()
+	// 反转为倒序: 最新写入的排最前
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
+	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawLogEntryList2Resp(entries)))
 }
 

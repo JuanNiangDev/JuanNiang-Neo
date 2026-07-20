@@ -243,9 +243,10 @@ type ForwardNode struct {
 
 // ProviderStatus 适配器运行状态。
 type ProviderStatus struct {
-	Running    bool    `json:"running"`
-	ListenAddr string  `json:"listen_addr"`
-	SelfID     int64   `json:"self_id,omitempty"`
-	ConnCount  int     `json:"conn_count"`
-	ConnIDs    []int64 `json:"conn_ids,omitempty"`
+	Running    bool         `json:"running"`
+	ListenAddr string       `json:"listen_addr"`
+	SelfID     int64        `json:"self_id,omitempty"`
+	ConnCount  int          `json:"conn_count"`
+	ConnIDs    []int64      `json:"conn_ids,omitempty"`
+	Conns      []ConnDetail `json:"conns,omitempty"`
 }

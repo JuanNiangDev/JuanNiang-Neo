@@ -6,7 +6,17 @@
     <v-card rounded="lg" elevation="1" class="mb-4 pa-4">
       <v-row dense align="center">
         <v-col cols="12" md="5">
-          <v-text-field v-model="chatAreaId" label="Chat Area ID" placeholder="输入 ChatArea UUID" density="compact" hide-details @keydown.enter="fetch" />
+          <v-select
+            v-model="chatAreaId"
+            :items="chatAreaItems"
+            item-title="label"
+            item-value="value"
+            label="Chat Area"
+            placeholder="选择 ChatArea"
+            density="compact"
+            hide-details
+            clearable
+          />
         </v-col>
         <v-col cols="6" md="2">
           <v-select v-model="roleFilter" :items="[{title:'全部',value:''},{title:'User',value:'user'},{title:'Assistant',value:'assistant'},{title:'Tool',value:'tool'}]" label="Role 过滤" density="compact" hide-details @update:model-value="fetch" />
@@ -44,13 +54,14 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { chatRecordApi, type ChatRecordResp } from '@/api'
+import { ref, onMounted } from 'vue'
+import { chatRecordApi, chatAreaApi, type ChatRecordResp, type ChatAreaResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
 const loading = ref(false); const chatAreaId = ref(''); const roleFilter = ref(''); const limit = ref(20)
 const records = ref<ChatRecordResp[]>([]); const total = ref(0); const page = ref(1)
+const chatAreaItems = ref<{label: string; value: string}[]>([])
 const toolCallsDialog = ref(false); const toolCallsTarget = ref<ChatRecordResp | null>(null)
 
 const headers = [
@@ -59,6 +70,7 @@ const headers = [
   { title: '时间', key: 'created_at' },
 ]
 
+async function fetchChatAreas() { try { const list = (await chatAreaApi.list()).data.data || []; chatAreaItems.value = list.map((c: ChatAreaResp) => ({ label: `${c.area_type==='private'?'私聊':'群聊'} ${c.target_id} (${c.id.slice(0,8)})`, value: c.id })) } catch { toastStore.error('获取 ChatArea 列表失败') } }
 async function fetch() {
   if (!chatAreaId.value) return
   loading.value = true
@@ -70,4 +82,5 @@ async function fetch() {
 }
 
 function showToolCalls(item: ChatRecordResp) { toolCallsTarget.value = item; toolCallsDialog.value = true }
+onMounted(fetchChatAreas)
 </script>

@@ -1,6 +1,39 @@
 # Lua API 参考
 
-Jonathan-Neo 暴露给 Lua 插件的 API 函数。可用性由 `pluggin.yaml` 中 `permissions` 控制。
+JuanNiang-Neo 暴露给 Lua 插件的 API 函数。可用性由 `pluggin.yaml` 中 `permissions` 控制。
+
+---
+
+## 引入 SDK
+
+JuanNiang-Neo 在二进制中内嵌了 Lua SDK（`internal/pluggin/sdk/jn.lua`），启动时由 `PluginEngine.ensureEmbeddedAssets()` 落盘到 `data/pluggins/sdk/jn.lua`，并通过 `injectSDK` 将该目录追加到每条 LState 的 `package.path`。
+
+插件**推荐**通过 `require("jn")` 引入 SDK，以获得 IDE（sumneko lua-language-server）完整类型提示：
+
+```lua
+local jn = require("jn")
+
+-- 通过 jn.<table>.<func> 调用，等价于直接使用全局 <table>.<func>
+jn.log.info("插件启动")
+local id, err = jn.t2i.generate("<h1>Hello</h1>")
+```
+
+SDK 仅是 Go 注入全局表的"重新导出"（`jn.log = log` / `jn.t2i = t2i` / ...），二者完全等价，可混用。下文示例同时给出"全局表"与"`jn.` 前缀"两种写法。
+
+| SDK 字段 | 对应全局表 | 说明 |
+|----------|-----------|------|
+| `jn.log` | `log` | 日志 |
+| `jn.json` | `json` | JSON 编解码 |
+| `jn.onebot11` | `onebot11` | OneBot11 协议接口 |
+| `jn.http` | `http` | HTTP 请求 |
+| `jn.database` | `database` | 数据库访问（命名空间隔离） |
+| `jn.cache` | `cache` | Redis 缓存（命名空间隔离） |
+| `jn.t2i` | `t2i` | 文生图 |
+| `jn.sandbox` | `sandbox` | 代码沙箱 |
+| `jn.agent` | `agent` | Agent 操作接口 |
+| `jn.command` | — | 多级命令注册（仅通过 SDK 暴露） |
+
+> **说明**: `jn.command.register` 是命令注册的唯一入口，内部委托到 Go 侧 `__jn_internal.register_command` 全局函数。直接调用 `__jn_internal.*` 不被推荐，签名可能随版本调整。
 
 ---
 
@@ -226,16 +259,18 @@ cache.set("my_key", {value = 42, name = "test"}, 3600)  -- 1小时过期
 
 | 权限 | `t2i` |
 
-> **开关检测:** T2I 服务未启用时调用返回 `(nil, "T2I 服务未启用")`。
+> **开关检测:** T2I 服务未启用时调用 `generate` / `generate_url` 返回 `(nil, "T2I 服务未启用")`。
+> 运行时通过 `AgentOperator.GetT2IClient()` 获取最新实例，支持热更新。
 
 ### `t2i.generate(html) → string [, err]`
 
 根据 HTML 生成图片，返回图片 ID。
 
 ```lua
-local id, err = t2i.generate("<h1>Hello</h1>")
+local jn = require("jn")
+local id, err = jn.t2i.generate("<h1>Hello</h1>")
 if not id then
-    log.error("T2I failed: " .. err)
+    jn.log.error("T2I failed: " .. err)
 end
 ```
 
@@ -247,22 +282,46 @@ end
 local url, err = t2i.generate_url("<p>Test</p>")
 ```
 
+### `t2i.toggle(active) → bool [, err]`
+
+启用或停用 T2I 服务。委托到 `AgentOperator.SetT2IActive`，会同步更新 DB 配置并重建客户端。
+
+```lua
+local ok, err = t2i.toggle(true)  -- 启用
+```
+
+### `t2i.is_active() → bool`
+
+查询 T2I 服务当前是否启用（从 DB 配置读取）。`dao` 不可用时返回 `false`。
+
+```lua
+if not t2i.is_active() then
+    log.warn("T2I 未启用")
+end
+```
+
+### `t2i.get_config() → table [, err]`
+
+返回 T2I 完整配置（base_url / timeout / is_active 等）。
+
 ---
 
 ## 全局表: `sandbox`
 
 | 权限 | `sandbox` |
 
-> **开关检测:** Sandbox 服务未启用时调用返回 `(nil, "Sandbox 服务未启用")`。
+> **开关检测:** Sandbox 服务未启用时调用 `create` / `exec_shell` / `exec_python` 返回 `(nil, "Sandbox 服务未启用")`。
+> 运行时通过 `AgentOperator.GetSandboxClient()` 获取最新实例，支持热更新。
 
 ### `sandbox.create() → table [, err]`
 
 创建新的沙箱。返回: `{sandbox_id=string, status=string}`。
 
 ```lua
-local sb = sandbox.create()
+local jn = require("jn")
+local sb = jn.sandbox.create()
 if not sb then return end
-log.info("沙箱创建: " .. sb.sandbox_id)
+jn.log.info("沙箱创建: " .. sb.sandbox_id)
 ```
 
 ### `sandbox.exec_shell(sandbox_id, command) → (output, exit_code) | (nil, err)`
@@ -285,43 +344,59 @@ if err then log.info("stderr: " .. err) end
 log.info("stdout: " .. out)
 ```
 
+### `sandbox.toggle(active) → bool [, err]`
+
+启用或停用 Sandbox 服务。委托到 `AgentOperator.SetSandboxActive`，同步更新 DB 配置并重建客户端。
+
+### `sandbox.is_active() → bool`
+
+查询 Sandbox 服务当前是否启用（从 DB 配置读取）。`dao` 不可用时返回 `false`。
+
+### `sandbox.get_config() → table [, err]`
+
+返回 Sandbox 完整配置（base_url / api_key / timeout / is_active 等）。
+
 ---
 
 ## 全局表: `agent`
 
 | 权限 | `agent` |
 
-提供 Agent 配置的只读查询。
+提供 Agent 配置的查询与运行时管理（共 16 个函数）。
 
-### `agent.get_providers() → []table [, err]`
+### 配置查询（从 DB 读取）
+
+#### `agent.get_providers() → []table [, err]`
 
 返回所有 LLM Provider 配置。
 
-### `agent.get_mcp_servers() → []table [, err]`
+#### `agent.get_mcp_servers() → []table [, err]`
 
 返回所有 MCP 服务器配置。
 
-### `agent.get_skills() → []table [, err]`
+#### `agent.get_skills() → []table [, err]`
 
 返回所有 Skill 配置。
 
-### `agent.get_sessions() → []table [, err]`
+#### `agent.get_sessions() → []table [, err]`
 
 返回所有 Session。
 
-### `agent.get_prompts() → []table [, err]`
+#### `agent.get_prompts() → []table [, err]`
 
 返回所有 Prompt 模板。
 
-### `agent.get_tools() → []table [, err]`
+#### `agent.get_tools() → []table [, err]`
 
 返回所有 Tool 配置。
 
-### `agent.get_plugins() → []table [, err]`
+#### `agent.get_plugins() → []table [, err]`
 
 返回所有已安装插件信息。
 
-### `agent.set_provider_active(id, active) → bool [, err]`
+### Provider 管理
+
+#### `agent.set_provider_active(id, active) → bool [, err]`
 
 启用/停用 LLM Provider。停用时从运行环境中移除，启用的 Provider 会被加载。
 
@@ -330,11 +405,76 @@ agent.set_provider_active("uuid", false)  -- 停用
 agent.set_provider_active("uuid", true)   -- 启用
 ```
 
-### `agent.set_mcp_active(id, active) → bool [, err]`
+#### `agent.list_runtime_providers() → []table [, err]`
+
+返回当前运行时已加载的 Provider 列表（来自 `ProviderGroup.List()`，仅包含已 active 的）。每项结构：
+
+```lua
+{
+    id = "uuid",
+    name = "openai",
+    type = "text_model",  -- "text_model" | "image_model" | "embedding_model"
+    model = "gpt-4",
+    active = true
+}
+```
+
+#### `agent.switch_provider(id) → bool [, err]`
+
+切换主 Provider（将指定 Provider 标记为活跃，停用同类型的其他 Provider）。委托到 `AgentOperator.SwitchProvider`。
+
+```lua
+local ok, err = agent.switch_provider("uuid")
+```
+
+### MCP 管理
+
+#### `agent.set_mcp_active(id, active) → bool [, err]`
 
 启用/停用 MCP 服务器。停用时会断开连接。
 
-### `agent.get_current_chat_area() → table`
+#### `agent.list_mcps() → []table [, err]`
+
+返回当前运行时已加载的 MCP 列表（来自 `MCPGroup.ListMCPs()`）。每项结构：
+
+```lua
+{
+    id = "uuid",
+    name = "weather-mcp",
+    url = "http://localhost:8080/sse",
+    active = true
+}
+```
+
+#### `agent.toggle_mcp(id, active) → bool [, err]`
+
+启用/停用 MCP 服务器，等价于 `set_mcp_active`，提供语义更直观的别名。
+
+### Tool 管理
+
+#### `agent.list_tools() → []table [, err]`
+
+返回当前运行时已注册的 Tool 列表（来自 `ToolRegistry.ListTools()`）。每项结构：
+
+```lua
+{
+    name = "send_group_msg",
+    description = "发送群消息",
+    builtin = true,
+    long_running = false,
+    active = true
+}
+```
+
+#### `agent.toggle_tool(name, active) → bool [, err]`
+
+启用/停用指定 Tool。`name` 是工具名（非 ID），停用时从 `ToolRegistry` 移除。
+
+> **注意**: 内置工具运行时常驻，停用后仍保留在注册表中；用户自定义工具停用后会被 `Unregister`。
+
+### 上下文与记忆
+
+#### `agent.get_current_chat_area() → table`
 
 返回当前正在处理的消息所属 Chat-Area 信息。
 
@@ -349,7 +489,7 @@ local area = agent.get_current_chat_area()
 -- }
 ```
 
-### `agent.compact_memory() → string [, err]`
+#### `agent.compact_memory() → string [, err]`
 
 Compact 当前 Chat-Area 的短期记忆：调用 LLM 将窗口内消息压缩为摘要，写入长期记忆并清空窗口。
 
@@ -361,6 +501,78 @@ end
 ```
 
 > **注意:** 需要已配置 Text LLM Provider 才能执行 Compact。
+
+---
+
+## SDK 模块: `jn.command`
+
+多级命令注册。仅通过 SDK 暴露，需先 `local jn = require("jn")`。
+
+命令系统是 `CommandRegistry` 维护的一棵 `CommandNode` 树，插件通过 `jn.command.register` 在树上挂载自己的命令。`PluginEngine.OnMessage` 在派发到 `on_message` 之前，会先检查 `event.RawMessage` 是否以 `/` 开头，若是则调用 `commands.Dispatch` 进行最长前缀匹配：
+
+- 命中可执行 handler → 自动回复 `reply`（非空时），并 `consumed=true` 跳过 Agent 与 `on_message`
+- 未命中 handler 但停在某个非根节点 → 自动列出该节点的子命令作为提示
+- 完全未命中 → fallback 到插件的 `on_message` 回调
+
+### `jn.command.register(path, handler [, opts]) → bool [, err]`
+
+注册一条命令。
+
+**参数**:
+- `path` — 命令路径，可为字符串（按空格切分，如 `"foo bar"`）或字符串数组（如 `{"foo", "bar"}`）
+- `handler` — 处理函数，签名 `function(args, event): consumed, reply`
+  - `args` — 命令路径之后的所有空格分隔参数（`string[]`）
+  - `event` — 触发命令的事件上下文（`jn.Event`）
+  - `consumed` — 是否消费此命令（true 跳过 Agent 处理）
+  - `reply` — 若非空，由系统自动回复给用户
+- `opts` — 选项表（可选）：
+  - `description` — 命令描述（用于 `/help` 自动生成）
+  - `usage` — 用法示例（如 `"/system provider switch <id>"`）
+
+**返回**: `true` 成功；`false, err` 失败（参数非法时）。
+
+> **handler 引用保活**: Go 侧通过 `L.SetGlobal(refKey, handlerFn)` 保留 handler 引用，防止 Lua GC 回收。
+
+```lua
+local jn = require("jn")
+
+-- 注册 /greet <name> 命令
+jn.command.register("greet", function(args, event)
+    local name = args[1] or "朋友"
+    return true, "你好，" .. name .. "！"
+end, {
+    description = "打招呼",
+    usage = "/greet [名字]",
+})
+
+-- 注册多级命令 /myplugin subcmd1 subcmd2
+jn.command.register({"myplugin", "subcmd1", "subcmd2"}, function(args, event)
+    -- args 是 subcmd2 之后的所有 token
+    return true, "收到参数: " .. table.concat(args, " ")
+end, {
+    description = "多级命令示例",
+    usage = "/myplugin subcmd1 subcmd2 [args...]",
+})
+```
+
+### 内置 `/help` 命令
+
+`PluginEngine.registerBuiltinCommands()` 在初始化时注册了 `/help` 命令（路径 `["system", "help"]`，挂在 `system` 插件名下）：
+
+- `/help` — 列出所有顶层命令
+- `/help <cmd>` — 查看 `<cmd>` 的子命令与用法
+- `/help <cmd> <subcmd>` — 查看更深层级
+
+示例输出：
+
+```
+可用命令：
+- /greet — 打招呼
+- /help — 查看所有可用命令，或查看某个命令的子命令与用法
+- /system — 系统管理命令组
+
+使用 /help <命令> 查看该命令的子命令与用法。
+```
 
 ---
 
@@ -379,6 +591,8 @@ function on_message(event) → (consumed, modified)
 | `raw_message` | string | 消息原文 |
 
 `consumed=true` → 跳过 Agent 处理。
+
+> **命令优先**: 若 `event.raw_message` 以 `/` 开头，`PluginEngine.OnMessage` 会先调用 `CommandRegistry.Dispatch`。命中命令后会自动回复并 `consumed=true`，**不会**再调用任何插件的 `on_message`。仅当未命中任何命令时才 fallback 到 `on_message` 回调链。插件应优先使用 `jn.command.register` 注册命令式交互，将 `on_message` 用于纯事件监听场景。
 
 ---
 

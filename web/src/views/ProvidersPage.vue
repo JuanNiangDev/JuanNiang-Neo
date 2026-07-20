@@ -10,7 +10,7 @@
     <v-data-table :headers="headers" :items="items" :loading="loading" items-per-page="20">
       <template #item.type="{ item }"><v-chip size="small" variant="tonal">{{ typeLabel(item.type) }}</v-chip></template>
       <template #item.is_active="{ item }">
-        <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details @update:model-value="(v: boolean) => toggle(item.id, v)" />
+        <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details @update:model-value="(v) => toggle(item.id, !!v)" />
       </template>
       <template #item.actions="{ item }">
         <v-btn icon="mdi-pencil" size="small" variant="text" color="primary" @click="openEdit(item)" />

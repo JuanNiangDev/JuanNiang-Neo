@@ -205,6 +205,43 @@ func (r *CommandRegistry) ListSubcommands(path []string) []*CommandNode {
 	return listChildrenSorted(node)
 }
 
+// PluginCommandInfo 单条命令的展示信息。
+type PluginCommandInfo struct {
+	Path        []string `json:"path"`         // 完整路径, 如 ["system","provider","switch"]
+	Description string   `json:"description"`  // 描述
+	Usage       string   `json:"usage"`        // 用法示例
+	IsLeaf      bool     `json:"is_leaf"`      // 是否为可执行命令 (handler != nil)
+}
+
+// ListByPlugin 返回指定插件注册的所有命令路径 (递归遍历整棵命令树)。
+// 仅返回由该插件注册的节点 (Handler 非 nil 即视为其注册的命令)。
+func (r *CommandRegistry) ListByPlugin(plugin string) []PluginCommandInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]PluginCommandInfo, 0)
+	r.collectByPlugin(r.root, plugin, nil, &out)
+	return out
+}
+
+func (r *CommandRegistry) collectByPlugin(n *CommandNode, plugin string, prefix []string, out *[]PluginCommandInfo) {
+	for _, child := range n.Children {
+		curPath := append(append([]string{}, prefix...), child.Name)
+		// 节点由指定插件注册且 handler 非空 → 视为该插件的可执行命令
+		if child.PluginName == plugin && child.Handler != nil {
+			*out = append(*out, PluginCommandInfo{
+				Path:        curPath,
+				Description: child.Opts.Description,
+				Usage:       child.Opts.Usage,
+				IsLeaf:      true,
+			})
+		}
+		// 递归子节点
+		if len(child.Children) > 0 {
+			r.collectByPlugin(child, plugin, curPath, out)
+		}
+	}
+}
+
 // listChildrenSorted 返回子节点列表（按 Name 升序）。
 func listChildrenSorted(n *CommandNode) []*CommandNode {
 	if n == nil || len(n.Children) == 0 {

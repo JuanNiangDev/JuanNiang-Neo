@@ -19,10 +19,28 @@
         <v-card-title>新增 ACL 规则</v-card-title>
         <v-card-text>
           <v-form ref="formRef">
-            <v-text-field v-model="form.chat_area_id" label="Chat Area ID" class="mb-3" />
+            <v-select
+              v-model="form.chat_area_id"
+              :items="chatAreaItems"
+              item-title="label"
+              item-value="value"
+              label="Chat Area"
+              class="mb-3"
+              clearable
+            />
             <v-select v-model="form.scope" :items="['chat','tool','mcp']" label="范围" class="mb-3" />
             <v-select v-model="form.permission" :items="['allow','deny']" label="权限" class="mb-3" />
             <v-select v-model="form.target_type" :items="['all','list']" label="目标类型" class="mb-3" />
+            <v-combobox
+              v-if="form.target_type === 'list'"
+              v-model="form.user_ids"
+              label="目标 QQ 号列表"
+              multiple
+              chips
+              closable-chips
+              hint="回车添加, 支持多个 QQ 号"
+              class="mb-3"
+            />
           </v-form>
         </v-card-text>
         <v-card-actions><v-spacer /><v-btn variant="text" @click="dialog = false">取消</v-btn><v-btn color="primary" variant="tonal" @click="handleSave" :loading="saving">保存</v-btn></v-card-actions>
@@ -35,12 +53,13 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { aclApi, type ACLRuleResp, type AddACLRuleReq } from '@/api'
+import { aclApi, chatAreaApi, type ACLRuleResp, type AddACLRuleReq, type ChatAreaResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
 const loading = ref(true); const items = ref<ACLRuleResp[]>([]); const dialog = ref(false); const deleteDialog = ref(false)
 const saving = ref(false); const deleting = ref(false); const deleteTarget = ref<ACLRuleResp | null>(null); const formRef = ref()
+const chatAreaItems = ref<{label: string; value: string}[]>([])
 
 const headers = [
   { title: 'ID', key: 'id' }, { title: 'Chat Area', key: 'chat_area_id' }, { title: '范围', key: 'scope' },
@@ -52,9 +71,10 @@ const defaultForm = (): AddACLRuleReq => ({ chat_area_id: '', scope: 'chat', per
 const form = ref<AddACLRuleReq>(defaultForm())
 
 async function fetch() { loading.value = true; try { items.value = (await aclApi.list()).data.data } catch { toastStore.error('获取失败') } finally { loading.value = false } }
+async function fetchChatAreas() { try { const list = (await chatAreaApi.list()).data.data || []; chatAreaItems.value = list.map((c: ChatAreaResp) => ({ label: `${c.area_type==='private'?'私聊':'群聊'} ${c.target_id} (${c.id.slice(0,8)})`, value: c.id })) } catch { toastStore.error('获取 ChatArea 列表失败') } }
 function openAdd() { form.value = defaultForm(); dialog.value = true }
 async function handleSave() { saving.value = true; try { await aclApi.create(form.value); toastStore.success('已保存'); dialog.value = false; await fetch() } catch (e: any) { toastStore.error(e?.message || '保存失败') } finally { saving.value = false } }
 function confirmDelete(item: ACLRuleResp) { deleteTarget.value = item; deleteDialog.value = true }
 async function handleDelete() { if (!deleteTarget.value) return; deleting.value = true; try { await aclApi.delete(deleteTarget.value.id); toastStore.success('已删除'); deleteDialog.value = false; await fetch() } catch { toastStore.error('删除失败') } finally { deleting.value = false } }
-onMounted(fetch)
+onMounted(() => { fetch(); fetchChatAreas() })
 </script>

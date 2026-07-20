@@ -163,7 +163,7 @@ const toastStore = useToastStore()
 const loading = ref(true)
 const overview = ref<OverviewResp | null>(null)
 const adapterRunning = ref(false)
-const adapterStatus = ref<AdapterStatus>({ running: false, listen_addr: '', self_id: 0, conn_count: 0, conn_ids: [] })
+const adapterStatus = ref<AdapterStatus>({ running: false, listen_addr: '', self_id: 0, conn_count: 0, conn_ids: [], conns: [] })
 
 const topStats = computed(() => [
   { label: 'Chat Areas', value: overview.value?.chat_area_count ?? 0, subtitle: '活跃聊天区域', icon: 'mdi-forum', color: 'pink' },

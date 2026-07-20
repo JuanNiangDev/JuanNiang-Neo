@@ -28,21 +28,38 @@
 │  │ 2. Plugin 拦截 (pluggin.OnMessage)                    │  │
 │  │    ┌─────────────────────────────────────────────┐   │  │
 │  │    │ PluginEngine 存储 currentEv (事件上下文)      │   │  │
+│  │    │                                             │   │  │
+│  │    │ 2a. 命令派发 (NEW, 优先 on_message)            │   │  │
+│  │    │   if raw_message 以 "/" 开头:                │   │  │
+│  │    │     CommandRegistry.Dispatch(raw, event)     │   │  │
+│  │    │       ├─ 最长前缀匹配命令树                    │   │  │
+│  │    │       ├─ 命中 handler → 调用并自动回复          │   │  │
+│  │    │       │   handler(args, event) →              │   │  │
+│  │    │       │     (consumed, reply, err)             │   │  │
+│  │    │       └─ 未命中但有子命令 → 列出子命令提示       │   │  │
+│  │    │     if consumed: continue loop                │   │  │
+│  │    │                                             │   │  │
+│  │    │ 2b. on_message 回调 (fallback)                │   │  │
 │  │    │ for each plugin:                             │   │  │
 │  │    │   if has on_message():                       │   │  │
 │  │    │     call on_message(event) → (consumed, ..)  │   │  │
 │  │    │     if consumed: skip agent, continue loop   │   │  │
 │  │    │                                             │   │  │
-│  │    │ 插件可调用:                                   │   │  │
-│  │    │   onebot11.*  (20 fn) — 消息/群管理/查询     │   │  │
-│  │    │   http.*     (2 fn)  — 外部 API             │   │  │
-│  │    │   database.* (2 fn)  — 插件数据 CRUD        │   │  │
-│  │    │   cache.*    (4 fn)  — 插件缓存             │   │  │
-│  │    │   t2i.*      (2 fn)  — 图片生成             │   │  │
-│  │    │   sandbox.*  (3 fn)  — 沙箱执行             │   │  │
-│  │    │   agent.*    (11 fn) — 配置/开关/Compact     │   │  │
+│  │    │ 插件可调用 (通过 require("jn") SDK):           │   │  │
+│  │    │   jn.onebot11.*  (20 fn) — 消息/群管理/查询   │   │  │
+│  │    │   jn.http.*      (2 fn)  — 外部 API          │   │  │
+│  │    │   jn.database.*  (2 fn)  — 插件数据 CRUD     │   │  │
+│  │    │   jn.cache.*     (4 fn)  — 插件缓存          │   │  │
+│  │    │   jn.t2i.*       (5 fn)  — 图片生成 + 开关   │   │  │
+│  │    │   jn.sandbox.*   (6 fn)  — 沙箱执行 + 开关   │   │  │
+│  │    │   jn.agent.*     (16 fn) — 配置/Provider/MCP │   │  │
+│  │    │                          /Tool/Switch/Compact│   │  │
+│  │    │   jn.command.register — 注册多级命令           │   │  │
 │  │    └─────────────────────────────────────────────┘   │  │
 │  │ 3. Agent 处理 (handleMessage)                         │  │
+│  │    └─ BuildSystemPrompt 优先级:                      │  │
+│  │       SystemLocked(IsSystem) → system → personality  │  │
+│  │       → custom (内容直接拼接, 不再渲染模板)            │  │
 │  └──────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -63,11 +80,14 @@ handleMessage(ctx, event)
 │     └─ 匹配成功 → 注入 Skill Prompt 到上下文
 │
 ├─ 5. 构建 LLM 上下文
-│     ├─ System Prompts (DAO → template render)
-│     ├─ Personality Prompts
+│     ├─ System Prompts (按优先级直接拼接, 不再渲染模板):
+│     │     1. SystemLocked (IsSystem=true, 强制拼接, 不受 IsActive 影响)
+│     │     2. system 类型
+│     │     3. personality 类型
+│     │     4. custom 类型
 │     ├─ 长期记忆 (LongTermMemory.Search → 注入 <long_term_memory>)
 │     ├─ 短期记忆 (ChatRecord 最近 N 条)
-│     ├─ 工具列表 (ToolRegistry.GetOpenAITools)
+│     ├─ 工具列表 (ToolRegistry.GetOpenAITools; 内置工具 + 启用的自定义工具)
 │     └─ 当前用户消息
 │
 ├─ 6. LLM 调用 (Provider.Chat)

@@ -1,6 +1,7 @@
 package dto
 
 import (
+	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/core/models"
 	"time"
 )
@@ -37,6 +38,7 @@ var (
 	SandboxConfigNotFound   = Response{Status: 40027, Info: "Sandbox 配置不存在"}
 	PluginIsSystem          = Response{Status: 40028, Info: "系统插件不允许删除或停用"}
 	PromptIsSystem          = Response{Status: 40029, Info: "系统提示词不允许修改或删除"}
+	ToolIsBuiltin           = Response{Status: 40030, Info: "内置工具运行时常驻, 不支持启停"}
 )
 
 type TokenResp struct {
@@ -48,11 +50,12 @@ type ErrorDetail struct {
 }
 
 type AdapterStatus struct {
-	Running    bool    `json:"running"`
-	ListenAddr string  `json:"listen_addr"`
-	SelfID     int64   `json:"self_id"`
-	ConnCount  int     `json:"conn_count"`
-	ConnIDs    []int64 `json:"conn_ids"`
+	Running    bool                 `json:"running"`
+	ListenAddr string               `json:"listen_addr"`
+	SelfID     int64                `json:"self_id"`
+	ConnCount  int                  `json:"conn_count"`
+	ConnIDs    []int64              `json:"conn_ids"`
+	Conns      []adapter.ConnDetail `json:"conns"`
 }
 
 type AdapterConfig struct {
@@ -110,7 +113,6 @@ type PromptResp struct {
 	Type      models.PromptType `json:"type"`
 	IsActive  bool              `json:"is_active"`
 	IsSystem  bool              `json:"is_system"`
-	Variables models.JSONSlice  `json:"variables"`
 	CreatedAt time.Time         `json:"created_at"`
 }
 
@@ -204,13 +206,16 @@ type OverviewResp struct {
 	MemAllocBytes     uint64 `json:"mem_alloc_bytes"`      // 堆已分配 (活跃对象)
 	MemSysBytes       uint64 `json:"mem_sys_bytes"`        // 从 OS 获取的内存总量
 	MemHeapInUseBytes uint64 `json:"mem_heap_inuse_bytes"` // 堆中正在使用
-	GoVersion         string `json:"go_version"`          // Go 版本
+	GoVersion         string `json:"go_version"`           // Go 版本
+
+	// Adapter 运行状态
+	AdapterRunning bool `json:"adapter_running"` // OneBot11 反向 WS 是否运行中
 
 	// T2I / Sandbox 状态
-	T2IActive       bool `json:"t2i_active"`        // 客户端已加载
-	T2IHealthy      bool `json:"t2i_healthy"`       // HealthCheck 通过
-	SandboxActive   bool `json:"sandbox_active"`   // 客户端已加载
-	SandboxHealthy  bool `json:"sandbox_healthy"`  // HealthCheck 通过
+	T2IActive      bool `json:"t2i_active"`      // 客户端已加载
+	T2IHealthy     bool `json:"t2i_healthy"`     // HealthCheck 通过
+	SandboxActive  bool `json:"sandbox_active"`  // 客户端已加载
+	SandboxHealthy bool `json:"sandbox_healthy"` // HealthCheck 通过
 }
 
 type ChatRecordListResp struct {

@@ -36,3 +36,5 @@ web/dist/
 web/.vite/
 web/*.local
 web/.DS_Store
+
+bin/*

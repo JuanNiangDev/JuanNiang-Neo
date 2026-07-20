@@ -5,7 +5,8 @@ export interface LoginReq { username: string; password: string }
 export interface ChangePasswordReq { old_password: string; new_password: string }
 export interface TokenResp { token: string }
 
-export interface AdapterStatus { running: boolean; listen_addr: string; self_id: number; conn_count: number; conn_ids: number[] }
+export interface AdapterConnDetail { id: number; ip: string; self_id: number }
+export interface AdapterStatus { running: boolean; listen_addr: string; self_id: number; conn_count: number; conn_ids: number[]; conns: AdapterConnDetail[] }
 export interface UpdateAdapterConfigReq { addr: string; port: number; token: string; admin_qq_numbers: string[]; enabled: boolean }
 
 export interface ProviderResp { id: string; created_at: string; name: string; type: string; endpoint: string; token: string; model: string; temperature: number; is_active: boolean }
@@ -17,8 +18,8 @@ export interface AddMCPServerReq { name: string; server_url: string; headers?: R
 export interface ShortTermMemoryResp { id: string; chat_area_id: string; window_size: number; auto_compact: boolean; created_at: string }
 export interface LongTermMemoryResp { id: string; chat_area_id: string; hot_area_size: number; hot_memory_ttl: number; created_at: string }
 
-export interface PromptResp { id: string; name: string; content: string; type: string; is_active: boolean; variables: string[]; created_at: string }
-export interface AddPromptReq { name: string; content: string; type: string; is_active: boolean; variables?: string[] }
+export interface PromptResp { id: string; name: string; content: string; type: string; is_active: boolean; is_system: boolean; created_at: string }
+export interface AddPromptReq { name: string; content: string; type: string; is_active: boolean }
 
 export interface SessionResp { id: string; chat_area_id: string; model: string; token_usage: number; meta_data: Record<string, any>; created_at: string }
 
@@ -59,6 +60,7 @@ export const authApi = {
 // ======== Adapter ========
 export const adapterApi = {
   getStatus: () => client.get('/adapter'),
+  getConfig: () => client.get('/adapter/config'),
   updateConfig: (data: UpdateAdapterConfigReq) => client.put('/adapter', data),
   restart: () => client.post('/adapter/restart'),
 }
