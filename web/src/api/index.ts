@@ -59,6 +59,7 @@ export const authApi = {
 // ======== Adapter ========
 export const adapterApi = {
   getStatus: () => client.get('/adapter'),
+  getConfig: () => client.get('/adapter/config'),
   updateConfig: (data: UpdateAdapterConfigReq) => client.put('/adapter', data),
   restart: () => client.post('/adapter/restart'),
 }
