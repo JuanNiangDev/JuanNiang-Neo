@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,7 +34,8 @@ func New(cfg Config) *Adapter {
 }
 
 func (p *Adapter) Start(ctx context.Context) error {
-	srv, err := newWSServer(ctx, p.cfg.Addr, p.cfg.Token, p.events)
+	listenAddr := p.listenAddr()
+	srv, err := newWSServer(ctx, listenAddr, p.cfg.Token, p.events)
 	if err != nil {
 		return fmt.Errorf("adapter start: %w", err)
 	}
@@ -47,8 +49,31 @@ func (p *Adapter) Start(ctx context.Context) error {
 	p.server = srv
 	p.closed = false
 	p.mu.Unlock()
-	slog.Info("adapter 已启动", "addr", p.cfg.Addr)
+	slog.Info("adapter 已启动", "addr", listenAddr)
 	return nil
+}
+
+// listenAddr 返回 net.Listen 直接可用的 "host:port" 串。
+// 兼容三种 cfg.Addr 形态：
+//   - "host:port"（标准）
+//   - "host"（仅有 host, 缺端口, WebUI 更新时常见）
+//   - ":port"（仅端口, 省略 host）
+func (p *Adapter) listenAddr() string {
+	addr := strings.TrimSpace(p.cfg.Addr)
+	if addr == "" {
+		return fmt.Sprintf(":%d", p.cfg.Port)
+	}
+	// 含冒号 → 视为 host:port 或 :port
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		tail := addr[i+1:]
+		// tail 非数字 → 说明冒号后不是端口（如 IPv6 边界），追加 Port
+		if _, err := fmt.Sscanf(tail, "%d", new(int)); err != nil {
+			return fmt.Sprintf("%s:%d", addr, p.cfg.Port)
+		}
+		return addr
+	}
+	// 不含冒号 → 仅 host, 追加端口
+	return fmt.Sprintf("%s:%d", addr, p.cfg.Port)
 }
 
 func (p *Adapter) Stop(ctx context.Context) error {
@@ -122,7 +147,7 @@ func (p *Adapter) Status() ProviderStatus {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	s := ProviderStatus{ListenAddr: p.cfg.Addr}
+	s := ProviderStatus{ListenAddr: p.listenAddr()}
 	if p.server == nil || p.closed {
 		return s
 	}
