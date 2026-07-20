@@ -1439,13 +1439,17 @@ func (s *Service) UpdateWebhookConfig(ctx context.Context, c *app.RequestContext
 
 // ---------- Logs ----------
 
-// GetLogs 返回最近 250 条日志。
+// GetLogs 返回最近 250 条日志，最新的在最前。
 func (s *Service) GetLogs(ctx context.Context, c *app.RequestContext) {
 	if s.LogHub == nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, []dto.LogEntryResp{}))
 		return
 	}
 	entries := s.LogHub.Recent()
+	// 反转为倒序: 最新写入的排最前
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
+	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawLogEntryList2Resp(entries)))
 }
 
