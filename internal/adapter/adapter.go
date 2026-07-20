@@ -181,34 +181,27 @@ func (p *Adapter) SyncConfig(ctx context.Context, conf Config) error {
 	p.cfg = conf
 	p.mu.Unlock()
 
+	// 简化逻辑:
+	//   - 启用: 若已在运行, 先 Stop 再 Start 重启加载新配置; 否则直接 Start
+	//   - 停用: 调用 Stop
 	if conf.Enable {
-		if err := p.Start(ctx); err != nil {
-			slog.Error("adapter 启动Adapter出错", "err", err.Error())
+		slog.Info("adapter 重启中")
+		if err := p.Stop(ctx); err != nil {
+			slog.Error("adapter 配置更新出错 (Stop)", "err", err.Error())
 			return err
 		}
-	}
-
-	if !conf.Enable {
+		if err := p.Start(ctx); err != nil {
+			slog.Error("adapter 配置更新出错 (Start)", "err", err.Error())
+			return err
+		}
+	} else {
 		if err := p.Stop(ctx); err != nil {
 			slog.Error("adapter 停止Adapter出错", "err", err.Error())
 			return err
 		}
 	}
 
-	slog.Info("adapter 重启中")
-
-	if err := p.Stop(ctx); err != nil {
-		slog.Error("adapter 配置更新出错 (Stop)", "err", err.Error())
-		return err
-	}
-
-	if err := p.Start(ctx); err != nil {
-		slog.Error("adapter 配置更新出错 (Start)", "err", err.Error())
-		return err
-	}
-
 	slog.Info("adapter 配置已更新")
-
 	return nil
 }
 

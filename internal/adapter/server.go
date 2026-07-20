@@ -42,7 +42,10 @@ func newWSServer(ctx context.Context, addr, token string, events chan Event) (*w
 		return nil, fmt.Errorf("listen %s: %w", addr, err)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
+	// 使用 context.Background() 而非传入的 ctx, 避免 caller (如 SyncConfig 的
+	// 5s 超时 ctx) cancel 后级联取消 ws server 导致服务立即停止。
+	// 生命周期完全由 wsServer.stop() 控制。
+	ctx, cancel := context.WithCancel(context.Background())
 
 	s := &wsServer{
 		listener: listener,
