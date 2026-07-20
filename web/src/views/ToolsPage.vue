@@ -9,14 +9,7 @@
         <v-chip size="small" :color="item.is_builtin ? 'primary' : 'grey'" variant="tonal">{{ item.is_builtin ? '内置' : '自定义' }}</v-chip>
       </template>
       <template #item.is_active="{ item }">
-        <v-switch
-          :model-value="item.is_active"
-          :disabled="item.is_builtin"
-          color="primary"
-          density="compact"
-          hide-details
-          @update:model-value="(v) => toggle(item.id, !!v)"
-        />
+        <v-chip size="small" :color="item.is_active ? 'success' : 'default'" variant="tonal">{{ item.is_active ? '启用' : '停用' }}</v-chip>
       </template>
       <template #item.actions="{ item }">
         <v-btn icon="mdi-eye" size="small" variant="text" color="info" @click="showDetail(item)" />
@@ -82,11 +75,6 @@ async function fetch() {
   try { items.value = (await toolApi.list()).data.data || [] }
   catch { toastStore.error('获取失败') }
   finally { loading.value = false }
-}
-
-async function toggle(id: string, v: boolean) {
-  try { await toolApi.toggle(id, v); await fetch(); toastStore.success(v ? '已启用' : '已停用') }
-  catch (e: any) { toastStore.error(e?.response?.data?.info || '操作失败') }
 }
 
 function showDetail(item: ToolConfigResp) {
