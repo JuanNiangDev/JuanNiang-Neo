@@ -152,7 +152,7 @@ make clean         清理 bin/ 与 web/dist
 ## 文档索引
 
 - [架构](docs/architecture.md) · [事件流](docs/event-flow.md) · [调用栈](docs/call-stack.md) · [实现细节](docs/implementation.md)
-- [API 文档](docs/api.md) · [OpenAPI 规范](api/openapi.yaml)
+- [部署与调试](docs/deployment.md) · [API 文档](docs/api.md) · [OpenAPI 规范](api/openapi.yaml)
 - [插件开发](docs/pluggin/) · [原始设计](docs/dev/) · [开发引导](docs/guidance.md)
 - [OpenCode 代理指引](AGENTS.md)
 

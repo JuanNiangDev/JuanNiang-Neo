@@ -61,6 +61,7 @@ Top-level:
   - `event-flow.md` — 事件流 & Agent 处理流程
   - `call-stack.md` — 调用栈
   - `implementation.md` — 实现细节
+  - `deployment.md` — 部署与调试指南 (env var / docker / systemd / 反代 / FAQ)
   - `api.md` — Web API 文档
   - `openapi.yaml` — OpenAPI 3.0 规范
   - `pluggin/` — 插件开发文档 (API参考/开发指南/架构/实现)

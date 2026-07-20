@@ -18,7 +18,7 @@ type Onebot11Adapter struct {
 	Port           int      `gorm:"column:port;not null;comment:连接端口"`
 	Token          string   `gorm:"column:token;type:varchar(255);comment:访问令牌"`
 	AdminQQNumbers []string `gorm:"column:admin_qq_numbers;type:json;serializer:json;comment:管理员QQ号列表"`
-	Enabled        bool     `gorm:"column:enabled;type:tinyint(1);default:1;comment:是否启用"`
+	Enabled        bool     `gorm:"column:enabled;type:boolean;default:true;comment:是否启用"`
 }
 
 func (Onebot11Adapter) TableName() string {
