@@ -5,7 +5,8 @@ export interface LoginReq { username: string; password: string }
 export interface ChangePasswordReq { old_password: string; new_password: string }
 export interface TokenResp { token: string }
 
-export interface AdapterStatus { running: boolean; listen_addr: string; self_id: number; conn_count: number; conn_ids: number[] }
+export interface AdapterConnDetail { id: number; ip: string; self_id: number }
+export interface AdapterStatus { running: boolean; listen_addr: string; self_id: number; conn_count: number; conn_ids: number[]; conns: AdapterConnDetail[] }
 export interface UpdateAdapterConfigReq { addr: string; port: number; token: string; admin_qq_numbers: string[]; enabled: boolean }
 
 export interface ProviderResp { id: string; created_at: string; name: string; type: string; endpoint: string; token: string; model: string; temperature: number; is_active: boolean }

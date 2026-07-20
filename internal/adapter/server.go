@@ -28,11 +28,12 @@ type wsServer struct {
 }
 
 type wsConn struct {
-	conn      *websocket.Conn
-	selfID    int64
-	mu        sync.Mutex
-	seq       uint64
-	responses map[string]chan *APIResponse
+	conn       *websocket.Conn
+	selfID     int64
+	remoteAddr string
+	mu         sync.Mutex
+	seq        uint64
+	responses  map[string]chan *APIResponse
 }
 
 func newWSServer(ctx context.Context, addr, token string, events chan Event) (*wsServer, error) {
@@ -111,6 +112,24 @@ func (s *wsServer) connIDs() []int64 {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+// ConnDetail 表示一条 WS 连接的展示信息。
+type ConnDetail struct {
+	ID   int64  `json:"id"`
+	IP   string `json:"ip"`
+	Self int64  `json:"self_id"`
+}
+
+// connDetails 返回所有连接的 ID + RemoteAddr 信息（供前端展示）。
+func (s *wsServer) connDetails() []ConnDetail {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ConnDetail, 0, len(s.conns))
+	for id, c := range s.conns {
+		out = append(out, ConnDetail{ID: id, IP: c.remoteAddr, Self: c.selfID})
+	}
+	return out
 }
 
 func (s *wsServer) callAPI(action string, params map[string]any) (*APIResponse, error) {
@@ -192,9 +211,10 @@ func (s *wsServer) handleWS(w http.ResponseWriter, r *http.Request, token string
 	}
 
 	wsc := &wsConn{
-		conn:      conn,
-		selfID:    handshake.SelfID,
-		responses: make(map[string]chan *APIResponse),
+		conn:       conn,
+		selfID:     handshake.SelfID,
+		remoteAddr: r.RemoteAddr,
+		responses:  make(map[string]chan *APIResponse),
 	}
 
 	s.mu.Lock()

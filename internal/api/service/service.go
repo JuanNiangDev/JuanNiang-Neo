@@ -94,6 +94,7 @@ func (s *Service) GetAdapterStatus(ctx context.Context, c *app.RequestContext) {
 		SelfID:     raw.SelfID,
 		ConnCount:  raw.ConnCount,
 		ConnIDs:    raw.ConnIDs,
+		Conns:      raw.Conns,
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, status))
@@ -652,11 +653,11 @@ func (s *Service) AddPrompt(ctx context.Context, c *app.RequestContext) {
 	}
 
 	p := models.Prompt{
-		ID:        newUUID(),
-		Name:      data.Name,
-		Content:   data.Content,
-		Type:      data.Type,
-		IsActive:  data.IsActive,
+		ID:       newUUID(),
+		Name:     data.Name,
+		Content:  data.Content,
+		Type:     data.Type,
+		IsActive: data.IsActive,
 	}
 	if err := s.DAO.Prompt.Create(ctx, &p); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -687,11 +688,11 @@ func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
 	}
 
 	p := models.Prompt{
-		ID:        id,
-		Name:      data.Name,
-		Content:   data.Content,
-		Type:      data.Type,
-		IsActive:  data.IsActive,
+		ID:       id,
+		Name:     data.Name,
+		Content:  data.Content,
+		Type:     data.Type,
+		IsActive: data.IsActive,
 	}
 	if err := s.DAO.Prompt.Update(ctx, &p); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -1159,7 +1160,7 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 		MemHeapInUseBytes: memStats.HeapInuse,
 		GoVersion:         runtime.Version(),
 
-		AdapterRunning:  adapterRunning,
+		AdapterRunning: adapterRunning,
 		T2IActive:      t2iActive,
 		T2IHealthy:     t2iHealthy,
 		SandboxActive:  sandboxActive,
@@ -1416,11 +1417,11 @@ func (s *Service) UpdateWebhookConfig(ctx context.Context, c *app.RequestContext
 	// 运行时同步
 	if s.WebhookAdapter != nil {
 		conf := adapter.WebhookConfig{
-			Addr:    data.Addr,
-			Port:    data.Port,
-			Token:   data.Token,
-			Enable:  data.Enabled,
-			Admins:  s.Adapter.Admins(),
+			Addr:   data.Addr,
+			Port:   data.Port,
+			Token:  data.Token,
+			Enable: data.Enabled,
+			Admins: s.Adapter.Admins(),
 		}
 		if err := s.WebhookAdapter.SyncConfig(ctx, conf); err != nil {
 			slog.Error("webhook adapter 配置同步失败", "err", err)

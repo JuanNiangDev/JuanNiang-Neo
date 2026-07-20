@@ -30,7 +30,18 @@
               <v-list-item>
                 <template #prepend><v-icon color="orange" class="me-3">mdi-lan-connect</v-icon></template>
                 <v-list-item-title>WebSocket 连接数</v-list-item-title>
-                <v-list-item-subtitle>{{ status.conn_count }} ({{ status.conn_ids?.join(', ') }})</v-list-item-subtitle>
+                <v-list-item-subtitle>
+                  {{ status.conn_count }}
+                  <v-btn
+                    v-if="status.conns && status.conns.length > 0"
+                    size="x-small"
+                    variant="tonal"
+                    color="info"
+                    class="ml-2"
+                    prepend-icon="mdi-eye"
+                    @click="connDialog = true"
+                  >查看连接</v-btn>
+                </v-list-item-subtitle>
               </v-list-item>
             </v-list>
             <v-btn color="primary" variant="tonal" class="mt-3 me-2" @click="restart" :loading="restarting">
@@ -68,18 +79,60 @@
         </v-card>
       </v-col>
     </v-row>
+    <!-- 连接详情弹窗 -->
+    <v-dialog v-model="connDialog" max-width="640">
+      <v-card rounded="lg">
+        <v-card-title class="d-flex align-center justify-space-between pa-4">
+          <span class="text-body-1">WebSocket 连接列表</span>
+          <v-btn icon="mdi-close" size="small" variant="text" @click="connDialog = false" />
+        </v-card-title>
+        <v-divider />
+        <v-card-text class="pa-0">
+          <v-data-table
+            :headers="connHeaders"
+            :items="connItems"
+            density="compact"
+            hide-default-footer
+            :items-per-page="-1"
+          >
+            <template #item.id="{ item }">
+              <v-chip size="x-small" variant="tonal" color="info">{{ item.id }}</v-chip>
+            </template>
+            <template #item.ip="{ item }">
+              <code class="ip-code">{{ item.ip || '-' }}</code>
+            </template>
+            <template #item.self_id="{ item }">
+              <v-chip size="x-small" variant="outlined">{{ item.self_id }}</v-chip>
+            </template>
+          </v-data-table>
+        </v-card-text>
+        <v-divider />
+        <v-card-actions class="pa-4">
+          <v-spacer />
+          <v-btn variant="text" @click="connDialog = false">关闭</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import { adapterApi, type AdapterStatus, type UpdateAdapterConfigReq } from '@/api'
+import { ref, onMounted, computed } from 'vue'
+import { adapterApi, type AdapterStatus, type AdapterConnDetail, type UpdateAdapterConfigReq } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
 const loading = ref(true); const restarting = ref(false); const saving = ref(false)
-const status = ref<AdapterStatus>({ running: false, listen_addr: '', self_id: 0, conn_count: 0, conn_ids: [] })
+const status = ref<AdapterStatus>({ running: false, listen_addr: '', self_id: 0, conn_count: 0, conn_ids: [], conns: [] })
 const config = ref<UpdateAdapterConfigReq>({ addr: '0.0.0.0', port: 8080, token: '', admin_qq_numbers: [], enabled: false })
+const connDialog = ref(false)
+
+const connHeaders = [
+  { title: 'ID', key: 'id', width: '120px' },
+  { title: 'IP', key: 'ip' },
+  { title: 'Self ID', key: 'self_id', width: '140px' },
+]
+const connItems = computed<AdapterConnDetail[]>(() => status.value.conns || [])
 
 async function fetchStatus() { loading.value = true; try { const res = await adapterApi.getStatus(); status.value = res.data.data } catch { toastStore.error('获取状态失败') } finally { loading.value = false } }
 async function fetchConfig() { try { const res = await adapterApi.getConfig(); const c = res.data.data; config.value = { addr: c.addr || '0.0.0.0', port: c.port || 8080, token: c.token || '', admin_qq_numbers: c.admin_qq_numbers || [], enabled: c.enabled ?? false } } catch { toastStore.error('获取配置失败') } }
@@ -87,3 +140,13 @@ async function restart() { restarting.value = true; try { await adapterApi.resta
 async function saveConfig() { saving.value = true; try { await adapterApi.updateConfig(config.value); toastStore.success('配置已保存'); await fetchStatus() } catch { toastStore.error('保存失败') } finally { saving.value = false } }
 onMounted(() => { fetchStatus(); fetchConfig() })
 </script>
+
+<style scoped>
+.ip-code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  background: rgba(var(--v-theme-on-surface), 0.06);
+  border-radius: 4px;
+}
+</style>
