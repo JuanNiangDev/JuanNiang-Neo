@@ -60,7 +60,10 @@
 
 - 持久状态在 Postgres + Redis cache; Agent / Session / Skill / Plugin 状态最终与 DB 同步。**禁止纯内存有状态对象。**
 - Lua 插件是唯一例外: 配置文件 `data/pluggins/<name>/pluggin.yaml` 直读盘。
-- 服务开关: T2I 与 Sandbox 未配置时 API 自动返回"未启用"提示, 无需提前手动配置。
+- **Lua SDK 与 system 插件**: 由 `//go:embed` 内嵌到二进制，启动时由 `PluginEngine.ensureEmbeddedAssets()` 落盘到 `data/pluggins/sdk/jn.lua`（SDK 总是覆盖）与 `data/pluggins/system/`（system 插件仅首次落盘，允许用户修改）。这两份文件**不应加入 .gitignore 之外的手动管理**，运行时由二进制保证一致性。
+- **命令注册表 (`CommandRegistry`)** 是 PluginEngine 内的运行时内存对象，命令注册**不持久化到 DB**；每次启动由各插件的 `main.lua` 通过 `jn.command.register` 重新注册。这是有意设计——命令与插件 LState 生命周期绑定，卸载即清除。
+- **系统锁定提示词 (`IsSystem=true`)**: 启动时由 `PromptManager.EnsureSystemPrompt(ctx)` 幂等播种到 DB（name=`__system_locked__`），二进制版本更新时会覆盖内容。API 层（`UpdatePrompt` / `DeletePrompt` / `TogglePrompt`）禁止修改系统锁定提示词，返回 `40029 PromptIsSystem`；用户创建 `Type=system` 的提示词也被拒绝。
+- 服务开关: T2I 与 Sandbox 未配置时 API 自动返回"未启用"提示, 无需提前手动配置。运行时通过 `AgentOperator.GetT2IClient()` / `GetSandboxClient()` 获取最新实例，支持热更新。
 - Web 控台鉴权: JWT (HS256), 默认 72h 有效期; 可选 OIDC SSO; 单管理员; 初始密码 `Admin123` (首登必改)。
 
 ## 5. Agent 与长任务模型
@@ -69,6 +72,18 @@
 - 长任务 (MCP / 工具调用) 用 errgroup 风格后台执行, 结果写入 `bgtask` memory; 独立的 **DrainerAgent** (非对话 Agent) 排空缓冲并发送最终的 QQ 消息。
 - Memory: ShortTerm (Redis 滑窗) + LongTerm (Postgres + HotArea LRU) + BgTask (缓冲); 三者由 `memory.MemoryGroup` 聚合。
 - Skill 命中后注入 prompt + tool; 命中规则是 关键词 OR 正则。
+- **SystemPrompt 拼接优先级**（高 → 低）: SystemLocked (`IsSystem=true`) → system (跳过 IsSystem) → personality → custom。内容直接 `strings.Join("\n\n")` 拼接，**不再使用 `text/template` 渲染**（`Variables` 字段已删除）。
+- **内置工具 ID 前缀 `builtin:`**: `ListTools` 合并 `ToolRegistry.List()` 内置工具与 DB `ToolConfig`，内置工具响应 `ID = "builtin:" + name`、`IsBuiltin = true`。`ToggleTool` 收到 `builtin:` 前缀返回 `40030 ToolIsBuiltin`，禁止切换内置工具状态。
+
+## 5.5. Lua 插件系统约定 (NEW)
+
+- **推荐使用 SDK**: 插件 `main.lua` 开头 `local jn = require("jn")`，通过 `jn.<table>.<func>` 调用 Go API，可获得 sumneko lua-language-server 完整类型提示。SDK 字段与全局表完全等价，可混用。
+- **命令注册优先**: 涉及 `/` 开头的命令式交互，**必须**使用 `jn.command.register(path, handler, opts)` 注册，由 `CommandRegistry` 统一派发、自动回复、`/help` 自动生成。**不要**在 `on_message` 中手动 `string.match` 解析 `/cmd`——命令系统在 `on_message` 之前派发，未命中的 `/` 消息才到达 `on_message`。
+- **多级命令**: `jn.command.register({"foo", "bar", "baz"}, handler, opts)` 注册多级路径，派发时按最长前缀匹配。
+- **`/help` 内置命令**: 由 `registerBuiltinCommands()` 在 `NewPluginEngine` 时注册，路径 `["system", "help"]`，挂在 `system` 插件名下。
+- **`system` 系统插件**: 由 `//go:embed` 内嵌 `pluggin.yaml` + `main.lua`，清单中 `system: true`。三层守卫禁止卸载 / 停用 / 删除（详见 `docs/pluggin/implementation.md` §8）。`ensureEmbeddedAssets` 仅在 `data/pluggins/system/pluggin.yaml` 不存在时落盘，**允许用户修改 `main.lua` 扩展命令**，但 `system: true` 标志由清单控制不应移除。
+- **`on_message` 适用场景**: 纯事件监听（不回复）、关键词触发（非 `/` 前缀）、无需固定命令模式的副作用逻辑。`on_message` 返回 `consumed=true` 阻止 Agent 处理。
+- **AgentOperator 接口**: `HagoCenter` 实现，暴露 Provider / MCP / Tool / T2I / Sandbox 管理 + Compact + 上下文查询。插件通过 `jn.agent.*` 调用，运行时状态查询用 `list_runtime_providers` / `list_mcps` / `list_tools`，切换用 `switch_provider` / `toggle_mcp` / `toggle_tool` / `t2i.toggle` / `sandbox.toggle`。
 
 ## 6. 编码约定
 
@@ -86,3 +101,19 @@
 - `deployments/Dockerfile` 改为 3 阶段 (含前端); `deployments/docker-compose.yaml` 加 healthcheck + 网络 + .env 支持。
 - 根 `.dockerignore` + `.env.example` 新增。
 - `README.md` 重写; `AGENTS.md` 修正布局与前端服务说明; `docs/architecture.md` 装一节"前端 SPA 静态服务"; `docs/api.md` 装第 20 章; 本文件从空文件补全。
+
+### 后续变更 (Lua 插件系统重构 + 系统锁定提示词 + Adapter/Tool 改进)
+
+- **Lua SDK (`internal/pluggin/sdk/jn.lua`)**: `//go:embed` 内嵌，启动时落盘到 `data/pluggins/sdk/jn.lua`，插件通过 `require("jn")` 引入获得 IDE 类型提示。SDK 重新导出 Go 注入的全局表 + 提供 `jn.command.register` 入口。
+- **多级命令系统 (`internal/pluggin/command.go`)**: `CommandRegistry` + `CommandNode` 树，支持 `/cmd subcmd args...` 最长前缀匹配派发。`PluginEngine.OnMessage` 在 `on_message` 之前优先派发命令，命中后自动回复。
+- **内置 `/help` 命令**: 由 `registerBuiltinCommands()` 注册到 `system` 插件名下，路径 `["system", "help"]`，调用 `FormatHelp(args)` 输出顶层命令或子命令详情。
+- **`system` 系统插件 (`internal/pluggin/systemplugin/`)**: 由 `//go:embed` 内嵌，清单中 `system: true`，触发三层守卫（Manifest.System + PluginEngine.IsSystem + Service 层）。注册 `/system status/provider/mcp/tool/memory/t2i/sandbox/session` 等命令。
+- **系统锁定提示词 (`internal/agent/prompt/prompt.go`)**: 新增 `IsSystem bool` 字段（`models.Prompt`）、`SystemLockedPromptName = "__system_locked__"` 常量、`EnsureSystemPrompt(ctx)` 启动时幂等播种。`BuildSystemPrompt` 拼接优先级 SystemLocked→system→personality→custom，删除 `text/template` 渲染与 `Variables` 字段。Service 层守卫返回 `40029 PromptIsSystem`。
+- **Adapter 重构 (`internal/adapter/`)**: `listenAddr()` 规范化兼容 host/:port/host:port/空串；`Stop()` 修复 close of closed channel panic（关闭后置 nil）；`newWSServer` 改用 `context.Background()` 避免 SyncConfig 5s 超时级联取消；`SyncConfig` 简化为 Stop+Start；新增 `wsConn.remoteAddr` 字段、`ConnDetail` 结构、`connDetails()` 方法、`ProviderStatus.Conns` 字段。
+- **Tool 管理增强 (`internal/api/service/service.go`)**: `ListTools` 合并 `ToolRegistry.List()` 内置工具与 DB `ToolConfig`，内置工具 ID 用 `builtin:` 前缀；`ToggleTool` 收到 `builtin:` 前缀返回 `40030 ToolIsBuiltin`。
+- **Plugin 管理增强**: `ListMaps` 返回 `permissions` / `is_system` / `commands` 字段；`TogglePlugin` / `DeletePlugin` 系统插件守卫返回 `40028 PluginIsSystem`。
+- **AgentOperator 接口扩展**: 新增 `SetToolActive` / `SwitchProvider` / `SetT2IActive` / `SetSandboxActive` / `GetT2IClient` / `GetSandboxClient` / `GetProviderGroup` / `GetMCPGroup` / `GetToolRegistry`；Lua 侧 `agent.*` 新增 `list_mcps` / `toggle_mcp` / `list_tools` / `toggle_tool` / `list_runtime_providers` / `switch_provider`，`t2i.*` / `sandbox.*` 新增 `toggle` / `is_active` / `get_config`。
+- **新 API 错误码**: `40028 PluginIsSystem` / `40029 PromptIsSystem` / `40030 ToolIsBuiltin`。
+- **`GetLogs` 返回顺序**: 改为最新最前（反转为倒序），前端无需自行排序。
+- **`Onebot11Adapter.AdminQQNumbers` 字段**: 持久化到 DB（GORM `serializer:json`），由 `UpdateAdapterConfig` 同步 DB 与运行时。
+- **T2I/Sandbox 启动时 `InitConfig`**: `loadT2IFromDB` / `loadSandboxFromDB` 在 DB 无配置时初始化默认行，保证前端读取不报错。

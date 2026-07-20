@@ -25,6 +25,8 @@ main()
 │   └─ hago.Init(ctx, cfg)
 │       ├─ session.NewSessionManager(dao, cache)
 │       ├─ prompt.NewPromptManager(dao)
+│       │   └─ EnsureSystemPrompt(ctx)   // 幂等种子系统锁定提示词 __system_locked__
+│       │       └─ DAO.GetByName → 不存在则 Create, 存在则同步内容到最新版本
 │       ├─ skills.NewSkillEngine()
 │       ├─ tool.RegisterBuiltinTools(...)  // 16 个内置工具
 │       ├─ loadProviders(ctx)              // DB → ProviderGroup
@@ -38,12 +40,19 @@ main()
 │   ├─ go DrainerAgent.Run()
 │   └─ go runEventLoop()
 │
-├─ pluggin.NewPluginEngine(path, adapter)
-│   └─ LoadAll() → for each plugin dir → Load()
-│       ├─ readManifest("pluggin.yaml")
-│       ├─ lua.NewState()
-│       ├─ injectBaseAPI(L)    // log, json, onebot11, http
-│       └─ L.DoFile(entry.lua)
+├─ pluggin.NewPluginEngine(path, adapter, db, cache, t2i, sandbox, dao, agentOp)
+│   ├─ registerBuiltinCommands()    // 注册 /help 系统命令到 CommandRegistry
+│   └─ LoadAll()
+│       ├─ ensureEmbeddedAssets()   // 把 //go:embed 的 jn.lua 与 system 插件落盘
+│       │   ├─ data/pluggins/sdk/jn.lua   (SDK, 总是覆盖)
+│       │   └─ data/pluggins/system/{pluggin.yaml, main.lua}  (仅不存在时写)
+│       └─ for each plugin dir → Load()
+│           ├─ readManifest("pluggin.yaml")
+│           ├─ lua.NewState()
+│           ├─ injectSDK(L, name)         // 把 sdk 目录加入 package.path
+│           ├─ injectBaseAPI(L, name, perms)  // log, json, onebot11, http, ...
+│           ├─ injectCommandAPI(L, name)  // 注册 __jn_internal.register_command
+│           └─ L.DoFile(entry.lua)        // 插件 require("jn") + jn.command.register
 │
 ├─ api/engine.New(addr, svc)
 │   ├─ server.Default(addr)
@@ -66,9 +75,17 @@ OneBot11 WS → adapter.readLoop()
 └─ agent.runEventLoop() ← for ev := range adapter.Events()
     │
     ├─ pluggin.OnMessage(event)
-    │   ├─ for each plugin:
-    │   │   └─ lua.Call("on_message", eventTable)
-    │   └─ if consumed: continue
+    │   ├─ 存储 currentEv (供 agent.get_current_chat_area() 查询)
+    │   ├─ [NEW] if raw_message 以 "/" 开头:
+    │   │   └─ CommandRegistry.Dispatch(raw, event)
+    │   │       ├─ 最长前缀匹配命令树
+    │   │       ├─ 命中 handler → handler(args, event) → (consumed, reply, err)
+    │   │       │                └─ sendReply(event, reply)  (reply 非空时)
+    │   │       └─ 未命中但有子命令 → reply 子命令列表
+    │   │   if consumed: continue
+    │   └─ for each plugin:
+    │       └─ lua.Call("on_message", eventTable)
+    │       └─ if consumed: continue
     │
     └─ handleMessage(ctx, ev)
         │
@@ -76,10 +93,13 @@ OneBot11 WS → adapter.readLoop()
         ├─ acl.Check(userID, chatAreaID, "chat")
         ├─ session.GetOrCreate(chatAreaID)
         ├─ skills.Match(rawMessage)
-        ├─ prompt.BuildFullContext(vars, longTermMems, tools)
-        │   ├─ dao.Prompt.ListByType(System)
-        │   ├─ dao.Prompt.ListByType(Personality)
-        │   └─ template.Execute(buf, vars)
+        ├─ prompt.BuildFullContext(ctx, longTermMems, toolDescs)
+        │   └─ BuildSystemPrompt(ctx):
+        │       ├─ dao.Prompt.ListSystemLocked()        // 1. SystemLocked (强制拼接)
+        │       ├─ dao.Prompt.ListByType(System)        // 2. system (跳过 IsSystem)
+        │       ├─ dao.Prompt.ListByType(Personality)   // 3. personality
+        │       └─ dao.Prompt.ListByType(Custom)        // 4. custom
+        │       → 内容直接拼接, 不再调用 template.Execute
         ├─ memory.GetShortTermMessages()  // ChatRecord 最近 N 条
         ├─ memory.GetLongTermMemory("", limit)
         │

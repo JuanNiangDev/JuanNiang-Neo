@@ -52,6 +52,9 @@
 | 40025 | adapter 配置不存在 |
 | 40026 | T2I 配置不存在 |
 | 40027 | Sandbox 配置不存在 |
+| 40028 | 系统插件不允许删除或停用 |
+| 40029 | 系统提示词不允许修改或删除 |
+| 40030 | 内置工具运行时常驻, 不支持启停 |
 | 50000 | 服务器内部错误 |
 
 **认证:** 除 `POST /login` 和 `GET /health` 外所有接口需 `Authorization: Bearer <token>` header，通过 `POST /login` 获取。
@@ -174,6 +177,12 @@ curl -X POST http://localhost:8090/api/v1/change-password \
 
 OneBot11 适配器状态查询与配置更新。
 
+> **重要变更:**
+> - `listen_addr` 由 `Adapter.listenAddr()` 规范化为 `host:port` 格式，兼容 `host-only` / `:port` / `host:port` / 空串四种形态（空串时退化为 `:<port>`）。
+> - `conns` 字段新增，返回每条 WS 连接的 `{id, ip, self_id}` 详情；`Adapter.Stop()` 修复了 close of closed channel panic（关闭后置 nil，`Start` 时若 `events==nil` 重建）。
+> - `SyncConfig` 简化：Enable 时 Stop+Start 重启；禁用时仅 Stop。`newWSServer` 改用 `context.Background()` 而非派生 caller ctx，避免 SyncConfig 的 5s 超时 ctx cancel 后级联取消 ws server。
+> - 管理员 QQ 列表持久化在 DB 的 `AdminQQNumbers` 字段（前端 `v-combobox` 编辑），不再仅靠 `OB_ADMINS` env。
+
 ### 2.1 GET /adapter
 
 **功能:** 获取 OneBot11 适配器当前运行状态（不含配置）。
@@ -183,10 +192,19 @@ OneBot11 适配器状态查询与配置更新。
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `running` | bool | 适配器是否在运行 |
-| `listen_addr` | string | 监听地址 `host:port` |
+| `listen_addr` | string | 监听地址 `host:port`（已规范化） |
 | `self_id` | int64 | 机器人 QQ 号 |
 | `conn_count` | int | 当前 WebSocket 连接数 |
 | `conn_ids` | int64[] | 已连接客户端 QQ 号列表 |
+| `conns` | ConnDetail[] | 每条连接的详情列表 |
+
+`ConnDetail`:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | int64 | 客户端 self_id (QQ 号) |
+| `ip` | string | 客户端 RemoteAddr（`handleWS` 时由 `r.RemoteAddr` 记录） |
+| `self_id` | int64 | 同 `id`，冗余字段便于前端展示 |
 
 ### 2.2 PUT /adapter
 
@@ -196,10 +214,10 @@ OneBot11 适配器状态查询与配置更新。
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `addr` | string | 是 | 监听地址 |
+| `addr` | string | 是 | 监听地址（支持 host / `:port` / `host:port` 形态，由 `listenAddr()` 规范化） |
 | `port` | int | 是 | 监听端口 |
 | `token` | string | 是 | OneBot access token |
-| `admin_qq_numbers` | string[] | 是 | 管理员 QQ 号列表 |
+| `admin_qq_numbers` | string[] | 是 | 管理员 QQ 号列表（持久化到 DB） |
 | `enabled` | bool | 是 | 是否启用 |
 
 **响应** `data: null`
@@ -450,11 +468,13 @@ MCP (Model Context Protocol) 服务器配置 CRUD，支持运行时连接/断开
 
 ## 6. Prompt 管理
 
-Prompt 模板 CRUD，支持变量插值。
+Prompt 模板 CRUD。
+
+> **重要变更:** 已移除模板渲染（`RenderTemplate` / `GetDefaultVars`）与 `variables` 字段。Prompt 内容按优先级直接拼接：**SystemLocked → system → personality → custom**。SystemLocked 类型由二进制在启动时幂等播种（`__system_locked__`），`IsSystem=true`，不受 `IsActive` 影响，强制拼接；Service 层 Update/Delete/Toggle 拒绝 `IsSystem` 行，新增 Prompt 也禁止使用 `system` 类型（保留给系统锁定提示词）。
 
 ### 6.1 GET /prompts
 
-**功能:** 列出所有 Prompt。
+**功能:** 列出所有 Prompt（含系统锁定提示词，前端可读但不可改）。
 
 **响应** `data: PromptResp[]`:
 
@@ -465,10 +485,12 @@ Prompt 模板 CRUD，支持变量插值。
 | `content` | string | 模板内容 |
 | `type` | PromptType | `system`/`personality`/`custom` |
 | `is_active` | bool | 是否激活 |
-| `variables` | string[] | 变量列表 |
+| `is_system` | bool | 是否系统锁定提示词（true 时禁止 Update/Delete/Toggle 停用） |
 | `created_at` | time | 创建时间 |
 
 ### 6.2 POST /prompts
+
+**功能:** 新增 Prompt。**禁止创建 `type=system` 的 Prompt**（该类型保留给系统锁定提示词），违规返回 `40029 PromptIsSystem`。
 
 **请求体** `AddPromptReq`:
 
@@ -476,15 +498,16 @@ Prompt 模板 CRUD，支持变量插值。
 |------|------|------|------|
 | `name` | string | 是 | 名称 |
 | `content` | string | 是 | 模板内容 |
-| `type` | PromptType | 是 | 类型 |
+| `type` | PromptType | 是 | 类型（仅 `personality`/`custom`） |
 | `is_active` | bool | 是 | 是否激活 |
-| `variables` | string[] | 否 | 变量列表 |
 
 **响应** `data: PromptResp`
 
 ### 6.3 PUT /prompts/:id
 
 **路径参数:** `id` (Prompt UUID)
+
+**功能:** 更新 Prompt。若目标行 `IsSystem=true` 返回 `40029`；若请求体 `type=system` 返回 `40029`。
 
 **请求体** `UpdatePromptReq`（同 AddPromptReq 字段）
 
@@ -494,11 +517,13 @@ Prompt 模板 CRUD，支持变量插值。
 
 **路径参数:** `id` (Prompt UUID)
 
+**功能:** 删除 Prompt。若目标行 `IsSystem=true` 返回 `40029`。
+
 **响应** `data: null`
 
 ### 6.5 PUT /prompts/:id/toggle
 
-**功能:** 启用/停用 Prompt。
+**功能:** 启用/停用 Prompt。系统锁定提示词**允许启用但不允许停用**，停用 `IsSystem=true` 的行返回 `40029`。
 
 **路径参数:** `id` (Prompt UUID)
 
@@ -613,17 +638,23 @@ Skill 是关键词/正则触发的工具/Prompt 组合配置。
 
 ## 9. Tool 管理
 
-工具配置查看与启用/停用。Tool 本身通过代码内置注册，前端只能切换状态。
+工具配置查看与启用/停用。
+
+**ListTools 合并策略:** `GET /tools` 合并两份数据源：
+1. **运行时 `ToolRegistry.List()` 中的内置工具** —— 这些工具 ID 形如 `builtin:<name>`，`is_builtin=true`，运行时常驻（`is_active=true`），不支持启停。
+2. **DB 中的 `ToolConfig` 表** —— 用户自定义工具 + 历史保留的内置工具条目。
+
+若 DB 中存在同名条目，合并时使用 DB 的 ID 与 `is_active`/`created_at` 字段，但 `is_builtin` 与 `parameters` 仍以运行时注册表为准。
 
 ### 9.1 GET /tools
 
-**功能:** 列出所有 Tool 配置。
+**功能:** 列出所有 Tool 配置（内置 + 自定义）。
 
 **响应** `data: ToolConfigResp[]`:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | string | UUID |
+| `id` | string | UUID；内置工具为 `builtin:<name>` 前缀 |
 | `name` | string | 工具名 |
 | `description` | string | 描述 |
 | `parameters` | JSONMap | JSON Schema 参数定义 |
@@ -634,9 +665,9 @@ Skill 是关键词/正则触发的工具/Prompt 组合配置。
 
 ### 9.2 PUT /tools/:id/toggle
 
-**功能:** 启用/停用 Tool。停用时从注册表移除；启用时内置工具已在 init 时注册，无需重复。
+**功能:** 启用/停用 Tool。**内置工具（`id` 以 `builtin:` 开头）运行时常驻，不支持启停**，违规返回 `40030 ToolIsBuiltin`。停用自定义工具时从注册表移除；启用时若为内置工具已在 init 时注册，无需重复。
 
-**路径参数:** `id` (Tool UUID)
+**路径参数:** `id` (Tool UUID 或 `builtin:<name>`)
 
 **请求体** `ToggleToolReq`:
 
@@ -652,21 +683,35 @@ Skill 是关键词/正则触发的工具/Prompt 组合配置。
 
 Lua 插件管理。插件通过 ZIP 上传，自动解压到 `data/pluggins/<name>/`。
 
+> **重要变更:** `GET /plugins` 改用 `PluginEngine.ListMaps()` 作为数据源，返回的条目字段与旧 `PluginResp` 不同（不再有 `path`/`config`/`created_at`，新增 `permissions`/`commands`/`is_system`/`author`/`description`）。**系统插件（`is_system=true`）禁止删除与停用**，违规返回 `40028 PluginIsSystem`。系统插件三层保护：Manifest.System 字段 + `PluginEngine.IsSystem()` + Service 层 Toggle/Delete 守卫。
+
 ### 10.1 GET /plugins
 
-**功能:** 列出所有插件配置。
+**功能:** 列出所有插件配置（来自运行时 `PluginEngine.ListMaps()`，含 manifest 元数据 + 注册命令列表）。
 
-**响应** `data: PluginResp[]`:
+**响应** `data: PluginListMap[]`:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `id` | string | UUID |
-| `name` | string | 名称 |
+| `name` | string | 插件名（与目录名一致，作为 `id` 使用） |
 | `version` | string | 版本 |
-| `path` | string | 文件路径 |
-| `config` | JSONMap | 插件配置 |
-| `is_active` | bool | 是否激活 |
-| `created_at` | time | 创建时间 |
+| `author` | string | 作者 |
+| `description` | string | 描述 |
+| `permissions` | string[] | 权限列表（来自 manifest） |
+| `is_system` | bool | 是否系统插件（true 时禁止 Toggle 停用 / Delete） |
+| `is_active` | bool | 是否激活（已加载即视为 true） |
+| `commands` | PluginCommandInfo[] | 该插件通过 `jn.command.register` 注册的所有命令路径 |
+
+`PluginCommandInfo`:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `path` | string[] | 完整命令路径，如 `["system","provider","switch"]` |
+| `description` | string | 命令描述 |
+| `usage` | string | 用法示例 |
+| `is_leaf` | bool | 是否为可执行命令（handler != nil） |
+
+> 若 `PluginEngine` 未初始化，回退到 DB 静态记录（`PluginResp[]`，字段同旧版）。
 
 ### 10.2 POST /plugins/upload
 
@@ -695,7 +740,7 @@ curl -X POST http://localhost:8090/api/v1/plugins/upload \
 
 ### 10.3 PUT /plugins/:id/toggle
 
-**功能:** 启用/停用插件。启用时调用 `PluginEngine.Load`，停用时 `Unload`。
+**功能:** 启用/停用插件。启用时调用 `PluginEngine.Load`，停用时 `Unload`。**系统插件禁止停用**（但允许"启用"以支持幂等场景），违规返回 `40028 PluginIsSystem`。
 
 **路径参数:** `id` (插件名)
 
@@ -709,7 +754,7 @@ curl -X POST http://localhost:8090/api/v1/plugins/upload \
 
 ### 10.4 DELETE /plugins/:id
 
-**功能:** 卸载并删除插件配置（不删除文件）。
+**功能:** 卸载并删除插件配置（不删除文件）。**系统插件禁止删除**，违规返回 `40028 PluginIsSystem`。
 
 **路径参数:** `id` (插件名)
 
@@ -1030,7 +1075,7 @@ Webhook 适配器配置（监听独立端口接收外部事件）。
 
 ### 18.1 GET /logs
 
-**功能:** 返回最近 250 条日志（按时间顺序，最早→最新）。
+**功能:** 返回最近 250 条日志，**最新的排在最前**（`GetLogs` 在 Hub `Recent()` 基础上反序，便于前端按"最新优先"展示）。
 
 **响应** `data: LogEntryResp[]`:
 
@@ -1049,7 +1094,7 @@ Webhook 适配器配置（监听独立端口接收外部事件）。
 
 **事件流:**
 
-1. 连接建立后先发送最近 250 条历史日志（每个一条 `log` 事件）
+1. 连接建立后先发送最近 250 条历史日志（按时间顺序，最早→最新）
 2. 然后订阅 Hub，实时推送新日志
 3. 每 15 秒发送一次 keepalive 心跳
 4. 客户端断开或服务停止时退出
@@ -1108,11 +1153,14 @@ es.addEventListener('log', (e) => {
 **注意事项:**
 
 - Provider 同类型只能一个 Active，激活时自动停用其他
-- Plugin 的 `id` 是插件名（不是 UUID），通过 `POST /plugins/upload` 上传 ZIP 后自动生成
+- Plugin 的 `id` 是插件名（不是 UUID），通过 `POST /plugins/upload` 上传 ZIP 后自动生成；系统插件（`is_system=true`，如内置 `system`）禁止删除与停用
 - Skill 的 `priority` 数字越大优先级越高
 - Memory 接口只管理配置；实际短期消息在 Redis、长期条目在 Postgres
 - ChatArea 由系统自动创建（消息驱动），无手动创建接口
-- T2I/Sandbox/Webhook 都是单行配置（ID=1）
+- T2I/Sandbox/Webhook 都是单行配置（ID=1）；首次访问 `GET /t2i/config` / `GET /sandbox/config` 若 DB 无配置会自动调用 `InitConfig` 创建默认行
+- Prompt 禁止创建 `type=system` 类型（保留给系统锁定提示词 `__system_locked__`）；系统锁定提示词不允许修改/删除/停用
+- Tool ID 以 `builtin:` 前缀的为内置工具，运行时常驻，`PUT /tools/:id/toggle` 收到 `builtin:` 前缀返回 `40030 ToolIsBuiltin`
+- Adapter `listen_addr` 由 `listenAddr()` 规范化为 `host:port`；管理员列表持久化在 DB `admin_qq_numbers` 字段
 
 ---
 
