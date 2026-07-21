@@ -222,7 +222,7 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 		Endpoint:    data.Endpoint,
 		Token:       data.Token,
 		Model:       data.Model,
-		Temperature: data.Temperature,
+		Temperature: float32(data.Temperature),
 		IsActive:    data.IsActive,
 	}
 
@@ -254,7 +254,7 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 			Endpoint:    data.Endpoint,
 			Token:       data.Token,
 			Model:       data.Model,
-			Temperature: data.Temperature,
+			Temperature: float32(data.Temperature),
 		}))
 	}
 
@@ -286,7 +286,7 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		Endpoint:    data.Endpoint,
 		Token:       data.Token,
 		Model:       data.Model,
-		Temperature: data.Temperature,
+		Temperature: float32(data.Temperature),
 		IsActive:    data.IsActive,
 	}
 
@@ -298,7 +298,7 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		Endpoint:    data.Endpoint,
 		Token:       data.Token,
 		Model:       data.Model,
-		Temperature: data.Temperature,
+		Temperature: float32(data.Temperature),
 	}
 
 	// 运行时同步：先移除同类型旧的，再同步新配置

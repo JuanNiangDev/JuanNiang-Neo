@@ -86,6 +86,32 @@ end, {
 })
 
 -- --------------------------------------------------------------------
+-- /system provider —— 默认显示列表
+-- --------------------------------------------------------------------
+jn.command.register("system provider", function(args, event)
+    local list, err = jn.agent.list_runtime_providers()
+    if not list then
+        reply(event, "获取 Provider 失败: " .. tostring(err))
+        return true
+    end
+    local lines = {"运行时 Provider 列表:"}
+    for _, p in ipairs(list) do
+        lines[#lines+1] = string.format("- id=%s  type=%s  model=%s  name=%s",
+            p.id, p.type, p.model, p.name)
+    end
+    if #list == 0 then
+        lines[#lines+1] = "(空)"
+    end
+    lines[#lines+1] = ""
+    lines[#lines+1] = "子命令: list, switch"
+    reply(event, table.concat(lines, "\n"))
+    return true
+end, {
+    description = "管理 LLM Provider（默认列出）",
+    usage = "/system provider [list|switch <id>]",
+})
+
+-- --------------------------------------------------------------------
 -- /system provider list|switch
 -- --------------------------------------------------------------------
 jn.command.register("system provider list", function(args, event)
@@ -129,6 +155,32 @@ jn.command.register("system provider switch", function(args, event)
 end, {
     description = "切换同类型 Provider (停用其它同类，激活指定 Provider)",
     usage = "/system provider switch <provider_id>",
+})
+
+-- --------------------------------------------------------------------
+-- /system mcp —— 默认显示列表
+-- --------------------------------------------------------------------
+jn.command.register("system mcp", function(args, event)
+    local list, err = jn.agent.list_mcps()
+    if not list then
+        reply(event, "获取 MCP 失败: " .. tostring(err))
+        return true
+    end
+    local lines = {"运行时 MCP 列表:"}
+    for _, m in ipairs(list) do
+        lines[#lines+1] = string.format("- id=%s  name=%s  active=%s",
+            m.id, m.name, tostring(m.active))
+    end
+    if #list == 0 then
+        lines[#lines+1] = "(空)"
+    end
+    lines[#lines+1] = ""
+    lines[#lines+1] = "子命令: list, toggle"
+    reply(event, table.concat(lines, "\n"))
+    return true
+end, {
+    description = "管理 MCP 服务器（默认列出）",
+    usage = "/system mcp [list|toggle <id> <on|off>]",
 })
 
 -- --------------------------------------------------------------------
@@ -181,6 +233,34 @@ jn.command.register("system mcp toggle", function(args, event)
 end, {
     description = "启用或停用指定 MCP 服务器",
     usage = "/system mcp toggle <mcp_id> <on|off>",
+})
+
+-- --------------------------------------------------------------------
+-- /system tool —— 默认显示列表
+-- --------------------------------------------------------------------
+jn.command.register("system tool", function(args, event)
+    local list, err = jn.agent.list_tools()
+    if not list then
+        reply(event, "获取 Tool 失败: " .. tostring(err))
+        return true
+    end
+    local lines = {"运行时 Tool 列表:"}
+    for _, t in ipairs(list) do
+        local tag = t.builtin and "[builtin]" or "[custom]"
+        local lr = t.long_running and " (long-running)" or ""
+        lines[#lines+1] = string.format("- %s %s%s — %s",
+            tag, t.name, lr, t.description or "")
+    end
+    if #list == 0 then
+        lines[#lines+1] = "(空)"
+    end
+    lines[#lines+1] = ""
+    lines[#lines+1] = "子命令: list, toggle"
+    reply(event, table.concat(lines, "\n"))
+    return true
+end, {
+    description = "管理 Tool（默认列出）",
+    usage = "/system tool [list|toggle <name> <on|off>]",
 })
 
 -- --------------------------------------------------------------------
@@ -258,6 +338,29 @@ end, {
 })
 
 -- --------------------------------------------------------------------
+-- /system t2i —— 默认显示状态
+-- --------------------------------------------------------------------
+jn.command.register("system t2i", function(args, event)
+    local active = jn.t2i.is_active()
+    local lines = {"T2I 状态:"}
+    lines[#lines+1] = "  启用: " .. tostring(active)
+    if active then
+        local cfg = jn.t2i.get_config()
+        if cfg then
+            lines[#lines+1] = "  base_url: " .. tostring(cfg.base_url or "")
+            lines[#lines+1] = "  timeout: " .. tostring(cfg.timeout or 0)
+        end
+    end
+    lines[#lines+1] = ""
+    lines[#lines+1] = "子命令: status, toggle"
+    reply(event, table.concat(lines, "\n"))
+    return true
+end, {
+    description = "管理 T2I 服务（默认显示状态）",
+    usage = "/system t2i [status|toggle <on|off>]",
+})
+
+-- --------------------------------------------------------------------
 -- /system t2i status|toggle
 -- --------------------------------------------------------------------
 jn.command.register("system t2i status", function(args, event)
@@ -306,6 +409,29 @@ end, {
 })
 
 -- --------------------------------------------------------------------
+-- /system sandbox —— 默认显示状态
+-- --------------------------------------------------------------------
+jn.command.register("system sandbox", function(args, event)
+    local active = jn.sandbox.is_active()
+    local lines = {"Sandbox 状态:"}
+    lines[#lines+1] = "  启用: " .. tostring(active)
+    if active then
+        local cfg = jn.sandbox.get_config()
+        if cfg then
+            lines[#lines+1] = "  base_url: " .. tostring(cfg.base_url or "")
+            lines[#lines+1] = "  timeout: " .. tostring(cfg.timeout or 0)
+        end
+    end
+    lines[#lines+1] = ""
+    lines[#lines+1] = "子命令: status, toggle"
+    reply(event, table.concat(lines, "\n"))
+    return true
+end, {
+    description = "管理 Sandbox 服务（默认显示状态）",
+    usage = "/system sandbox [status|toggle <on|off>]",
+})
+
+-- --------------------------------------------------------------------
 -- /system sandbox status|toggle
 -- --------------------------------------------------------------------
 jn.command.register("system sandbox status", function(args, event)
@@ -351,6 +477,32 @@ jn.command.register("system sandbox toggle", function(args, event)
 end, {
     description = "启用或停用 Sandbox 服务",
     usage = "/system sandbox toggle <on|off>",
+})
+
+-- --------------------------------------------------------------------
+-- /system session —— 默认显示列表
+-- --------------------------------------------------------------------
+jn.command.register("system session", function(args, event)
+    local sessions, err = jn.agent.get_sessions()
+    if not sessions then
+        reply(event, "获取 Session 失败: " .. tostring(err))
+        return true
+    end
+    local lines = {"Session 列表:"}
+    for _, s in ipairs(sessions) do
+        lines[#lines+1] = string.format("- id=%s  area=%s  model=%s  tokens=%d",
+            s.id, s.chat_area_id, s.model or "?", s.token_usage or 0)
+    end
+    if #sessions == 0 then
+        lines[#lines+1] = "(空)"
+    end
+    lines[#lines+1] = ""
+    lines[#lines+1] = "子命令: list, info"
+    reply(event, table.concat(lines, "\n"))
+    return true
+end, {
+    description = "管理 Session（默认列出）",
+    usage = "/system session [list|info]",
 })
 
 -- --------------------------------------------------------------------

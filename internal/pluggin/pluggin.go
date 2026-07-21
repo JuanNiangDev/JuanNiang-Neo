@@ -292,11 +292,16 @@ func (pe *PluginEngine) List() []Manifest {
 
 // ListMaps 返回插件列表 (map 格式, 供 Web API 使用)。
 // 包含 manifest 元数据 + 权限列表 + 该插件注册的命令。
+// 已加载的插件 is_active=true，未加载的（已禁用/未启动）is_active=false。
 func (pe *PluginEngine) ListMaps() []map[string]any {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
-	out := make([]map[string]any, 0, len(pe.plugins))
-	for _, p := range pe.plugins {
+
+	// 收集已加载的插件名，同时构建输出
+	loaded := make(map[string]bool)
+	out := make([]map[string]any, 0)
+	for name, p := range pe.plugins {
+		loaded[name] = true
 		m := p.Manifest
 		entry := map[string]any{
 			"name":        m.Name,
@@ -307,14 +312,41 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 			"is_system":   m.System,
 			"is_active":   true, // 已加载即视为 active
 		}
-		// 附加该插件注册的命令列表
+		// 使用 Load 时的 name（目录名）查找命令，而非 manifest.Name
+		// 因为命令注册使用的 plugin 参数是 Load 的 name 参数
 		if pe.commands != nil {
-			entry["commands"] = pe.commands.ListByPlugin(m.Name)
+			entry["commands"] = pe.commands.ListByPlugin(name)
 		} else {
 			entry["commands"] = []map[string]any{}
 		}
 		out = append(out, entry)
 	}
+
+	// 扫描磁盘，添加已存在但未加载的插件（已禁用的）
+	entries, err := os.ReadDir(pe.basePath)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Name() == "sdk" || loaded[entry.Name()] {
+				continue
+			}
+			// 读取 pluggin.yaml 获取元数据
+			manifest, err := pe.readManifest(filepath.Join(pe.basePath, entry.Name()))
+			if err != nil {
+				continue
+			}
+			out = append(out, map[string]any{
+				"name":        manifest.Name,
+				"version":     manifest.Version,
+				"author":      manifest.Author,
+				"description": manifest.Description,
+				"permissions": manifest.Permissions,
+				"is_system":   manifest.System,
+				"is_active":   false,
+				"commands":    []map[string]any{},
+			})
+		}
+	}
+
 	return out
 }
 
@@ -545,12 +577,6 @@ func (pe *PluginEngine) injectCommandAPI(L *lua.LState, pluginName string) {
 				L.Push(lua.LString("path 不能为空"))
 				return 2
 			}
-			if handlerFn.Type() != lua.LTFunction {
-				L.Push(lua.LBool(false))
-				L.Push(lua.LString("handler 必须是函数"))
-				return 2
-			}
-
 			opts := CommandOpts{}
 			if optsArg.Type() == lua.LTTable {
 				t := optsArg.(*lua.LTable)
@@ -562,38 +588,43 @@ func (pe *PluginEngine) injectCommandAPI(L *lua.LState, pluginName string) {
 				}
 			}
 
-			// 保留 handler 引用，防止被 GC
-			refKey := fmt.Sprintf("__jn_cmd_handler_%s_%s", pluginName, strings.Join(path, "_"))
-			L.SetGlobal(refKey, handlerFn)
-
 			plugin := pluginName
-			handler := CommandHandler(func(args []string, event EventData) (bool, string, error) {
-				// 在插件 LState 中调用 handler
-				argTable := L.NewTable()
-				for i, a := range args {
-					L.SetTable(argTable, lua.LNumber(i+1), lua.LString(a))
-				}
-				evTable := eventToLuaTable(L, event)
-				if err := L.CallByParam(lua.P{
-					Fn:      handlerFn,
-					NRet:    2,
-					Protect: true,
-				}, argTable, evTable); err != nil {
-					return true, "", err
-				}
-				retConsumed := L.Get(-2)
-				retReply := L.Get(-1)
-				L.Pop(2)
-				consumed := false
-				if retConsumed.Type() == lua.LTBool {
-					consumed = bool(retConsumed.(lua.LBool))
-				}
-				reply := ""
-				if retReply.Type() == lua.LTString {
-					reply = string(retReply.(lua.LString))
-				}
-				return consumed, reply, nil
-			})
+			var handler CommandHandler
+
+			if handlerFn.Type() == lua.LTFunction {
+				// 保留 handler 引用，防止被 GC
+				refKey := fmt.Sprintf("__jn_cmd_handler_%s_%s", pluginName, strings.Join(path, "_"))
+				L.SetGlobal(refKey, handlerFn)
+
+				handler = CommandHandler(func(args []string, event EventData) (bool, string, error) {
+					// 在插件 LState 中调用 handler
+					argTable := L.NewTable()
+					for i, a := range args {
+						L.SetTable(argTable, lua.LNumber(i+1), lua.LString(a))
+					}
+					evTable := eventToLuaTable(L, event)
+					if err := L.CallByParam(lua.P{
+						Fn:      handlerFn,
+						NRet:    2,
+						Protect: true,
+					}, argTable, evTable); err != nil {
+						return true, "", err
+					}
+					retConsumed := L.Get(-2)
+					retReply := L.Get(-1)
+					L.Pop(2)
+					consumed := false
+					if retConsumed.Type() == lua.LTBool {
+						consumed = bool(retConsumed.(lua.LBool))
+					}
+					reply := ""
+					if retReply.Type() == lua.LTString {
+						reply = string(retReply.(lua.LString))
+					}
+					return consumed, reply, nil
+				})
+			}
+			// handler==nil 表示仅作为分组节点，不直接执行
 
 			registry.Register(plugin, path, opts, handler)
 			L.Push(lua.LBool(true))

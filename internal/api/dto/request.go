@@ -1,8 +1,40 @@
 package dto
 
 import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+
 	"JuanNiang-Neo/internal/core/models"
 )
+
+// FlexFloat32 支持 JSON 字符串和数字两种格式的反序列化。
+// 前端 <input type="number"> 在某些情况下会将数字值序列化为 JSON 字符串。
+type FlexFloat32 float32
+
+func (f *FlexFloat32) UnmarshalJSON(data []byte) error {
+	// 尝试作为数字解析
+	var v float32
+	if err := json.Unmarshal(data, &v); err == nil {
+		*f = FlexFloat32(v)
+		return nil
+	}
+	// 尝试作为字符串解析
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		v64, err := strconv.ParseFloat(s, 32)
+		if err != nil {
+			return fmt.Errorf("FlexFloat32: 无法解析字符串 %q: %w", s, err)
+		}
+		*f = FlexFloat32(v64)
+		return nil
+	}
+	return fmt.Errorf("FlexFloat32: 无法解析 %s", string(data))
+}
+
+func (f FlexFloat32) MarshalJSON() ([]byte, error) {
+	return json.Marshal(float32(f))
+}
 
 type ChangePasswordReq struct {
 	OldPassword string `json:"old_password"`
@@ -32,7 +64,7 @@ type AddProviderReq struct {
 	Endpoint    string           `json:"endpoint"`
 	Token       string           `json:"token"`
 	Model       string           `json:"model"`
-	Temperature float32          `json:"temperature"`
+	Temperature FlexFloat32      `json:"temperature"`
 	IsActive    bool             `json:"isActive"`
 }
 
@@ -42,7 +74,7 @@ type UpdateProviderReq struct {
 	Endpoint    string           `json:"endpoint"`
 	Token       string           `json:"token"`
 	Model       string           `json:"model"`
-	Temperature float32          `json:"temperature"`
+	Temperature FlexFloat32      `json:"temperature"`
 	IsActive    bool             `json:"isActive"`
 }
 
