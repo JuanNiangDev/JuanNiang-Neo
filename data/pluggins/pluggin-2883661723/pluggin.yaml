@@ -1,8 +1,9 @@
 name: ping
-version: "1.1.0"
+version: 1.1.0
 author: JuanNiang
-description: "Ping 插件示例，使用 jn SDK 注册 /ping 命令"
+description: Ping 插件示例，使用 jn SDK 注册 /ping 命令
 entry: main.lua
-enabled: true
 permissions:
-  - onebot11
+    - onebot11
+system: false
+enabled: true
