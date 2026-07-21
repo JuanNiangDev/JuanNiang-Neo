@@ -541,6 +541,33 @@ func (s *Service) ToggleMCPServer(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+func (s *Service) CheckMCPServer(ctx context.Context, c *app.RequestContext) {
+	id := c.Param("id")
+	raw, err := s.DAO.MCPServer.GetByID(ctx, id)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.MCPNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	client := mcp.NewSSEMCPClient(buildMcpSSEConfig(raw))
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if err := client.Connect(checkCtx); err != nil {
+		client.Disconnect()
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+			"healthy": false,
+			"error":   err.Error(),
+		}))
+		return
+	}
+	client.Disconnect()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+		"healthy": true,
+		"error":   "",
+	}))
+}
+
 // ====================================================================
 // Skill
 // ====================================================================

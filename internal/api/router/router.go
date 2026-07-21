@@ -39,6 +39,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/mcp/:id", auth, svc.UpdateMCPServer)
 	api.DELETE("/mcp/:id", auth, svc.DeleteMCPServer)
 	api.PUT("/mcp/:id/toggle", auth, svc.ToggleMCPServer)
+	api.GET("/mcp/:id/check", auth, svc.CheckMCPServer)
 
 	// Memory
 	api.GET("/memory/:chatAreaID/short-term", auth, svc.GetShortTermMemoryConfig)

@@ -83,6 +83,7 @@ export const mcpApi = {
   update: (id: string, data: AddMCPServerReq) => client.put(`/mcp/${id}`, data),
   delete: (id: string) => client.delete(`/mcp/${id}`),
   toggle: (id: string, is_active: boolean) => client.put(`/mcp/${id}/toggle`, { is_active }),
+  check: (id: string) => client.get(`/mcp/${id}/check`),
 }
 
 // ======== Memory ========
