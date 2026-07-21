@@ -278,10 +278,15 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	h.Session.UpdateTokenUsage(ctx, sess.ID, int64(resp.TokenUsage))
 
 	if resp.Message.Content != "" {
-		h.sendReply(msg, resp.Message.Content)
-		h.recordChat(ctx, chatArea.ID, userID, "assistant", resp.Message.Content, resp.TokenUsage, marshalToolCalls(resp.Message.ToolCalls))
-		if h.Memory != nil {
-			h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
+		// 群聊中 LLM 输出"静默"类废话时直接丢弃，不发送、不记录
+		if msg.MessageType == "group" && isSilenceResponse(resp.Message.Content) {
+			slog.Info("群聊静默响应已丢弃", "content", resp.Message.Content, "group_id", msg.GroupID)
+		} else {
+			h.sendReply(msg, resp.Message.Content)
+			h.recordChat(ctx, chatArea.ID, userID, "assistant", resp.Message.Content, resp.TokenUsage, marshalToolCalls(resp.Message.ToolCalls))
+			if h.Memory != nil {
+				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
+			}
 		}
 	}
 
@@ -523,6 +528,44 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
 			slog.Error("发送消息失败", "err", err)
 		}
 	}
+}
+
+// isSilenceResponse 检测 LLM 是否输出了纯"静默声明"类废话（如"保持静默"、"我不回复"等）。
+// 仅当整条消息就是一句静默声明时才拦截，避免误伤正常对话中提及"静默"的消息。
+func isSilenceResponse(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	// 只检查短消息（≤15字），正常回复不会这么短
+	if len([]rune(trimmed)) > 15 {
+		return false
+	}
+
+	lower := strings.ToLower(trimmed)
+	// 精确匹配：整条消息就是静默声明本身
+	exactMatches := []string{
+		"保持静默", "保持沉默", "静默观察", "静默",
+		"不回复", "我不回复", "我不回",
+		"不插话", "我不插话",
+		"不说话", "我不说话",
+		"不发言", "我不发言",
+		"不参与", "我不参与",
+		"与我无关", "不关我的事",
+		"我不说",
+	}
+	for _, m := range exactMatches {
+		if lower == m {
+			return true
+		}
+	}
+
+	// 包含"静默"且没有其他实质内容（如"我保持静默"、"会静默观察"）
+	if strings.Contains(lower, "静默") || strings.Contains(lower, "不回复") || strings.Contains(lower, "不插话") {
+		return true
+	}
+
+	return false
 }
 
 // getTargetID 根据消息类型返回对应的 QQ 目标 ID。
