@@ -1036,18 +1036,13 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 		}
 	}
 
-	// 通过 name 查找 DB 中的 Plugin 记录获取 UUID
-	dbPlugin, err := s.DAO.Plugin.GetByName(ctx, name)
-	if err != nil {
-		// DB 中无记录（插件可能是直接放在目录里的），只做运行时 Load/Unload，不操作 DB
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
-		return
+	// 持久化启用/停用状态到插件自身的 pluggin.yaml
+	if s.PluginEngine != nil {
+		if err := s.PluginEngine.SetEnabled(name, data.IsActive); err != nil {
+			slog.Warn("写入插件 enabled 状态失败", "name", name, "err", err)
+		}
 	}
 
-	if err := s.DAO.Plugin.SetActive(ctx, dbPlugin.ID, data.IsActive); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 

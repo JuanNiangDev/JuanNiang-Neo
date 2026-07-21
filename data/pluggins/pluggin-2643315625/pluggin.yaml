@@ -3,6 +3,7 @@ version: "1.0.0"
 author: JuanNiang-Neo
 description: "签到插件，提供 /qd 签到 和 /rank 排名功能"
 entry: main.lua
+enabled: true
 permissions:
   - onebot11
   - database

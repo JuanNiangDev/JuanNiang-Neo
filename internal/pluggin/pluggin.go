@@ -37,6 +37,10 @@ type Manifest struct {
 	// System=true 表示系统内置插件，禁止通过 API 删除或停用。
 	// 这类插件通常随二进制分发，由 PluginEngine 启动时自动写入磁盘并加载。
 	System bool `yaml:"system"`
+	// Enabled 为插件的启用/停用状态。true=启用，false=停用。
+	// 由 API TogglePlugin 写入 YAML，启动时 LoadAll 据此决定是否加载。
+	// 系统插件（System=true）忽略此字段，始终加载。
+	Enabled bool `yaml:"enabled"`
 }
 
 type LoadedPlugin struct {
@@ -214,6 +218,12 @@ func (pe *PluginEngine) LoadAll() error {
 		if entry.Name() == "sdk" {
 			continue
 		}
+		// 读取 manifest 判断 enabled 状态（非系统插件且 enabled=false 则跳过）
+		manifest, _ := pe.readManifest(filepath.Join(pe.basePath, entry.Name()))
+		if manifest != nil && !manifest.Enabled && !manifest.System {
+			slog.Info("插件已禁用，跳过加载", "name", entry.Name())
+			continue
+		}
 		if err := pe.Load(entry.Name()); err != nil {
 			slog.Error("插件加载失败", "name", entry.Name(), "err", err)
 		}
@@ -341,7 +351,7 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 				"description": manifest.Description,
 				"permissions": manifest.Permissions,
 				"is_system":   manifest.System,
-				"is_active":   false,
+				"is_active":   manifest.Enabled, // 从 YAML enabled 字段读取，兼容旧版默认 true
 				"commands":    []map[string]any{},
 			})
 		}
@@ -1356,7 +1366,33 @@ func (pe *PluginEngine) readManifest(dir string) (*Manifest, error) {
 	if m.Entry == "" {
 		m.Entry = "main.lua"
 	}
+	// 兼容旧 YAML：若文件中未显式声明 enabled，默认视为 true
+	if !bytes.Contains(data, []byte("\nenabled")) && !bytes.HasPrefix(bytes.TrimSpace(data), []byte("enabled")) {
+		m.Enabled = true
+	}
 	return &m, nil
+}
+
+// writeManifest 将清单写回 pluggin.yaml。
+func (pe *PluginEngine) writeManifest(dir string, m *Manifest) error {
+	path := filepath.Join(dir, "pluggin.yaml")
+	data, err := yaml.Marshal(m)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// SetEnabled 更新插件 YAML 中的 enabled 字段。
+// 返回的是磁盘更新结果，不影响已加载/未加载的运行时状态。
+func (pe *PluginEngine) SetEnabled(name string, enabled bool) error {
+	dir := filepath.Join(pe.basePath, name)
+	m, err := pe.readManifest(dir)
+	if err != nil {
+		return fmt.Errorf("读取插件清单失败: %w", err)
+	}
+	m.Enabled = enabled
+	return pe.writeManifest(dir, m)
 }
 
 // ====================================================================

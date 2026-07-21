@@ -4,6 +4,7 @@ author: JuanNiang-Neo
 description: "系统插件，封装 Agent/Provider/MCP/Tool/T2I/Sandbox/Session 管理命令"
 entry: main.lua
 system: true
+enabled: true
 permissions:
   - onebot11
   - agent
