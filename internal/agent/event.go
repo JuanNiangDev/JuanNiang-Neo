@@ -57,7 +57,47 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 				continue
 			}
 			h.processEvent(ctx, ev)
+		case output, ok := <-h.BgTaskResultChan:
+			if !ok {
+				continue
+			}
+			slog.Info("收到后台任务结果，注入主 Agent", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID)
+			// 将 DrainerOutput 转换为合成 Event，触发主 Agent 处理
+			syntheticEvent := h.bgTaskOutputToEvent(output)
+			h.processEvent(ctx, syntheticEvent)
 		}
+	}
+}
+
+// bgTaskOutputToEvent 将 Drainer 汇总结果转换为合成 Event，供主 Agent 处理。
+func (h *HagoCenter) bgTaskOutputToEvent(output DrainerOutput) adapter.Event {
+	userID := output.TargetID
+	if output.MessageType == "group" {
+		userID = output.TargetID // GroupID 放到 Message.GroupID
+	}
+
+	msg := &adapter.MessageEvent{
+		MessageType: output.MessageType,
+		UserID:      userID,
+		RawMessage:  output.Result,
+	}
+
+	if output.MessageType == "group" {
+		msg.GroupID = output.TargetID
+	} else {
+		msg.UserID = output.TargetID
+	}
+
+	// 私聊时 UserID = TargetID；群聊时 UserID 填 0（系统发送），GroupID = TargetID
+	if output.MessageType == "group" {
+		msg.UserID = 0
+	}
+
+	return adapter.Event{
+		PostType:       "message",
+		IsBgTaskResult: true,
+		Admins:         h.Adapter.Admins(),
+		Message:        msg,
 	}
 }
 
@@ -125,8 +165,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	// ACL 检查：admin 自动绕过
-	if !isAdmin(userID, ev.Admins) && !h.ACL.CheckChat(ctx, userID, chatArea.ID) {
+	// ACL 检查：admin 自动绕过；后台任务结果事件也跳过
+	if !ev.IsBgTaskResult && !isAdmin(userID, ev.Admins) && !h.ACL.CheckChat(ctx, userID, chatArea.ID) {
 		slog.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID, "scope", "chat")
 		return
 	}

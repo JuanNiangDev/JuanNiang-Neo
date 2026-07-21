@@ -6,12 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"JuanNiang-Neo/internal/adapter"
-	"JuanNiang-Neo/internal/agent/memory"
-	"JuanNiang-Neo/internal/agent/memory/shortterm"
-	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
-	"JuanNiang-Neo/internal/agent/session"
 )
 
 // DrainerOutput 后台任务步骤/整体完成时的输出。
@@ -24,17 +19,14 @@ type DrainerOutput struct {
 	Status      string `json:"status"`
 	Result      string `json:"result,omitempty"`
 	Error       string `json:"error,omitempty"`
-	UserPrompt  string `json:"user_prompt,omitempty"` // 用户原始请求，供 drainer 上下文
+	UserPrompt  string `json:"user_prompt,omitempty"` // 用户原始请求
 }
 
-// DrainerAgent 排水 Agent，消费后台任务结果缓冲区，整合后发送 QQ 消息。
+// DrainerAgent 排水 Agent，消费后台任务结果，汇总后发送给主 Agent 处理。
 type DrainerAgent struct {
-	inputChan <-chan DrainerOutput
-	providers *provider.ProviderGroup
-	adapter   *adapter.Adapter
-	session   *session.SessionManager
-	prompt    *prompt.PromptManager
-	memory    *memory.MemoryGroup
+	inputChan  <-chan DrainerOutput
+	resultChan chan<- DrainerOutput // 汇总后的最终结果发给主 Agent
+	providers  *provider.ProviderGroup
 
 	// 按 ChatArea 分组累积结果
 	pending map[string][]DrainerOutput
@@ -42,25 +34,19 @@ type DrainerAgent struct {
 
 func NewDrainerAgent(
 	inputChan <-chan DrainerOutput,
+	resultChan chan<- DrainerOutput,
 	providers *provider.ProviderGroup,
-	adapter *adapter.Adapter,
-	sessionMgr *session.SessionManager,
-	promptMgr *prompt.PromptManager,
-	memGrp *memory.MemoryGroup,
 ) *DrainerAgent {
 	return &DrainerAgent{
-		inputChan: inputChan,
-		providers: providers,
-		adapter:   adapter,
-		session:   sessionMgr,
-		prompt:    promptMgr,
-		memory:    memGrp,
-		pending:   make(map[string][]DrainerOutput),
+		inputChan:  inputChan,
+		resultChan: resultChan,
+		providers:  providers,
+		pending:    make(map[string][]DrainerOutput),
 	}
 }
 
 func (d *DrainerAgent) Run(ctx context.Context) {
-	slog.Info("DrainerAgent 已启动")
+	slog.Info("DrainerAgent 已启动 (result → bgTaskResultChan)")
 	for {
 		select {
 		case <-ctx.Done():
@@ -79,17 +65,9 @@ func (d *DrainerAgent) handle(ctx context.Context, output DrainerOutput) {
 
 	d.pending[chatAreaID] = append(d.pending[chatAreaID], output)
 
-	// 最终完成信号（含 failed 状态），整合所有结果发送
+	// 最终完成信号（含 failed 状态），整合所有结果发送给主 Agent
 	if (output.Status == "done" || output.Status == "failed") && output.StepID == "" {
 		d.finalize(ctx, chatAreaID)
-		return
-	}
-
-	if output.StepID != "" && output.Status == "done" {
-		totalResults := len(d.pending[chatAreaID])
-		if totalResults%3 == 0 {
-			d.sendProgress(ctx, chatAreaID, output.TaskID)
-		}
 	}
 }
 
@@ -100,7 +78,7 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 	}
 	delete(d.pending, chatAreaID)
 
-	// 收集步骤结果（含失败步骤）
+	// 收集步骤结果
 	var stepOutputs []DrainerOutput
 	var failedSteps []DrainerOutput
 	for _, o := range outputs {
@@ -114,99 +92,46 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 		}
 	}
 
-	// 先发送失败的步骤错误信息
-	for _, o := range failedSteps {
-		d.sendMsg(o, fmt.Sprintf("步骤 %s 执行失败: %s", o.StepID, o.Error))
-	}
-
-	if len(stepOutputs) == 0 {
-		// 检查是否有最终错误消息
-		for _, o := range outputs {
-			if o.StepID == "" && o.Error != "" {
-				d.sendMsg(o, o.Error)
-				d.writeBackMemory(ctx, chatAreaID, o, o.Error)
-				return
-			}
-		}
-		d.sendMsg(outputs[0], "后台任务执行完成。")
-		d.writeBackMemory(ctx, chatAreaID, outputs[0], "后台任务执行完成。")
-		return
-	}
-
-	// 发送每个步骤的结果，并汇总写入记忆
+	// 汇总所有步骤结果 + 错误
 	var summaryParts []string
+	for _, o := range failedSteps {
+		summaryParts = append(summaryParts, fmt.Sprintf("[失败] %s: %s", o.StepID, o.Error))
+	}
 	for _, o := range stepOutputs {
 		if o.Status != "failed" {
-			d.sendMsg(o, o.Result)
+			summaryParts = append(summaryParts, fmt.Sprintf("[完成] %s: %s", o.StepID, truncate(o.Result, 800)))
 		}
-		summaryParts = append(summaryParts, fmt.Sprintf("[%s] %s: %s", o.Status, o.StepID, truncate(o.Result, 500)))
 	}
 
-	// 将任务结果写回短期记忆和 DB 聊天记录，确保主 Agent 能感知
-	summary := fmt.Sprintf("[后台任务结果]\n%s", strings.Join(summaryParts, "\n"))
+	summary := fmt.Sprintf("[后台任务已完成]\n%s", strings.Join(summaryParts, "\n"))
+	userPrompt := ""
+	errMsg := ""
 	if len(outputs) > 0 {
-		d.writeBackMemory(ctx, chatAreaID, outputs[0], summary)
+		userPrompt = outputs[0].UserPrompt
 	}
-}
-
-func (d *DrainerAgent) sendProgress(ctx context.Context, chatAreaID, taskID string) {
-	outputs := d.pending[chatAreaID]
-	var results []string
-	for _, o := range outputs {
-		if o.StepID != "" {
-			results = append(results, fmt.Sprintf("\u2022 %s", o.Result))
-		}
-	}
-	msg := fmt.Sprintf("任务 %s 进度更新:\n%s", taskID[:8], strings.Join(results, "\n"))
-
-	if len(outputs) > 0 {
-		d.sendMsg(outputs[0], msg)
-	}
-}
-
-// sendMsg 根据 DrainerOutput 的消息类型发送到正确目标。支持 <|msg|> 及 \n\n 多消息拆分。
-func (d *DrainerAgent) sendMsg(output DrainerOutput, content string) {
-	for _, part := range splitMessages(content) {
-		switch output.MessageType {
-		case "private":
-			if _, err := d.adapter.SendPrivateMsg(output.TargetID, part); err != nil {
-				slog.Error("Drainer 发送私聊失败", "err", err, "user_id", output.TargetID)
-			}
-		case "group":
-			if _, err := d.adapter.SendGroupMsg(output.TargetID, part); err != nil {
-				slog.Error("Drainer 发送群聊失败", "err", err, "group_id", output.TargetID)
-			}
-		default:
-			slog.Error("Drainer: 未知消息类型", "type", output.MessageType)
-		}
-	}
-}
-
-// writeBackMemory 将后台任务结果写回短期记忆和 DB 聊天记录，确保主 Agent 能感知任务完成/失败。
-func (d *DrainerAgent) writeBackMemory(ctx context.Context, chatAreaID string, output DrainerOutput, content string) {
-	// 写入短期记忆（LLM 下次调用时能看到）
-	if d.memory != nil {
-		if err := d.memory.AddShortTermMessage(ctx, chatAreaID, shortterm.ChatMessage{
-			Role:    "system",
-			Content: content,
-		}); err != nil {
-			slog.Error("Drainer 写入短期记忆失败", "err", err, "chat_area_id", chatAreaID)
-		}
+	if len(failedSteps) > 0 {
+		errMsg = fmt.Sprintf("%d 个步骤失败", len(failedSteps))
 	}
 
-	// 写入 DB 聊天记录（持久化存档）
-	if d.session != nil {
-		// 私聊时用 target_id 作为 user_id，群聊时用 0
-		userID := int64(0)
-		if output.MessageType == "private" {
-			userID = output.TargetID
-		}
-		if err := d.session.AppendRecord(ctx, chatAreaID, userID, "system", content, 0, nil); err != nil {
-			slog.Error("Drainer 写入聊天记录失败", "err", err, "chat_area_id", chatAreaID)
-		}
+	finalStatus := "done"
+	if len(stepOutputs) == 0 && len(failedSteps) > 0 {
+		finalStatus = "failed"
 	}
 
-	slog.Info("Drainer 已写回任务结果到记忆", "chat_area_id", chatAreaID, "content_len", len(content))
+	slog.Info("Drainer 汇总完成，发送给主 Agent", "chat_area_id", chatAreaID,
+		"status", finalStatus, "failed", len(failedSteps), "success", len(stepOutputs))
+
+	// 发送汇总结果给主 Agent
+	d.resultChan <- DrainerOutput{
+		TaskID:      outputs[0].TaskID,
+		ChatAreaID:  chatAreaID,
+		MessageType: outputs[0].MessageType,
+		TargetID:    outputs[0].TargetID,
+		Status:      finalStatus,
+		Result:      summary,
+		Error:       errMsg,
+		UserPrompt:  userPrompt,
+	}
 }
 
 // truncate 截断字符串到指定长度。
