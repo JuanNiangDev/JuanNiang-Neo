@@ -314,6 +314,7 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 		loaded[name] = true
 		m := p.Manifest
 		entry := map[string]any{
+			"id":          name, // 目录名，用于 API 操作 (toggle/delete)
 			"name":        m.Name,
 			"version":     m.Version,
 			"author":      m.Author,
@@ -345,6 +346,7 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 				continue
 			}
 			out = append(out, map[string]any{
+				"id":          entry.Name(), // 目录名，用于 API 操作
 				"name":        manifest.Name,
 				"version":     manifest.Version,
 				"author":      manifest.Author,
