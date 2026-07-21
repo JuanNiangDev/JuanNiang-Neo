@@ -24,13 +24,11 @@ end
 -- --------------------------------------------------------------------
 local function get_user_name(event)
     if event.message_type == "group" then
-        -- 尝试获取群名片
         local info = jn.onebot11.get_group_member_info(event.group_id, event.user_id)
         if info then
-            return info.card and info.card ~= "" and info.card or info.nickname or ""
+            return info.nickname and info.nickname ~= "" and info.nickname or tostring(event.user_id)
         end
     end
-    -- 私聊或获取失败，使用 sender 信息
     return tostring(event.user_id)
 end
 
