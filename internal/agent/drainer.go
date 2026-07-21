@@ -15,12 +15,14 @@ import (
 
 // DrainerOutput 后台任务步骤/整体完成时的输出。
 type DrainerOutput struct {
-	TaskID     string `json:"task_id"`
-	StepID     string `json:"step_id,omitempty"`
-	ChatAreaID string `json:"chat_area_id"`
-	Status     string `json:"status"`
-	Result     string `json:"result,omitempty"`
-	Error      string `json:"error,omitempty"`
+	TaskID      string `json:"task_id"`
+	StepID      string `json:"step_id,omitempty"`
+	ChatAreaID  string `json:"chat_area_id"`
+	MessageType string `json:"message_type"` // "private" / "group"
+	TargetID    int64  `json:"target_id"`    // user_id (私聊) / group_id (群聊)
+	Status      string `json:"status"`
+	Result      string `json:"result,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 // DrainerAgent 排水 Agent，消费后台任务结果缓冲区，整合后发送 QQ 消息。
@@ -109,7 +111,6 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 		}
 	}
 
-	var areaID int64
 	if len(outputs) > 0 {
 		lines = append(lines, "后台任务执行结果汇总：")
 		for _, r := range results {
@@ -130,11 +131,11 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 	})
 	if err != nil {
 		slog.Error("Drainer LLM 调用失败", "err", err)
-		d.adapter.SendGroupMsg(areaID, fmt.Sprintf("任务执行完成:\n%s", strings.Join(results, "\n")))
+		d.sendMsg(outputs[0], fmt.Sprintf("任务执行完成:\n%s", strings.Join(results, "\n")))
 		return
 	}
 
-	d.adapter.SendGroupMsg(areaID, resp.Message.Content)
+	d.sendMsg(outputs[0], resp.Message.Content)
 }
 
 func (d *DrainerAgent) sendProgress(ctx context.Context, chatAreaID, taskID string) {
@@ -147,6 +148,23 @@ func (d *DrainerAgent) sendProgress(ctx context.Context, chatAreaID, taskID stri
 	}
 	msg := fmt.Sprintf("任务 %s 进度更新:\n%s", taskID[:8], strings.Join(results, "\n"))
 
-	var areaID int64
-	d.adapter.SendGroupMsg(areaID, msg)
+	if len(outputs) > 0 {
+		d.sendMsg(outputs[0], msg)
+	}
+}
+
+// sendMsg 根据 DrainerOutput 的消息类型发送到正确目标。
+func (d *DrainerAgent) sendMsg(output DrainerOutput, content string) {
+	switch output.MessageType {
+	case "private":
+		if _, err := d.adapter.SendPrivateMsg(output.TargetID, content); err != nil {
+			slog.Error("Drainer 发送私聊失败", "err", err, "user_id", output.TargetID)
+		}
+	case "group":
+		if _, err := d.adapter.SendGroupMsg(output.TargetID, content); err != nil {
+			slog.Error("Drainer 发送群聊失败", "err", err, "group_id", output.TargetID)
+		}
+	default:
+		slog.Error("Drainer: 未知消息类型", "type", output.MessageType)
+	}
 }

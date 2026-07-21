@@ -259,7 +259,7 @@ func (h *HagoCenter) handleToolCalls(
 				steps := []TaskStep{
 					{ID: tc.ID, ToolName: toolName, Args: args},
 				}
-				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, steps)
+				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), steps)
 				if err != nil {
 					slog.Error("提交后台任务失败", "err", err)
 					continue
@@ -371,6 +371,18 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
 	}
 	if err != nil {
 		slog.Error("发送消息失败", "err", err)
+	}
+}
+
+// getTargetID 根据消息类型返回对应的 QQ 目标 ID。
+func getTargetID(msg *adapter.MessageEvent) int64 {
+	switch msg.MessageType {
+	case "private":
+		return msg.UserID
+	case "group":
+		return msg.GroupID
+	default:
+		return 0
 	}
 }
 
