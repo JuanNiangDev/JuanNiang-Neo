@@ -41,12 +41,9 @@ local function parse_onoff(s)
 end
 
 -- --------------------------------------------------------------------
--- 顶层命令: /system
+-- 顶层命令: /system (纯分组节点，子命令自动生成帮助)
 -- --------------------------------------------------------------------
-jn.command.register("system", function(args, event)
-    reply(event, "JuanNiang-Neo 系统管理插件\n可用子命令: status, provider, mcp, tool, memory, t2i, sandbox, session\n输入 /help system 查看详情")
-    return true
-end, {
+jn.command.register("system", nil, {
     description = "系统管理命令分组",
     usage = "/system <子命令>",
 })

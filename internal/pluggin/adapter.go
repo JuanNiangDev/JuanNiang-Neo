@@ -28,6 +28,14 @@ func (a *AdapterWrapper) DeleteMsg(messageID int64) error {
 	return a.p.DeleteMsg(messageID)
 }
 
+func (a *AdapterWrapper) GetMsg(messageID int64) (map[string]any, error) {
+	msg, err := a.p.GetMsg(messageID)
+	if err != nil {
+		return nil, err
+	}
+	return toMap(msg), nil
+}
+
 func (a *AdapterWrapper) GetGroupInfo(groupID int64) (map[string]any, error) {
 	info, err := a.p.GetGroupInfo(groupID)
 	if err != nil {

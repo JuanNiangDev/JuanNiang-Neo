@@ -19,6 +19,7 @@ type AdapterProvider interface {
 	SendPrivateMsg(userID int64, message any) (int64, error)
 	SendGroupMsg(groupID int64, message any) (int64, error)
 	DeleteMsg(messageID int64) error
+	GetMsg(messageID int64) (*adapter.MessageEvent, error)
 	GetGroupInfo(groupID int64) (*adapter.GroupInfo, error)
 	GetGroupMemberList(groupID int64) ([]adapter.GroupMemberInfo, error)
 	KickGroupMember(groupID, userID int64, rejectAdd bool) error
@@ -124,6 +125,21 @@ func RegisterBuiltinTools(
 				return "", err
 			}
 			return "消息已撤回", nil
+		},
+	})
+
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "get_msg", "根据消息 ID 获取消息的完整内容（包括被引用的消息）",
+			Int64Param("message_id", "消息 ID", true), true, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct{ MessageID int64 `json:"message_id"` }
+			json.Unmarshal(args, &p)
+			msg, err := adapter.GetMsg(p.MessageID)
+			if err != nil {
+				return "", err
+			}
+			data, _ := json.Marshal(msg)
+			return string(data), nil
 		},
 	})
 
@@ -318,6 +334,53 @@ func RegisterBuiltinTools(
 			return time.Now().Format("2006-01-02 15:04:05 Monday"), nil
 		},
 	})
+
+	// --- 沙箱管理工具 (非长耗时) ---
+
+	if getSandbox != nil {
+		tools = append(tools, &onebotTool{
+			BaseTool: NewTool("", "create_sandbox", "创建一个新的沙箱实例，返回 sandbox_id 用于后续命令执行等操作",
+				openai.FunctionParameters{
+					"type":       "object",
+					"properties": map[string]any{},
+				}, true, false),
+			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+				sandbox := getSandbox()
+				if sandbox == nil {
+					return "", fmt.Errorf("沙箱服务未启用")
+				}
+				sbox, err := sandbox.CreateSandbox(ctx, sandboxcaller.CreateSandboxRequest{})
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("沙箱创建成功，sandbox_id: %s, status: %s", sbox.ID, sbox.Status), nil
+			},
+		})
+
+		tools = append(tools, &onebotTool{
+			BaseTool: NewTool("", "list_sandboxes", "列出已有的沙箱实例",
+				openai.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"status": map[string]any{"type": "string", "description": "按状态筛选(可选): running/stopped"},
+					},
+				}, true, false),
+			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+				sandbox := getSandbox()
+				if sandbox == nil {
+					return "", fmt.Errorf("沙箱服务未启用")
+				}
+				var p struct{ Status string `json:"status"` }
+				json.Unmarshal(args, &p)
+				list, err := sandbox.ListSandboxes(ctx, 20, "", p.Status)
+				if err != nil {
+					return "", err
+				}
+				data, _ := json.Marshal(list)
+				return string(data), nil
+			},
+		})
+	}
 
 	// --- 沙箱工具 (长耗时, 需要 sandbox_id) ---
 

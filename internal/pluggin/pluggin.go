@@ -51,6 +51,7 @@ type SendAdapter interface {
 	SendPrivateMsg(userID int64, message any) (int64, error)
 	SendGroupMsg(groupID int64, message any) (int64, error)
 	DeleteMsg(messageID int64) error
+	GetMsg(messageID int64) (map[string]any, error)
 	GetGroupInfo(groupID int64) (map[string]any, error)
 	GetGroupMemberList(groupID int64) ([]map[string]any, error)
 	KickGroupMember(groupID, userID int64, rejectAdd bool) error
@@ -654,6 +655,10 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			err := adapter.DeleteMsg(int64(L.CheckNumber(1)))
 			return pushResult(L, err)
 		},
+		"get_msg": func(L *lua.LState) int {
+			msg, err := adapter.GetMsg(int64(L.CheckNumber(1)))
+			return pushResultJSON(L, msg, err)
+		},
 		"get_group_info": func(L *lua.LState) int {
 			info, err := adapter.GetGroupInfo(int64(L.CheckNumber(1)))
 			return pushResultJSON(L, info, err)
@@ -1074,6 +1079,23 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 			}
 			active := bool(L.CheckBool(1))
 			err := pe.agentOp.SetSandboxActive(context.Background(), active)
+			return pushResult(L, err)
+		},
+		"list": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				return pushResultJSON(L, nil, fmt.Errorf("Sandbox 服务未启用"))
+			}
+			list, err := client.ListSandboxes(context.Background(), 50, "", "")
+			return pushResultJSON(L, list, err)
+		},
+		"delete": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				return pushResult(L, fmt.Errorf("Sandbox 服务未启用"))
+			}
+			sid := L.CheckString(1)
+			err := client.DeleteSandbox(context.Background(), sid)
 			return pushResult(L, err)
 		},
 		"is_active": func(L *lua.LState) int {
