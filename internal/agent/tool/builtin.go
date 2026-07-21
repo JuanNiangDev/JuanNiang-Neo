@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -498,12 +499,19 @@ func RegisterBuiltinTools(
 				}
 				var p struct{ HTML string `json:"html"` }
 				json.Unmarshal(args, &p)
-				url, err := t2i.GenerateURL(ctx, t2icaller.GenerateRequest{HTML: p.HTML})
+				imgBytes, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
+					HTML: p.HTML,
+					Options: &t2icaller.GenerateOptions{
+						Type:    t2icaller.ImageTypeJPEG,
+						Quality: 80,
+					},
+				})
 				if err != nil {
 					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
-				// 返回 CQ 图片消息码，OneBot11 协议端会自动解析为图片段
-				return fmt.Sprintf("[CQ:image,file=%s]", url), nil
+				// base64 内嵌图片，避免 QQ 协议端无法访问 T2I 内部地址
+				b64 := base64.StdEncoding.EncodeToString(imgBytes)
+				return fmt.Sprintf("[CQ:image,file=base64://%s]", b64), nil
 			},
 		})
 	}
