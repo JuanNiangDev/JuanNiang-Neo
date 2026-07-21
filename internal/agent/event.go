@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -187,7 +188,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "user", Content: userMsg})
 	}
 	// 持久化原始聊天记录到 DB (与短期记忆解耦, 不受 Redis 重启或 Compact 影响)
-	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0)
+	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0, nil)
 
 	req := provider.ChatRequest{
 		Messages:    messages,
@@ -205,7 +206,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 
 	if resp.Message.Content != "" {
 		h.sendReply(msg, resp.Message.Content)
-		h.recordChat(ctx, chatArea.ID, userID, "assistant", resp.Message.Content, 0)
+		h.recordChat(ctx, chatArea.ID, userID, "assistant", resp.Message.Content, resp.TokenUsage, marshalToolCalls(resp.Message.ToolCalls))
 		if h.Memory != nil {
 			h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
 		}
@@ -248,8 +249,8 @@ func (h *HagoCenter) handleToolCalls(
 						ToolCallID: tc.ID,
 						Name:       toolName,
 					})
-					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0)
-					slog.Info("ACL 拒绝工具调用", "user_id", userID, "tool", toolName)
+					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0, nil)
+				slog.Info("ACL 拒绝工具调用", "user_id", userID, "tool", toolName)
 					continue
 				}
 			}
@@ -270,7 +271,7 @@ func (h *HagoCenter) handleToolCalls(
 					Content:    fmt.Sprintf("任务已提交后台执行，task_id: %s", taskID),
 					ToolCallID: tc.ID,
 				})
-				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("任务 %s -> 后台执行: %s", toolName, taskID), 0)
+				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("任务 %s -> 后台执行: %s", toolName, taskID), 0, nil)
 				continue
 			}
 
@@ -286,8 +287,8 @@ func (h *HagoCenter) handleToolCalls(
 				ToolCallID: tc.ID,
 				Name:       toolName,
 			})
-			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0)
-		} else {
+			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0, nil)
+	} else {
 			// MCP 工具调用
 			if !userIsAdmin {
 				allowed, denialMsg := h.ACL.CheckMCP(ctx, userID, chatAreaID, toolName)
@@ -298,8 +299,8 @@ func (h *HagoCenter) handleToolCalls(
 						ToolCallID: tc.ID,
 						Name:       toolName,
 					})
-					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0)
-					slog.Info("ACL 拒绝 MCP 调用", "user_id", userID, "tool", toolName)
+					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0, nil)
+				slog.Info("ACL 拒绝 MCP 调用", "user_id", userID, "tool", toolName)
 					continue
 				}
 			}
@@ -316,11 +317,11 @@ func (h *HagoCenter) handleToolCalls(
 				ToolCallID: tc.ID,
 				Name:       toolName,
 			})
-			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0)
-		}
+			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0, nil)
 	}
+}
 
-	followUp, err := llm.Chat(ctx, provider.ChatRequest{
+followUp, err := llm.Chat(ctx, provider.ChatRequest{
 		Messages:    history,
 		Tools:       h.buildToolList(ctx),
 		Temperature: 0.7,
@@ -334,7 +335,7 @@ func (h *HagoCenter) handleToolCalls(
 
 	if followUp.Message.Content != "" {
 		h.sendReply(msg, followUp.Message.Content)
-		h.recordChat(ctx, chatAreaID, userID, "assistant", followUp.Message.Content, followUp.TokenUsage)
+		h.recordChat(ctx, chatAreaID, userID, "assistant", followUp.Message.Content, followUp.TokenUsage, marshalToolCalls(followUp.Message.ToolCalls))
 		if h.Memory != nil {
 			h.Memory.AddShortTermMessage(ctx, chatAreaID, shortterm.ChatMessage{Role: "assistant", Content: followUp.Message.Content})
 		}
@@ -373,8 +374,19 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
 	}
 }
 
-func (h *HagoCenter) recordChat(ctx context.Context, chatAreaID string, userID int64, role, content string, tokens int) {
-	if err := h.Session.AppendRecord(ctx, chatAreaID, userID, role, content, tokens); err != nil {
+func (h *HagoCenter) recordChat(ctx context.Context, chatAreaID string, userID int64, role, content string, tokens int, toolCalls models.JSONMap) {
+	if err := h.Session.AppendRecord(ctx, chatAreaID, userID, role, content, tokens, toolCalls); err != nil {
 		slog.Error("记录聊天失败", "err", err)
 	}
+}
+
+// marshalToolCalls 将 ToolCall 列表转为 JSONMap 存入 DB
+func marshalToolCalls(tcs []provider.ToolCall) models.JSONMap {
+	if len(tcs) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(tcs)
+	var raw []any
+	json.Unmarshal(b, &raw)
+	return models.JSONMap{"tool_calls": raw}
 }

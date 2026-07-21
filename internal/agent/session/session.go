@@ -90,7 +90,7 @@ func (sm *SessionManager) DeleteSession(ctx context.Context, id string) error {
 // AppendRecord 将原始聊天记录持久化到 DB (chat_records 表)。
 // 与 MemoryGroup 的短期记忆解耦: 短期记忆走 Redis (易失, LLM 上下文窗口)，
 // 本方法写入 Postgres 作为持久化存档, 即便 Redis 重启或 Compact 摘要后, 仍可回溯原始对话。
-func (sm *SessionManager) AppendRecord(ctx context.Context, chatAreaID string, userID int64, role, content string, tokenCount int) error {
+func (sm *SessionManager) AppendRecord(ctx context.Context, chatAreaID string, userID int64, role, content string, tokenCount int, toolCalls models.JSONMap) error {
 	if sm.recordDAO == nil {
 		return nil
 	}
@@ -100,6 +100,7 @@ func (sm *SessionManager) AppendRecord(ctx context.Context, chatAreaID string, u
 		Role:       role,
 		Content:    content,
 		TokenCount: tokenCount,
+		ToolCalls:  toolCalls,
 	}
 	return sm.recordDAO.Create(ctx, record)
 }
