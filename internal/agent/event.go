@@ -213,13 +213,13 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	}
 
 	if len(resp.Message.ToolCalls) > 0 {
-		h.handleToolCalls(ctx, msg, chatArea.ID, userID, sess.ID, messages, resp, ev.Admins)
+		h.handleToolCalls(ctx, msg, chatArea.ID, userID, userMsg, sess.ID, messages, resp, ev.Admins)
 	}
 }
 
 func (h *HagoCenter) handleToolCalls(
 	ctx context.Context, msg *adapter.MessageEvent,
-	chatAreaID string, userID int64, sessionID string,
+	chatAreaID string, userID int64, userMsg string, sessionID string,
 	history []provider.ChatMessage, resp *provider.ChatResponse,
 	admins []string,
 ) {
@@ -259,7 +259,7 @@ func (h *HagoCenter) handleToolCalls(
 				steps := []TaskStep{
 					{ID: tc.ID, ToolName: toolName, Args: args},
 				}
-				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), steps)
+				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), userMsg, steps)
 				if err != nil {
 					slog.Error("提交后台任务失败", "err", err)
 					continue
@@ -343,7 +343,7 @@ followUp, err := llm.Chat(ctx, provider.ChatRequest{
 
 	// 递归处理可能的后续 tool calls
 	if len(followUp.Message.ToolCalls) > 0 {
-		h.handleToolCalls(ctx, msg, chatAreaID, userID, sessionID, history, followUp, admins)
+		h.handleToolCalls(ctx, msg, chatAreaID, userID, userMsg, sessionID, history, followUp, admins)
 	}
 }
 

@@ -23,6 +23,7 @@ type DrainerOutput struct {
 	Status      string `json:"status"`
 	Result      string `json:"result,omitempty"`
 	Error       string `json:"error,omitempty"`
+	UserPrompt  string `json:"user_prompt,omitempty"` // 用户原始请求，供 drainer 上下文
 }
 
 // DrainerAgent 排水 Agent，消费后台任务结果缓冲区，整合后发送 QQ 消息。
@@ -103,29 +104,71 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 		return
 	}
 
-	var lines []string
+	// 收集任务执行结果
 	var results []string
+	userPrompt := ""
 	for _, o := range outputs {
 		if o.StepID != "" {
-			results = append(results, fmt.Sprintf("[%s]: %s", o.StepID, o.Result))
+			results = append(results, fmt.Sprintf("[步骤 %s]: %s", o.StepID, o.Result))
+		}
+		if o.UserPrompt != "" {
+			userPrompt = o.UserPrompt
 		}
 	}
 
-	if len(outputs) > 0 {
-		lines = append(lines, "后台任务执行结果汇总：")
-		for _, r := range results {
-			lines = append(lines, r)
+	if len(results) == 0 {
+		d.sendMsg(outputs[0], "后台任务执行完成。")
+		return
+	}
+
+	// 获取系统提示词（人格/行为约束）
+	sysPrompt := "你是一个任务报告助手，请用中文生成友好的任务结果总结。"
+	if d.prompt != nil {
+		if sp, err := d.prompt.BuildSystemPrompt(ctx); err == nil && sp != "" {
+			sysPrompt = sp + "\n\n当前角色：后台任务排水 Agent，负责将任务执行结果以友好的方式反馈给用户。"
 		}
+	}
+
+	// 获取短期记忆上下文（最近对话）
+	contextLines := ""
+	if d.memory != nil {
+		msgs, err := d.memory.GetShortTermMessages(ctx, chatAreaID)
+		if err == nil && len(msgs) > 0 {
+			contextLines = "背景对话上下文：\n"
+			// 取最近 6 条避免过长
+			start := len(msgs) - 6
+			if start < 0 {
+				start = 0
+			}
+			for i := start; i < len(msgs); i++ {
+				role := msgs[i].Role
+				if role == "" {
+					role = "unknown"
+				}
+				contextLines += fmt.Sprintf("- [%s]: %s\n", role, msgs[i].Content)
+			}
+		}
+	}
+
+	// 构建最终 prompt
+	userReqLine := ""
+	if userPrompt != "" {
+		userReqLine = fmt.Sprintf("用户的原始请求是：「%s」\n", userPrompt)
 	}
 
 	summaryPrompt := fmt.Sprintf(
-		"请将以下后台任务的执行结果整理为自然语言总结，告诉用户任务完成情况：\n\n%s",
-		strings.Join(lines, "\n"),
+		"%s\n\n%s后台任务执行结果：\n%s\n\n请用自然语言将结果反馈给用户，注意：\n"+
+			"- 直接告诉用户结果是什么，不要说「任务执行完毕」等冗余开场白\n"+
+			"- 结合用户的原始请求自然地呈现结果，像正常对话一样\n"+
+			"- 如果和对话上下文相关，可以适当引用上文",
+		contextLines,
+		userReqLine,
+		strings.Join(results, "\n"),
 	)
 
 	resp, err := llm.Chat(ctx, provider.ChatRequest{
 		Messages: []provider.ChatMessage{
-			{Role: "system", Content: "你是一个任务报告助手，请用中文生成友好的任务结果总结。"},
+			{Role: "system", Content: sysPrompt},
 			{Role: "user", Content: summaryPrompt},
 		},
 	})
