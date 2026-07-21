@@ -22,7 +22,7 @@ type BackgroundTask struct {
 	ChatAreaID string     `gorm:"not null;index"`
 	ChatArea   ChatArea   `gorm:"foreignKey:ChatAreaID"`
 	Status     TaskStatus `gorm:"default:pending;index"`
-	Steps      JSONMap    `gorm:"type:jsonb;default:'[]'"`
+	Steps      JSONMap    `gorm:"type:jsonb;default:'{}'"`
 	Results    JSONMap    `gorm:"type:jsonb;default:'{}'"`
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
