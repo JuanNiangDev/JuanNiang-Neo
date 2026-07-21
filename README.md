@@ -17,6 +17,20 @@
 - **基础设施**：Postgres 持久化 + Redis 缓存 + Sandbox 代码沙箱 + T2I 文生图，未配置时自动返回未启用提示
 - **系统锁定提示词**：每次对话强制拼接，引导 LLM 使用 T2I 富文本、分消息段回复、权限层级等
 
+## 效果图
+
+- **Login UI**
+
+![login-ui](docs/img/login.png)
+
+- **Home**
+
+![login-ui](docs/img/home.png)
+
+- **Chat**
+
+<img src="docs/img/chat.jpg" alt="login-ui" style="zoom: 25%;" />
+
 ## 文档导航
 
 | 文档名称 | 说明 |
