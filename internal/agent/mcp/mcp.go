@@ -107,6 +107,27 @@ func (g *MCPGroup) ListTools(ctx context.Context) []ToolDefinition {
 	return all
 }
 
+// HasTool 检查是否存在指定名称的 MCP 工具。
+func (g *MCPGroup) HasTool(ctx context.Context, name string) bool {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	for _, m := range g.mcps {
+		if !m.IsConnected() {
+			continue
+		}
+		tools, err := m.ListTools(ctx)
+		if err != nil {
+			continue
+		}
+		for _, t := range tools {
+			if t.Name == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // CallTool 按工具名分发调用到拥有该工具的 MCP 服务器。
 func (g *MCPGroup) CallTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	g.mu.RLock()

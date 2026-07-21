@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
@@ -23,14 +24,16 @@ type TaskStep struct {
 // BackgroundTaskExecutor 后台任务执行器，支持 DAG + errgroup 并发。
 type BackgroundTaskExecutor struct {
 	tools      *tool.ToolRegistry
+	mcpGroup   *mcp.MCPGroup
 	dao        *dao.BackgroundTaskDAO
 	outputChan chan<- DrainerOutput
 	mu         sync.Mutex
 }
 
-func NewBackgroundTaskExecutor(tools *tool.ToolRegistry, dao *dao.BackgroundTaskDAO, outputChan chan<- DrainerOutput) *BackgroundTaskExecutor {
+func NewBackgroundTaskExecutor(tools *tool.ToolRegistry, mcpGroup *mcp.MCPGroup, dao *dao.BackgroundTaskDAO, outputChan chan<- DrainerOutput) *BackgroundTaskExecutor {
 	return &BackgroundTaskExecutor{
 		tools:      tools,
+		mcpGroup:   mcpGroup,
 		dao:        dao,
 		outputChan: outputChan,
 	}
@@ -42,10 +45,13 @@ func (b *BackgroundTaskExecutor) Submit(ctx context.Context, chatAreaID string, 
 	stepsMap := make(models.JSONMap)
 	_ = json.Unmarshal(stepsJSON, &stepsMap)
 	task := &models.BackgroundTask{
-		ChatAreaID: chatAreaID,
-		Status:     models.TaskStatusPending,
-		Steps:      stepsMap,
-		Results:    models.JSONMap{},
+		ChatAreaID:  chatAreaID,
+		MessageType: msgType,
+		TargetID:    targetID,
+		UserPrompt:  userPrompt,
+		Status:      models.TaskStatusPending,
+		Steps:       stepsMap,
+		Results:     models.JSONMap{},
 	}
 	if err := b.dao.Create(ctx, task); err != nil {
 		return "", err
@@ -53,6 +59,18 @@ func (b *BackgroundTaskExecutor) Submit(ctx context.Context, chatAreaID string, 
 
 	go b.executeAsync(task, msgType, targetID, userPrompt, steps)
 	return task.ID, nil
+}
+
+// executeTool 统一执行工具：优先查 MCP，再查 ToolRegistry。
+func (b *BackgroundTaskExecutor) executeTool(ctx context.Context, toolName string, args json.RawMessage) (string, error) {
+	// 优先检查 MCP 工具（避免与内置工具同名时路由错误）
+	if b.mcpGroup != nil {
+		if b.mcpGroup.HasTool(ctx, toolName) {
+			return b.mcpGroup.CallTool(ctx, toolName, args)
+		}
+	}
+	// 回退到内置工具
+	return b.tools.Execute(ctx, toolName, args)
 }
 
 func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, msgType string, targetID int64, userPrompt string, steps []TaskStep) {
@@ -92,7 +110,7 @@ func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, msgTy
 
 			step := s
 			g.Go(func() error {
-				result, err := b.tools.Execute(gCtx, step.ToolName, step.Args)
+				result, err := b.executeTool(gCtx, step.ToolName, step.Args)
 				mu.Lock()
 				defer mu.Unlock()
 
@@ -144,9 +162,42 @@ func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, msgTy
 	slog.Info("后台任务执行完成", "task_id", task.ID)
 }
 
+// Run 启动后台任务执行器，并恢复 DB 中未完成的任务。
 func (b *BackgroundTaskExecutor) Run(ctx context.Context) {
 	slog.Info("BackgroundTaskExecutor 已启动")
+
+	// 恢复重启前未完成的任务
+	b.recoverTasks(ctx)
+
 	<-ctx.Done()
+}
+
+// recoverTasks 从 DB 恢复所有 pending/running 状态的任务并重新执行。
+func (b *BackgroundTaskExecutor) recoverTasks(ctx context.Context) {
+	tasks, err := b.dao.ListPending(ctx)
+	if err != nil {
+		slog.Error("恢复后台任务失败: 查询 DB 出错", "err", err)
+		return
+	}
+	if len(tasks) == 0 {
+		return
+	}
+
+	slog.Info("正在恢复未完成的后台任务", "count", len(tasks))
+	for _, t := range tasks {
+		// 解析 Steps JSON → []TaskStep
+		stepsJSON, _ := json.Marshal(t.Steps)
+		var steps []TaskStep
+		if err := json.Unmarshal(stepsJSON, &steps); err != nil {
+			slog.Error("恢复任务失败: 解析步骤出错", "task_id", t.ID, "err", err)
+			b.dao.UpdateStatus(ctx, t.ID, models.TaskStatusFailed)
+			continue
+		}
+
+		// 将 running 状态视为需要重新执行（可能是上次崩溃导致）
+		slog.Info("恢复执行后台任务", "task_id", t.ID, "status", t.Status)
+		go b.executeAsync(&t, t.MessageType, t.TargetID, t.UserPrompt, steps)
+	}
 }
 
 func stepStatus(err error) string {

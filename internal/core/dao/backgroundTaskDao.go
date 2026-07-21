@@ -47,3 +47,13 @@ func (d *BackgroundTaskDAO) ListByChatArea(ctx context.Context, chatAreaID strin
 		Order("created_at DESC").Find(&list).Error
 	return list, err
 }
+
+// ListPending 查询所有状态为 pending 或 running 的任务，用于重启后恢复。
+func (d *BackgroundTaskDAO) ListPending(ctx context.Context) ([]models.BackgroundTask, error) {
+	var list []models.BackgroundTask
+	err := d.db.WithContext(ctx).Where("status IN ?", []string{
+		string(models.TaskStatusPending),
+		string(models.TaskStatusRunning),
+	}).Order("created_at ASC").Find(&list).Error
+	return list, err
+}

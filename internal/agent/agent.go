@@ -120,7 +120,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	h.BgTaskExecutor = NewBackgroundTaskExecutor(h.Tools, h.DAO.BackgroundTask, h.OutputChan)
+	h.BgTaskExecutor = NewBackgroundTaskExecutor(h.Tools, h.MCP, h.DAO.BackgroundTask, h.OutputChan)
 	h.Drainer = NewDrainerAgent(h.OutputChan, h.Providers, h.Adapter, h.Session, h.Prompt, h.Memory)
 
 	return nil

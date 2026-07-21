@@ -235,11 +235,62 @@ func (h *HagoCenter) handleToolCalls(
 		toolName := tc.Function.Name
 		args := tc.Function.Arguments
 
-		// 判断是注册工具还是 MCP 工具
+		// 判定工具来源：优先 MCP（MCP 工具可覆盖同名内置工具），再查 ToolRegistry
+		isMCPTool := h.MCP != nil && h.MCP.HasTool(ctx, toolName)
 		_, isRegistryTool := h.Tools.Get(toolName)
 
-		if isRegistryTool {
-			// ACL 检查：工具调用权限（admin 自动绕过）
+		if isMCPTool {
+			// --- MCP 工具调用 ---
+			if !userIsAdmin {
+				allowed, denialMsg := h.ACL.CheckMCP(ctx, userID, chatAreaID, toolName)
+				if !allowed {
+					history = append(history, provider.ChatMessage{
+						Role:       "tool",
+						Content:    denialMsg,
+						ToolCallID: tc.ID,
+						Name:       toolName,
+					})
+					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0, nil)
+					slog.Info("ACL 拒绝 MCP 调用", "user_id", userID, "tool", toolName)
+					continue
+				}
+			}
+
+			// MCP 长耗时工具也走后台任务
+			if h.Tools.IsLongRunning(toolName) {
+				steps := []TaskStep{
+					{ID: tc.ID, ToolName: toolName, Args: args},
+				}
+				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), userMsg, steps)
+				if err != nil {
+					slog.Error("提交后台任务失败(MCP)", "err", err)
+					continue
+				}
+				h.sendReply(msg, fmt.Sprintf("MCP 任务 %s 已提交后台执行...", toolName))
+				history = append(history, provider.ChatMessage{
+					Role:       "tool",
+					Content:    fmt.Sprintf("MCP 任务已提交后台执行，task_id: %s", taskID),
+					ToolCallID: tc.ID,
+				})
+				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("MCP 任务 %s -> 后台执行: %s", toolName, taskID), 0, nil)
+				continue
+			}
+
+			result, err := h.MCP.CallTool(ctx, toolName, args)
+			if err != nil {
+				result = fmt.Sprintf("MCP调用失败: %s", err.Error())
+				slog.Error("MCP调用失败", "tool", toolName, "err", err)
+			}
+
+			history = append(history, provider.ChatMessage{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+				Name:       toolName,
+			})
+			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("MCP %s: %s", toolName, result), 0, nil)
+		} else if isRegistryTool {
+			// --- 内置工具调用 ---
 			if !userIsAdmin {
 				allowed, denialMsg := h.ACL.CheckTool(ctx, userID, chatAreaID, toolName)
 				if !allowed {
@@ -250,7 +301,7 @@ func (h *HagoCenter) handleToolCalls(
 						Name:       toolName,
 					})
 					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0, nil)
-				slog.Info("ACL 拒绝工具调用", "user_id", userID, "tool", toolName)
+					slog.Info("ACL 拒绝工具调用", "user_id", userID, "tool", toolName)
 					continue
 				}
 			}
@@ -288,38 +339,19 @@ func (h *HagoCenter) handleToolCalls(
 				Name:       toolName,
 			})
 			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0, nil)
-	} else {
-			// MCP 工具调用
-			if !userIsAdmin {
-				allowed, denialMsg := h.ACL.CheckMCP(ctx, userID, chatAreaID, toolName)
-				if !allowed {
-					history = append(history, provider.ChatMessage{
-						Role:       "tool",
-						Content:    denialMsg,
-						ToolCallID: tc.ID,
-						Name:       toolName,
-					})
-					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0, nil)
-				slog.Info("ACL 拒绝 MCP 调用", "user_id", userID, "tool", toolName)
-					continue
-				}
-			}
-
-			result, err := h.MCP.CallTool(ctx, toolName, args)
-			if err != nil {
-				result = fmt.Sprintf("MCP调用失败: %s", err.Error())
-				slog.Error("MCP调用失败", "tool", toolName, "err", err)
-			}
-
+		} else {
+			// 未找到工具
+			errMsg := fmt.Sprintf("工具 %q 未找到 (非内置工具也非 MCP 工具)", toolName)
+			slog.Error(errMsg)
 			history = append(history, provider.ChatMessage{
 				Role:       "tool",
-				Content:    result,
+				Content:    errMsg,
 				ToolCallID: tc.ID,
 				Name:       toolName,
 			})
-			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0, nil)
+			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, errMsg), 0, nil)
+		}
 	}
-}
 
 followUp, err := llm.Chat(ctx, provider.ChatRequest{
 		Messages:    history,
