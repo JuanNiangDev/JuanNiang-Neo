@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -405,8 +406,28 @@ func RegisterBuiltinTools(
 					Query     string `json:"query"`
 				}
 				json.Unmarshal(args, &p)
-				result, err := sandbox.ExecShell(ctx, p.SandboxID, sandboxcaller.ShellExecRequest{
-					Command: fmt.Sprintf("search '%s'", p.Query),
+				// 使用 Python requests + DuckDuckGo HTML 搜索
+				encodedQuery := fmt.Sprintf("%q", p.Query)
+				code := fmt.Sprintf(`import json, re, urllib.request, urllib.parse
+query = %s
+try:
+    url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    resp = urllib.request.urlopen(req, timeout=15)
+    html = resp.read().decode("utf-8", errors="ignore")
+    results = []
+    for m in re.finditer(r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', html):
+        results.append({"title": re.sub(r'<[^>]+>', '', m.group(2)).strip(), "url": m.group(1)})
+        if len(results) >= 10:
+            break
+    if not results:
+        results = [{"title": "无结果", "url": ""}]
+    print(json.dumps({"success": True, "results": results}, ensure_ascii=False))
+except Exception as e:
+    print(json.dumps({"success": False, "error": str(e)}))
+`, encodedQuery)
+				result, err := sandbox.ExecPython(ctx, p.SandboxID, sandboxcaller.PythonExecRequest{
+					Code: code,
 				})
 				if err != nil {
 					return "", err
@@ -498,15 +519,19 @@ func RegisterBuiltinTools(
 				}
 				var p struct{ HTML string `json:"html"` }
 				json.Unmarshal(args, &p)
-				resp, err := t2i.Generate(ctx, t2icaller.GenerateRequest{
-					HTML:   p.HTML,
-					AsJSON: true,
+				imgBytes, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
+					HTML: p.HTML,
+					Options: &t2icaller.GenerateOptions{
+						Type:    t2icaller.ImageTypeJPEG,
+						Quality: 80,
+					},
 				})
 				if err != nil {
-					return "", err
+					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
-				data, _ := json.Marshal(resp)
-				return string(data), nil
+				// base64 内嵌图片，避免 QQ 协议端无法访问 T2I 内部地址
+				b64 := base64.StdEncoding.EncodeToString(imgBytes)
+				return fmt.Sprintf("[CQ:image,file=base64://%s]", b64), nil
 			},
 		})
 	}

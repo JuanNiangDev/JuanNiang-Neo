@@ -13,13 +13,16 @@ type Segment struct {
 // --- 事件类型 ---
 
 // Event 是所有 OneBot11 事件的通用表示。
-// PostType 决定具体填充哪个子类型字段。
+// Event 统一事件结构。
 type Event struct {
 	PostType string          `json:"post_type"` // message / notice / request / meta_event / webhook
 	Time     int64           `json:"time"`
 	SelfID   int64           `json:"self_id"`
 	Raw      json.RawMessage `json:"-"` // 原始 JSON
 	Admins   []string        `json:"-"` // 透传给 plugin/agent 的管理员列表
+
+	// IsBgTaskResult 标记此事件是后台任务结果合成的，跳过 ACL 检查。
+	IsBgTaskResult bool `json:"-"`
 
 	// 消息事件
 	Message *MessageEvent `json:"message,omitempty"`

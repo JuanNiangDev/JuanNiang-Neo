@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"JuanNiang-Neo/internal/agent/mcp"
@@ -66,10 +68,12 @@ func (b *BackgroundTaskExecutor) executeTool(ctx context.Context, toolName strin
 	// 优先检查 MCP 工具（避免与内置工具同名时路由错误）
 	if b.mcpGroup != nil {
 		if b.mcpGroup.HasTool(ctx, toolName) {
+			slog.Info("BgTask 执行 MCP 工具", "tool", toolName)
 			return b.mcpGroup.CallTool(ctx, toolName, args)
 		}
 	}
 	// 回退到内置工具
+	slog.Info("BgTask 执行内置工具", "tool", toolName)
 	return b.tools.Execute(ctx, toolName, args)
 }
 
@@ -85,9 +89,14 @@ func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, msgTy
 
 	completed := make(map[string]bool)
 	results := make(map[string]string)
+	stepErrors := make(map[string]string) // 记录每步错误
+	hasFailed := false
 	var mu sync.Mutex
 
 	slog.Info("后台任务执行开始", "task_id", task.ID, "steps", len(steps))
+	for _, s := range steps {
+		slog.Info("后台任务步骤", "task_id", task.ID, "step_id", s.ID, "tool", s.ToolName)
+	}
 
 	for len(completed) < len(steps) {
 		g, gCtx := errgroup.WithContext(ctx)
@@ -110,13 +119,18 @@ func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, msgTy
 
 			step := s
 			g.Go(func() error {
+				slog.Info("后台任务步骤执行中", "task_id", task.ID, "step_id", step.ID, "tool", step.ToolName)
 				result, err := b.executeTool(gCtx, step.ToolName, step.Args)
 				mu.Lock()
 				defer mu.Unlock()
 
 				if err != nil {
+					slog.Error("后台任务步骤执行失败", "task_id", task.ID, "step_id", step.ID, "tool", step.ToolName, "err", err)
 					results[step.ID] = "error: " + err.Error()
+					stepErrors[step.ID] = err.Error()
+					hasFailed = true
 				} else {
+					slog.Info("后台任务步骤执行完成", "task_id", task.ID, "step_id", step.ID, "tool", step.ToolName, "result_len", len(result))
 					results[step.ID] = result
 				}
 				completed[step.ID] = true
@@ -143,23 +157,46 @@ func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, msgTy
 	resultsJSON, _ := json.Marshal(results)
 	resultsMap := make(models.JSONMap)
 	_ = json.Unmarshal(resultsJSON, &resultsMap)
+
+	// 根据是否有失败步骤来设置最终状态
+	finalStatus := models.TaskStatusDone
+	if hasFailed {
+		finalStatus = models.TaskStatusFailed
+		// 将错误信息存入结果，方便前端展示
+		errorsJSON, _ := json.Marshal(stepErrors)
+		resultsMap["_errors"] = string(errorsJSON)
+	}
+
 	b.dao.Update(ctx, &models.BackgroundTask{
 		ID:      task.ID,
-		Status:  models.TaskStatusDone,
+		Status:  finalStatus,
 		Results: resultsMap,
 	})
+
+	// 根据是否有错误，发送不同的最终通知
+	var finalResult string
+	if hasFailed {
+		var failedTools []string
+		for stepID, errMsg := range stepErrors {
+			failedTools = append(failedTools, fmt.Sprintf("%s: %s", stepID, errMsg))
+		}
+		finalResult = fmt.Sprintf("后台任务执行失败 (%d/%d 步骤出错): %s", len(stepErrors), len(steps), strings.Join(failedTools, "; "))
+	} else {
+		finalResult = "所有步骤已完成"
+	}
 
 	b.outputChan <- DrainerOutput{
 		TaskID:      task.ID,
 		ChatAreaID:  task.ChatAreaID,
 		MessageType: msgType,
 		TargetID:    targetID,
-		Status:      "done",
-		Result:      "所有步骤已完成",
+		Status:      string(finalStatus),
+		Result:      finalResult,
+		Error:       finalResult,
 		UserPrompt:  userPrompt,
 	}
 
-	slog.Info("后台任务执行完成", "task_id", task.ID)
+	slog.Info("后台任务执行完成", "task_id", task.ID, "status", finalStatus, "failed", hasFailed)
 }
 
 // Run 启动后台任务执行器，并恢复 DB 中未完成的任务。

@@ -4,14 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
-
-	"JuanNiang-Neo/internal/adapter"
-	"JuanNiang-Neo/internal/agent/memory"
-	"JuanNiang-Neo/internal/agent/prompt"
-	"JuanNiang-Neo/internal/agent/provider"
-	"JuanNiang-Neo/internal/agent/session"
 )
+
+// cqCodeMatch 匹配 [CQ:type,key=val,...] 格式的 CQ 码。
+var cqCodeMatch = regexp.MustCompile(`\[CQ:[^\]]+\]`)
 
 // DrainerOutput 后台任务步骤/整体完成时的输出。
 type DrainerOutput struct {
@@ -23,17 +21,16 @@ type DrainerOutput struct {
 	Status      string `json:"status"`
 	Result      string `json:"result,omitempty"`
 	Error       string `json:"error,omitempty"`
-	UserPrompt  string `json:"user_prompt,omitempty"` // 用户原始请求，供 drainer 上下文
+	UserPrompt  string `json:"user_prompt,omitempty"` // 用户原始请求
+
+	// MediaPayloads 从步骤结果中提取的 CQ 码（图片等），由主 Agent 直接发送到 QQ。
+	MediaPayloads []string `json:"media_payloads,omitempty"`
 }
 
-// DrainerAgent 排水 Agent，消费后台任务结果缓冲区，整合后发送 QQ 消息。
+// DrainerAgent 排水 Agent，消费后台任务结果，汇总后发送给主 Agent 处理。
 type DrainerAgent struct {
-	inputChan <-chan DrainerOutput
-	providers *provider.ProviderGroup
-	adapter   *adapter.Adapter
-	session   *session.SessionManager
-	prompt    *prompt.PromptManager
-	memory    *memory.MemoryGroup
+	inputChan  <-chan DrainerOutput
+	resultChan chan<- DrainerOutput // 汇总后的最终结果发给主 Agent
 
 	// 按 ChatArea 分组累积结果
 	pending map[string][]DrainerOutput
@@ -41,25 +38,17 @@ type DrainerAgent struct {
 
 func NewDrainerAgent(
 	inputChan <-chan DrainerOutput,
-	providers *provider.ProviderGroup,
-	adapter *adapter.Adapter,
-	sessionMgr *session.SessionManager,
-	promptMgr *prompt.PromptManager,
-	memGrp *memory.MemoryGroup,
+	resultChan chan<- DrainerOutput,
 ) *DrainerAgent {
 	return &DrainerAgent{
-		inputChan: inputChan,
-		providers: providers,
-		adapter:   adapter,
-		session:   sessionMgr,
-		prompt:    promptMgr,
-		memory:    memGrp,
-		pending:   make(map[string][]DrainerOutput),
+		inputChan:  inputChan,
+		resultChan: resultChan,
+		pending:    make(map[string][]DrainerOutput),
 	}
 }
 
 func (d *DrainerAgent) Run(ctx context.Context) {
-	slog.Info("DrainerAgent 已启动")
+	slog.Info("DrainerAgent 已启动 (result → bgTaskResultChan)")
 	for {
 		select {
 		case <-ctx.Done():
@@ -78,16 +67,9 @@ func (d *DrainerAgent) handle(ctx context.Context, output DrainerOutput) {
 
 	d.pending[chatAreaID] = append(d.pending[chatAreaID], output)
 
-	if output.Status == "done" && output.StepID == "" {
+	// 最终完成信号（含 failed 状态），整合所有结果发送给主 Agent
+	if (output.Status == "done" || output.Status == "failed") && output.StepID == "" {
 		d.finalize(ctx, chatAreaID)
-		return
-	}
-
-	if output.StepID != "" && output.Status == "done" {
-		totalResults := len(d.pending[chatAreaID])
-		if totalResults%3 == 0 {
-			d.sendProgress(ctx, chatAreaID, output.TaskID)
-		}
 	}
 }
 
@@ -100,64 +82,71 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 
 	// 收集步骤结果
 	var stepOutputs []DrainerOutput
-	userPrompt := ""
-	for _, o := range outputs {
-		if o.StepID != "" && o.Result != "" {
-			stepOutputs = append(stepOutputs, o)
-		}
-		if o.UserPrompt != "" {
-			userPrompt = o.UserPrompt
-		}
-	}
-
-	if len(stepOutputs) == 0 {
-		d.sendMsg(outputs[0], "后台任务执行完成。")
-		return
-	}
-
-	// 每个步骤结果作为独立消息发送，而不是合并为一条
-	baseOutput := stepOutputs[0]
-
-	// 先发送用户原始请求的引用（如果有）
-	if userPrompt != "" {
-		d.sendMsg(baseOutput, fmt.Sprintf("关于「%s」的执行结果：", userPrompt))
-	}
-
-	for _, o := range stepOutputs {
-		d.sendMsg(o, o.Result)
-	}
-
-	// 发送完成提示
-	d.sendMsg(baseOutput, "所有后台任务已执行完毕。")
-}
-
-func (d *DrainerAgent) sendProgress(ctx context.Context, chatAreaID, taskID string) {
-	outputs := d.pending[chatAreaID]
-	var results []string
+	var failedSteps []DrainerOutput
+	var allMedia []string
 	for _, o := range outputs {
 		if o.StepID != "" {
-			results = append(results, fmt.Sprintf("\u2022 %s", o.Result))
+			if o.Status == "failed" {
+				failedSteps = append(failedSteps, o)
+			}
+			if o.Result != "" {
+				// 从结果中提取 CQ 码，记录到 MediaPayloads
+				media := cqCodeMatch.FindAllString(o.Result, -1)
+				allMedia = append(allMedia, media...)
+				stepOutputs = append(stepOutputs, o)
+			}
 		}
 	}
-	msg := fmt.Sprintf("任务 %s 进度更新:\n%s", taskID[:8], strings.Join(results, "\n"))
 
+	// 汇总所有步骤结果 + 错误（CQ 码替换为占位符，不截断）
+	var summaryParts []string
+	for _, o := range failedSteps {
+		summaryParts = append(summaryParts, fmt.Sprintf("[失败] %s: %s", o.StepID, o.Error))
+	}
+	for _, o := range stepOutputs {
+		if o.Status != "failed" {
+			// 清除 CQ 码，替换为 [图片/文件] 占位符
+			cleanResult := cqCodeMatch.ReplaceAllString(o.Result, "[媒体内容]")
+			summaryParts = append(summaryParts, fmt.Sprintf("[完成] %s: %s", o.StepID, truncateClean(cleanResult, 500)))
+		}
+	}
+
+	summary := fmt.Sprintf("[后台任务已完成]\n%s", strings.Join(summaryParts, "\n"))
+	userPrompt := ""
+	errMsg := ""
 	if len(outputs) > 0 {
-		d.sendMsg(outputs[0], msg)
+		userPrompt = outputs[0].UserPrompt
+	}
+	if len(failedSteps) > 0 {
+		errMsg = fmt.Sprintf("%d 个步骤失败", len(failedSteps))
+	}
+
+	finalStatus := "done"
+	if len(stepOutputs) == 0 && len(failedSteps) > 0 {
+		finalStatus = "failed"
+	}
+
+	slog.Info("Drainer 汇总完成，发送给主 Agent", "chat_area_id", chatAreaID,
+		"status", finalStatus, "failed", len(failedSteps), "success", len(stepOutputs), "media", len(allMedia))
+
+	// 发送汇总结果给主 Agent
+	d.resultChan <- DrainerOutput{
+		TaskID:        outputs[0].TaskID,
+		ChatAreaID:    chatAreaID,
+		MessageType:   outputs[0].MessageType,
+		TargetID:      outputs[0].TargetID,
+		Status:        finalStatus,
+		Result:        summary,
+		Error:         errMsg,
+		UserPrompt:    userPrompt,
+		MediaPayloads: allMedia,
 	}
 }
 
-// sendMsg 根据 DrainerOutput 的消息类型发送到正确目标。
-func (d *DrainerAgent) sendMsg(output DrainerOutput, content string) {
-	switch output.MessageType {
-	case "private":
-		if _, err := d.adapter.SendPrivateMsg(output.TargetID, content); err != nil {
-			slog.Error("Drainer 发送私聊失败", "err", err, "user_id", output.TargetID)
-		}
-	case "group":
-		if _, err := d.adapter.SendGroupMsg(output.TargetID, content); err != nil {
-			slog.Error("Drainer 发送群聊失败", "err", err, "group_id", output.TargetID)
-		}
-	default:
-		slog.Error("Drainer: 未知消息类型", "type", output.MessageType)
+// truncateClean 截断已清理的纯文本到指定长度。
+func truncateClean(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
 	}
+	return s[:maxLen] + "..."
 }

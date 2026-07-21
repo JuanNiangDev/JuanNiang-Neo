@@ -57,3 +57,10 @@ func (d *BackgroundTaskDAO) ListPending(ctx context.Context) ([]models.Backgroun
 	}).Order("created_at ASC").Find(&list).Error
 	return list, err
 }
+
+// ListAll 返回所有后台任务，最新在前。
+func (d *BackgroundTaskDAO) ListAll(ctx context.Context) ([]models.BackgroundTask, error) {
+	var list []models.BackgroundTask
+	err := d.db.WithContext(ctx).Order("created_at DESC").Limit(200).Find(&list).Error
+	return list, err
+}

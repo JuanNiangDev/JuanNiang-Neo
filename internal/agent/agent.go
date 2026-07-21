@@ -42,10 +42,11 @@ type HagoCenter struct {
 	SandboxClient *sandboxcaller.Client
 	T2IClient     *t2icaller.Client
 
-	BgTaskExecutor *BackgroundTaskExecutor
-	Drainer        *DrainerAgent
-	OutputChan     chan DrainerOutput
-	PluginEngine   *pluggin.PluginEngine
+	BgTaskExecutor    *BackgroundTaskExecutor
+	Drainer           *DrainerAgent
+	OutputChan        chan DrainerOutput // BgTaskExecutor → Drainer
+	BgTaskResultChan  chan DrainerOutput // Drainer → 主 Agent 事件循环
+	PluginEngine      *pluggin.PluginEngine
 }
 
 // Config HagoCenter 初始化配置。
@@ -64,11 +65,12 @@ type Config struct {
 // NewHagoCenter 创建并初始化 HagoCenter。
 func NewHagoCenter() *HagoCenter {
 	return &HagoCenter{
-		Providers:  provider.NewProviderGroup(),
-		MCP:        mcp.NewMCPGroup(),
-		Tools:      tool.NewToolRegistry(),
-		Skills:     skill.NewSkillEngine(),
-		OutputChan: make(chan DrainerOutput, 128),
+		Providers:       provider.NewProviderGroup(),
+		MCP:             mcp.NewMCPGroup(),
+		Tools:           tool.NewToolRegistry(),
+		Skills:          skill.NewSkillEngine(),
+		OutputChan:      make(chan DrainerOutput, 128),
+		BgTaskResultChan: make(chan DrainerOutput, 128),
 	}
 }
 
@@ -121,7 +123,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	}
 
 	h.BgTaskExecutor = NewBackgroundTaskExecutor(h.Tools, h.MCP, h.DAO.BackgroundTask, h.OutputChan)
-	h.Drainer = NewDrainerAgent(h.OutputChan, h.Providers, h.Adapter, h.Session, h.Prompt, h.Memory)
+	h.Drainer = NewDrainerAgent(h.OutputChan, h.BgTaskResultChan)
 
 	return nil
 }
@@ -239,5 +241,6 @@ func (h *HagoCenter) buildToolList(ctx context.Context) []provider.ToolDef {
 // Stop 停止 Agent 系统。
 func (h *HagoCenter) Stop() {
 	close(h.OutputChan)
+	close(h.BgTaskResultChan)
 	slog.Info("HagoCenter 已停止")
 }

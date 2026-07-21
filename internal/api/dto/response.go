@@ -262,3 +262,19 @@ type LogEntryResp struct {
 	Message string         `json:"message"`
 	Attrs   map[string]any `json:"attrs,omitempty"`
 }
+
+// ---------- Background Tasks ----------
+
+// BackgroundTaskResp 后台任务前端响应。
+type BackgroundTaskResp struct {
+	ID          string         `json:"id"`
+	ChatAreaID  string         `json:"chat_area_id"`
+	Status      string         `json:"status"`
+	MessageType string         `json:"message_type"`
+	TargetID    int64          `json:"target_id"`
+	UserPrompt  string         `json:"user_prompt"`
+	Steps       models.JSONMap `json:"steps"`
+	Results     models.JSONMap `json:"results"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   time.Time      `json:"updated_at"`
+}
