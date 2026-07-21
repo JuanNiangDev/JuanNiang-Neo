@@ -198,3 +198,23 @@ export const backgroundTaskApi = {
   list: () => client.get('/background-tasks'),
   get: (id: string) => client.get(`/background-tasks/${id}`),
 }
+
+// ======== CronJob ========
+export interface CronJobResp {
+  id: string; name: string; cron_expr: string; message: string; message_type: string
+  target_id: number; is_active: boolean; last_run_at?: string; last_error: string
+  created_at: string; updated_at: string
+}
+export interface AddCronJobReq {
+  name: string; cron_expr: string; message: string; message_type: string
+  target_id: number; is_active: boolean
+}
+
+export const cronJobApi = {
+  list: () => client.get('/cronjobs'),
+  get: (id: string) => client.get(`/cronjobs/${id}`),
+  create: (data: AddCronJobReq) => client.post('/cronjobs', data),
+  update: (id: string, data: AddCronJobReq) => client.put(`/cronjobs/${id}`, data),
+  delete: (id: string) => client.delete(`/cronjobs/${id}`),
+  toggle: (id: string, is_active: boolean) => client.put(`/cronjobs/${id}/toggle`, { is_active }),
+}

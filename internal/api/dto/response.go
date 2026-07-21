@@ -278,3 +278,19 @@ type BackgroundTaskResp struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 }
+
+// ---------- CronJob ----------
+
+type CronJobResp struct {
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	CronExpr    string     `json:"cron_expr"`
+	Message     string     `json:"message"`
+	MessageType string     `json:"message_type"`
+	TargetID    int64      `json:"target_id"`
+	IsActive    bool       `json:"is_active"`
+	LastRunAt   *time.Time `json:"last_run_at"`
+	LastError   string     `json:"last_error"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}

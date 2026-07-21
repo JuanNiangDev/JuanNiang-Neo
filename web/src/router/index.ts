@@ -35,6 +35,7 @@ const router = createRouter({
         { path: 'logs', name: 'Logs', component: () => import('@/views/LogsPage.vue') },
         { path: 'settings', name: 'Settings', component: () => import('@/views/SettingsPage.vue') },
         { path: 'background-tasks', name: 'BackgroundTasks', component: () => import('@/views/BackgroundTasksPage.vue') },
+        { path: 'cronjobs', name: 'CronJobs', component: () => import('@/views/CronJobsPage.vue') },
       ],
     },
   ],

@@ -116,4 +116,12 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	// Background Tasks
 	api.GET("/background-tasks", auth, svc.ListBackgroundTasks)
 	api.GET("/background-tasks/:id", auth, svc.GetBackgroundTask)
+
+	// CronJob
+	api.GET("/cronjobs", auth, svc.ListCronJobs)
+	api.GET("/cronjobs/:id", auth, svc.GetCronJob)
+	api.POST("/cronjobs", auth, svc.AddCronJob)
+	api.PUT("/cronjobs/:id", auth, svc.UpdateCronJob)
+	api.DELETE("/cronjobs/:id", auth, svc.DeleteCronJob)
+	api.PUT("/cronjobs/:id/toggle", auth, svc.ToggleCronJob)
 }

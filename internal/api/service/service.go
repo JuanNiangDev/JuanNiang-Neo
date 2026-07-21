@@ -1670,6 +1670,130 @@ func (s *Service) GetBackgroundTask(ctx context.Context, c *app.RequestContext) 
 	}))
 }
 
+// ---------- CronJob ----------
+
+func (s *Service) ListCronJobs(ctx context.Context, c *app.RequestContext) {
+	list, err := s.DAO.CronJob.List(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawCronJobList2Resp(list)))
+}
+
+func (s *Service) GetCronJob(ctx context.Context, c *app.RequestContext) {
+	raw, err := s.DAO.CronJob.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawCronJob2Resp(raw)))
+}
+
+func (s *Service) AddCronJob(ctx context.Context, c *app.RequestContext) {
+	var data dto.AddCronJobReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	if data.MessageType == "" {
+		data.MessageType = "private"
+	}
+
+	m := models.CronJob{
+		Name:        data.Name,
+		CronExpr:    data.CronExpr,
+		Message:     data.Message,
+		MessageType: data.MessageType,
+		TargetID:    data.TargetID,
+		IsActive:    data.IsActive,
+	}
+	if err := s.DAO.CronJob.Create(ctx, &m); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 同步调度器
+	if s.CronJobManager != nil {
+		_ = s.CronJobManager.Reload(ctx)
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawCronJob2Resp(&m)))
+}
+
+func (s *Service) UpdateCronJob(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateCronJobReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	raw, err := s.DAO.CronJob.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	if data.MessageType == "" {
+		data.MessageType = "private"
+	}
+
+	raw.Name = data.Name
+	raw.CronExpr = data.CronExpr
+	raw.Message = data.Message
+	raw.MessageType = data.MessageType
+	raw.TargetID = data.TargetID
+	raw.IsActive = data.IsActive
+
+	if err := s.DAO.CronJob.Update(ctx, raw); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 同步调度器
+	if s.CronJobManager != nil {
+		_ = s.CronJobManager.Reload(ctx)
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawCronJob2Resp(raw)))
+}
+
+func (s *Service) DeleteCronJob(ctx context.Context, c *app.RequestContext) {
+	if err := s.DAO.CronJob.Delete(ctx, c.Param("id")); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 同步调度器
+	if s.CronJobManager != nil {
+		_ = s.CronJobManager.Reload(ctx)
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+func (s *Service) ToggleCronJob(ctx context.Context, c *app.RequestContext) {
+	var data dto.ToggleCronJobReq
+	id := c.Param("id")
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	if err := s.DAO.CronJob.SetActive(ctx, id, data.IsActive); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 同步调度器
+	if s.CronJobManager != nil {
+		_ = s.CronJobManager.Reload(ctx)
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
 // ---------- helpers ----------
 
 func newUUID() string {

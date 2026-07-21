@@ -8,6 +8,7 @@ import (
 	t2i "JuanNiang-Neo/infrastructure/t2i"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
+	cronjobmgr "JuanNiang-Neo/internal/agent/cronjob"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
 	"JuanNiang-Neo/internal/agent/provider"
@@ -42,6 +43,8 @@ type Service struct {
 	// OnUpdateT2I 在 T2I 配置变更时调用，用于同步到 HagoCenter。
 	OnUpdateT2I     func(client *t2icaller.Client)
 	OnUpdateSandbox func(client *sandboxcaller.Client)
+	// CronJobManager 在 CronJob 变更时调用 Reload 同步调度器。
+	CronJobManager *cronjobmgr.Manager
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {

@@ -264,3 +264,29 @@ func RawLogEntryList2Resp(raw []logging.Entry) []LogEntryResp {
 	}
 	return res
 }
+
+// ---------- CronJob ----------
+
+func RawCronJob2Resp(raw *models.CronJob) CronJobResp {
+	return CronJobResp{
+		ID:          raw.ID,
+		Name:        raw.Name,
+		CronExpr:    raw.CronExpr,
+		Message:     raw.Message,
+		MessageType: raw.MessageType,
+		TargetID:    raw.TargetID,
+		IsActive:    raw.IsActive,
+		LastRunAt:   raw.LastRunAt,
+		LastError:   raw.LastError,
+		CreatedAt:   raw.CreatedAt,
+		UpdatedAt:   raw.UpdatedAt,
+	}
+}
+
+func RawCronJobList2Resp(raw []models.CronJob) []CronJobResp {
+	res := make([]CronJobResp, len(raw))
+	for i, item := range raw {
+		res[i] = RawCronJob2Resp(&item)
+	}
+	return res
+}

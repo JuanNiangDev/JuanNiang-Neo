@@ -87,6 +87,7 @@ const navGroups = [
       { title: 'Skills', icon: 'mdi-lightning-bolt', to: '/skills' },
       { title: 'Tools', icon: 'mdi-tools', to: '/tools' },
       { title: 'Plugins', icon: 'mdi-puzzle', to: '/plugins' },
+      { title: 'CronJob', icon: 'mdi-timer-cog-outline', to: '/cronjobs' },
       { title: 'Sessions', icon: 'mdi-chat-processing-outline', to: '/sessions' },
       { title: 'Memory', icon: 'mdi-memory', to: '/memory' },
     ],

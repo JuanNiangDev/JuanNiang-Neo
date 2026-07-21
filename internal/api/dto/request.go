@@ -219,3 +219,27 @@ type UpdateWebhookConfigReq struct {
 	Token   string `json:"token"`
 	Enabled bool   `json:"enabled"`
 }
+
+// ---------- CronJob ----------
+
+type AddCronJobReq struct {
+	Name        string `json:"name"`
+	CronExpr    string `json:"cron_expr"`
+	Message     string `json:"message"`
+	MessageType string `json:"message_type"`
+	TargetID    int64  `json:"target_id"`
+	IsActive    bool   `json:"is_active"`
+}
+
+type UpdateCronJobReq struct {
+	Name        string `json:"name"`
+	CronExpr    string `json:"cron_expr"`
+	Message     string `json:"message"`
+	MessageType string `json:"message_type"`
+	TargetID    int64  `json:"target_id"`
+	IsActive    bool   `json:"is_active"`
+}
+
+type ToggleCronJobReq struct {
+	IsActive bool `json:"is_active"`
+}
