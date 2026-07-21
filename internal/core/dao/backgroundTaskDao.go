@@ -28,7 +28,8 @@ func (d *BackgroundTaskDAO) GetByID(ctx context.Context, id string) (*models.Bac
 }
 
 func (d *BackgroundTaskDAO) Update(ctx context.Context, t *models.BackgroundTask) error {
-	return d.db.WithContext(ctx).Save(t).Error
+	return d.db.WithContext(ctx).Model(&models.BackgroundTask{}).Where("id = ?", t.ID).
+		Select("status", "results").Updates(t).Error
 }
 
 func (d *BackgroundTaskDAO) UpdateStatus(ctx context.Context, id string, status models.TaskStatus) error {

@@ -55,6 +55,7 @@ M.json = json
 ---@field send_private_msg fun(user_id: number, message: string): boolean, string?
 ---@field send_group_msg fun(group_id: number, message: string): boolean, string?
 ---@field delete_msg fun(message_id: number): boolean, string?
+---@field get_msg fun(message_id: number): table, string? 根据消息 ID 获取消息完整内容
 ---@field get_group_info fun(group_id: number): table, string?
 ---@field get_group_member_list fun(group_id: number): table[], string?
 ---@field get_group_member_info fun(group_id: number, user_id: number): table, string?
@@ -127,6 +128,8 @@ M.t2i = t2i
 ---@field create fun(): table, string? 返回 {sandbox_id=string, status=string}
 ---@field exec_shell fun(sandbox_id: string, command: string): string, number|string  返回 (output, exit_code|err)
 ---@field exec_python fun(sandbox_id: string, code: string): string, string 返回 (output, error_str)
+---@field list fun(): table[], string? 列出已有沙箱实例
+---@field delete fun(sandbox_id: string): boolean, string? 删除指定沙箱
 ---@field toggle fun(active: boolean): boolean, string? 启用/停用 Sandbox 服务
 ---@field is_active fun(): boolean
 ---@field get_config fun(): table, string?

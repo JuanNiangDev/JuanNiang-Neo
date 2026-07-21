@@ -1,6 +1,36 @@
 package caller
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
+
+// BayTime 兼容 Bay API 的多种时间格式（可能不带时区后缀）
+type BayTime struct {
+	time.Time
+}
+
+func (bt *BayTime) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	if s == "" || s == "null" {
+		return nil
+	}
+	formats := []string{
+		"2006-01-02T15:04:05Z07:00",
+		"2006-01-02T15:04:05.999999Z07:00",
+		"2006-01-02T15:04:05.999999",
+		"2006-01-02T15:04:05",
+	}
+	for _, f := range formats {
+		t, err := time.Parse(f, s)
+		if err == nil {
+			bt.Time = t
+			return nil
+		}
+	}
+	return fmt.Errorf("cannot parse BayTime: %s", s)
+}
 
 // SandboxStatus 沙箱状态枚举
 type SandboxStatus string
@@ -71,9 +101,9 @@ type SandboxInfo struct {
 	Profile       string                 `json:"profile"`
 	CargoID       string                 `json:"cargo_id"`
 	Capabilities  []string               `json:"capabilities"`
-	CreatedAt     time.Time              `json:"created_at"`
-	ExpiresAt     *time.Time             `json:"expires_at"`
-	IdleExpiresAt *time.Time             `json:"idle_expires_at"`
+	CreatedAt     BayTime                 `json:"created_at"`
+	ExpiresAt     *BayTime                `json:"expires_at"`
+	IdleExpiresAt *BayTime                `json:"idle_expires_at"`
 	Containers    []RuntimeContainerInfo `json:"containers,omitempty"`
 }
 
@@ -148,7 +178,7 @@ type ExecutionHistoryEntry struct {
 	Description     *string    `json:"description"`
 	Tags            *string    `json:"tags"`
 	Notes           *string    `json:"notes"`
-	CreatedAt       time.Time  `json:"created_at"`
+	CreatedAt       BayTime   `json:"created_at"`
 }
 
 // ExecutionHistoryList 执行历史列表
