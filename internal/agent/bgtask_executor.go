@@ -39,7 +39,7 @@ func NewBackgroundTaskExecutor(tools *tool.ToolRegistry, dao *dao.BackgroundTask
 // Submit 提交一个后台任务，返回 taskID。
 func (b *BackgroundTaskExecutor) Submit(ctx context.Context, chatAreaID string, steps []TaskStep) (string, error) {
 	stepsJSON, _ := json.Marshal(steps)
-	var stepsMap models.JSONMap
+	stepsMap := make(models.JSONMap)
 	_ = json.Unmarshal(stepsJSON, &stepsMap)
 	task := &models.BackgroundTask{
 		ChatAreaID: chatAreaID,
@@ -120,7 +120,7 @@ func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, steps
 	}
 
 	resultsJSON, _ := json.Marshal(results)
-	var resultsMap models.JSONMap
+	resultsMap := make(models.JSONMap)
 	_ = json.Unmarshal(resultsJSON, &resultsMap)
 	b.dao.Update(ctx, &models.BackgroundTask{
 		ID:      task.ID,
