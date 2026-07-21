@@ -16,6 +16,10 @@ import (
 	"JuanNiang-Neo/internal/pluggin"
 )
 
+// SilenceToken 是 LLM 在不回复时输出的固定标记。
+// prompt 会告知 LLM："判定不回复时输出 __NO_REPLY__，系统检测到后自动丢弃"。
+const SilenceToken = "__NO_REPLY__"
+
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
 // 当 adapter 的 events channel 关闭时（如重启），会尝试等待后重新获取新的 channel，
 // 而不是直接退出事件循环。
@@ -278,7 +282,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	h.Session.UpdateTokenUsage(ctx, sess.ID, int64(resp.TokenUsage))
 
 	if resp.Message.Content != "" {
-		// 群聊中 LLM 输出"静默"类废话时直接丢弃，不发送、不记录
+		// 群聊中 LLM 输出静默标记或静默废话时直接丢弃，不发送、不记录
 		if msg.MessageType == "group" && isSilenceResponse(resp.Message.Content) {
 			slog.Info("群聊静默响应已丢弃", "content", resp.Message.Content, "group_id", msg.GroupID)
 		} else {
@@ -290,7 +294,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		}
 	}
 
-	if len(resp.Message.ToolCalls) > 0 {
+	// 静默响应时也跳过工具调用（防止 LLM 绕过文本输出直接调 send_group_msg 发废话）
+	silenced := msg.MessageType == "group" && resp.Message.Content != "" && isSilenceResponse(resp.Message.Content)
+	if !silenced && len(resp.Message.ToolCalls) > 0 {
 		h.handleToolCalls(ctx, msg, chatArea.ID, userID, userMsg, sess.ID, messages, resp, ev.Admins)
 	}
 }
@@ -530,21 +536,26 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
 	}
 }
 
-// isSilenceResponse 检测 LLM 是否输出了纯"静默声明"类废话（如"保持静默"、"我不回复"等）。
-// 仅当整条消息就是一句静默声明时才拦截，避免误伤正常对话中提及"静默"的消息。
+// isSilenceResponse 检测 LLM 是否输出了静默标记或静默声明类废话。
+// 主路径：LLM 按 prompt 要求输出 __NO_REPLY__ 标记。
+// 兜底：匹配已知静默短语/表情，防止 LLM 不遵守标记约定。
 func isSilenceResponse(content string) bool {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {
 		return false
 	}
-	// 只检查短消息（≤15字），正常回复不会这么短
+
+	// 主路径：静默标记（LLM 被 prompt 告知"不回复时输出 __NO_REPLY__"）
+	if strings.Contains(trimmed, SilenceToken) {
+		return true
+	}
+
+	// 兜底：已知静默短语匹配（仅限短消息，避免误伤）
 	if len([]rune(trimmed)) > 15 {
 		return false
 	}
-
 	lower := strings.ToLower(trimmed)
-	// 精确匹配：整条消息就是静默声明本身
-	exactMatches := []string{
+	silencePhrases := []string{
 		"保持静默", "保持沉默", "静默观察", "静默",
 		"不回复", "我不回复", "我不回",
 		"不插话", "我不插话",
@@ -553,15 +564,18 @@ func isSilenceResponse(content string) bool {
 		"不参与", "我不参与",
 		"与我无关", "不关我的事",
 		"我不说",
+		"不响", "不响，做空气", "不响，做空气。",
+		"做空气", "装死", "当没看到", "没看到",
+		"路过", "潜水", "暗中观察",
+		"😶", "🤐", "🙈", "🫥",
 	}
-	for _, m := range exactMatches {
+	for _, m := range silencePhrases {
 		if lower == m {
 			return true
 		}
 	}
-
-	// 包含"静默"且没有其他实质内容（如"我保持静默"、"会静默观察"）
-	if strings.Contains(lower, "静默") || strings.Contains(lower, "不回复") || strings.Contains(lower, "不插话") {
+	if strings.Contains(lower, "静默") || strings.Contains(lower, "不回复") || strings.Contains(lower, "不插话") ||
+		strings.Contains(lower, "不响") || strings.Contains(lower, "做空气") || strings.Contains(lower, "装死") {
 		return true
 	}
 
