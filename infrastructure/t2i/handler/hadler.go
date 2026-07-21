@@ -87,7 +87,9 @@ func (c *Client) HealthCheck() error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	// T2I 服务无独立 /health 端点, 返回 404 属正常 (服务存活即可)。
+	// 只要请求未报网络错误即视为健康。
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
 		return fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 	return nil
