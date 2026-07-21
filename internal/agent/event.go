@@ -394,15 +394,23 @@ func isAdmin(userID int64, admins []string) bool {
 }
 
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
-	var err error
-	switch msg.MessageType {
-	case "private":
-		_, err = h.Adapter.SendPrivateMsg(msg.UserID, content)
-	case "group":
-		_, err = h.Adapter.SendGroupMsg(msg.GroupID, content)
-	}
-	if err != nil {
-		slog.Error("发送消息失败", "err", err)
+	// 按 <|msg|> 分隔符拆分为多条独立消息
+	parts := strings.Split(content, "<|msg|>")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		var err error
+		switch msg.MessageType {
+		case "private":
+			_, err = h.Adapter.SendPrivateMsg(msg.UserID, part)
+		case "group":
+			_, err = h.Adapter.SendGroupMsg(msg.GroupID, part)
+		}
+		if err != nil {
+			slog.Error("发送消息失败", "err", err)
+		}
 	}
 }
 

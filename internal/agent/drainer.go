@@ -146,18 +146,25 @@ func (d *DrainerAgent) sendProgress(ctx context.Context, chatAreaID, taskID stri
 	}
 }
 
-// sendMsg 根据 DrainerOutput 的消息类型发送到正确目标。
+// sendMsg 根据 DrainerOutput 的消息类型发送到正确目标。支持 <|msg|> 分隔多条消息。
 func (d *DrainerAgent) sendMsg(output DrainerOutput, content string) {
-	switch output.MessageType {
-	case "private":
-		if _, err := d.adapter.SendPrivateMsg(output.TargetID, content); err != nil {
-			slog.Error("Drainer 发送私聊失败", "err", err, "user_id", output.TargetID)
+	parts := strings.Split(content, "<|msg|>")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
 		}
-	case "group":
-		if _, err := d.adapter.SendGroupMsg(output.TargetID, content); err != nil {
-			slog.Error("Drainer 发送群聊失败", "err", err, "group_id", output.TargetID)
+		switch output.MessageType {
+		case "private":
+			if _, err := d.adapter.SendPrivateMsg(output.TargetID, part); err != nil {
+				slog.Error("Drainer 发送私聊失败", "err", err, "user_id", output.TargetID)
+			}
+		case "group":
+			if _, err := d.adapter.SendGroupMsg(output.TargetID, part); err != nil {
+				slog.Error("Drainer 发送群聊失败", "err", err, "group_id", output.TargetID)
+			}
+		default:
+			slog.Error("Drainer: 未知消息类型", "type", output.MessageType)
 		}
-	default:
-		slog.Error("Drainer: 未知消息类型", "type", output.MessageType)
 	}
 }
