@@ -8,6 +8,7 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/memory"
+	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/session"
@@ -123,18 +124,28 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 		for _, o := range outputs {
 			if o.StepID == "" && o.Error != "" {
 				d.sendMsg(o, o.Error)
+				d.writeBackMemory(ctx, chatAreaID, o, o.Error)
 				return
 			}
 		}
 		d.sendMsg(outputs[0], "后台任务执行完成。")
+		d.writeBackMemory(ctx, chatAreaID, outputs[0], "后台任务执行完成。")
 		return
 	}
 
-	// 直接发送每个步骤的结果，不加任何包装文字
+	// 发送每个步骤的结果，并汇总写入记忆
+	var summaryParts []string
 	for _, o := range stepOutputs {
 		if o.Status != "failed" {
 			d.sendMsg(o, o.Result)
 		}
+		summaryParts = append(summaryParts, fmt.Sprintf("[%s] %s: %s", o.Status, o.StepID, truncate(o.Result, 500)))
+	}
+
+	// 将任务结果写回短期记忆和 DB 聊天记录，确保主 Agent 能感知
+	summary := fmt.Sprintf("[后台任务结果]\n%s", strings.Join(summaryParts, "\n"))
+	if len(outputs) > 0 {
+		d.writeBackMemory(ctx, chatAreaID, outputs[0], summary)
 	}
 }
 
@@ -169,4 +180,39 @@ func (d *DrainerAgent) sendMsg(output DrainerOutput, content string) {
 			slog.Error("Drainer: 未知消息类型", "type", output.MessageType)
 		}
 	}
+}
+
+// writeBackMemory 将后台任务结果写回短期记忆和 DB 聊天记录，确保主 Agent 能感知任务完成/失败。
+func (d *DrainerAgent) writeBackMemory(ctx context.Context, chatAreaID string, output DrainerOutput, content string) {
+	// 写入短期记忆（LLM 下次调用时能看到）
+	if d.memory != nil {
+		if err := d.memory.AddShortTermMessage(ctx, chatAreaID, shortterm.ChatMessage{
+			Role:    "system",
+			Content: content,
+		}); err != nil {
+			slog.Error("Drainer 写入短期记忆失败", "err", err, "chat_area_id", chatAreaID)
+		}
+	}
+
+	// 写入 DB 聊天记录（持久化存档）
+	if d.session != nil {
+		// 私聊时用 target_id 作为 user_id，群聊时用 0
+		userID := int64(0)
+		if output.MessageType == "private" {
+			userID = output.TargetID
+		}
+		if err := d.session.AppendRecord(ctx, chatAreaID, userID, "system", content, 0, nil); err != nil {
+			slog.Error("Drainer 写入聊天记录失败", "err", err, "chat_area_id", chatAreaID)
+		}
+	}
+
+	slog.Info("Drainer 已写回任务结果到记忆", "chat_area_id", chatAreaID, "content_len", len(content))
+}
+
+// truncate 截断字符串到指定长度。
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
