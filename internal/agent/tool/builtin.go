@@ -420,18 +420,25 @@ func RegisterBuiltinTools(
 					Query     string `json:"query"`
 				}
 				json.Unmarshal(args, &p)
-				// 使用 Python requests + DuckDuckGo HTML 搜索
+				// 使用 Python requests + Bing 搜索
 				encodedQuery := fmt.Sprintf("%q", p.Query)
 				code := fmt.Sprintf(`import json, re, urllib.request, urllib.parse
 query = %s
 try:
-    url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    url = "https://www.bing.com/search?q=" + urllib.parse.quote(query) + "&setlang=zh-cn"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
     resp = urllib.request.urlopen(req, timeout=15)
     html = resp.read().decode("utf-8", errors="ignore")
     results = []
-    for m in re.finditer(r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>', html):
-        results.append({"title": re.sub(r'<[^>]+>', '', m.group(2)).strip(), "url": m.group(1)})
+    # Bing 搜索结果: <li class="b_algo"> 包含 <h2><a href="...">title</a></h2>
+    blocks = re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', html, re.DOTALL)
+    for block in blocks:
+        m = re.search(r'<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>', block, re.DOTALL)
+        if m:
+            title = re.sub(r'<[^>]+>', '', m.group(2)).strip()
+            url = m.group(1)
+            if title and url.startswith("http"):
+                results.append({"title": title, "url": url})
         if len(results) >= 10:
             break
     if not results:
