@@ -42,6 +42,18 @@ func (t *onebotTool) Execute(ctx context.Context, args json.RawMessage) (string,
 	return t.executor(ctx, args)
 }
 
+// SessionInfo 当前会话信息（供工具使用）。
+type SessionInfo struct {
+	MessageType string `json:"message_type"` // private / group
+	TargetID    int64  `json:"target_id"`    // user_id (私聊) / group_id (群聊)
+	SenderQQ    int64  `json:"sender_qq"`
+	SenderName  string `json:"sender_name"` // 昵称或群名片
+	SenderRole  string `json:"sender_role"` // owner / admin / member (群聊); 私聊为空
+	SelfQQ      int64  `json:"self_qq"`
+	SelfName    string `json:"self_name"` // 机器人昵称
+	Admins      string `json:"admins"`   // 管理员 QQ 列表
+}
+
 // RegisterBuiltinTools 注册所有内置工具到注册表。
 // getSandbox / getT2I 使用 function getter 以支持运行时客户端热更新。
 func RegisterBuiltinTools(
@@ -50,6 +62,8 @@ func RegisterBuiltinTools(
 	getSandbox func() *sandboxcaller.Client,
 	getT2I func() *t2icaller.Client,
 	imageModel provider.Provider,
+	getSessionCtx func() string,
+	getCurrentMsg func() *adapter.MessageEvent,
 ) {
 	tools := []Tool{}
 
@@ -566,6 +580,56 @@ except Exception as e:
 				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				return "未配置识图模型(Image Model)，无法识别图片。请联系管理员配置。", nil
+			},
+		})
+	}
+
+	// --- 会话信息 ---
+
+	if getSessionCtx != nil {
+		tools = append(tools, &onebotTool{
+			BaseTool: NewTool("", "get_session_info", "获取当前聊天会话信息（私聊/群聊、对方QQ/群号、发送者信息、机器人身份等）",
+				TimeParams(), true, false),
+			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+				return getSessionCtx(), nil
+			},
+		})
+	}
+
+	// --- QQ 超级表情 ---
+
+	if getCurrentMsg != nil {
+		tools = append(tools, &onebotTool{
+			BaseTool: NewTool("", "send_face", "发送 QQ 表情（超级表情/emoji）到当前会话。注意：这是 QQ 内置表情系统，非图片。",
+				openai.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"face_id": map[string]any{"type": "integer", "description": "QQ 表情 ID。常用: 0=惊讶, 1=撇嘴, 2=色, 3=发呆, 4=得意, 5=流泪, 6=害羞, 7=闭嘴, 10=发怒, 12=太阳, 14=微笑, 18=可爱, 21=疑问, 22=无语, 23=晕, 27=敲打, 28=再见, 32=懵, 33=冷汗, 34=擦汗, 37=呲牙, 39=偷笑, 49=嘿哈, 53=祈祷, 55=流汗, 56=抠鼻, 63=委屈, 66=坏笑, 74=可怜, 76=酷, 89=尴尬, 97=大笑, 111=爱心, 112=心心眼, 136=双手合十, 142=抱拳, 150=墨镜笑脸, 182=耶, 188=狗头, 201=点赞, 211=笑哭, 227=旺柴, 264=FREE, 277=鲜花, 311=拳头"},
+					},
+					"required": []string{"face_id"},
+				}, true, false),
+			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+				var p struct {
+					FaceID int `json:"face_id"`
+				}
+				json.Unmarshal(args, &p)
+				msg := getCurrentMsg()
+				if msg == nil {
+					return "未获取到当前会话信息", nil
+				}
+				// 使用 CQ 码格式发送表情，normalizeMessage 会自动解析为消息段
+				cqCode := fmt.Sprintf("[CQ:face,id=%d]", p.FaceID)
+				switch msg.MessageType {
+				case "private":
+					if _, err := adapter.SendPrivateMsg(msg.UserID, cqCode); err != nil {
+						return "", err
+					}
+				case "group":
+					if _, err := adapter.SendGroupMsg(msg.GroupID, cqCode); err != nil {
+						return "", err
+					}
+				}
+				return fmt.Sprintf("QQ 表情 (face_id=%d) 已发送", p.FaceID), nil
 			},
 		})
 	}

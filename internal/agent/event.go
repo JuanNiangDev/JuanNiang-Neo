@@ -210,10 +210,21 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		toolDescs += fmt.Sprintf("- %s: %s\n", t.Function.Name, t.Function.Description)
 	}
 
+	// 构建会话上下文（透传发送者QQ/名字/权限 + 环境信息）
+	h.CurrentMsg = msg
+	h.CurrentSessionCtx = h.buildSessionContext(ctx, msg, ev.Admins)
+
 	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs)
 
 	messages := []provider.ChatMessage{
 		{Role: "system", Content: systemCtx},
+	}
+
+	// 注入当前会话上下文（让 Agent 感知聊天环境：谁在说话、什么群、自己的身份等）
+	if h.CurrentSessionCtx != "" {
+		messages = append(messages, provider.ChatMessage{
+			Role: "system", Content: h.CurrentSessionCtx,
+		})
 	}
 
 	if skillMatched && matchedSkill.PromptRef != "" {
@@ -531,4 +542,61 @@ func marshalToolCalls(tcs []provider.ToolCall) models.JSONMap {
 	var raw []any
 	json.Unmarshal(b, &raw)
 	return models.JSONMap{"tool_calls": raw}
+}
+
+// buildSessionContext 构建当前会话上下文，包含发送者、群信息、机器人身份等。
+// 这些信息以 system prompt 形式注入，让 Agent 感知聊天环境。
+func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.MessageEvent, admins []string) string {
+	var parts []string
+
+	switch msg.MessageType {
+	case "private":
+		parts = append(parts, "消息类型: 私聊")
+		parts = append(parts, fmt.Sprintf("对方QQ: %d", msg.UserID))
+		if msg.Sender.Nickname != "" {
+			parts = append(parts, fmt.Sprintf("对方昵称: %s", msg.Sender.Nickname))
+		}
+	case "group":
+		parts = append(parts, "消息类型: 群聊")
+		parts = append(parts, fmt.Sprintf("群号: %d", msg.GroupID))
+		// 获取发送者群内信息
+		senderName := msg.Sender.Card
+		if senderName == "" {
+			senderName = msg.Sender.Nickname
+		}
+		parts = append(parts, fmt.Sprintf("发送者QQ: %d", msg.UserID))
+		parts = append(parts, fmt.Sprintf("发送者名称: %s", senderName))
+
+		// 获取群内权限（owner/admin/member）
+		if h.Adapter != nil {
+			memberInfo, err := h.Adapter.GetGroupMemberInfo(msg.GroupID, msg.UserID)
+			if err == nil && memberInfo != nil {
+				roleLabel := memberInfo.Role
+				switch memberInfo.Role {
+				case "owner":
+					roleLabel = "群主"
+				case "admin":
+					roleLabel = "管理员"
+				case "member":
+					roleLabel = "普通成员"
+				}
+				parts = append(parts, fmt.Sprintf("发送者权限: %s", roleLabel))
+			}
+		}
+	}
+
+	// 机器人自身信息
+	if h.SelfQQ != 0 {
+		parts = append(parts, fmt.Sprintf("你的QQ: %d", h.SelfQQ))
+	}
+	if h.SelfNickname != "" {
+		parts = append(parts, fmt.Sprintf("你的昵称: %s", h.SelfNickname))
+	}
+
+	// 管理员列表
+	if len(admins) > 0 {
+		parts = append(parts, fmt.Sprintf("管理员QQ列表: [%s]", strings.Join(admins, ", ")))
+	}
+
+	return "[当前聊天环境]\n" + strings.Join(parts, "\n")
 }

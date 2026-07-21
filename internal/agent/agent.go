@@ -47,6 +47,15 @@ type HagoCenter struct {
 	OutputChan        chan DrainerOutput // BgTaskExecutor → Drainer
 	BgTaskResultChan  chan DrainerOutput // Drainer → 主 Agent 事件循环
 	PluginEngine      *pluggin.PluginEngine
+
+	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
+	SelfQQ       int64
+	SelfNickname string
+
+	// CurrentSessionCtx 当前会话上下文（供 get_session_info 工具使用）
+	CurrentSessionCtx string
+	// CurrentMsg 当前正在处理的消息（供工具获取发送目标）
+	CurrentMsg *adapter.MessageEvent
 }
 
 // Config HagoCenter 初始化配置。
@@ -83,6 +92,13 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Providers = cfg.Providers
 	h.MCP = cfg.MCPGroup
 
+	// 缓存机器人自己的 QQ 号和昵称
+	h.SelfQQ = h.Adapter.SelfID()
+	if info, err := h.Adapter.GetLoginInfo(); err == nil && info != nil {
+		h.SelfNickname = info.Nickname
+	}
+	slog.Info("机器人身份信息", "self_qq", h.SelfQQ, "self_nickname", h.SelfNickname)
+
 	// 存储 T2I/Sandbox 运行时客户端
 	h.SandboxClient = cfg.Sandbox
 	h.T2IClient = cfg.T2I
@@ -110,7 +126,10 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	tool.RegisterBuiltinTools(h.Tools, cfg.Adapter,
 		func() *sandboxcaller.Client { return h.SandboxClient },
 		func() *t2icaller.Client { return h.T2IClient },
-		h.Providers.SelectModel(provider.ModelTypeImage))
+		h.Providers.SelectModel(provider.ModelTypeImage),
+		func() string { return h.CurrentSessionCtx },
+		func() *adapter.MessageEvent { return h.CurrentMsg },
+	)
 
 	if err := h.loadProviders(ctx); err != nil {
 		return err
