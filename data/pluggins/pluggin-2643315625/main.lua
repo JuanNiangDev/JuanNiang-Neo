@@ -25,7 +25,7 @@ end
 local function get_user_name(event)
     if event.message_type == "group" then
         -- 尝试获取群名片
-        local info, err = jn.onebot11.get_group_member_info(event.group_id, event.user_id)
+        local info = jn.onebot11.get_group_member_info(event.group_id, event.user_id)
         if info then
             return info.card and info.card ~= "" and info.card or info.nickname or ""
         end
@@ -45,7 +45,7 @@ end
 -- 辅助函数：获取一句金句 (from vv314/quotes -> hitokoto API)
 -- --------------------------------------------------------------------
 local function get_quote()
-    local resp, err = jn.http.get("https://v1.hitokoto.cn/?c=a&c=b&c=c&c=d&c=e&c=f&c=g&c=h&c=i&c=j&c=k&c=l")
+    local resp = jn.http.get("https://v1.hitokoto.cn/?c=a&c=b&c=c&c=d&c=e&c=f&c=g&c=h&c=i&c=j&c=k&c=l")
     if resp and resp.status == 200 and resp.body then
         local data = jn.json.decode(resp.body)
         if data and data.hitokoto then
@@ -70,7 +70,7 @@ end
 local function init_db()
     local sql = [[
         CREATE TABLE IF NOT EXISTS pluggin_checkin_records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             user_id BIGINT NOT NULL,
             group_id BIGINT NOT NULL DEFAULT 0,
             user_name TEXT DEFAULT '',
@@ -79,7 +79,7 @@ local function init_db()
             created_at TEXT DEFAULT ''
         )
     ]]
-    local rows, err = jn.database.exec(sql)
+    local _, err = jn.database.exec(sql)
     if err then
         jn.log.error("签到插件：初始化数据库失败: " .. err)
     end
@@ -111,7 +111,7 @@ local function do_checkin(user_id, group_id, user_name)
         "INSERT INTO pluggin_checkin_records (user_id, group_id, user_name, score, check_date, created_at) VALUES (%d, %d, '%s', %d, '%s', '%s')",
         user_id, group_id, user_name, score, date, os.date("%Y-%m-%d %H:%M:%S")
     )
-    local rows, err = jn.database.exec(sql)
+    local _, err = jn.database.exec(sql)
     if err then
         jn.log.error("签到插件：签到失败: " .. err)
         return nil, err
@@ -199,7 +199,7 @@ jn.command.register("rank", function(args, event)
         [[SELECT user_id, user_name, COALESCE(SUM(score), 0) AS total, COUNT(*) AS check_days
           FROM pluggin_checkin_records
           WHERE group_id = %d
-          GROUP BY user_id
+          GROUP BY user_id, user_name
           ORDER BY total DESC
           LIMIT 10]],
         group_id
