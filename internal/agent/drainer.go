@@ -100,13 +100,9 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 
 	// 收集步骤结果
 	var stepOutputs []DrainerOutput
-	userPrompt := ""
 	for _, o := range outputs {
 		if o.StepID != "" && o.Result != "" {
 			stepOutputs = append(stepOutputs, o)
-		}
-		if o.UserPrompt != "" {
-			userPrompt = o.UserPrompt
 		}
 	}
 
@@ -115,20 +111,10 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 		return
 	}
 
-	// 每个步骤结果作为独立消息发送，而不是合并为一条
-	baseOutput := stepOutputs[0]
-
-	// 先发送用户原始请求的引用（如果有）
-	if userPrompt != "" {
-		d.sendMsg(baseOutput, fmt.Sprintf("关于「%s」的执行结果：", userPrompt))
-	}
-
+	// 直接发送每个步骤的结果，不加任何包装文字
 	for _, o := range stepOutputs {
 		d.sendMsg(o, o.Result)
 	}
-
-	// 发送完成提示
-	d.sendMsg(baseOutput, "所有后台任务已执行完毕。")
 }
 
 func (d *DrainerAgent) sendProgress(ctx context.Context, chatAreaID, taskID string) {

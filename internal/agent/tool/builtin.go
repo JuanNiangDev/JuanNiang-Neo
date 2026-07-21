@@ -498,15 +498,12 @@ func RegisterBuiltinTools(
 				}
 				var p struct{ HTML string `json:"html"` }
 				json.Unmarshal(args, &p)
-				resp, err := t2i.Generate(ctx, t2icaller.GenerateRequest{
-					HTML:   p.HTML,
-					AsJSON: true,
-				})
+				url, err := t2i.GenerateURL(ctx, t2icaller.GenerateRequest{HTML: p.HTML})
 				if err != nil {
-					return "", err
+					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
-				data, _ := json.Marshal(resp)
-				return string(data), nil
+				// 返回 CQ 图片消息码，OneBot11 协议端会自动解析为图片段
+				return fmt.Sprintf("[CQ:image,file=%s]", url), nil
 			},
 		})
 	}
