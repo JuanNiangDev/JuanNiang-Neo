@@ -36,6 +36,7 @@ type Bundle struct {
 	Sandbox         *SandboxConfigDAO
 	T2I             *T2IConfigDAO
 	Webhook         *WebhookConfigDAO
+	CronJob         *CronJobDAO
 }
 
 func NewBundle(db *gorm.DB) *Bundle {
@@ -59,5 +60,6 @@ func NewBundle(db *gorm.DB) *Bundle {
 		Sandbox:         NewSandboxConfigDAO(db),
 		T2I:             NewT2IConfigDAO(db),
 		Webhook:         NewWebhookConfigDAO(db),
+		CronJob:         NewCronJobDAO(db),
 	}
 }

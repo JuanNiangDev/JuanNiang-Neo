@@ -81,6 +81,13 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 			// 将 DrainerOutput 转换为合成 Event，触发主 Agent 处理（LLM 只需生成文字回复）
 			syntheticEvent := h.bgTaskOutputToEvent(output)
 			h.processEvent(ctx, syntheticEvent)
+		case ev, ok := <-h.CronJobEvents:
+			if !ok {
+				continue
+			}
+			slog.Info("收到 CronJob 事件，注入 Agent", "post_type", ev.PostType)
+			ev.Admins = h.Adapter.Admins()
+			h.processEvent(ctx, ev)
 		}
 	}
 }
@@ -132,22 +139,25 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	if ev.PostType != "message" || ev.Message == nil {
+	if (ev.PostType != "message" && ev.PostType != "cronjob") || ev.Message == nil {
 		return
 	}
 
-	// Plugin 拦截
-	if h.PluginEngine != nil {
-		pluginEvent := pluggin.EventData{
-			PostType:    "message",
-			MessageType: ev.Message.MessageType,
-			UserID:      ev.Message.UserID,
-			GroupID:     ev.Message.GroupID,
-			RawMessage:  ev.Message.RawMessage,
-			Admins:      ev.Admins,
-		}
-		if h.PluginEngine.OnMessage(pluginEvent) {
-			return
+	// CronJob 事件跳过 Plugin 拦截（插件不应拦截定时任务）
+	if ev.PostType != "cronjob" {
+		// Plugin 拦截
+		if h.PluginEngine != nil {
+			pluginEvent := pluggin.EventData{
+				PostType:    "message",
+				MessageType: ev.Message.MessageType,
+				UserID:      ev.Message.UserID,
+				GroupID:     ev.Message.GroupID,
+				RawMessage:  ev.Message.RawMessage,
+				Admins:      ev.Admins,
+			}
+			if h.PluginEngine.OnMessage(pluginEvent) {
+				return
+			}
 		}
 	}
 
@@ -177,8 +187,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	// ACL 检查：admin 自动绕过；后台任务结果事件也跳过
-	if !ev.IsBgTaskResult && !isAdmin(userID, ev.Admins) && !h.ACL.CheckChat(ctx, userID, chatArea.ID) {
+	// ACL 检查：admin 自动绕过；后台任务/定时任务事件也跳过
+	if !ev.IsBgTaskResult && !ev.IsCronJob && !isAdmin(userID, ev.Admins) && !h.ACL.CheckChat(ctx, userID, chatArea.ID) {
 		slog.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID, "scope", "chat")
 		return
 	}

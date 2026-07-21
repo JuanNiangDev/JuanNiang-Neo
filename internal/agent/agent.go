@@ -8,6 +8,7 @@ import (
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/cronjob"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
 	"JuanNiang-Neo/internal/agent/memory/bgtask"
@@ -46,6 +47,8 @@ type HagoCenter struct {
 	Drainer           *DrainerAgent
 	OutputChan        chan DrainerOutput // BgTaskExecutor → Drainer
 	BgTaskResultChan  chan DrainerOutput // Drainer → 主 Agent 事件循环
+	CronJobManager    *cronjob.Manager
+	CronJobEvents     chan adapter.Event // CronJob → 主 Agent 事件循环
 	PluginEngine      *pluggin.PluginEngine
 
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
@@ -78,8 +81,9 @@ func NewHagoCenter() *HagoCenter {
 		MCP:             mcp.NewMCPGroup(),
 		Tools:           tool.NewToolRegistry(),
 		Skills:          skill.NewSkillEngine(),
-		OutputChan:      make(chan DrainerOutput, 128),
+		OutputChan:       make(chan DrainerOutput, 128),
 		BgTaskResultChan: make(chan DrainerOutput, 128),
+		CronJobEvents:    make(chan adapter.Event, 64),
 	}
 }
 
@@ -143,6 +147,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 
 	h.BgTaskExecutor = NewBackgroundTaskExecutor(h.Tools, h.MCP, h.DAO.BackgroundTask, h.OutputChan)
 	h.Drainer = NewDrainerAgent(h.OutputChan, h.BgTaskResultChan)
+	h.CronJobManager = cronjob.New(h.DAO.CronJob, h.CronJobEvents)
 
 	return nil
 }
@@ -230,11 +235,12 @@ func (h *HagoCenter) loadSkills(ctx context.Context) error {
 	return nil
 }
 
-// Start 启动 Agent 系统 (后台任务执行器 + 排水 Agent + 事件循环)。
+// Start 启动 Agent 系统 (后台任务执行器 + 排水 Agent + 事件循环 + CronJob 调度器)。
 func (h *HagoCenter) Start(ctx context.Context) error {
 	go h.BgTaskExecutor.Run(ctx)
 	go h.Drainer.Run(ctx)
 	go h.runEventLoop(ctx)
+	go h.CronJobManager.Run(ctx)
 	slog.Info("HagoCenter 已启动")
 	return nil
 }
