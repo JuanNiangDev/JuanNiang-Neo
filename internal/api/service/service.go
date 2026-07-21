@@ -419,10 +419,10 @@ func (s *Service) AddMCPServer(ctx context.Context, c *app.RequestContext) {
 		ID:            newUUID(),
 		Name:          data.Name,
 		ServerURL:     data.ServerURL,
-		Headers:       data.Headers,
+		Headers:       ensureNonNilMap(data.Headers),
 		Timeout:       data.Timeout,
 		RetryCount:    data.RetryCount,
-		ToolFilter:    data.ToolFilter,
+		ToolFilter:    ensureNonNilSlice(data.ToolFilter),
 		AutoReconnect: data.AutoReconnect,
 		IsActive:      data.IsActive,
 	}
@@ -457,10 +457,10 @@ func (s *Service) UpdateMCPServer(ctx context.Context, c *app.RequestContext) {
 		ID:            id,
 		Name:          data.Name,
 		ServerURL:     data.ServerURL,
-		Headers:       data.Headers,
+		Headers:       ensureNonNilMap(data.Headers),
 		Timeout:       data.Timeout,
 		RetryCount:    data.RetryCount,
-		ToolFilter:    data.ToolFilter,
+		ToolFilter:    ensureNonNilSlice(data.ToolFilter),
 		AutoReconnect: data.AutoReconnect,
 		IsActive:      data.IsActive,
 	}
@@ -1612,6 +1612,20 @@ func atoi(s string) int {
 	var n int
 	fmt.Sscanf(s, "%d", &n)
 	return n
+}
+
+func ensureNonNilMap(m models.JSONMap) models.JSONMap {
+	if m == nil {
+		return make(models.JSONMap)
+	}
+	return m
+}
+
+func ensureNonNilSlice(s models.JSONSlice) models.JSONSlice {
+	if s == nil {
+		return make(models.JSONSlice, 0)
+	}
+	return s
 }
 
 // buildMcpSSEConfig 从 DB model 构建 MCP SSE 客户端配置。
