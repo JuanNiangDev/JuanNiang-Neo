@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
-
-	"JuanNiang-Neo/internal/agent/provider"
 )
+
+// cqCodeMatch 匹配 [CQ:type,key=val,...] 格式的 CQ 码。
+var cqCodeMatch = regexp.MustCompile(`\[CQ:[^\]]+\]`)
 
 // DrainerOutput 后台任务步骤/整体完成时的输出。
 type DrainerOutput struct {
@@ -20,13 +22,15 @@ type DrainerOutput struct {
 	Result      string `json:"result,omitempty"`
 	Error       string `json:"error,omitempty"`
 	UserPrompt  string `json:"user_prompt,omitempty"` // 用户原始请求
+
+	// MediaPayloads 从步骤结果中提取的 CQ 码（图片等），由主 Agent 直接发送到 QQ。
+	MediaPayloads []string `json:"media_payloads,omitempty"`
 }
 
 // DrainerAgent 排水 Agent，消费后台任务结果，汇总后发送给主 Agent 处理。
 type DrainerAgent struct {
 	inputChan  <-chan DrainerOutput
 	resultChan chan<- DrainerOutput // 汇总后的最终结果发给主 Agent
-	providers  *provider.ProviderGroup
 
 	// 按 ChatArea 分组累积结果
 	pending map[string][]DrainerOutput
@@ -35,12 +39,10 @@ type DrainerAgent struct {
 func NewDrainerAgent(
 	inputChan <-chan DrainerOutput,
 	resultChan chan<- DrainerOutput,
-	providers *provider.ProviderGroup,
 ) *DrainerAgent {
 	return &DrainerAgent{
 		inputChan:  inputChan,
 		resultChan: resultChan,
-		providers:  providers,
 		pending:    make(map[string][]DrainerOutput),
 	}
 }
@@ -81,25 +83,31 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 	// 收集步骤结果
 	var stepOutputs []DrainerOutput
 	var failedSteps []DrainerOutput
+	var allMedia []string
 	for _, o := range outputs {
 		if o.StepID != "" {
 			if o.Status == "failed" {
 				failedSteps = append(failedSteps, o)
 			}
 			if o.Result != "" {
+				// 从结果中提取 CQ 码，记录到 MediaPayloads
+				media := cqCodeMatch.FindAllString(o.Result, -1)
+				allMedia = append(allMedia, media...)
 				stepOutputs = append(stepOutputs, o)
 			}
 		}
 	}
 
-	// 汇总所有步骤结果 + 错误
+	// 汇总所有步骤结果 + 错误（CQ 码替换为占位符，不截断）
 	var summaryParts []string
 	for _, o := range failedSteps {
 		summaryParts = append(summaryParts, fmt.Sprintf("[失败] %s: %s", o.StepID, o.Error))
 	}
 	for _, o := range stepOutputs {
 		if o.Status != "failed" {
-			summaryParts = append(summaryParts, fmt.Sprintf("[完成] %s: %s", o.StepID, truncate(o.Result, 800)))
+			// 清除 CQ 码，替换为 [图片/文件] 占位符
+			cleanResult := cqCodeMatch.ReplaceAllString(o.Result, "[媒体内容]")
+			summaryParts = append(summaryParts, fmt.Sprintf("[完成] %s: %s", o.StepID, truncateClean(cleanResult, 500)))
 		}
 	}
 
@@ -119,23 +127,24 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 	}
 
 	slog.Info("Drainer 汇总完成，发送给主 Agent", "chat_area_id", chatAreaID,
-		"status", finalStatus, "failed", len(failedSteps), "success", len(stepOutputs))
+		"status", finalStatus, "failed", len(failedSteps), "success", len(stepOutputs), "media", len(allMedia))
 
 	// 发送汇总结果给主 Agent
 	d.resultChan <- DrainerOutput{
-		TaskID:      outputs[0].TaskID,
-		ChatAreaID:  chatAreaID,
-		MessageType: outputs[0].MessageType,
-		TargetID:    outputs[0].TargetID,
-		Status:      finalStatus,
-		Result:      summary,
-		Error:       errMsg,
-		UserPrompt:  userPrompt,
+		TaskID:        outputs[0].TaskID,
+		ChatAreaID:    chatAreaID,
+		MessageType:   outputs[0].MessageType,
+		TargetID:      outputs[0].TargetID,
+		Status:        finalStatus,
+		Result:        summary,
+		Error:         errMsg,
+		UserPrompt:    userPrompt,
+		MediaPayloads: allMedia,
 	}
 }
 
-// truncate 截断字符串到指定长度。
-func truncate(s string, maxLen int) string {
+// truncateClean 截断已清理的纯文本到指定长度。
+func truncateClean(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}

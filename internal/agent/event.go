@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -16,9 +15,6 @@ import (
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/pluggin"
 )
-
-// cqCodeRe 匹配 [CQ:type,key=val,...] 格式的 CQ 码。
-var cqCodeRe = regexp.MustCompile(`\[CQ:[^\]]+\]`)
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
 // 当 adapter 的 events channel 关闭时（如重启），会尝试等待后重新获取新的 channel，
@@ -65,8 +61,24 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 			if !ok {
 				continue
 			}
-			slog.Info("收到后台任务结果，注入主 Agent", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID)
-			// 将 DrainerOutput 转换为合成 Event，触发主 Agent 处理
+			slog.Info("收到后台任务结果，注入主 Agent", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID, "media", len(output.MediaPayloads))
+			// 先发送媒体负载（图片等 CQ 码）直接到 QQ
+			if len(output.MediaPayloads) > 0 {
+				// 构造临时 MessageEvent 用于 sendReply
+				tmpMsg := &adapter.MessageEvent{
+					MessageType: output.MessageType,
+				}
+				if output.MessageType == "private" {
+					tmpMsg.UserID = output.TargetID
+				} else {
+					tmpMsg.GroupID = output.TargetID
+				}
+				for _, media := range output.MediaPayloads {
+					slog.Info("BgTaskResult 直接发送媒体", "cq_len", len(media))
+					h.sendReply(tmpMsg, media)
+				}
+			}
+			// 将 DrainerOutput 转换为合成 Event，触发主 Agent 处理（LLM 只需生成文字回复）
 			syntheticEvent := h.bgTaskOutputToEvent(output)
 			h.processEvent(ctx, syntheticEvent)
 		}
@@ -178,25 +190,6 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	}
 
 	userMsg := strings.TrimSpace(msg.RawMessage)
-
-	// 后台任务结果事件：提取 CQ 码直接发送到 QQ，清理后给 LLM
-	if ev.IsBgTaskResult {
-		cqCodes := cqCodeRe.FindAllString(userMsg, -1)
-		if len(cqCodes) > 0 {
-			for _, cq := range cqCodes {
-				slog.Info("BgTaskResult 发送 CQ 码", "chat_area_id", chatArea.ID, "cq_len", len(cq))
-				h.sendReply(msg, cq)
-			}
-			// 从消息中移除 CQ 码
-			userMsg = cqCodeRe.ReplaceAllString(userMsg, "")
-			userMsg = strings.TrimSpace(userMsg)
-			if userMsg == "" {
-				userMsg = fmt.Sprintf("[后台任务已完成，已直接发送了 %d 条内容到 QQ，请简短告知用户]", len(cqCodes))
-			} else {
-				userMsg += fmt.Sprintf("\n\n[注：已直接将 %d 条内容发送到 QQ，文本回复中无需重复发送]", len(cqCodes))
-			}
-		}
-	}
 
 	matchedSkill, skillMatched := h.Skills.Match(userMsg)
 

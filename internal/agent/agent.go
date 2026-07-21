@@ -123,7 +123,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	}
 
 	h.BgTaskExecutor = NewBackgroundTaskExecutor(h.Tools, h.MCP, h.DAO.BackgroundTask, h.OutputChan)
-	h.Drainer = NewDrainerAgent(h.OutputChan, h.BgTaskResultChan, h.Providers)
+	h.Drainer = NewDrainerAgent(h.OutputChan, h.BgTaskResultChan)
 
 	return nil
 }
