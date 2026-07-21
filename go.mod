@@ -9,6 +9,7 @@ require (
 	github.com/mark3labs/mcp-go v0.56.0
 	github.com/openai/openai-go/v3 v3.43.0
 	github.com/redis/go-redis/v9 v9.21.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/tidwall/gjson v1.19.0
 	github.com/yuin/gopher-lua v1.1.2
 	golang.org/x/crypto v0.32.0
