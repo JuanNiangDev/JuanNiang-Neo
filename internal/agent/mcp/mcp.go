@@ -160,6 +160,12 @@ func (c *sdkMCPClient) Connect(ctx context.Context) error {
 		return err
 	}
 
+	// SSE 传输层必须先 Start 再 Initialize
+	if err := cli.Start(ctx); err != nil {
+		cli.Close()
+		return err
+	}
+
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = mcp.Implementation{
