@@ -1627,6 +1627,54 @@ func writeLogEvent(w *sse.Writer, entry logging.Entry) error {
 	return w.WriteEvent("", "log", data)
 }
 
+// ---------- Background Tasks ----------
+
+// ListBackgroundTasks 返回所有后台任务。
+func (s *Service) ListBackgroundTasks(ctx context.Context, c *app.RequestContext) {
+	list, err := s.DAO.BackgroundTask.ListAll(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	resp := make([]dto.BackgroundTaskResp, 0, len(list))
+	for _, t := range list {
+		resp = append(resp, dto.BackgroundTaskResp{
+			ID:          t.ID,
+			ChatAreaID:  t.ChatAreaID,
+			Status:      string(t.Status),
+			MessageType: t.MessageType,
+			TargetID:    t.TargetID,
+			UserPrompt:  t.UserPrompt,
+			Steps:       t.Steps,
+			Results:     t.Results,
+			CreatedAt:   t.CreatedAt,
+			UpdatedAt:   t.UpdatedAt,
+		})
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
+}
+
+// GetBackgroundTask 返回单个后台任务详情。
+func (s *Service) GetBackgroundTask(ctx context.Context, c *app.RequestContext) {
+	t, err := s.DAO.BackgroundTask.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.BackgroundTaskResp{
+		ID:          t.ID,
+		ChatAreaID:  t.ChatAreaID,
+		Status:      string(t.Status),
+		MessageType: t.MessageType,
+		TargetID:    t.TargetID,
+		UserPrompt:  t.UserPrompt,
+		Steps:       t.Steps,
+		Results:     t.Results,
+		CreatedAt:   t.CreatedAt,
+		UpdatedAt:   t.UpdatedAt,
+	}))
+}
+
 // ---------- helpers ----------
 
 func newUUID() string {

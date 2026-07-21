@@ -34,6 +34,7 @@ const router = createRouter({
         { path: 'webhook', name: 'Webhook', component: () => import('@/views/WebhookPage.vue') },
         { path: 'logs', name: 'Logs', component: () => import('@/views/LogsPage.vue') },
         { path: 'settings', name: 'Settings', component: () => import('@/views/SettingsPage.vue') },
+        { path: 'background-tasks', name: 'BackgroundTasks', component: () => import('@/views/BackgroundTasksPage.vue') },
       ],
     },
   ],

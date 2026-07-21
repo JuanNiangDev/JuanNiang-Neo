@@ -239,6 +239,9 @@ func (h *HagoCenter) handleToolCalls(
 		isMCPTool := h.MCP != nil && h.MCP.HasTool(ctx, toolName)
 		_, isRegistryTool := h.Tools.Get(toolName)
 
+		slog.Info("Tool 调用开始", "tool", toolName, "is_mcp", isMCPTool, "is_builtin", isRegistryTool,
+			"chat_area_id", chatAreaID, "user_id", userID)
+
 		if isMCPTool {
 			// --- MCP 工具调用 ---
 			if !userIsAdmin {
@@ -263,9 +266,10 @@ func (h *HagoCenter) handleToolCalls(
 				}
 				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), userMsg, steps)
 				if err != nil {
-					slog.Error("提交后台任务失败(MCP)", "err", err)
+					slog.Error("提交后台任务失败(MCP)", "tool", toolName, "err", err)
 					continue
 				}
+				slog.Info("MCP 长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
 				h.sendReply(msg, fmt.Sprintf("MCP 任务 %s 已提交后台执行...", toolName))
 				history = append(history, provider.ChatMessage{
 					Role:       "tool",
@@ -276,10 +280,13 @@ func (h *HagoCenter) handleToolCalls(
 				continue
 			}
 
+			slog.Info("MCP Tool 执行中", "tool", toolName)
 			result, err := h.MCP.CallTool(ctx, toolName, args)
 			if err != nil {
 				result = fmt.Sprintf("MCP调用失败: %s", err.Error())
 				slog.Error("MCP调用失败", "tool", toolName, "err", err)
+			} else {
+				slog.Info("MCP Tool 执行完成", "tool", toolName, "result_len", len(result))
 			}
 
 			history = append(history, provider.ChatMessage{
@@ -312,10 +319,11 @@ func (h *HagoCenter) handleToolCalls(
 				}
 				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), userMsg, steps)
 				if err != nil {
-					slog.Error("提交后台任务失败", "err", err)
+					slog.Error("提交后台任务失败", "tool", toolName, "err", err)
 					continue
 				}
 
+				slog.Info("内置长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
 				h.sendReply(msg, fmt.Sprintf("任务 %s 已提交后台执行...", toolName))
 				history = append(history, provider.ChatMessage{
 					Role:       "tool",
@@ -326,10 +334,13 @@ func (h *HagoCenter) handleToolCalls(
 				continue
 			}
 
+			slog.Info("内置 Tool 执行中", "tool", toolName)
 			result, err := h.Tools.Execute(ctx, toolName, args)
 			if err != nil {
 				result = fmt.Sprintf("工具执行失败: %s", err.Error())
-				slog.Error("工具执行失败", "tool", toolName, "err", err)
+				slog.Error("内置工具执行失败", "tool", toolName, "err", err)
+			} else {
+				slog.Info("内置 Tool 执行完成", "tool", toolName, "result_len", len(result))
 			}
 
 			history = append(history, provider.ChatMessage{
@@ -342,7 +353,7 @@ func (h *HagoCenter) handleToolCalls(
 		} else {
 			// 未找到工具
 			errMsg := fmt.Sprintf("工具 %q 未找到 (非内置工具也非 MCP 工具)", toolName)
-			slog.Error(errMsg)
+			slog.Error("工具未找到", "tool", toolName)
 			history = append(history, provider.ChatMessage{
 				Role:       "tool",
 				Content:    errMsg,

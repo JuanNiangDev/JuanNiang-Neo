@@ -78,7 +78,8 @@ func (d *DrainerAgent) handle(ctx context.Context, output DrainerOutput) {
 
 	d.pending[chatAreaID] = append(d.pending[chatAreaID], output)
 
-	if output.Status == "done" && output.StepID == "" {
+	// 最终完成信号（含 failed 状态），整合所有结果发送
+	if (output.Status == "done" || output.Status == "failed") && output.StepID == "" {
 		d.finalize(ctx, chatAreaID)
 		return
 	}
@@ -98,22 +99,42 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 	}
 	delete(d.pending, chatAreaID)
 
-	// 收集步骤结果
+	// 收集步骤结果（含失败步骤）
 	var stepOutputs []DrainerOutput
+	var failedSteps []DrainerOutput
 	for _, o := range outputs {
-		if o.StepID != "" && o.Result != "" {
-			stepOutputs = append(stepOutputs, o)
+		if o.StepID != "" {
+			if o.Status == "failed" {
+				failedSteps = append(failedSteps, o)
+			}
+			if o.Result != "" {
+				stepOutputs = append(stepOutputs, o)
+			}
 		}
 	}
 
+	// 先发送失败的步骤错误信息
+	for _, o := range failedSteps {
+		d.sendMsg(o, fmt.Sprintf("步骤 %s 执行失败: %s", o.StepID, o.Error))
+	}
+
 	if len(stepOutputs) == 0 {
+		// 检查是否有最终错误消息
+		for _, o := range outputs {
+			if o.StepID == "" && o.Error != "" {
+				d.sendMsg(o, o.Error)
+				return
+			}
+		}
 		d.sendMsg(outputs[0], "后台任务执行完成。")
 		return
 	}
 
 	// 直接发送每个步骤的结果，不加任何包装文字
 	for _, o := range stepOutputs {
-		d.sendMsg(o, o.Result)
+		if o.Status != "failed" {
+			d.sendMsg(o, o.Result)
+		}
 	}
 }
 

@@ -112,4 +112,8 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	// Logs
 	api.GET("/logs", auth, svc.GetLogs)
 	api.GET("/logs/stream", auth, svc.StreamLogs)
+
+	// Background Tasks
+	api.GET("/background-tasks", auth, svc.ListBackgroundTasks)
+	api.GET("/background-tasks/:id", auth, svc.GetBackgroundTask)
 }

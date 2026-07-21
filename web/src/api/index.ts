@@ -179,3 +179,22 @@ export const webhookApi = {
 export const logApi = {
   list: () => client.get('/logs'),
 }
+
+// ======== Background Tasks ========
+export interface BackgroundTaskResp {
+  id: string
+  chat_area_id: string
+  status: string
+  message_type: string
+  target_id: number
+  user_prompt: string
+  steps: Record<string, any>
+  results: Record<string, any>
+  created_at: string
+  updated_at: string
+}
+
+export const backgroundTaskApi = {
+  list: () => client.get('/background-tasks'),
+  get: (id: string) => client.get(`/background-tasks/${id}`),
+}
