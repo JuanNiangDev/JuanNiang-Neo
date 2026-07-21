@@ -55,6 +55,7 @@
 | 40028 | 系统插件不允许删除或停用 |
 | 40029 | 系统提示词不允许修改或删除 |
 | 40030 | 内置工具运行时常驻, 不支持启停 |
+| 40031 | CronJob 不存在 |
 | 50000 | 服务器内部错误 |
 
 **认证:** 除 `POST /login` 和 `GET /health` 外所有接口需 `Authorization: Bearer <token>` header，通过 `POST /login` 获取。
@@ -111,6 +112,8 @@
 17. [Webhook](#17-webhook)
 18. [日志](#18-日志)
 19. [健康检查](#19-健康检查)
+20. [CronJob 管理](#20-cronjob-管理)
+21. [前端 SPA 静态服务](#21-前端-spa-静态服务)
 
 ---
 
@@ -1146,9 +1149,10 @@ es.addEventListener('log', (e) => {
 6. `GET /prompts` + `POST /prompts` 配置 Prompt
 7. `GET /skills` + `POST /skills` 配置 Skill
 8. `GET /acl` + `POST /acl` 配置访问控制
-9. `PUT /t2i/config` + `PUT /sandbox/config` 配置 T2I/Sandbox
-10. `GET /chat-records/:chatAreaID` 查看历史聊天
-11. `GET /logs/stream` 实时查看日志
+9. `GET /cronjobs` + `POST /cronjobs` 配置定时任务
+10. `PUT /t2i/config` + `PUT /sandbox/config` 配置 T2I/Sandbox
+11. `GET /chat-records/:chatAreaID` 查看历史聊天
+12. `GET /logs/stream` 实时查看日志
 
 **注意事项:**
 
@@ -1161,10 +1165,109 @@ es.addEventListener('log', (e) => {
 - Prompt 禁止创建 `type=system` 类型（保留给系统锁定提示词 `__system_locked__`）；系统锁定提示词不允许修改/删除/停用
 - Tool ID 以 `builtin:` 前缀的为内置工具，运行时常驻，`PUT /tools/:id/toggle` 收到 `builtin:` 前缀返回 `40030 ToolIsBuiltin`
 - Adapter `listen_addr` 由 `listenAddr()` 规范化为 `host:port`；管理员列表持久化在 DB `admin_qq_numbers` 字段
+- CronJob 增删改/toggle 后自动 reload 调度器（基于 `robfig/cron`），无需手动重启；cron 表达式为 6 字段标准格式（秒 分 时 日 月 周）
 
 ---
 
-## 20. 前端 SPA 静态服务
+## 20. CronJob 管理
+
+定时任务管理，按 cron 表达式定时发送消息到指定私聊或群聊。CronJob 的调度依赖 `CronJobManager`（基于 `robfig/cron`），增删改后自动 reload 调度器。
+
+### CronJobResp 结构
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | UUID |
+| `name` | string | 任务名称 |
+| `cron_expr` | string | 标准 cron 表达式（6 字段：秒 分 时 日 月 周） |
+| `message` | string | 触发时发送的消息内容 |
+| `message_type` | string | 消息类型：`private`（私聊）/ `group`（群聊），默认 `private` |
+| `target_id` | int64 | 目标 QQ 号（私聊）或群号（群聊） |
+| `is_active` | bool | 是否启用 |
+| `last_run_at` | time | 上次执行时间（可为 null） |
+| `last_error` | string | 上次错误信息 |
+| `created_at` | time | 创建时间 |
+| `updated_at` | time | 更新时间 |
+
+### 20.1 GET /cronjobs
+
+**功能:** 列出所有定时任务。
+
+**响应** `data: CronJobResp[]`
+
+### 20.2 GET /cronjobs/:id
+
+**功能:** 获取单个定时任务详情。
+
+**路径参数:**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | CronJob UUID |
+
+**响应** `data: CronJobResp`
+
+### 20.3 POST /cronjobs
+
+**功能:** 新增定时任务，创建后自动同步调度器。
+
+**请求体** `AddCronJobReq`:
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `name` | string | 是 | 任务名称 |
+| `cron_expr` | string | 是 | cron 表达式（6 字段：秒 分 时 日 月 周），如 `0 0 9 * * *` 表示每天 9:00 |
+| `message` | string | 是 | 触发时发送的消息 |
+| `message_type` | string | 否 | 消息类型，默认 `private` |
+| `target_id` | int64 | 是 | 目标 QQ 号或群号 |
+| `is_active` | bool | 是 | 是否立即启用 |
+
+**响应** `data: CronJobResp`
+
+**示例:**
+
+```bash
+curl -X POST http://localhost:8090/api/v1/cronjobs \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"早安提醒","cron_expr":"0 0 9 * * *","message":"早上好！","message_type":"private","target_id":123456,"is_active":true}'
+```
+
+### 20.4 PUT /cronjobs/:id
+
+**功能:** 更新定时任务（覆盖更新），更新后自动同步调度器。
+
+**路径参数:** `id` (CronJob UUID)
+
+**请求体** `UpdateCronJobReq`（字段同 `AddCronJobReq`）
+
+**响应** `data: CronJobResp`
+
+### 20.5 DELETE /cronjobs/:id
+
+**功能:** 删除定时任务，删除后自动同步调度器。
+
+**路径参数:** `id` (CronJob UUID)
+
+**响应** `data: null`
+
+### 20.6 PUT /cronjobs/:id/toggle
+
+**功能:** 启用/停用定时任务，同步调度器。
+
+**路径参数:** `id` (CronJob UUID)
+
+**请求体** `ToggleCronJobReq`:
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `is_active` | bool | 是 | 目标状态 |
+
+**响应** `data: null`
+
+---
+
+## 21. 前端 SPA 静态服务
 
 后端通过 Hertz `NoRoute` 兜底, 同端口 (`:8090`) 服务 Vue 前端 SPA, 路径与 API 互不冲突:
 

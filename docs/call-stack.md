@@ -33,11 +33,13 @@ main()
 │       ├─ loadMCPs(ctx)                   // DB → MCPGroup (MCP SDK)
 │       ├─ loadSkills(ctx)                 // DB → SkillEngine
 │       ├─ NewBackgroundTaskExecutor(...)
-│       └─ NewDrainerAgent(...)
+│       ├─ NewDrainerAgent(...)
+│       └─ cronjob.New(h.DAO.CronJob, h.CronJobEvents)  // CronJob 调度器初始化
 │
 ├─ hago.Start(ctx)
 │   ├─ go BgTaskExecutor.Run()
 │   ├─ go DrainerAgent.Run()
+│   ├─ go h.CronJobManager.Run(ctx)
 │   └─ go runEventLoop()
 │
 ├─ pluggin.NewPluginEngine(path, adapter, db, cache, t2i, sandbox, dao, agentOp)
@@ -72,7 +74,7 @@ OneBot11 WS → adapter.readLoop()
 ├─ gjson 解析 → parseEvent()
 ├─ events chan ← Event{PostType, Message, Notice, ...}
 │
-└─ agent.runEventLoop() ← for ev := range adapter.Events()
+└─ agent.runEventLoop()  // for + select 多路复用
     │
     ├─ pluggin.OnMessage(event)
     │   ├─ 存储 currentEv (供 agent.get_current_chat_area() 查询)
@@ -108,13 +110,17 @@ OneBot11 WS → adapter.readLoop()
         │   └─ parseChatResponse → ChatResponse{Message, TokenUsage}
         │
         ├─ [文本响应]:
-        │   ├─ sendReply(msg, content)
-        │   │   ├─ [private] adapter.SendPrivateMsg
-        │   │   └─ [group]   adapter.SendGroupMsg
-        │   │       └─ wsServer.callAPI("send_group_msg", params)
-        │   │           └─ WS write → OneBot11 客户端 → QQ API
-        │   ├─ dao.ChatRecord.Create(assistant)
-        │   └─ memory.AddShortTermMessage(assistant)
+        │   ├─ [群聊] isSilenceResponse(content)?
+        │   │   ├─ 是 → 丢弃(不记录), 跳过 handleToolCalls
+        │   │   └─ 否 → sendReply(msg, content)
+        │   │       ├─ [private] adapter.SendPrivateMsg
+        │   │       └─ [group]   adapter.SendGroupMsg
+        │   │           └─ wsServer.callAPI("send_group_msg", params)
+        │   │               └─ WS write → OneBot11 客户端 → QQ API
+        │   │       ├─ dao.ChatRecord.Create(assistant)
+        │   │       └─ memory.AddShortTermMessage(assistant)
+        │   │
+        │   └─ [私聊] → sendReply → 记录 (同上)
         │
         └─ [Tool Call 响应]:
             └─ handleToolCalls(ctx, msg, chatAreaID, ...)
@@ -142,6 +148,10 @@ OneBot11 WS → adapter.readLoop()
                         │   ├─ [步骤完成]: sendProgress (每 3 步)
                         │   └─ [任务完成]: LLM 整合 → sendReply
                         └─ loop
+    │
+    └─ [CronJob 事件]:
+        └─ case ev, ok := <-h.CronJobEvents:  // 注入队列后的 CronJob 事件
+            └─ processEvent(ctx, ev) → handleMessage (跳过 Plugin 拦截)
 ```
 
 ## MCP 工具调用栈
