@@ -47,6 +47,8 @@ type ACLRule struct {
 	Permission ACLPermission `gorm:"not null;default:allow;comment:允许或拒绝"`
 	TargetType ACLTargetType `gorm:"not null;default:all;comment:目标(all/list)"`
 	UserIDs    JSONSlice     `gorm:"type:jsonb;default:'[]';comment:目标用户ID列表(TargetType=list时有效)"`
+	ToolIDs    JSONSlice     `gorm:"type:jsonb;default:'[]';comment:工具ID列表(Scope=tool时有效)"`
+	MCPIDs     JSONSlice     `gorm:"type:jsonb;default:'[]';comment:MCP服务器ID列表(Scope=mcp时有效)"`
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	DeletedAt  gorm.DeletedAt `gorm:"index"`

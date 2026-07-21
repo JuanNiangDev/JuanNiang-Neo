@@ -78,17 +78,15 @@ func main() {
 		middleware.JWTSecret = []byte(s)
 	}
 
-	adapterCfg := adapter.Config{
-		// Addr 是 net.Listen 直接接收的 "host:port" 串, 必须填充否则会随机选端口。
-		Addr:   fmt.Sprintf(":%d", mustAtoi(env("OB_PORT", "8081"))),
-		Port:   mustAtoi(env("OB_PORT", "8081")),
-		Token:  env("OB_TOKEN", ""),
-		Admins: parseAdmins(env("OB_ADMINS", "")),
-	}
+	adapterCfg := loadAdapterConfig(ctx, coreInst.DAO)
 	adapterProv := adapter.New(adapterCfg)
-	if err := adapterProv.Start(ctx); err != nil {
-		slog.Error("Adapter 启动失败", "err", err)
-		os.Exit(1)
+	if adapterCfg.Enable {
+		if err := adapterProv.Start(ctx); err != nil {
+			slog.Error("Adapter 启动失败", "err", err)
+			os.Exit(1)
+		}
+	} else {
+		slog.Info("Adapter 已禁用（DB 配置 Enable=false），跳过启动")
 	}
 
 	// ---------- 4b. Webhook Adapter ----------
@@ -349,4 +347,40 @@ func loadWebhookConfig(ctx context.Context, daos *dao.Bundle) (models.WebhookCon
 		return defaultCfg, nil
 	}
 	return *cfg, nil
+}
+
+// loadAdapterConfig 从 DB 加载 OneBot11 Adapter 配置；若 DB 无记录则初始化默认配置并重新读取，
+// 若 DB 加载失败则回退到 env 默认值。
+func loadAdapterConfig(ctx context.Context, daos *dao.Bundle) adapter.Config {
+	// env 默认值作为 fallback
+	defaultCfg := adapter.Config{
+		Addr:   fmt.Sprintf(":%d", mustAtoi(env("OB_PORT", "8081"))),
+		Port:   mustAtoi(env("OB_PORT", "8081")),
+		Token:  env("OB_TOKEN", ""),
+		Admins: parseAdmins(env("OB_ADMINS", "")),
+		Enable: true,
+	}
+
+	cfg, err := daos.Onebot11Adapter.GetAdapterConfig(ctx)
+	if err != nil {
+		// DB 中无记录 → 初始化默认配置
+		if initErr := daos.Onebot11Adapter.InitAdapterConfig(ctx); initErr != nil {
+			slog.Warn("Adapter 配置初始化失败，使用 env 默认值", "err", initErr)
+			return defaultCfg
+		}
+		cfg, err = daos.Onebot11Adapter.GetAdapterConfig(ctx)
+		if err != nil {
+			slog.Warn("Adapter 配置加载失败，使用 env 默认值", "err", err)
+			return defaultCfg
+		}
+	}
+
+	// DB 加载成功，用 DB 配置覆盖 env 默认值
+	return adapter.Config{
+		Addr:   fmt.Sprintf("%s:%d", cfg.Addr, cfg.Port),
+		Port:   cfg.Port,
+		Token:  cfg.Token,
+		Admins: cfg.AdminQQNumbers,
+		Enable: cfg.Enabled,
+	}
 }

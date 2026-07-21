@@ -140,6 +140,8 @@ func RawACLRule2Resp(raw *models.ACLRule) ACLRuleResp {
 		Permission: raw.Permission,
 		TargetType: raw.TargetType,
 		UserIDs:    raw.UserIDs,
+		ToolIDs:    raw.ToolIDs,
+		MCPIDs:     raw.MCPIDs,
 		CreatedAt:  raw.CreatedAt,
 	}
 }

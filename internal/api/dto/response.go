@@ -144,6 +144,8 @@ type ACLRuleResp struct {
 	Permission models.ACLPermission `json:"permission"`
 	TargetType models.ACLTargetType `json:"target_type"`
 	UserIDs    models.JSONSlice     `json:"user_ids"`
+	ToolIDs    models.JSONSlice     `json:"tool_ids"`
+	MCPIDs     models.JSONSlice     `json:"mcp_ids"`
 	CreatedAt  time.Time            `json:"created_at"`
 }
 

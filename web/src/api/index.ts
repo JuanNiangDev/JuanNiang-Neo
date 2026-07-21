@@ -30,8 +30,8 @@ export interface ToolConfigResp { id: string; name: string; description: string;
 
 export interface PluginResp { id: string; name: string; version: string; path: string; config: Record<string, any>; is_active: boolean; created_at: string }
 
-export interface ACLRuleResp { id: number; chat_area_id: string; scope: string; permission: string; target_type: string; user_ids: string[]; created_at: string }
-export interface AddACLRuleReq { chat_area_id: string; scope: string; permission: string; target_type: string; user_ids?: string[] }
+export interface ACLRuleResp { id: number; chat_area_id: string; scope: string; permission: string; target_type: string; user_ids: string[]; tool_ids: string[]; mcp_ids: string[]; created_at: string }
+export interface AddACLRuleReq { chat_area_id: string; scope: string; permission: string; target_type: string; user_ids?: string[]; tool_ids?: string[]; mcp_ids?: string[] }
 
 export interface ChatAreaResp { id: string; area_type: string; target_id: number; created_at: string }
 

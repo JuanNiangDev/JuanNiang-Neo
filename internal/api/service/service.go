@@ -988,10 +988,10 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	id := c.Param("id")
+	name := c.Param("id")
 
 	// 系统插件禁止停用（但允许"启用"——幂等场景）
-	if !data.IsActive && s.PluginEngine != nil && s.PluginEngine.IsSystem(id) {
+	if !data.IsActive && s.PluginEngine != nil && s.PluginEngine.IsSystem(name) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginIsSystem, dto.ErrorDetail{ErrorDetail: "系统插件不允许停用"}))
 		return
 	}
@@ -999,17 +999,25 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 	// 运行时同步：启用时加载插件，停用时卸载
 	if s.PluginEngine != nil {
 		if data.IsActive {
-			if err := s.PluginEngine.Load(id); err != nil {
-				slog.Error("插件加载失败", "id", id, "err", err)
+			if err := s.PluginEngine.Load(name); err != nil {
+				slog.Error("插件加载失败", "name", name, "err", err)
 			}
 		} else {
-			if err := s.PluginEngine.Unload(id); err != nil {
-				slog.Error("插件卸载失败", "id", id, "err", err)
+			if err := s.PluginEngine.Unload(name); err != nil {
+				slog.Error("插件卸载失败", "name", name, "err", err)
 			}
 		}
 	}
 
-	if err := s.DAO.Plugin.SetActive(ctx, id, data.IsActive); err != nil {
+	// 通过 name 查找 DB 中的 Plugin 记录获取 UUID
+	dbPlugin, err := s.DAO.Plugin.GetByName(ctx, name)
+	if err != nil {
+		// DB 中无记录（插件可能是直接放在目录里的），只做运行时 Load/Unload，不操作 DB
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+		return
+	}
+
+	if err := s.DAO.Plugin.SetActive(ctx, dbPlugin.ID, data.IsActive); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -1017,26 +1025,36 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 }
 
 func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
-	id := c.Param("id")
+	name := c.Param("id")
 
 	// 系统插件禁止删除
-	if s.PluginEngine != nil && s.PluginEngine.IsSystem(id) {
+	if s.PluginEngine != nil && s.PluginEngine.IsSystem(name) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginIsSystem, dto.ErrorDetail{ErrorDetail: "系统插件不允许删除"}))
 		return
 	}
 
-	// 运行时同步：先卸载再删除 DB 记录
+	// 运行时同步：先卸载
 	if s.PluginEngine != nil {
-		if err := s.PluginEngine.Unload(id); err != nil {
+		if err := s.PluginEngine.Unload(name); err != nil {
 			// 非系统插件的卸载错误仅记录，不阻断删除流程
-			slog.Warn("插件卸载失败（继续删除 DB 记录）", "id", id, "err", err)
+			slog.Warn("插件卸载失败（继续删除流程）", "name", name, "err", err)
 		}
 	}
 
-	if err := s.DAO.Plugin.Delete(ctx, id); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
+	// 通过 name 查找 DB 中的 Plugin 记录获取 UUID，然后删除 DB 记录
+	dbPlugin, err := s.DAO.Plugin.GetByName(ctx, name)
+	if err == nil {
+		if err := s.DAO.Plugin.Delete(ctx, dbPlugin.ID); err != nil {
+			slog.Warn("插件 DB 记录删除失败", "name", name, "err", err)
+		}
 	}
+
+	// 删除插件目录
+	pluginDir := filepath.Join("data/pluggins", name)
+	if err := os.RemoveAll(pluginDir); err != nil {
+		slog.Warn("插件目录删除失败", "dir", pluginDir, "err", err)
+	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
@@ -1066,6 +1084,8 @@ func (s *Service) AddACLRule(ctx context.Context, c *app.RequestContext) {
 		Permission: data.Permission,
 		TargetType: data.TargetType,
 		UserIDs:    data.UserIDs,
+		ToolIDs:    data.ToolIDs,
+		MCPIDs:     data.MCPIDs,
 	}
 
 	// 运行时同步：使用 ACL.AddRule（存在则更新）

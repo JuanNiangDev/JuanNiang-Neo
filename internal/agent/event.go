@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
@@ -15,10 +16,13 @@ import (
 )
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
+// 当 adapter 的 events channel 关闭时（如重启），会尝试等待后重新获取新的 channel，
+// 而不是直接退出事件循环。
 func (h *HagoCenter) runEventLoop(ctx context.Context) {
 	slog.Info("事件循环已启动")
 
-	// 处理 webhook 事件
+	adapterEvents := h.Adapter.Events()
+
 	var webhookEvents <-chan adapter.Event
 	if h.WebhookAdapter != nil {
 		webhookEvents = h.WebhookAdapter.Events()
@@ -29,10 +33,19 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 		case <-ctx.Done():
 			slog.Info("事件循环已停止")
 			return
-		case ev, ok := <-h.Adapter.Events():
+		case ev, ok := <-adapterEvents:
 			if !ok {
-				slog.Info("事件循环已停止")
-				return
+				slog.Warn("Adapter events channel 已关闭，尝试重新获取...")
+				// 等待 adapter 重启后重新获取新的 channel
+				select {
+				case <-ctx.Done():
+					slog.Info("事件循环已停止")
+					return
+				case <-time.After(time.Second):
+				}
+				adapterEvents = h.Adapter.Events()
+				slog.Info("已重新获取 Adapter events channel")
+				continue
 			}
 			// 透传 Admins 列表（来自 adapter 配置）
 			ev.Admins = h.Adapter.Admins()
