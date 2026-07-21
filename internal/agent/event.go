@@ -269,7 +269,7 @@ func (h *HagoCenter) handleToolCalls(
 				h.sendReply(msg, fmt.Sprintf("MCP 任务 %s 已提交后台执行...", toolName))
 				history = append(history, provider.ChatMessage{
 					Role:       "tool",
-					Content:    fmt.Sprintf("MCP 任务已提交后台执行，task_id: %s", taskID),
+					Content:    fmt.Sprintf("[系统] MCP 任务 %s 已提交后台执行 (task_id: %s)。你不需要做任何后续处理——禁止编造或猜测执行结果。只需告知用户任务已提交。", toolName, taskID),
 					ToolCallID: tc.ID,
 				})
 				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("MCP 任务 %s -> 后台执行: %s", toolName, taskID), 0, nil)
@@ -319,7 +319,7 @@ func (h *HagoCenter) handleToolCalls(
 				h.sendReply(msg, fmt.Sprintf("任务 %s 已提交后台执行...", toolName))
 				history = append(history, provider.ChatMessage{
 					Role:       "tool",
-					Content:    fmt.Sprintf("任务已提交后台执行，task_id: %s", taskID),
+					Content:    fmt.Sprintf("[系统] 任务 %s 已提交后台执行 (task_id: %s)。你不需要做任何后续处理——禁止编造或猜测执行结果。只需告知用户任务已提交。", toolName, taskID),
 					ToolCallID: tc.ID,
 				})
 				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("任务 %s -> 后台执行: %s", toolName, taskID), 0, nil)
@@ -393,14 +393,41 @@ func isAdmin(userID int64, admins []string) bool {
 	return false
 }
 
-func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
-	// 按 <|msg|> 分隔符拆分为多条独立消息
-	parts := strings.Split(content, "<|msg|>")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
+// splitMessages 将 LLM 输出拆分为多条独立消息。
+// 优先使用 <|msg|> 显式分隔符；未找到时回退到 \n\n（双换行）拆分。
+// 不尝试拆分超过 5 段的输出（避免破坏多段落长消息）。
+func splitMessages(content string) []string {
+	// 优先：显式 <|msg|> 分隔符
+	if strings.Contains(content, "<|msg|>") {
+		var parts []string
+		for _, p := range strings.Split(content, "<|msg|>") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				parts = append(parts, p)
+			}
 		}
+		return parts
+	}
+	// 回退：\n\n 拆分（DeepSeek 习惯用空行分隔多条独立消息）
+	// 限制 2~5 段，避免拆分多段落长消息
+	parts := strings.Split(content, "\n\n")
+	if len(parts) >= 2 && len(parts) <= 5 {
+		var result []string
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				result = append(result, p)
+			}
+		}
+		if len(result) >= 2 {
+			return result
+		}
+	}
+	return []string{content}
+}
+
+func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
+	for _, part := range splitMessages(content) {
 		var err error
 		switch msg.MessageType {
 		case "private":

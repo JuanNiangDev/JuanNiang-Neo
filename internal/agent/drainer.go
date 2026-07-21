@@ -146,14 +146,9 @@ func (d *DrainerAgent) sendProgress(ctx context.Context, chatAreaID, taskID stri
 	}
 }
 
-// sendMsg 根据 DrainerOutput 的消息类型发送到正确目标。支持 <|msg|> 分隔多条消息。
+// sendMsg 根据 DrainerOutput 的消息类型发送到正确目标。支持 <|msg|> 及 \n\n 多消息拆分。
 func (d *DrainerAgent) sendMsg(output DrainerOutput, content string) {
-	parts := strings.Split(content, "<|msg|>")
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
+	for _, part := range splitMessages(content) {
 		switch output.MessageType {
 		case "private":
 			if _, err := d.adapter.SendPrivateMsg(output.TargetID, part); err != nil {
