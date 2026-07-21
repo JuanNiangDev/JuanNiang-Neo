@@ -22,9 +22,9 @@ type BackgroundTask struct {
 	ChatAreaID  string     `gorm:"not null;index"`
 	ChatArea    ChatArea   `gorm:"foreignKey:ChatAreaID"`
 	Status      TaskStatus `gorm:"default:pending;index"`
-	MessageType string     `gorm:"size:16"`  // "private" / "group" — 恢复时用于发送结果
-	TargetID    int64      `gorm:"not null"` // user_id (私聊) / group_id (群聊)
-	UserPrompt  string     `gorm:"type:text"`// 用户原始请求，恢复时传递给 drainer
+	MessageType string     `gorm:"size:16;default:''"` // "private" / "group" — 恢复时用于发送结果
+	TargetID    int64      `gorm:"default:0"`        // user_id (私聊) / group_id (群聊)
+	UserPrompt  string     `gorm:"type:text"`        // 用户原始请求，恢复时传递给 drainer
 	Steps       JSONMap    `gorm:"type:jsonb;default:'{}'"`
 	Results     JSONMap    `gorm:"type:jsonb;default:'{}'"`
 	CreatedAt   time.Time

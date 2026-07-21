@@ -195,6 +195,12 @@ func (b *BackgroundTaskExecutor) recoverTasks(ctx context.Context) {
 		}
 
 		// 将 running 状态视为需要重新执行（可能是上次崩溃导致）
+		// 跳过缺少发送目标信息的旧任务（target_id=0 表示升级前创建的任务）
+		if t.TargetID == 0 || t.MessageType == "" {
+			slog.Warn("跳过无法恢复的旧任务（缺少发送目标）", "task_id", t.ID)
+			b.dao.UpdateStatus(ctx, t.ID, models.TaskStatusFailed)
+			continue
+		}
 		slog.Info("恢复执行后台任务", "task_id", t.ID, "status", t.Status)
 		go b.executeAsync(&t, t.MessageType, t.TargetID, t.UserPrompt, steps)
 	}
