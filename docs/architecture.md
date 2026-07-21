@@ -21,6 +21,7 @@ JuanNiang-Neo 是一个基于 OneBot11 协议的 QQ 聊天 Agent 系统，类 As
 │          │          │ session  │ handler  │                │
 │          │          │ skill    │          │                │
 │          │          │ tool     │          │                │
+│          │          │ cronjob  │          │                │
 ├──────────┴──────────┴──────────┴──────────┴────────────────┤
 │                     adapter/ (OneBot11 WS)                  │
 │                 事件接收 · API调用 · 消息构造                 │
@@ -33,7 +34,7 @@ JuanNiang-Neo 是一个基于 OneBot11 协议的 QQ 聊天 Agent 系统，类 As
 |------|--------|------|
 | **入口** | `cmd/server/main.go` | 组装所有模块, 启动服务, 优雅退出 |
 | **适配器** | `internal/adapter/` | OneBot11 反向 WS 服务端: 事件解析、API 封装、消息段构造 |
-| **Agent** | `internal/agent/` | Agent 核心: MCP、记忆、提示词、Provider、会话、技能、工具 |
+| **Agent** | `internal/agent/` | Agent 核心: MCP、记忆、提示词、Provider、会话、技能、工具、定时任务 |
 | **核心库** | `internal/core/` | 数据模型 (GORM)、DAO、缓存 (Redis)、ACL |
 | **Web API** | `internal/api/` | Hertz Web 管理面板: JWT 鉴权、CRUD API |
 | **插件** | `internal/pluggin/` | gopher-lua 引擎: 插件生命周期、API 暴露、事件拦截 |
@@ -58,6 +59,7 @@ ChatArea  ─── 聊天区域 (private/group, Session+Memory 的集合)
   └─ BackgroundTask  ── 后台任务: DAG 步骤 + 结果缓冲区
 ChatRecord ─── 聊天记录 (user/assistant/tool)
 Plugin     ─── Lua 插件元数据 (Manifest.System=true 表示系统插件不可删/不可停用)
+CronJob    ─── 定时任务 (cron 表达式 + 消息内容 + 目标ID + 启用状态 + 最后执行时间)，通过 channel 注入 Agent 事件循环
 ACLRule    ─── ACL 规则 (用户×ChatArea×权限)
 ```
 
@@ -79,6 +81,8 @@ ChatArea (1) ──< ACLRule (1:N per user)
 
 LongTermMemory (1) ──< LongTermMemoryItem (1:N)
 ```
+
+CronJob 独立于 ChatArea，不与其他模型建立外键关系。触发时由 `internal/agent/cronjob.Manager` 构造合成 `adapter.Event`（`PostType: "cronjob"`, `IsCronJob: true`），通过 `CronJobEvents` channel 注入主事件循环，走 `handleMessage` 标准处理路径（跳过插件拦截）。调度器使用 `robfig/cron`，支持秒级 cron 表达式；API 层变更时自动调用 `Manager.Reload()` 同步。
 
 ### 插件 API 分组
 
@@ -136,3 +140,41 @@ LongTermMemory (1) ──< LongTermMemoryItem (1:N)
 - **开发模式**: 前端走 Vite `:3000` 热更新, `vite.config.ts` 代理 `/api` → `:8090`, 因此开发期 Go 的 SPA fallback 不会被触发。
 - **生产模式 (容器)**: `deployments/Dockerfile` 多阶段构建把 `web/dist` 拷到 `/app/web/dist`, `ENV WEB_DIR=/app/web/dist`, 单容器同端口暴露 Web 面板 + API + 前端。
 - 路径穿越防护: `SPAHandler` 通过 `filepath.Rel` 校验目标文件必须落在 `webDir` 之内。
+
+---
+
+## 群聊回复策略与静默机制
+
+群聊场景下 Agent 不应对每条消息都回复，否则会造成刷屏。系统通过**提示词规则 + 代码层兜底过滤**两层机制实现智能静默。
+
+### 提示词中的群聊回复规则
+
+群聊回复判断由 `internal/agent/prompt/prompt.go` 注入的系统提示词驱动，核心规则如下：
+
+- **被@铁律**：消息中 @了机器人、直接提到名字/昵称/称呼、或是对上一条回复的延续追问时，**无条件立即回复**。此规则覆盖一切静默规则，是唯一不可违背的绝对命令。
+- **条件 B — 内容直接相关**：询问能力/功能/使用方法，或请求执行操作（搜索、生图、群管理等），即使未 @也可以回复。
+- **条件 C — 对话上下文指向你**：短期记忆显示刚参与了这段对话，且新消息是自然延续。
+- **条件 D — 热聊参与**：短期记忆显示最近 5-10 条消息中有 ≥3 人连续讨论同一话题时视为热聊状态，可适当参与（每 5-10 条最多回 1 条）。话题切换时自动退出，不第一个打破沉默，不插话二人对话。
+- **明确不回复**：日常闲聊、互怼、问候、互 @（非 @自己）、无关话题、纯表情/图片、单字消息等。
+
+### 静默标记 `__NO_REPLY__`
+
+LLM 被要求在判定不回复时**仅输出固定标记 `__NO_REPLY__`**，不输出任何其他文字、不调用任何工具。系统检测到此标记后自动丢弃回复，不向 QQ 发送任何内容。
+
+### 代码层 `isSilenceResponse` 兜底过滤
+
+定义在 `internal/agent/event.go`，对**所有群聊消息**的 LLM 文本输出做二次校验：
+
+```go
+const SilenceToken = "__NO_REPLY__"
+```
+
+`isSilenceResponse(content)` 的逻辑：
+
+1. **主路径**：检测内容是否包含 `__NO_REPLY__` 标记 — 命中则静默。
+2. **兜底匹配**：对长度 ≤15 字符的短消息，匹配已知静默短语列表（如"保持静默"、"不回复"、"不插话"、"不响"、"做空气"、"装死"等），以及静默类表情（😶/🤐/🙈/🫥）。命中任意一个即为静默。
+3. **子串兜底**：对短消息额外检查是否包含"静默"、"不回复"、"不插话"、"不响"、"做空气"、"装死"等关键词。
+
+当 `isSilenceResponse` 返回 `true` 时，`handleMessage` 跳过 `sendReply`、`recordChat` 和 `handleToolCalls`，实现三层拦截：不发送、不记录、不执行工具调用。静默响应日志仅打一条 `slog.Info`。
+
+> **设计意图**：提示词规则是主防线，LLM 在绝大多数情况下正确输出 `__NO_REPLY__`。代码层兜底用于防止 LLM 不遵守标记约定（如输出"保持静默"等自然语言废话），确保群聊不被打扰。

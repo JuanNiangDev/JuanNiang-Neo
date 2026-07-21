@@ -64,6 +64,33 @@
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## 完整事件流 (CronJob → 定时任务)
+
+```
+┌──────────────────────┐
+│  CronJobManager      │  来自 pluggin.yaml
+│  cron 定时表达式      │  (如 "0 */1 * * *")
+└──────────┬───────────┘
+           │ Run() → 遍历已注册 cron job
+           │ 到期触发 → 构造 Event
+           ▼
+┌─────────────────────────────────────────────────────────────┐
+│  构造事件                                                    │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  PostType = "cronjob"                                 │  │
+│  │  IsCronJob = true                                     │  │
+│  │  RawMessage = 插件注册时指定的文本                      │  │
+│  │  UserID = "system" / GroupID = ""                     │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                           │                                 │
+│              CronJobEvents chan (buffer 32)                 │
+└───────────────────────────┼─────────────────────────────────┘
+                            │
+                            ▼
+              runEventLoop 统一监听处理
+              (与 OneBot11 事件共用同一事件循环)
+```
+
 ## Agent 处理流程 (handleMessage)
 
 ```
@@ -92,7 +119,11 @@ handleMessage(ctx, event)
 │
 ├─ 6. LLM 调用 (Provider.Chat)
 │     │
-│     ├─ 文本响应 → sendReply → 记录 ChatRecord
+│     ├─ 文本响应 → isSilenceResponse 检查
+│     │     ├─ 匹配 __NO_REPLY__ 或静默短语 → 丢弃响应
+│     │     │     ├─ 不发送, 不记录 ChatRecord
+│     │     │     └─ 同时跳过 Tool Calls
+│     │     └─ 不匹配 → sendReply → 记录 ChatRecord
 │     │
 │     └─ Tool Call 响应 → handleToolCalls
 │           │
@@ -139,9 +170,14 @@ Start()
 │
 ├─ go BgTaskExecutor.Run(ctx)
 ├─ go DrainerAgent.Run(ctx)
-└─ go runEventLoop(ctx)    ← 阻塞主循环
+├─ go CronJobManager.Run(ctx)
+├─ CronJobEvents chan (buffer 32)    ← cron 事件源
+└─ go runEventLoop(ctx)               ← 阻塞主循环
       │
-      └─ for ev := range adapter.Events()
+      ├─ case ev := <-adapter.Events()       ← OneBot11 事件
+      ├─ case ev := <-CronJobEvents          ← CronJob 事件
+      │
+      └─ 统一处理
            │
            ├─ Plugin 拦截 (可消费事件)
            └─ Agent 处理

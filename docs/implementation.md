@@ -104,6 +104,13 @@
   4. `dao.Prompt.ListByType(Custom)` — 用户自定义补充
 - **API 守卫**: `UpdatePrompt` / `DeletePrompt` / `TogglePrompt` 在 Service 层检查 `existing.IsSystem`，命中则返回 `40029 PromptIsSystem`；`AddPrompt` / `UpdatePrompt` 拒绝用户将 `Type` 设为 `system`
 - `BuildFullContext`: SystemPrompt + 长期记忆 + 工具描述，内部调用 `BuildSystemPrompt`
+- **群聊回复策略**（在 `SystemLockedPromptContent` 中定义）:
+  - **被@铁律**: 当消息中包含@本机器人时，无条件回复，覆盖所有静默规则
+  - **相关性判断**: 不满足被@铁律时，综合以下条件决定是否回复：
+    - **条件 B** — 消息内容与机器人知识/能力相关（可直接回答或提供价值）
+    - **条件 C** — 当前对话上下文中机器人刚参与过相关话题（延续讨论）
+    - **条件 D** — 群聊处于热聊状态且内容适合自然参与（融入对话）
+  - **静默标记 `__NO_REPLY__`**: 当 LLM 判断无需回复时，系统提示词要求其输出 `__NO_REPLY__` 标记；系统层检测到该标记后丢弃响应（不发消息、不记聊天记录、不存短期记忆）；仅限群聊场景，私聊始终回复
 
 **Session (`session/`)**
 - MessageHistory 存 Redis List (LPush/LRange)
@@ -132,6 +139,21 @@
 - 匹配策略: 关键词 (strings.Contains) + 正则 (regexp.Compile)
 - 优先级排序: Priority 降序
 - 系统技能 (`IsSystem=true`): 每次对话强制加载
+
+**CronJob 定时任务 (`agent/cronjob/`)**
+- `Manager` 结构: 封装 `robfig/cron/v3` 调度器，管理定时任务生命周期
+- `Run(ctx)`: 启动 cron 调度器，监听 `ctx.Done()` 实现优雅退出
+- `Reload(ctx)`: 从 DB 重新加载所有启用的任务 (`IsActive=true`)，清空并重建 cron 条目
+- `makeJobFunc(task)`: 构造 `MessageEvent`（触发者为空）→ 封装为 `Event{PostType:"cronjob", IsCronJob:true}` → 非阻塞写入 `CronJobEvents` channel
+- **事件处理**: `processEvent` 中对 `IsCronJob=true` 的事件跳过 Plugin 拦截和 ACL 检查，直接进入 Agent 处理链
+
+**群聊静默过滤器**
+- `SilenceToken = "__NO_REPLY__"` 常量（`internal/agent/event.go`）
+- `isSilenceResponse(content)`: 双路径检测
+  - 主路径: `strings.Contains(content, SilenceToken)` 精确匹配静默标记
+  - 兜底路径: 匹配静默短语/emoji 列表（LLM 未按要求输出标记时的容错）
+- `handleMessage` 中: 群聊场景 + 静默响应 → 丢弃该响应（不发 QQ 消息、不记录 `ChatRecord`、不写入短期记忆），同时跳过 ToolCalls 结果处理
+- 兜底短语列表: `保持静默` / `不回复` / `不响应` / `做空气` / `装死` / `😶` / `🤐` 等
 
 ### 4. 后台任务系统
 
