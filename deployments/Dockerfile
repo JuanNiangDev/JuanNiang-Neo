@@ -28,7 +28,9 @@ WORKDIR /app
 RUN apk --no-cache add git
 
 ENV CGO_ENABLED=0 \
-    GOPROXY=direct
+    GOPROXY=direct \
+    GONOSUMCHECK=* \
+    GONOSUMDB=*
 
 # 先拷 module 描述, 利用层缓存
 COPY go.mod go.sum ./
