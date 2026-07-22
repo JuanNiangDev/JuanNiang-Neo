@@ -8,7 +8,7 @@ ARG GO_VERSION=1.25-alpine
 ARG NODE_VERSION=20-alpine
 
 # ===== Stage 1: 前端构建 =====
-FROM ${NODE_VERSION} AS web-builder
+FROM node:${NODE_VERSION} AS web-builder
 WORKDIR /app/web
 
 # 先拷 lockfile, 利用层缓存
@@ -21,7 +21,7 @@ RUN npm run build && test -d dist
 
 
 # ===== Stage 2: Go 后端构建 =====
-FROM ${GO_VERSION} AS go-builder
+FROM golang:${GO_VERSION} AS go-builder
 WORKDIR /app
 
 ENV CGO_ENABLED=0 \
