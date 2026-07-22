@@ -3,6 +3,7 @@ package pluggin
 import (
 	"bytes"
 	"context"
+	crand "crypto/rand"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,9 @@ import (
 // ---------- 清单 ----------
 
 type Manifest struct {
+	// PPID 插件持久化唯一标识（UUID），用于跨目录重命名/迁移时稳定识别插件。
+	// 为空时由 Load 自动生成并写回 pluggin.yaml。
+	PPID        string   `yaml:"ppid"`
 	Name        string   `yaml:"name"`
 	Version     string   `yaml:"version"`
 	Author      string   `yaml:"author"`
@@ -243,6 +247,16 @@ func (pe *PluginEngine) Load(name string) error {
 	manifest, err := pe.readManifest(pluginDir)
 	if err != nil {
 		return fmt.Errorf("读取 pluggin.yaml 失败: %w", err)
+	}
+
+	// PPID 为空时自动生成并写回 yaml，保证每个插件都有稳定唯一标识
+	if manifest.PPID == "" {
+		manifest.PPID = newPluginUUID()
+		if werr := pe.writeManifest(pluginDir, manifest); werr != nil {
+			slog.Warn("写回插件 PPID 失败", "name", name, "err", werr)
+		} else {
+			slog.Info("已为插件生成 PPID", "name", name, "ppid", manifest.PPID)
+		}
 	}
 
 	L := lua.NewState()
@@ -1354,6 +1368,15 @@ func pushResultJSON(L *lua.LState, v any, err error) int {
 // ====================================================================
 // Manifest
 // ====================================================================
+
+// newPluginUUID 生成 RFC 4122 v4 风格的 UUID 字符串。
+func newPluginUUID() string {
+	b := make([]byte, 16)
+	_, _ = crand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
 
 func (pe *PluginEngine) readManifest(dir string) (*Manifest, error) {
 	path := filepath.Join(dir, "pluggin.yaml")
