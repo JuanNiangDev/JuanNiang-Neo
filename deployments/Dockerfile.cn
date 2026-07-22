@@ -36,6 +36,9 @@ RUN npm run build && test -d dist
 FROM ${REGISTRY}/golang:${GO_VERSION} AS go-builder
 WORKDIR /app
 
+# golang:alpine 不含 git，go mod download 需要 git 拉取依赖
+RUN apk --no-cache add git
+
 ENV CGO_ENABLED=0 \
     GOPROXY=https://goproxy.cn,direct
 
