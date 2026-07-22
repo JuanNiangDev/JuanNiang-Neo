@@ -64,6 +64,7 @@ func RegisterBuiltinTools(
 	imageModel provider.Provider,
 	getSessionCtx func() string,
 	getCurrentMsg func() *adapter.MessageEvent,
+	getRecentMsgs func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error),
 ) {
 	tools := []Tool{}
 
@@ -640,6 +641,52 @@ except Exception as e:
 			},
 		})
 	}
+
+	// --- 消息查询 ---
+
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "get_recent_messages", "获取当前会话中往上 N 条消息。用于了解上下文，判断群聊中是否有人@你或提到你。",
+			openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"limit": map[string]any{"type": "integer", "description": "获取的消息数量，默认 10"},
+				},
+			}, true, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Limit int `json:"limit"`
+			}
+			json.Unmarshal(args, &p)
+			if p.Limit <= 0 {
+				p.Limit = 10
+			}
+			if p.Limit > 50 {
+				p.Limit = 50
+			}
+			msg := getCurrentMsg()
+			if msg == nil {
+				return "未获取到当前会话信息", nil
+			}
+			targetID := int64(0)
+			if msg.MessageType == "private" {
+				targetID = msg.UserID
+			} else {
+				targetID = msg.GroupID
+			}
+			msgs, err := getRecentMsgs(ctx, msg.MessageType, targetID, p.Limit)
+			if err != nil {
+				return "", err
+			}
+			if len(msgs) == 0 {
+				return "暂无更早的消息记录", nil
+			}
+			result := fmt.Sprintf("最近 %d 条消息:\n", len(msgs))
+			for i, m := range msgs {
+				result += fmt.Sprintf("[%d] %s\n", i+1, m)
+			}
+			return result, nil
+		},
+	})
 
 	for _, t := range tools {
 		registry.Register(t)

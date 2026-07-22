@@ -133,6 +133,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		h.Providers.SelectModel(provider.ModelTypeImage),
 		func() string { return h.CurrentSessionCtx },
 		func() *adapter.MessageEvent { return h.CurrentMsg },
+		func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error) {
+			return h.getRecentMessagesByMsgType(ctx, msgType, targetID, limit)
+		},
 	)
 
 	if err := h.loadProviders(ctx); err != nil {

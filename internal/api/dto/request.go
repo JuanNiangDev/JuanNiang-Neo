@@ -243,3 +243,10 @@ type UpdateCronJobReq struct {
 type ToggleCronJobReq struct {
 	IsActive bool `json:"is_active"`
 }
+
+// ---------- 回复策略 ----------
+
+type UpdateReplyStrategyReq struct {
+	Strategy           string  `json:"strategy"`
+	RelevanceThreshold float64 `json:"relevance_threshold"`
+}

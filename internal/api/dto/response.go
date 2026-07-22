@@ -294,3 +294,10 @@ type CronJobResp struct {
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
+
+// ---------- 回复策略 ----------
+
+type ReplyStrategyResp struct {
+	Strategy           string  `json:"strategy"`
+	RelevanceThreshold float64 `json:"relevance_threshold"`
+}
