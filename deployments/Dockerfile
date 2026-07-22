@@ -28,12 +28,12 @@ WORKDIR /app
 RUN apk --no-cache add git
 
 ENV CGO_ENABLED=0 \
-    GOPROXY=direct
+    GOPROXY=https://goproxy.cn,direct
 
 # 先拷 module 描述, 利用层缓存
 COPY go.mod go.sum ./
 # GONOSUMCHECK/GONOSUMDB 内联到 RUN，避免 CI 缓存层跳过 env 变更
-RUN GONOSUMCHECK='*' GONOSUMDB='*' go mod download
+RUN go mod download
 
 COPY . .
 # 仅编译后端, 不嵌入前端 (运行时由 WEB_DIR 指向容器内 /app/web/dist)
