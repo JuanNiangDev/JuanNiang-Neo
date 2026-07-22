@@ -608,24 +608,31 @@ except Exception as e:
 
 	if getCurrentMsg != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "send_face", "发送 QQ 超级表情到当前会话。⚠️ 必须先调用 list_super_faces 查询表情 ID，再传入正确的 face_id！不要自己编造 ID。注意：这是 QQ 内置表情系统，非图片。",
+			BaseTool: NewTool("", "send_face", "发送 QQ 超级表情到当前会话。⚠️ 必须先调用 list_super_faces 查询表情 ID 和 sub_type，再传入正确的 face_id 和 sub_type！不要自己编造参数。注意：这是 QQ 内置表情系统，非图片。",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
-						"face_id": map[string]any{"type": "integer", "description": "QQ 表情 ID。必须先调用 list_super_faces 查询！常见经典小黄脸参考: 0=惊讶, 1=撇嘴, 2=色, 3=发呆, 4=得意, 5=流泪, 6=害羞, 7=闭嘴, 10=发怒, 14=微笑, 18=可爱, 21=疑问, 22=无语, 28=再见, 37=呲牙, 39=偷笑, 55=流汗, 63=委屈, 66=坏笑, 74=可怜, 76=酷, 89=尴尬, 97=大笑, 111=爱心, 142=抱拳, 182=耶, 188=狗头, 201=点赞, 211=笑哭, 277=鲜花"},
+						"face_id":  map[string]any{"type": "integer", "description": "QQ 表情 ID。必须先调用 list_super_faces 查询！常见经典小黄脸参考: 0=惊讶, 1=撇嘴, 2=色, 3=发呆, 4=得意, 5=流泪, 6=害羞, 7=闭嘴, 10=发怒, 14=微笑, 18=可爱, 21=疑问, 22=无语, 28=再见, 37=呲牙, 39=偷笑, 55=流汗, 63=委屈, 66=坏笑, 74=可怜, 76=酷, 89=尴尬, 97=大笑, 111=爱心, 142=抱拳, 182=耶, 188=狗头, 201=点赞, 211=笑哭, 277=鲜花"},
+						"sub_type": map[string]any{"type": "integer", "description": "表情 sub_type，超级表情为 3 或 5，经典小黄脸不填"},
 					},
 					"required": []string{"face_id"},
 				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				var p struct {
-					FaceID int `json:"face_id"`
+					FaceID  int `json:"face_id"`
+					SubType int `json:"sub_type"`
 				}
 				json.Unmarshal(args, &p)
 				msg := getCurrentMsg()
 				if msg == nil {
 					return "未获取到当前会话信息", nil
 				}
-				cqCode := fmt.Sprintf("[CQ:face,id=%d]", p.FaceID)
+				var cqCode string
+				if p.SubType > 0 {
+					cqCode = fmt.Sprintf("[CQ:face,id=%d,sub_type=%d]", p.FaceID, p.SubType)
+				} else {
+					cqCode = fmt.Sprintf("[CQ:face,id=%d]", p.FaceID)
+				}
 				switch msg.MessageType {
 				case "private":
 					if _, err := adapter.SendPrivateMsg(msg.UserID, cqCode); err != nil {
