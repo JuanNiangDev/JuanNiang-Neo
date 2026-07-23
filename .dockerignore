@@ -24,12 +24,8 @@ web/dist/
 web/.vite/
 web/*.local
 
-# 运行时数据 (仅 SDK 和系统插件打包进镜像，用户插件运行时通过 bind-mount 加载)
-data/*
-!data/pluggins/
-data/pluggins/*
-!data/pluggins/sdk/
-!data/pluggins/system/
+# 运行时数据/日志
+data/
 *.log
 
 # 文档与编排本身不需进镜像 (Dockerfile 仍会读取 context)
