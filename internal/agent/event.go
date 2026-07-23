@@ -361,10 +361,19 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	// 持久化原始聊天记录到 DB (与短期记忆解耦, 不受 Redis 重启或 Compact 影响)
 	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0, nil)
 
+	// 读取回复策略：always 模式跳过静默检测；AgentLite 模式不传工具、跳过工具循环
+	replyCfg, _ := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+	skipSilenceCheck := replyCfg != nil && replyCfg.Strategy == models.StrategyAlways
+	agentLite := replyCfg != nil && replyCfg.AgentLite
+
 	req := provider.ChatRequest{
 		Messages:    messages,
 		Tools:       toolList,
 		Temperature: 0.7,
+	}
+	// AgentLite 模式：不向 LLM 暴露工具
+	if agentLite {
+		req.Tools = nil
 	}
 
 	resp, err := llm.Chat(ctx, req)
@@ -374,10 +383,6 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	}
 
 	h.Session.UpdateTokenUsage(ctx, sess.ID, int64(resp.TokenUsage))
-
-	// 获取回复策略，always 模式下跳过静默检测
-	replyCfg, _ := h.DAO.ReplyStrategy.GetOrCreate(ctx)
-	skipSilenceCheck := replyCfg != nil && replyCfg.Strategy == models.StrategyAlways
 
 	if resp.Message.Content != "" {
 		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(resp.Message.Content)
@@ -390,6 +395,11 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
 			}
 		}
+	}
+
+	// AgentLite 模式：跳过所有工具/MCP 调用和 Agent 循环
+	if agentLite {
+		return
 	}
 
 	// 静默响应时也跳过工具调用（防止 LLM 绕过文本输出直接调 send_group_msg 发废话）

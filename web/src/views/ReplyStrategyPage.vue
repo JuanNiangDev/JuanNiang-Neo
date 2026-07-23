@@ -6,11 +6,12 @@
     </div>
 
     <v-row>
-      <v-col cols="12" md="8">
-        <!-- 回复策略卡片 -->
-        <v-card rounded="lg" elevation="1" class="mb-6">
+      <!-- 回复策略 -->
+      <v-col cols="12" md="7">
+        <v-card rounded="lg" elevation="1" class="h-100">
           <v-card-item>
             <template #title><span class="text-h6 font-weight-bold">回复策略</span></template>
+            <template #subtitle>群聊/私聊消息路由方式</template>
           </v-card-item>
           <v-card-text>
             <v-form @submit.prevent="handleSave">
@@ -28,24 +29,13 @@
                   <div class="d-flex align-center" style="gap: 16px">
                     <v-slider
                       v-model="form.relevance_threshold"
-                      :min="0"
-                      :max="1"
-                      :step="0.05"
-                      color="primary"
-                      thumb-label="always"
-                      hide-details
-                      style="flex: 1"
+                      :min="0" :max="1" :step="0.05"
+                      color="primary" thumb-label="always" hide-details style="flex: 1"
                     />
                     <v-text-field
                       v-model.number="form.relevance_threshold"
-                      type="number"
-                      :min="0"
-                      :max="1"
-                      :step="0.05"
-                      density="compact"
-                      style="width: 90px"
-                      hide-details
-                      variant="outlined"
+                      type="number" :min="0" :max="1" :step="0.05"
+                      density="compact" style="width: 90px" hide-details variant="outlined"
                     />
                   </div>
                   <div class="text-caption text-medium-emphasis mt-2">
@@ -58,47 +48,57 @@
                   <div class="text-subtitle-2 font-weight-bold mb-2">机器人名字</div>
                   <v-text-field
                     v-model="form.bot_name"
-                    label="机器人名字（用于相关性判断，如「小卷」）"
+                    label="用于相关性判断，如「小卷」"
                     placeholder="例如：小卷"
-                    density="comfortable"
-                    variant="outlined"
-                    hide-details
-                    clearable
+                    density="comfortable" variant="outlined" hide-details clearable
                   />
-                  <div class="text-caption text-medium-emphasis mt-2">
-                    设置机器人名字后，相关性检查会参考此名字来判断消息是否指向机器人。
-                  </div>
                 </v-card>
               </v-expand-transition>
 
               <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!form.strategy">
-                <v-icon class="me-1">mdi-content-save</v-icon> 保存策略
+                <v-icon class="me-1">mdi-content-save</v-icon> 保存
               </v-btn>
             </v-form>
           </v-card-text>
         </v-card>
+      </v-col>
 
-        <!-- 其他设置卡片 -->
-        <v-card rounded="lg" elevation="1">
+      <!-- 其他设置 -->
+      <v-col cols="12" md="5">
+        <v-card rounded="lg" elevation="1" class="h-100">
           <v-card-item>
             <template #title><span class="text-h6 font-weight-bold">其他设置</span></template>
+            <template #subtitle>消息格式与 Agent 行为</template>
           </v-card-item>
           <v-card-text>
             <v-form @submit.prevent="handleSave">
-              <v-switch
-                v-model="form.strip_markdown"
-                label="去除 Markdown 格式 — Agent 发送消息前去除加粗、斜体、代码块等格式"
-                color="primary"
-                hide-details
-                class="mb-2"
-              />
-              <div class="text-caption text-medium-emphasis mb-4">
-                开启后，Agent 回复中的 **加粗**、*斜体*、`代码`、[链接]、标题、列表 等 Markdown
-                格式将被去除，发送纯文本到 QQ。
+              <!-- AgentLite -->
+              <div class="d-flex align-start mb-4">
+                <div class="flex-grow-1 me-3">
+                  <div class="text-subtitle-2 font-weight-bold">AgentLite 模式</div>
+                  <div class="text-caption text-medium-emphasis mt-1">
+                    关闭工具/MCP 调用和 Agent 循环。消息直接发给 LLM，回复后即结束。<br />
+                    记忆、提示词、Skill 行为不受影响。
+                  </div>
+                </div>
+                <v-switch v-model="form.agent_lite" color="primary" hide-details density="compact" />
+              </div>
+
+              <v-divider class="mb-4" />
+
+              <!-- Strip Markdown -->
+              <div class="d-flex align-start mb-4">
+                <div class="flex-grow-1 me-3">
+                  <div class="text-subtitle-2 font-weight-bold">去除 Markdown 格式</div>
+                  <div class="text-caption text-medium-emphasis mt-1">
+                    Agent 发送消息前去除加粗、斜体、代码块、链接等格式，发送纯文本到 QQ。
+                  </div>
+                </div>
+                <v-switch v-model="form.strip_markdown" color="primary" hide-details density="compact" />
               </div>
 
               <v-btn type="submit" color="primary" variant="tonal" :loading="saving">
-                <v-icon class="me-1">mdi-content-save</v-icon> 保存设置
+                <v-icon class="me-1">mdi-content-save</v-icon> 保存
               </v-btn>
             </v-form>
           </v-card-text>
@@ -121,6 +121,7 @@ const form = ref({
   relevance_threshold: 0.5,
   bot_name: '',
   strip_markdown: false,
+  agent_lite: false,
 })
 
 async function load() {
@@ -132,6 +133,7 @@ async function load() {
       form.value.relevance_threshold = d.relevance_threshold ?? 0.5
       form.value.bot_name = d.bot_name || ''
       form.value.strip_markdown = d.strip_markdown || false
+      form.value.agent_lite = d.agent_lite || false
     }
   } catch (_e: any) {}
 }
@@ -144,6 +146,7 @@ async function handleSave() {
       relevance_threshold: form.value.relevance_threshold,
       bot_name: form.value.bot_name,
       strip_markdown: form.value.strip_markdown,
+      agent_lite: form.value.agent_lite,
     })
     toastStore.success('回复设置已保存')
   } catch (e: any) {
