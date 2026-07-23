@@ -155,6 +155,10 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 
 	// 后台任务结果事件（Drainer 合成）跳过策略检查，图片等媒体已由 Drainer 直接发送
 	if ev.IsBgTaskResult {
+		if cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx); err == nil {
+			h.StripMarkdown = cfg.StripMarkdown
+			h.DisableSplit = cfg.AgentLite
+		}
 		h.handleMessage(ctx, ev)
 		return
 	}
@@ -167,9 +171,13 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 		if err != nil {
 			slog.Warn("获取回复策略失败，跳过过滤", "err", err)
-		} else if cfg.Strategy == models.StrategyNeverReply {
-			slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
-			return
+		} else {
+			h.StripMarkdown = cfg.StripMarkdown
+			h.DisableSplit = cfg.AgentLite
+			if cfg.Strategy == models.StrategyNeverReply {
+				slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
+				return
+			}
 		}
 		// 非完全不回复策略，私聊直接放行
 		h.handleMessage(ctx, ev)
@@ -180,6 +188,8 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	if err != nil {
 		slog.Warn("获取回复策略失败，跳过过滤", "err", err)
 	} else {
+		h.StripMarkdown = cfg.StripMarkdown
+		h.DisableSplit = cfg.AgentLite
 		switch cfg.Strategy {
 		case models.StrategyNeverReply:
 			// 完全不处理
@@ -354,10 +364,24 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	// 持久化原始聊天记录到 DB (与短期记忆解耦, 不受 Redis 重启或 Compact 影响)
 	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0, nil)
 
+	// 读取回复策略：always 模式跳过静默检测；AgentLite 模式不传工具、跳过工具循环
+	replyCfg, _ := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+	skipSilenceCheck := replyCfg != nil && replyCfg.Strategy == models.StrategyAlways
+	agentLite := replyCfg != nil && replyCfg.AgentLite
+
 	req := provider.ChatRequest{
 		Messages:    messages,
 		Tools:       toolList,
 		Temperature: 0.7,
+	}
+	// AgentLite 模式：不向 LLM 暴露工具，并注入提示词
+	if agentLite {
+		req.Tools = nil
+		messages = append([]provider.ChatMessage{{
+			Role:    "system",
+			Content: "【AgentLite 模式】当前处于精简模式，你无法使用任何工具或 MCP 调用，也无法分条发送消息。请将所有回复合并为一条消息返回。",
+		}}, messages...)
+		req.Messages = messages
 	}
 
 	resp, err := llm.Chat(ctx, req)
@@ -367,10 +391,6 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	}
 
 	h.Session.UpdateTokenUsage(ctx, sess.ID, int64(resp.TokenUsage))
-
-	// 获取回复策略，always 模式下跳过静默检测
-	replyCfg, _ := h.DAO.ReplyStrategy.GetOrCreate(ctx)
-	skipSilenceCheck := replyCfg != nil && replyCfg.Strategy == models.StrategyAlways
 
 	if resp.Message.Content != "" {
 		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(resp.Message.Content)
@@ -383,6 +403,11 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
 			}
 		}
+	}
+
+	// AgentLite 模式：跳过所有工具/MCP 调用和 Agent 循环
+	if agentLite {
+		return
 	}
 
 	// 静默响应时也跳过工具调用（防止 LLM 绕过文本输出直接调 send_group_msg 发废话）
@@ -614,7 +639,16 @@ func splitMessages(content string) []string {
 }
 
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
-	for _, part := range splitMessages(content) {
+	var parts []string
+	if h.DisableSplit {
+		parts = []string{content}
+	} else {
+		parts = splitMessages(content)
+	}
+	for _, part := range parts {
+		if h.StripMarkdown {
+			part = stripMarkdown(part)
+		}
 		var err error
 		switch msg.MessageType {
 		case "private":

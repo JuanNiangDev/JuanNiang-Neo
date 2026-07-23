@@ -33,6 +33,7 @@ func (d *SandboxConfigDAO) GetConfig(ctx context.Context) (*models.SandboxConfig
 }
 
 // UpdateConfig 更新 Sandbox 配置。
+// 使用 Select("*") 强制更新所有字段（包括 false 等零值），避免 GORM struct Updates 跳过零值字段。
 func (d *SandboxConfigDAO) UpdateConfig(ctx context.Context, conf *models.SandboxConfig) error {
-	return d.db.WithContext(ctx).Where("id = 1").Updates(conf).Error
+	return d.db.WithContext(ctx).Where("id = 1").Select("*").Updates(conf).Error
 }

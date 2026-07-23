@@ -405,7 +405,8 @@ func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 		if err != nil {
 			slog.Error("命令派发错误", "raw", event.RawMessage, "err", err)
 		}
-		if c {
+		// 只要命令已消费或有回复内容，都视为已处理（避免消息流入 Agent）
+		if c || reply != "" {
 			if reply != "" {
 				pe.sendReply(event, reply)
 			}

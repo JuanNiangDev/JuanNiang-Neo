@@ -36,5 +36,5 @@ func (d *WebhookConfigDAO) GetConfig(ctx context.Context) (*models.WebhookConfig
 
 // UpdateConfig 更新 Webhook 配置。
 func (d *WebhookConfigDAO) UpdateConfig(ctx context.Context, conf *models.WebhookConfig) error {
-	return d.db.WithContext(ctx).Where("id = 1").Updates(conf).Error
+	return d.db.WithContext(ctx).Where("id = 1").Select("*").Updates(conf).Error
 }

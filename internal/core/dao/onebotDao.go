@@ -34,7 +34,7 @@ func (d *Onebot11AdapterDao) GetAdapterConfig(ctx context.Context) (*models.Oneb
 }
 
 func (d *Onebot11AdapterDao) UpdateAdapterConfig(ctx context.Context, conf *models.Onebot11Adapter) error {
-	return d.db.WithContext(ctx).Where("id = 1").Updates(conf).Error
+	return d.db.WithContext(ctx).Where("id = 1").Select("*").Updates(conf).Error
 }
 
 // AddAdminQQ 添加管理员 QQ 号，已存在则忽略。
