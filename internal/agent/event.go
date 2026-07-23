@@ -347,9 +347,13 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 
 	h.Session.UpdateTokenUsage(ctx, sess.ID, int64(resp.TokenUsage))
 
+	// 获取回复策略，always 模式下跳过静默检测
+	replyCfg, _ := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+	skipSilenceCheck := replyCfg != nil && replyCfg.Strategy == models.StrategyAlways
+
 	if resp.Message.Content != "" {
-		// 群聊中 LLM 输出静默标记或静默废话时直接丢弃，不发送、不记录
-		if msg.MessageType == "group" && isSilenceResponse(resp.Message.Content) {
+		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(resp.Message.Content)
+		if silenced {
 			slog.Info("群聊静默响应已丢弃", "content", resp.Message.Content, "group_id", msg.GroupID)
 		} else {
 			h.sendReply(msg, resp.Message.Content)
@@ -361,8 +365,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	}
 
 	// 静默响应时也跳过工具调用（防止 LLM 绕过文本输出直接调 send_group_msg 发废话）
-	silenced := msg.MessageType == "group" && resp.Message.Content != "" && isSilenceResponse(resp.Message.Content)
-	if !silenced && len(resp.Message.ToolCalls) > 0 {
+	// always 模式下不跳过工具调用
+	toolSilenced := !skipSilenceCheck && msg.MessageType == "group" && resp.Message.Content != "" && isSilenceResponse(resp.Message.Content)
+	if !toolSilenced && len(resp.Message.ToolCalls) > 0 {
 		h.handleToolCalls(ctx, msg, chatArea.ID, userID, userMsg, sess.ID, messages, resp, ev.Admins)
 	}
 }
