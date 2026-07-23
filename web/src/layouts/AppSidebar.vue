@@ -73,6 +73,7 @@ const navGroups = [
     title: '核心配置',
     icon: 'mdi-cog-outline',
     items: [
+      { title: '回复策略', icon: 'mdi-reply-circle-outline', to: '/reply-strategy' },
       { title: 'Adapter', icon: 'mdi-connection', to: '/adapter' },
       { title: 'LLM Providers', icon: 'mdi-brain', to: '/providers' },
       { title: 'MCP 服务器', icon: 'mdi-server-network', to: '/mcp' },

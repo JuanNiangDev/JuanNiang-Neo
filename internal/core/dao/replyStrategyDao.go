@@ -11,7 +11,7 @@ type ReplyStrategyDAO struct{ db *gorm.DB }
 
 func NewReplyStrategyDAO(db *gorm.DB) *ReplyStrategyDAO { return &ReplyStrategyDAO{db: db} }
 
-// GetOrCreate 获取当前策略配置，不存在则创建默认行（never_reply）。
+// GetOrCreate 获取当前策略配置，不存在则创建默认行（always）。
 func (d *ReplyStrategyDAO) GetOrCreate(ctx context.Context) (*models.ReplyStrategyConfig, error) {
 	var cfg models.ReplyStrategyConfig
 	err := d.db.WithContext(ctx).First(&cfg).Error
@@ -23,7 +23,7 @@ func (d *ReplyStrategyDAO) GetOrCreate(ctx context.Context) (*models.ReplyStrate
 	}
 	cfg = models.ReplyStrategyConfig{
 		ID:                 newUUID(),
-		Strategy:           models.StrategyNeverReply,
+		Strategy:           models.StrategyAlways,
 		RelevanceThreshold: 0.5,
 	}
 	if err := d.db.WithContext(ctx).Create(&cfg).Error; err != nil {
