@@ -56,6 +56,7 @@
 | 40029 | 系统提示词不允许修改或删除 |
 | 40030 | 内置工具运行时常驻, 不支持启停 |
 | 40031 | CronJob 不存在 |
+| 40032 | 回复策略配置不存在 |
 | 50000 | 服务器内部错误 |
 
 **认证:** 除 `POST /login` 和 `GET /health` 外所有接口需 `Authorization: Bearer <token>` header，通过 `POST /login` 获取。
@@ -113,7 +114,8 @@
 18. [日志](#18-日志)
 19. [健康检查](#19-健康检查)
 20. [CronJob 管理](#20-cronjob-管理)
-21. [前端 SPA 静态服务](#21-前端-spa-静态服务)
+21. [回复策略](#21-回复策略)
+22. [前端 SPA 静态服务](#22-前端-spa-静态服务)
 
 ---
 
@@ -1144,19 +1146,21 @@ es.addEventListener('log', (e) => {
 1. `POST /login` 拿到 `token`
 2. 后续所有请求都加 `Authorization: Bearer <token>` header
 3. `GET /overview` 查看系统总览
-4. `GET /providers` + `POST /providers` 配置 LLM
-5. `GET /mcp` + `POST /mcp` 配置 MCP
-6. `GET /prompts` + `POST /prompts` 配置 Prompt
-7. `GET /skills` + `POST /skills` 配置 Skill
-8. `GET /acl` + `POST /acl` 配置访问控制
-9. `GET /cronjobs` + `POST /cronjobs` 配置定时任务
-10. `PUT /t2i/config` + `PUT /sandbox/config` 配置 T2I/Sandbox
-11. `GET /chat-records/:chatAreaID` 查看历史聊天
-12. `GET /logs/stream` 实时查看日志
+4. `GET /reply-strategy` + `PUT /reply-strategy` 配置回复策略
+5. `GET /providers` + `POST /providers` 配置 LLM
+6. `GET /mcp` + `POST /mcp` 配置 MCP
+7. `GET /prompts` + `POST /prompts` 配置 Prompt
+8. `GET /skills` + `POST /skills` 配置 Skill
+9. `GET /acl` + `POST /acl` 配置访问控制
+10. `GET /cronjobs` + `POST /cronjobs` 配置定时任务
+11. `PUT /t2i/config` + `PUT /sandbox/config` 配置 T2I/Sandbox
+12. `GET /chat-records/:chatAreaID` 查看历史聊天
+13. `GET /logs/stream` 实时查看日志
 
 **注意事项:**
 
 - Provider 同类型只能一个 Active，激活时自动停用其他
+- 回复策略为单例配置（`GET/PUT /reply-strategy`），默认 `strategy=always, relevance_threshold=0.5`；首次 GET 不存在时自动创建
 - Plugin 的 `id` 是插件名（不是 UUID），通过 `POST /plugins/upload` 上传 ZIP 后自动生成；系统插件（`is_system=true`，如内置 `system`）禁止删除与停用
 - Skill 的 `priority` 数字越大优先级越高
 - Memory 接口只管理配置；实际短期消息在 Redis、长期条目在 Postgres
@@ -1267,7 +1271,75 @@ curl -X POST http://localhost:8090/api/v1/cronjobs \
 
 ---
 
-## 21. 前端 SPA 静态服务
+## 21. 回复策略
+
+系统回复策略配置（单例，只有一行记录），控制在群聊中 Agent 对消息的回复行为。
+
+**ReplyStrategy 枚举值:**
+- `never_reply` — 完全不回复任何消息
+- `at_only` — 仅被 @ 时回复
+- `always` — 始终回复（默认）
+- `plugin_only` — 仅插件处理，不调用 LLM Agent
+- `relevance` — LLM 评估相关性后决定是否回复
+
+### ReplyStrategyResp 结构
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | UUID（单例固定 ID） |
+| `strategy` | string | 策略模式（枚举值） |
+| `relevance_threshold` | float64 | 相关性阈值（0-1），仅在 `relevance` 模式下生效 |
+| `bot_name` | string | 机器人名字（如"小卷"），用于相关性 prompt 辅助判断 |
+| `created_at` | time | 创建时间 |
+| `updated_at` | time | 更新时间 |
+
+### 21.1 GET /reply-strategy
+
+**功能:** 获取当前回复策略配置。
+
+**响应** `data: ReplyStrategyResp`
+
+### 21.2 PUT /reply-strategy
+
+**功能:** 更新回复策略配置。初次调用前系统会自动创建默认记录（`strategy=always, relevance_threshold=0.5`）。
+
+**请求体** `UpdateReplyStrategyReq`:
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `strategy` | string | 是 | 策略模式 |
+| `relevance_threshold` | float64 | 是 | 相关性阈值（0-1） |
+| `bot_name` | string | 否 | 机器人名字 |
+
+**响应** `data: ReplyStrategyResp`
+
+**示例:**
+
+```bash
+curl -X PUT http://localhost:8090/api/v1/reply-strategy \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"strategy":"relevance","relevance_threshold":0.6,"bot_name":"小卷"}'
+```
+
+```json
+{
+  "status": 0,
+  "info": "OK",
+  "data": {
+    "id": "...",
+    "strategy": "relevance",
+    "relevance_threshold": 0.6,
+    "bot_name": "小卷",
+    "created_at": "2026-07-20T12:00:00Z",
+    "updated_at": "2026-07-23T17:00:00Z"
+  }
+}
+```
+
+---
+
+## 22. 前端 SPA 静态服务
 
 后端通过 Hertz `NoRoute` 兜底, 同端口 (`:8090`) 服务 Vue 前端 SPA, 路径与 API 互不冲突:
 

@@ -22,6 +22,8 @@ JuanNiang-Neo 是一个基于 OneBot11 协议的 QQ 聊天 Agent 系统，类 As
 │          │          │ skill    │          │                │
 │          │          │ tool     │          │                │
 │          │          │ cronjob  │          │                │
+│          │          │ reply    │          │                │
+│          │          │ strategy │          │                │
 ├──────────┴──────────┴──────────┴──────────┴────────────────┤
 │                     adapter/ (OneBot11 WS)                  │
 │                 事件接收 · API调用 · 消息构造                 │
@@ -34,8 +36,8 @@ JuanNiang-Neo 是一个基于 OneBot11 协议的 QQ 聊天 Agent 系统，类 As
 |------|--------|------|
 | **入口** | `cmd/server/main.go` | 组装所有模块, 启动服务, 优雅退出 |
 | **适配器** | `internal/adapter/` | OneBot11 反向 WS 服务端: 事件解析、API 封装、消息段构造 |
-| **Agent** | `internal/agent/` | Agent 核心: MCP、记忆、提示词、Provider、会话、技能、工具、定时任务 |
-| **核心库** | `internal/core/` | 数据模型 (GORM)、DAO、缓存 (Redis)、ACL |
+| **Agent** | `internal/agent/` | Agent 核心: MCP、记忆、提示词、Provider、会话、技能、工具、定时任务、回复策略 |
+| **核心库** | `internal/core/` | 数据模型 (GORM)、DAO、缓存 (Redis)、ACL、回复策略配置 |
 | **Web API** | `internal/api/` | Hertz Web 管理面板: JWT 鉴权、CRUD API |
 | **插件** | `internal/pluggin/` | gopher-lua 引擎: 插件生命周期、API 暴露、事件拦截 |
 | **基础设施** | `infrastructure/` | Postgres、Redis、Sandbox、T2I 客户端 |
@@ -61,6 +63,7 @@ ChatRecord ─── 聊天记录 (user/assistant/tool)
 Plugin     ─── Lua 插件元数据 (Manifest.System=true 表示系统插件不可删/不可停用)
 CronJob    ─── 定时任务 (cron 表达式 + 消息内容 + 目标ID + 启用状态 + 最后执行时间)，通过 channel 注入 Agent 事件循环
 ACLRule    ─── ACL 规则 (用户×ChatArea×权限)
+ReplyStrategyConfig ── 回复策略配置 (单例: 策略模式 + 相关性阈值 + 机器人名字)
 ```
 
 > **模型新增字段:**
@@ -143,38 +146,81 @@ CronJob 独立于 ChatArea，不与其他模型建立外键关系。触发时由
 
 ---
 
-## 群聊回复策略与静默机制
+## 群聊回复策略系统
 
-群聊场景下 Agent 不应对每条消息都回复，否则会造成刷屏。系统通过**提示词规则 + 代码层兜底过滤**两层机制实现智能静默。
+群聊场景下 Agent 不应对每条消息都回复。系统通过**五层回复策略**（Web 可配，持久化到 DB）实现精确控制。
 
-### 提示词中的群聊回复规则
+### 五种策略模式
 
-群聊回复判断由 `internal/agent/prompt/prompt.go` 注入的系统提示词驱动，核心规则如下：
+| 模式 | 常量 | 行为 |
+|------|------|------|
+| **不回复** | `never_reply` | 完全静默，插件命令也不执行 |
+| **仅被@** | `at_only` | 仅当消息 @ 了机器人才回复 |
+| **始终回复** | `always` | 正常处理所有消息（默认） |
+| **仅插件** | `plugin_only` | 只执行插件命令/回调，不调用 LLM |
+| **相关性** | `relevance` | 调用独立 LLM 评估消息相关性，得分 ≥ 阈值才回复 |
 
-- **被@铁律**：消息中 @了机器人、直接提到名字/昵称/称呼、或是对上一条回复的延续追问时，**无条件立即回复**。此规则覆盖一切静默规则，是唯一不可违背的绝对命令。
-- **条件 B — 内容直接相关**：询问能力/功能/使用方法，或请求执行操作（搜索、生图、群管理等），即使未 @也可以回复。
-- **条件 C — 对话上下文指向你**：短期记忆显示刚参与了这段对话，且新消息是自然延续。
-- **条件 D — 热聊参与**：短期记忆显示最近 5-10 条消息中有 ≥3 人连续讨论同一话题时视为热聊状态，可适当参与（每 5-10 条最多回 1 条）。话题切换时自动退出，不第一个打破沉默，不插话二人对话。
-- **明确不回复**：日常闲聊、互怼、问候、互 @（非 @自己）、无关话题、纯表情/图片、单字消息等。
+### 策略决策流程
 
-### 静默标记 `__NO_REPLY__`
+```mermaid
+flowchart TD
+    EVT[消息事件到达] --> TYPE{消息类型?}
+    TYPE -->|私聊| PRIVATE{策略?}
+    PRIVATE -->|never_reply| SKIP[跳过]
+    PRIVATE -->|其他| AGENT[进入 Agent 处理]
+    
+    TYPE -->|群聊| STRATEGY{策略模式?}
+    STRATEGY -->|never_reply| SKIP
+    STRATEGY -->|at_only| AT{@了机器人?}
+    AT -->|是| PLUGIN[插件拦截]
+    AT -->|否| SKIP
+    STRATEGY -->|plugin_only| PLUGIN_ONLY[仅执行插件<br/>不调 Agent]
+    STRATEGY -->|relevance| REL_CHECK{@了机器人<br/>或插件命令?}
+    REL_CHECK -->|是, 绕过| PLUGIN
+    REL_CHECK -->|否| RELEVANCE[LLM 相关性评估]
+    RELEVANCE --> REL_SCORE{得分 ≥ 阈值?}
+    REL_SCORE -->|是| PLUGIN
+    REL_SCORE -->|否| SKIP
+    STRATEGY -->|always| PLUGIN
+    
+    PLUGIN --> P_CONSUMED{插件消费了消息?}
+    P_CONSUMED -->|是| SKIP
+    P_CONSUMED -->|否| AGENT
+    AGENT --> SILENCE{静默检测?}
+    SILENCE -->|是| SKIP
+    SILENCE -->|否| REPLY[发送回复 + 记录]
+```
 
-LLM 被要求在判定不回复时**仅输出固定标记 `__NO_REPLY__`**，不输出任何其他文字、不调用任何工具。系统检测到此标记后自动丢弃回复，不向 QQ 发送任何内容。
+### 相关性评估 (`StrategyRelevance`)
 
-### 代码层 `isSilenceResponse` 兜底过滤
+相关性模式下，未命中 `@` 或插件命令绕过条件时，系统调用**独立 LLM**（不影响主对话）评估消息相关性：
 
-定义在 `internal/agent/event.go`，对**所有群聊消息**的 LLM 文本输出做二次校验：
+1. **文本消息**: 提取最近 10 条短期记忆作为上下文，调用 Text Provider 判断相关性（temperature=0.3），返回 `{relevance, reason}`
+2. **图片消息**: 有 Vision Provider 时走图片分析；无 Vision 时直接跳过
+3. **配置参数**: `relevance_threshold`（阈值 0-1）+ `bot_name`（机器人名字，用于辅助 LLM 判断）
+4. **容错**: LLM 返回含未转义引号等畸形 JSON 时，回退到正则提取 `relevance` 和 `reason`
+
+### 绕过高优条件
+
+以下情况**直接绕过**回复策略的所有前置检查（即使 `never_reply` 也会执行插件）：
+
+| 条件 | 行为 |
+|------|------|
+| CronJob 事件 | 跳过策略，直接进入 Agent |
+| BgTaskResult 事件 | 跳过策略（Drainer 合成事件，富文本已发送） |
+| Webhook 事件 | 走 `PluginEngine.OnWebhook` |
+
+### 静默检测 (`isSilenceResponse`)
+
+定义在 `internal/agent/event.go`，对**群聊**LLM 文本输出做二次过滤：
 
 ```go
 const SilenceToken = "__NO_REPLY__"
 ```
 
-`isSilenceResponse(content)` 的逻辑：
+- **主路径**: 检测内容是否含 `__NO_REPLY__` 标记
+- **兜底匹配**: 对 ≤15 字符的消息匹配静默短语列表（保持静默/不回复/不插话/😶/🤐 等）
+- **跳过条件**: `StrategyAlways` 模式下跳过静默检测
+- **后果**: 匹配后丢弃文本回复 + 抑制 Tool Calls + 不记录 ChatRecord
 
-1. **主路径**：检测内容是否包含 `__NO_REPLY__` 标记 — 命中则静默。
-2. **兜底匹配**：对长度 ≤15 字符的短消息，匹配已知静默短语列表（如"保持静默"、"不回复"、"不插话"、"不响"、"做空气"、"装死"等），以及静默类表情（😶/🤐/🙈/🫥）。命中任意一个即为静默。
-3. **子串兜底**：对短消息额外检查是否包含"静默"、"不回复"、"不插话"、"不响"、"做空气"、"装死"等关键词。
-
-当 `isSilenceResponse` 返回 `true` 时，`handleMessage` 跳过 `sendReply`、`recordChat` 和 `handleToolCalls`，实现三层拦截：不发送、不记录、不执行工具调用。静默响应日志仅打一条 `slog.Info`。
-
-> **设计意图**：提示词规则是主防线，LLM 在绝大多数情况下正确输出 `__NO_REPLY__`。代码层兜底用于防止 LLM 不遵守标记约定（如输出"保持静默"等自然语言废话），确保群聊不被打扰。
+系统提示词会引导 LLM 在判定不回复时输出 `__NO_REPLY__`；代码层兜底用于防止 LLM 不遵守标记约定。

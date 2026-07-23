@@ -21,17 +21,17 @@ main()
 │       ├─ newWSServer(ctx, addr, token, events)
 │       └─ go wsServer.serve() → handleWS → readLoop → parseEvent
 │
-├─ agent.NewHagoCenter()
-│   └─ hago.Init(ctx, cfg)
+├─ hago.Init(ctx, cfg)
 │       ├─ session.NewSessionManager(dao, cache)
 │       ├─ prompt.NewPromptManager(dao)
 │       │   └─ EnsureSystemPrompt(ctx)   // 幂等种子系统锁定提示词 __system_locked__
 │       │       └─ DAO.GetByName → 不存在则 Create, 存在则同步内容到最新版本
 │       ├─ skills.NewSkillEngine()
-│       ├─ tool.RegisterBuiltinTools(...)  // 16 个内置工具
+│       ├─ tool.RegisterBuiltinTools(...)  // 18 个内置工具
 │       ├─ loadProviders(ctx)              // DB → ProviderGroup
 │       ├─ loadMCPs(ctx)                   // DB → MCPGroup (MCP SDK)
 │       ├─ loadSkills(ctx)                 // DB → SkillEngine
+│       ├─ loadReplyStrategy(ctx)          // DB → 回复策略运行时配置
 │       ├─ NewBackgroundTaskExecutor(...)
 │       ├─ NewDrainerAgent(...)
 │       └─ cronjob.New(h.DAO.CronJob, h.CronJobEvents)  // CronJob 调度器初始化
@@ -76,20 +76,33 @@ OneBot11 WS → adapter.readLoop()
 │
 └─ agent.runEventLoop()  // for + select 多路复用
     │
-    ├─ pluggin.OnMessage(event)
-    │   ├─ 存储 currentEv (供 agent.get_current_chat_area() 查询)
-    │   ├─ [NEW] if raw_message 以 "/" 开头:
-    │   │   └─ CommandRegistry.Dispatch(raw, event)
-    │   │       ├─ 最长前缀匹配命令树
-    │   │       ├─ 命中 handler → handler(args, event) → (consumed, reply, err)
-    │   │       │                └─ sendReply(event, reply)  (reply 非空时)
-    │   │       └─ 未命中但有子命令 → reply 子命令列表
-    │   │   if consumed: continue
-    │   └─ for each plugin:
-    │       └─ lua.Call("on_message", eventTable)
-    │       └─ if consumed: continue
-    │
-    └─ handleMessage(ctx, ev)
+    ├─ processEvent(ctx, ev)  // 统一入口
+    │   │
+    │   ├─ [CronJob/BgTaskResult/Webhook] → 特殊处理
+    │   │
+    │   ├─ [回复策略评估] (群聊):
+    │   │   ├─ StrategyNeverReply → return
+    │   │   ├─ StrategyAtOnly → isAtSelf? → no: return
+    │   │   ├─ StrategyPluginOnly → runPluginOnly → return
+    │   │   ├─ StrategyRelevance:
+    │   │   │   ├─ isAtSelf? / isPluginCommand? → yes: 绕过
+    │   │   │   └─ no: relevanceAgentEvaluate(LLM) → < threshold → return
+    │   │   └─ StrategyAlways → 继续
+    │   │
+    │   ├─ pluggin.OnMessage(event)
+    │   │   ├─ 存储 currentEv (供 agent.get_current_chat_area() 查询)
+    │   │   ├─ if raw_message 以 "/" 开头:
+    │   │   │   └─ CommandRegistry.Dispatch(raw, event)
+    │   │   │       ├─ 最长前缀匹配命令树
+    │   │   │       ├─ 命中 handler → handler(args, event) → (consumed, reply, err)
+    │   │   │       │                └─ sendReply(event, reply)  (reply 非空时)
+    │   │   │       └─ 未命中但有子命令 → reply 子命令列表
+    │   │   │   if consumed: return
+    │   │   └─ for each plugin:
+    │   │       └─ lua.Call("on_message", eventTable)
+    │   │       └─ if consumed: return
+    │   │
+    │   └─ handleMessage(ctx, ev)  // LLM Agent 处理
         │
         ├─ dao.ChatArea.GetOrCreate(type, targetID)
         ├─ acl.Check(userID, chatAreaID, "chat")
@@ -110,17 +123,12 @@ OneBot11 WS → adapter.readLoop()
         │   └─ parseChatResponse → ChatResponse{Message, TokenUsage}
         │
         ├─ [文本响应]:
-        │   ├─ [群聊] isSilenceResponse(content)?
-        │   │   ├─ 是 → 丢弃(不记录), 跳过 handleToolCalls
-        │   │   └─ 否 → sendReply(msg, content)
-        │   │       ├─ [private] adapter.SendPrivateMsg
-        │   │       └─ [group]   adapter.SendGroupMsg
-        │   │           └─ wsServer.callAPI("send_group_msg", params)
-        │   │               └─ WS write → OneBot11 客户端 → QQ API
-        │   │       ├─ dao.ChatRecord.Create(assistant)
-        │   │       └─ memory.AddShortTermMessage(assistant)
-        │   │
-        │   └─ [私聊] → sendReply → 记录 (同上)
+        │   ├─ [私聊 或 StrategyAlways]:
+        │   │   └─ 跳过静默检测，直接 sendReply
+        │   ├─ [群聊 非 always]:
+        │   │   └─ isSilenceResponse(content)?
+        │   │       ├─ 是 → 丢弃(不记录), 跳过 handleToolCalls
+        │   │       └─ 否 → sendReply(msg, content)
         │
         └─ [Tool Call 响应]:
             └─ handleToolCalls(ctx, msg, chatAreaID, ...)
@@ -149,9 +157,8 @@ OneBot11 WS → adapter.readLoop()
                         │   └─ [任务完成]: LLM 整合 → sendReply
                         └─ loop
     │
-    └─ [CronJob 事件]:
-        └─ case ev, ok := <-h.CronJobEvents:  // 注入队列后的 CronJob 事件
-            └─ processEvent(ctx, ev) → handleMessage (跳过 Plugin 拦截)
+    └─ [CronJob/BgTaskResult 事件]:
+        └─ processEvent → 跳过策略评估 → handleMessage
 ```
 
 ## MCP 工具调用栈

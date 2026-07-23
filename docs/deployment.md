@@ -243,14 +243,25 @@ sudo journalctl -u juan-niang-neo -f
 - npm
 - make(可选)
 
-### 5.2 make 一键
+### 5.2 Docker Build（国内加速）
+
+项目提供了两个 Dockerfile：
+
+| 文件 | 用途 |
+|------|------|
+| `deployments/Dockerfile` | 海外环境（从 Docker Hub 拉取基础镜像） |
+| `deployments/Dockerfile.cn` | 国内环境（Aliyun 镜像，Alpine apk 换 aliyun 源，Go proxy 用 goproxy.cn） |
+
+使用 `docker build -f deployments/Dockerfile.cn .` 可大幅加速境内构建。
+
+### 5.3 make 一键
 
 ```bash
 make           # 等价 make build
 make build     # web-build -> build-go, 产出 web/dist + bin/juan-niang-neo
 ```
 
-### 5.3 手工分步
+### 5.4 手工分步
 
 ```bash
 # 前端
@@ -263,7 +274,7 @@ cd ..
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/juan-niang-neo ./cmd/server
 ```
 
-### 5.4 交叉编译
+### 5.5 交叉编译
 
 ```bash
 # Linux amd64 例

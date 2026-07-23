@@ -120,13 +120,14 @@
 **Tool (`tool/`)**
 - `Tool` 接口: ID/Name/Description/Parameters/Execute/IsBuiltin/IsLongRunning
 - `ToolRegistry`: map 存储, GetOpenAITools 转换
-- 内置工具 (16 个):
-  - OneBot11 (11): send_private_msg, send_group_msg, delete_msg, get_group_info,
+- 内置工具 (18 个):
+  - OneBot11 (12): send_private_msg, send_group_msg, delete_msg, get_group_info,
     get_group_member_list, kick_group_member, ban_group_member, set_group_whole_ban,
-    set_group_card, handle_friend_request, handle_group_request
+    set_group_card, handle_friend_request, handle_group_request, send_face
+  - 查询 (1): list_super_faces
   - 基础 (1): get_time
   - 沙箱 (3): browser_search, command_exec, code_exec (长耗时)
-  - T2I (1): text_to_image (长耗时)
+  - T2I (1): text_to_image (长耗时，返回图片 URL 由主 Agent 组装发送)
   - Vision (1): 识图 (仅 Image Model 配置时可用)
 - 富文本消息: `BuildMessageFromJSON` 解析 string/[]Segment
 - **内置工具 ID 前缀 `builtin:`**: `Service.ListTools` 合并 `ToolRegistry.List()` 内置工具与 DB `ToolConfig`：
@@ -152,8 +153,21 @@
 - `isSilenceResponse(content)`: 双路径检测
   - 主路径: `strings.Contains(content, SilenceToken)` 精确匹配静默标记
   - 兜底路径: 匹配静默短语/emoji 列表（LLM 未按要求输出标记时的容错）
-- `handleMessage` 中: 群聊场景 + 静默响应 → 丢弃该响应（不发 QQ 消息、不记录 `ChatRecord`、不写入短期记忆），同时跳过 ToolCalls 结果处理
+- `handleMessage` 中: 群聊场景 + 静默响应 → 丢弃该响应（不发 QQ 消息、不记录 `ChatRecord`、不写入短期记忆），同时跳过 ToolCalls 结果处理；`StrategyAlways` 模式下跳过静默检测
 - 兜底短语列表: `保持静默` / `不回复` / `不响应` / `做空气` / `装死` / `😶` / `🤐` 等
+
+**回复策略 (`reply_strategy.go`)**
+- `ReplyStrategyConfig` GORM 单例行，持久化于 `reply_strategy_config` 表
+- 五种策略模式: `never_reply` / `at_only` / `always` / `plugin_only` / `relevance`
+- `relevanceAgentEvaluate()`: `StrategyRelevance` 的核心，调用独立 LLM（不影响主对话）评估消息相关性：
+  - 文本消息: 取最近 10 条短期记忆 + 发送者信息，构造`你是群聊判断者` prompt，调用 Text Provider（temperature=0.3）
+  - 图片消息: 有 Vision Provider 时走图片分析 prompt；无则返回 score=0
+  - 解析 LLM 返回的 `{"relevance": float, "reason": string}` JSON
+  - `extractRelevanceJSON()` 容错: 正则分别提取 `relevance` 和 `reason`，容忍 reason 中的未转义引号
+- `isAtSelf(rawMsg)`: 检测 `[CQ:at,qq=<selfQQ>]`，selfQQ 优先运行时 `Adapter.SelfID()`，fallback 到启动时缓存的 `SelfQQ`
+- `isPluginCommand(rawMsg)`: 委托到 `PluginEngine.HasPluginCommand`（trie 存在性检查，不执行命令）
+- 策略配置通过 `GET/PUT /api/v1/reply-strategy` 热更新，`loadReplyStrategy()` 在 `HagoCenter.Init` 时初始化
+- `BotName` 字段: 用户自定义机器人名字（如 "小卷"），注入相关性和系统 prompt 用于辅助判断
 
 ### 4. 后台任务系统
 
