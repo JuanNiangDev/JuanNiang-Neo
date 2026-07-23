@@ -18,6 +18,7 @@ type ReplyStrategyConfig struct {
 	ID                 string        `gorm:"primaryKey;type:uuid" json:"id"`
 	Strategy           ReplyStrategy `gorm:"not null;default:'always'" json:"strategy"`
 	RelevanceThreshold float64       `gorm:"default:0.5" json:"relevance_threshold"`
+	BotName            string        `gorm:"default:''" json:"bot_name"`
 	CreatedAt          time.Time     `json:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at"`
 }

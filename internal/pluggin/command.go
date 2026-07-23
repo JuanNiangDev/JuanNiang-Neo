@@ -111,6 +111,39 @@ func (r *CommandRegistry) Find(path []string) *CommandNode {
 	return cur
 }
 
+// HasCommand 检查消息是否匹配任何已注册的命令（不执行，仅判断是否有命令）。
+func (r *CommandRegistry) HasCommand(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "/") {
+		return false
+	}
+	tokens := strings.Fields(raw)
+	if len(tokens) == 0 {
+		return false
+	}
+	tokens[0] = strings.TrimPrefix(tokens[0], "/")
+	if tokens[0] == "" {
+		return false
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	cur := r.root
+	var matched bool
+	for _, tok := range tokens {
+		next, ok := cur.Children[tok]
+		if !ok {
+			break
+		}
+		cur = next
+		if next.Handler != nil {
+			matched = true
+		}
+	}
+	return matched
+}
+
 // Dispatch 解析 raw 消息并派发到对应命令。
 // raw 应为以 "/" 开头的消息。返回 (consumed, reply, err)。
 // 若找不到匹配命令，consumed=false 让上层 fallback 到 on_message。

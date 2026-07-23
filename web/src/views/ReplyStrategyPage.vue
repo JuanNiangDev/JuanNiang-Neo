@@ -51,6 +51,22 @@
                     Agent 判断消息相关性 &ge; 阈值时才会回复。被@时自动绕过此判断。
                     <br />当前阈值: {{ form.relevance_threshold.toFixed(2) }}
                   </div>
+
+                  <v-divider class="my-3" />
+
+                  <div class="text-subtitle-2 font-weight-bold mb-2">机器人名字</div>
+                  <v-text-field
+                    v-model="form.bot_name"
+                    label="机器人名字（用于相关性判断，如「小卷」）"
+                    placeholder="例如：小卷"
+                    density="comfortable"
+                    variant="outlined"
+                    hide-details
+                    clearable
+                  />
+                  <div class="text-caption text-medium-emphasis mt-2">
+                    设置机器人名字后，相关性检查会参考此名字来判断消息是否指向机器人。
+                  </div>
                 </v-card>
               </v-expand-transition>
 
@@ -76,6 +92,7 @@ const saving = ref(false)
 const form = ref({
   strategy: 'always',
   relevance_threshold: 0.5,
+  bot_name: '',
 })
 
 async function load() {
@@ -85,6 +102,7 @@ async function load() {
     if (d) {
       form.value.strategy = d.strategy || 'always'
       form.value.relevance_threshold = d.relevance_threshold ?? 0.5
+      form.value.bot_name = d.bot_name || ''
     }
   } catch (_e: any) {}
 }
@@ -95,6 +113,7 @@ async function handleSave() {
     await replyStrategyApi.update({
       strategy: form.value.strategy,
       relevance_threshold: form.value.relevance_threshold,
+      bot_name: form.value.bot_name,
     })
     toastStore.success('回复策略已保存')
   } catch (e: any) {

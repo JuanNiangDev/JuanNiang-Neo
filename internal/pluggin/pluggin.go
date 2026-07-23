@@ -388,6 +388,11 @@ type EventData struct {
 	Webhook     map[string]any `json:"webhook,omitempty"`
 }
 
+// HasPluginCommand 检查消息是否匹配已注册的插件命令（不执行，仅供策略层判断）。
+func (pe *PluginEngine) HasPluginCommand(raw string) bool {
+	return pe.commands.HasCommand(raw)
+}
+
 func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()

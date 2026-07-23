@@ -20,7 +20,7 @@ type RelevanceCheckResult struct {
 
 // relevanceAgentEvaluate 调用 LLM 评估消息相关性。
 // 返回 0-1 之间的相关性分数，以及原因。
-func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.MessageEvent, recentMessages []string) (float64, string) {
+func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.MessageEvent, recentMessages []string, botName string) (float64, string) {
 	// 获取机器人 QQ，优先 Adapter 实时值（防止缓存为 0）
 	selfQQ := h.SelfQQ
 	if h.Adapter != nil {
@@ -100,6 +100,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 	prompt := fmt.Sprintf(`你是一个群聊相关度判断助手。请根据以下群聊上下文判断当前消息是否与你（机器人）相关，是否需要你回复。
 
 你的身份:
+- 你的名字: %s
 - 你的昵称: %s
 - 你的QQ: %d
 - 群聊中 at 你的格式: [CQ:at,qq=%d]
@@ -109,7 +110,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 - 发送者QQ: %d
 
 回复规则:
-- 如果消息明确指向你（@你、叫你名字"%s"、称呼"机器人"/"bot"、询问你的能力、请求你操作），相关度应该高（>0.7）
+- 如果消息明确指向你（@你、叫你的名字"%s"或"%s"、称呼"机器人"/"bot"、询问你的能力、请求你操作），相关度应该高（>0.7）
 - 如果消息是群友之间的闲聊、互怼、讨论与你无关的话题，相关度应该低（<0.3）
 - 如果消息是群管理相关需求（踢人、禁言等），即使没有@你，相关度也应该高
 - 如果消息是群友之间互相求助且没有@你，相关度应该低
@@ -120,7 +121,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 {"relevance": 0.0-1.0, "reason": "简短原因"}
 
 上下文:
-%s`, h.SelfNickname, selfQQ, selfQQ, msg.Sender.Nickname, msg.UserID, h.SelfNickname, contextStr)
+%s`, botName, h.SelfNickname, selfQQ, selfQQ, msg.Sender.Nickname, msg.UserID, h.SelfNickname, botName, contextStr)
 
 	messages := []provider.ChatMessage{
 		{Role: "system", Content: "你是一个群聊相关性判断助手。请以 JSON 格式回复。"},
@@ -232,4 +233,12 @@ func (h *HagoCenter) isAtSelf(rawMsg string) bool {
 		return false
 	}
 	return strings.Contains(rawMsg, fmt.Sprintf("[CQ:at,qq=%d]", selfQQ))
+}
+
+// isPluginCommand 检查消息是否是已注册的插件命令（以 / 开头且在命令注册表中存在）。
+func (h *HagoCenter) isPluginCommand(rawMsg string) bool {
+	if h.PluginEngine == nil {
+		return false
+	}
+	return h.PluginEngine.HasPluginCommand(rawMsg)
 }

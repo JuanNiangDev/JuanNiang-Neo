@@ -249,4 +249,5 @@ type ToggleCronJobReq struct {
 type UpdateReplyStrategyReq struct {
 	Strategy           string  `json:"strategy"`
 	RelevanceThreshold float64 `json:"relevance_threshold"`
+	BotName            string  `json:"bot_name"`
 }

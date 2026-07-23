@@ -196,8 +196,8 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 			h.runPluginOnly(ctx, ev)
 			return
 		case models.StrategyRelevance:
-			// 相关性判断：@我直接通过，否则调用相关性 Agent
-			if !h.isAtSelf(msg.RawMessage) {
+			// 相关性判断：@我 或 插件命令 直接通过，否则调用相关性 Agent
+			if !h.isAtSelf(msg.RawMessage) && !h.isPluginCommand(msg.RawMessage) {
 				// 获取 ChatArea 用于短期记忆查询
 				chatAreaID := ""
 				if msg.MessageType == "group" {
@@ -207,7 +207,7 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 					}
 				}
 				recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
-				score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs)
+				score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, cfg.BotName)
 				if score < cfg.RelevanceThreshold {
 					slog.Debug("回复策略: 相关性不足，跳过",
 						"score", score, "threshold", cfg.RelevanceThreshold, "reason", reason,

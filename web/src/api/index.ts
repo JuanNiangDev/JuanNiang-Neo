@@ -223,10 +223,12 @@ export const cronJobApi = {
 export interface ReplyStrategyResp {
   strategy: string
   relevance_threshold: number
+  bot_name: string
 }
 export interface UpdateReplyStrategyReq {
   strategy: string
   relevance_threshold: number
+  bot_name: string
 }
 
 export const replyStrategyApi = {
