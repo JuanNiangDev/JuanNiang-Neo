@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"JuanNiang-Neo/internal/adapter"
@@ -150,19 +152,26 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 	return result.Relevance, result.Reason
 }
 
-// extractRelevanceJSON 从 LLM 响应中提取 JSON
+// extractRelevanceJSON 从 LLM 响应中提取 JSON，处理 reason 中可能包含未转义引号的情况。
 func extractRelevanceJSON(content string) RelevanceCheckResult {
-	// 尝试找到 JSON 对象
-	start := strings.Index(content, "{")
-	end := strings.LastIndex(content, "}")
-	if start >= 0 && end > start {
-		jsonStr := content[start : end+1]
-		var result RelevanceCheckResult
-		if err := json.Unmarshal([]byte(jsonStr), &result); err == nil {
-			return result
+	result := RelevanceCheckResult{Relevance: 0, Reason: "无法解析相关性结果"}
+
+	// 1. 用正则提取 relevance 数值
+	reRel := regexp.MustCompile(`"relevance"\s*:\s*([\d.]+)`)
+	if m := reRel.FindStringSubmatch(content); len(m) >= 2 {
+		if v, err := strconv.ParseFloat(m[1], 64); err == nil {
+			result.Relevance = v
 		}
 	}
-	return RelevanceCheckResult{Relevance: 0, Reason: "无法解析相关性结果"}
+
+	// 2. 提取 reason：从 "reason": 之后到最后一个 "} 之前
+	//    处理 reason 值中可能包含未转义双引号的情况
+	reReason := regexp.MustCompile(`"reason"\s*:\s*"(.+)"\s*}`)
+	if m := reReason.FindStringSubmatch(content); len(m) >= 2 {
+		result.Reason = m[1]
+	}
+
+	return result
 }
 
 // extractImageURL 从消息段中提取图片 URL
