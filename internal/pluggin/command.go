@@ -137,7 +137,9 @@ func (r *CommandRegistry) HasCommand(raw string) bool {
 			break
 		}
 		cur = next
-		if next.Handler != nil {
+		// 叶节点（有 Handler）或分组节点（有子命令）都视为命中，
+		// 因为 Dispatch 会对两者产生有效输出（执行命令 / 列出子命令）
+		if next.Handler != nil || len(next.Children) > 0 {
 			matched = true
 		}
 	}

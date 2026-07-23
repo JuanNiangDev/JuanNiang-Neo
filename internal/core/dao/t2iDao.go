@@ -34,5 +34,5 @@ func (d *T2IConfigDAO) GetConfig(ctx context.Context) (*models.T2IConfig, error)
 
 // UpdateConfig 更新 T2I 配置。
 func (d *T2IConfigDAO) UpdateConfig(ctx context.Context, conf *models.T2IConfig) error {
-	return d.db.WithContext(ctx).Where("id = 1").Updates(conf).Error
+	return d.db.WithContext(ctx).Where("id = 1").Select("*").Updates(conf).Error
 }
