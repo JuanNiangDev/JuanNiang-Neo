@@ -621,10 +621,10 @@ func splitMessages(content string) []string {
 }
 
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
-	if h.StripMarkdown {
-		content = stripMarkdown(content)
-	}
 	for _, part := range splitMessages(content) {
+		if h.StripMarkdown {
+			part = stripMarkdown(part)
+		}
 		var err error
 		switch msg.MessageType {
 		case "private":
