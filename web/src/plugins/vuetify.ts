@@ -1,13 +1,10 @@
 import { createVuetify } from 'vuetify'
-import * as components from 'vuetify/components'
-import * as directives from 'vuetify/directives'
 import 'vuetify/styles'
 import '@mdi/font/css/materialdesignicons.css'
 import { JuanNiangTheme, JuanNiangThemeDark } from '@/theme/theme'
 
+// vite-plugin-vuetify 的 autoImport 自动按需导入组件和指令，无需手动注册
 export default createVuetify({
-  components,
-  directives,
   theme: {
     defaultTheme: 'JuanNiangThemeDark',
     themes: {
