@@ -53,13 +53,17 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 - 你的昵称: %s
 - 你的QQ: %d
 
+当前消息:
+- 发送者昵称: %s
+- 发送者QQ: %d
+
 回复规则:
 - 如果图片/文字明确指向你（@你、叫你名字"%s"、询问你的能力、请求你操作），相关度应该高（>0.7）
 - 如果图片/文字是群友之间的闲聊、互怼、讨论与你无关的话题，相关度应该低（<0.3）
 - 如果图片/文字是群管理相关需求，相关度应该高
 - 如果图片是纯表情包、风景照、美食照等与任务无关的内容，相关度应该低
 
-请以 JSON 格式回复: {"relevance": 0.0-1.0, "reason": "简短原因"}`, h.SelfNickname, selfQQ, h.SelfNickname)
+请以 JSON 格式回复: {"relevance": 0.0-1.0, "reason": "简短原因"}`, h.SelfNickname, selfQQ, msg.Sender.Nickname, msg.UserID, h.SelfNickname)
 					// 下载图片并调用 Vision
 					resp, err := visionModel.Vision(ctx, nil, prompt) // Vision expects raw image bytes
 					if err != nil {
@@ -100,6 +104,10 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 - 你的QQ: %d
 - 群聊中 at 你的格式: [CQ:at,qq=%d]
 
+当前消息:
+- 发送者昵称: %s
+- 发送者QQ: %d
+
 回复规则:
 - 如果消息明确指向你（@你、叫你名字"%s"、称呼"机器人"/"bot"、询问你的能力、请求你操作），相关度应该高（>0.7）
 - 如果消息是群友之间的闲聊、互怼、讨论与你无关的话题，相关度应该低（<0.3）
@@ -112,7 +120,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 {"relevance": 0.0-1.0, "reason": "简短原因"}
 
 上下文:
-%s`, h.SelfNickname, selfQQ, selfQQ, h.SelfNickname, contextStr)
+%s`, h.SelfNickname, selfQQ, selfQQ, msg.Sender.Nickname, msg.UserID, h.SelfNickname, contextStr)
 
 	messages := []provider.ChatMessage{
 		{Role: "system", Content: "你是一个群聊相关性判断助手。请以 JSON 格式回复。"},

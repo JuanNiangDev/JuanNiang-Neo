@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -526,7 +527,7 @@ except Exception as e:
 
 	if getT2I != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片(长耗时)，返回图片 URL。生成后你需要自行组装消息发送：在回复文本中包含 [CQ:image,file=返回的URL] ，或调用 send_group_msg/send_private_msg 时把消息参数设为该 CQ 码。",
+			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片(长耗时)，系统自动发送。你只需告知用户图片已生成，无需手动发送。",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -541,7 +542,7 @@ except Exception as e:
 				}
 				var p struct{ HTML string `json:"html"` }
 				json.Unmarshal(args, &p)
-				url, err := t2i.GenerateURL(ctx, t2icaller.GenerateRequest{
+				imgBytes, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
 					HTML: p.HTML,
 					Options: &t2icaller.GenerateOptions{
 						Type:    t2icaller.ImageTypeJPEG,
@@ -551,7 +552,8 @@ except Exception as e:
 				if err != nil {
 					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
-				return fmt.Sprintf("图片已生成，URL: %s\n你可以在回复中用 [CQ:image,file=%s] 发送该图片。", url, url), nil
+				b64 := base64.StdEncoding.EncodeToString(imgBytes)
+				return fmt.Sprintf("图片已生成并发送 (%d bytes)\n[CQ:image,file=base64://%s]", len(imgBytes), b64), nil
 			},
 		})
 	}

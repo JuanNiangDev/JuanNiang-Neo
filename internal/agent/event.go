@@ -153,6 +153,12 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
+	// 后台任务结果事件（Drainer 合成）跳过策略检查，图片等媒体已由 Drainer 直接发送
+	if ev.IsBgTaskResult {
+		h.handleMessage(ctx, ev)
+		return
+	}
+
 	// === 回复策略过滤 ===
 	msg := ev.Message
 	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
