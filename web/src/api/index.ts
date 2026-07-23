@@ -224,11 +224,13 @@ export interface ReplyStrategyResp {
   strategy: string
   relevance_threshold: number
   bot_name: string
+  strip_markdown: boolean
 }
 export interface UpdateReplyStrategyReq {
   strategy: string
   relevance_threshold: number
   bot_name: string
+  strip_markdown: boolean
 }
 
 export const replyStrategyApi = {

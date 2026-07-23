@@ -19,6 +19,7 @@ type ReplyStrategyConfig struct {
 	Strategy           ReplyStrategy `gorm:"not null;default:'always'" json:"strategy"`
 	RelevanceThreshold float64       `gorm:"default:0.5" json:"relevance_threshold"`
 	BotName            string        `gorm:"default:''" json:"bot_name"`
+	StripMarkdown      bool          `gorm:"default:false" json:"strip_markdown"` // 是否去除 Agent 消息中的 Markdown 格式
 	CreatedAt          time.Time     `json:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at"`
 }

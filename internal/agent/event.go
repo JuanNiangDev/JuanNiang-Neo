@@ -155,6 +155,9 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 
 	// 后台任务结果事件（Drainer 合成）跳过策略检查，图片等媒体已由 Drainer 直接发送
 	if ev.IsBgTaskResult {
+		if cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx); err == nil {
+			h.StripMarkdown = cfg.StripMarkdown
+		}
 		h.handleMessage(ctx, ev)
 		return
 	}
@@ -167,9 +170,12 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 		if err != nil {
 			slog.Warn("获取回复策略失败，跳过过滤", "err", err)
-		} else if cfg.Strategy == models.StrategyNeverReply {
-			slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
-			return
+		} else {
+			h.StripMarkdown = cfg.StripMarkdown
+			if cfg.Strategy == models.StrategyNeverReply {
+				slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
+				return
+			}
 		}
 		// 非完全不回复策略，私聊直接放行
 		h.handleMessage(ctx, ev)
@@ -180,6 +186,7 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	if err != nil {
 		slog.Warn("获取回复策略失败，跳过过滤", "err", err)
 	} else {
+		h.StripMarkdown = cfg.StripMarkdown
 		switch cfg.Strategy {
 		case models.StrategyNeverReply:
 			// 完全不处理
@@ -614,6 +621,9 @@ func splitMessages(content string) []string {
 }
 
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
+	if h.StripMarkdown {
+		content = stripMarkdown(content)
+	}
 	for _, part := range splitMessages(content) {
 		var err error
 		switch msg.MessageType {

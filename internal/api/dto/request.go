@@ -250,4 +250,5 @@ type UpdateReplyStrategyReq struct {
 	Strategy           string  `json:"strategy"`
 	RelevanceThreshold float64 `json:"relevance_threshold"`
 	BotName            string  `json:"bot_name"`
+	StripMarkdown      bool    `json:"strip_markdown"`
 }

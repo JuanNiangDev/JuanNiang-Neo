@@ -55,6 +55,9 @@ type HagoCenter struct {
 	SelfQQ       int64
 	SelfNickname string
 
+	// StripMarkdown 缓存回复策略中的去 Markdown 开关（每次 processEvent 刷新）
+	StripMarkdown bool
+
 	// CurrentSessionCtx 当前会话上下文（供 get_session_info 工具使用）
 	CurrentSessionCtx string
 	// CurrentMsg 当前正在处理的消息（供工具获取发送目标）

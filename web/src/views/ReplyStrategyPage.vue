@@ -1,18 +1,19 @@
 <template>
   <div>
     <div class="page-header">
-      <div class="page-title"><v-icon class="me-2" color="primary">mdi-reply-circle</v-icon>系统回复策略</div>
-      <div class="page-subtitle">控制机器人在群聊和私聊中的回复行为</div>
+      <div class="page-title"><v-icon class="me-2" color="primary">mdi-reply-circle</v-icon>系统回复设置</div>
+      <div class="page-subtitle">控制机器人的回复行为与消息格式</div>
     </div>
 
     <v-row>
       <v-col cols="12" md="8">
-        <v-card rounded="lg" elevation="1">
+        <!-- 回复策略卡片 -->
+        <v-card rounded="lg" elevation="1" class="mb-6">
           <v-card-item>
             <template #title><span class="text-h6 font-weight-bold">回复策略</span></template>
           </v-card-item>
           <v-card-text>
-            <v-form @submit.prevent="handleSave" ref="formRef">
+            <v-form @submit.prevent="handleSave">
               <v-radio-group v-model="form.strategy" class="mb-4">
                 <v-radio label="完全不回复 — 不处理任何消息" value="never_reply" color="error" />
                 <v-radio label="仅@我时回复 — 只有被@时才交给 Plugin 和 Agent" value="at_only" color="warning" />
@@ -76,6 +77,32 @@
             </v-form>
           </v-card-text>
         </v-card>
+
+        <!-- 其他设置卡片 -->
+        <v-card rounded="lg" elevation="1">
+          <v-card-item>
+            <template #title><span class="text-h6 font-weight-bold">其他设置</span></template>
+          </v-card-item>
+          <v-card-text>
+            <v-form @submit.prevent="handleSave">
+              <v-switch
+                v-model="form.strip_markdown"
+                label="去除 Markdown 格式 — Agent 发送消息前去除加粗、斜体、代码块等格式"
+                color="primary"
+                hide-details
+                class="mb-2"
+              />
+              <div class="text-caption text-medium-emphasis mb-4">
+                开启后，Agent 回复中的 **加粗**、*斜体*、`代码`、[链接]、标题、列表 等 Markdown
+                格式将被去除，发送纯文本到 QQ。
+              </div>
+
+              <v-btn type="submit" color="primary" variant="tonal" :loading="saving">
+                <v-icon class="me-1">mdi-content-save</v-icon> 保存设置
+              </v-btn>
+            </v-form>
+          </v-card-text>
+        </v-card>
       </v-col>
     </v-row>
   </div>
@@ -93,6 +120,7 @@ const form = ref({
   strategy: 'always',
   relevance_threshold: 0.5,
   bot_name: '',
+  strip_markdown: false,
 })
 
 async function load() {
@@ -103,6 +131,7 @@ async function load() {
       form.value.strategy = d.strategy || 'always'
       form.value.relevance_threshold = d.relevance_threshold ?? 0.5
       form.value.bot_name = d.bot_name || ''
+      form.value.strip_markdown = d.strip_markdown || false
     }
   } catch (_e: any) {}
 }
@@ -114,8 +143,9 @@ async function handleSave() {
       strategy: form.value.strategy,
       relevance_threshold: form.value.relevance_threshold,
       bot_name: form.value.bot_name,
+      strip_markdown: form.value.strip_markdown,
     })
-    toastStore.success('回复策略已保存')
+    toastStore.success('回复设置已保存')
   } catch (e: any) {
     toastStore.error(e?.response?.data?.info || e?.message || '保存失败')
   } finally { saving.value = false }
