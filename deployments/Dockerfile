@@ -54,9 +54,9 @@ COPY --from=go-builder /juan-niang-neo /usr/local/bin/juan-niang-neo
 COPY --from=web-builder  /app/web/dist /app/web/dist
 COPY config/ /etc/juan-niang-neo/config
 
-# 运行时数据 (plugin 目录由 compose bind-mount 进来; 这里只准备兜底空目录)
-RUN mkdir -p /app/data/pluggins \
-    && chown -R jn:jn /app /etc/juan-niang-neo
+# 运行时数据 (插件 + SDK 打包进镜像，compose bind-mount 可覆盖)
+COPY data/ /app/data/
+RUN chown -R jn:jn /app /etc/juan-niang-neo
 
 ENV WEB_DIR=/app/web/dist \
     TZ=Asia/Shanghai \
