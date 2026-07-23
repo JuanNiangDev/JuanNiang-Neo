@@ -728,9 +728,15 @@ func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.Messa
 		parts = append(parts, fmt.Sprintf("当前消息ID: %d", msg.MessageID))
 	}
 
-	// 机器人自身信息
-	if h.SelfQQ != 0 {
-		parts = append(parts, fmt.Sprintf("你的QQ: %d", h.SelfQQ))
+	// 机器人自身信息（优先 Adapter 实时 SelfID，防止 Init 时 QQ bot 未连接导致缓存为 0）
+	selfQQ := h.SelfQQ
+	if h.Adapter != nil {
+		if id := h.Adapter.SelfID(); id != 0 {
+			selfQQ = id
+		}
+	}
+	if selfQQ != 0 {
+		parts = append(parts, fmt.Sprintf("你的QQ: %d", selfQQ))
 	}
 	if h.SelfNickname != "" {
 		parts = append(parts, fmt.Sprintf("你的昵称: %s", h.SelfNickname))

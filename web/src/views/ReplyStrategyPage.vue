@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="page-header">
-      <div class="page-title"><v-icon class="me-2" color="primary">mdi-reply-circle-outline</v-icon>系统回复策略</div>
+      <div class="page-title"><v-icon class="me-2" color="primary">mdi-reply-circle</v-icon>系统回复策略</div>
       <div class="page-subtitle">控制机器人在群聊和私聊中的回复行为</div>
     </div>
 

@@ -21,6 +21,14 @@ type RelevanceCheckResult struct {
 // relevanceAgentEvaluate 调用 LLM 评估消息相关性。
 // 返回 0-1 之间的相关性分数，以及原因。
 func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.MessageEvent, recentMessages []string) (float64, string) {
+	// 获取机器人 QQ，优先 Adapter 实时值（防止缓存为 0）
+	selfQQ := h.SelfQQ
+	if h.Adapter != nil {
+		if id := h.Adapter.SelfID(); id != 0 {
+			selfQQ = id
+		}
+	}
+
 	// 检查是否有图片消息但无视觉模型
 	hasImage := false
 	for _, seg := range msg.Message {
@@ -51,7 +59,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 - 如果图片/文字是群管理相关需求，相关度应该高
 - 如果图片是纯表情包、风景照、美食照等与任务无关的内容，相关度应该低
 
-请以 JSON 格式回复: {"relevance": 0.0-1.0, "reason": "简短原因"}`, h.SelfNickname, h.SelfQQ, h.SelfNickname)
+请以 JSON 格式回复: {"relevance": 0.0-1.0, "reason": "简短原因"}`, h.SelfNickname, selfQQ, h.SelfNickname)
 					// 下载图片并调用 Vision
 					resp, err := visionModel.Vision(ctx, nil, prompt) // Vision expects raw image bytes
 					if err != nil {
@@ -104,7 +112,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 {"relevance": 0.0-1.0, "reason": "简短原因"}
 
 上下文:
-%s`, h.SelfNickname, h.SelfQQ, h.SelfQQ, h.SelfNickname, contextStr)
+%s`, h.SelfNickname, selfQQ, selfQQ, h.SelfNickname, contextStr)
 
 	messages := []provider.ChatMessage{
 		{Role: "system", Content: "你是一个群聊相关性判断助手。请以 JSON 格式回复。"},
@@ -203,6 +211,17 @@ func (h *HagoCenter) getRecentMessagesByMsgType(ctx context.Context, msgType str
 }
 
 // isAtSelf 检查消息是否 @ 了机器人自己。
+// 优先使用 Adapter 实时 SelfID（防止 Init 时 QQ bot 尚未连接导致缓存为 0），
+// 回退到启动时缓存的 SelfQQ。
 func (h *HagoCenter) isAtSelf(rawMsg string) bool {
-	return strings.Contains(rawMsg, fmt.Sprintf("[CQ:at,qq=%d]", h.SelfQQ))
+	selfQQ := h.SelfQQ
+	if h.Adapter != nil {
+		if id := h.Adapter.SelfID(); id != 0 {
+			selfQQ = id
+		}
+	}
+	if selfQQ == 0 {
+		return false
+	}
+	return strings.Contains(rawMsg, fmt.Sprintf("[CQ:at,qq=%d]", selfQQ))
 }
