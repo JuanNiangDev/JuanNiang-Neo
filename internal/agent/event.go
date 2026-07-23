@@ -157,6 +157,7 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	if ev.IsBgTaskResult {
 		if cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx); err == nil {
 			h.StripMarkdown = cfg.StripMarkdown
+			h.DisableSplit = cfg.AgentLite
 		}
 		h.handleMessage(ctx, ev)
 		return
@@ -172,6 +173,7 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 			slog.Warn("获取回复策略失败，跳过过滤", "err", err)
 		} else {
 			h.StripMarkdown = cfg.StripMarkdown
+			h.DisableSplit = cfg.AgentLite
 			if cfg.Strategy == models.StrategyNeverReply {
 				slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
 				return
@@ -187,6 +189,7 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		slog.Warn("获取回复策略失败，跳过过滤", "err", err)
 	} else {
 		h.StripMarkdown = cfg.StripMarkdown
+		h.DisableSplit = cfg.AgentLite
 		switch cfg.Strategy {
 		case models.StrategyNeverReply:
 			// 完全不处理
@@ -371,9 +374,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		Tools:       toolList,
 		Temperature: 0.7,
 	}
-	// AgentLite 模式：不向 LLM 暴露工具
+	// AgentLite 模式：不向 LLM 暴露工具，并注入提示词
 	if agentLite {
 		req.Tools = nil
+		messages = append([]provider.ChatMessage{{
+			Role:    "system",
+			Content: "【AgentLite 模式】当前处于精简模式，你无法使用任何工具或 MCP 调用，也无法分条发送消息。请将所有回复合并为一条消息返回。",
+		}}, messages...)
+		req.Messages = messages
 	}
 
 	resp, err := llm.Chat(ctx, req)
@@ -631,7 +639,13 @@ func splitMessages(content string) []string {
 }
 
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
-	for _, part := range splitMessages(content) {
+	var parts []string
+	if h.DisableSplit {
+		parts = []string{content}
+	} else {
+		parts = splitMessages(content)
+	}
+	for _, part := range parts {
 		if h.StripMarkdown {
 			part = stripMarkdown(part)
 		}
