@@ -1794,6 +1794,74 @@ func (s *Service) ToggleCronJob(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+// ---------- 回复策略 ----------
+
+func (s *Service) GetReplyStrategy(ctx context.Context, c *app.RequestContext) {
+	cfg, err := s.DAO.ReplyStrategy.GetOrCreate(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ReplyStrategyResp{
+		Strategy:           string(cfg.Strategy),
+		RelevanceThreshold: cfg.RelevanceThreshold,
+		BotName:            cfg.BotName,
+	}))
+}
+
+func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateReplyStrategyReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 验证策略值
+	validStrategies := map[string]bool{
+		string(models.StrategyNeverReply): true,
+		string(models.StrategyAtOnly):     true,
+		string(models.StrategyAlways):     true,
+		string(models.StrategyPluginOnly): true,
+		string(models.StrategyRelevance):  true,
+	}
+	if !validStrategies[data.Strategy] {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40031, Info: "无效的回复策略"}, nil))
+		return
+	}
+
+	// 验证阈值
+	if data.Strategy == string(models.StrategyRelevance) {
+		if data.RelevanceThreshold < 0 || data.RelevanceThreshold > 1 {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: "相关性阈值必须在 0-1 之间"}, nil))
+			return
+		}
+		if data.RelevanceThreshold == 0 {
+			data.RelevanceThreshold = 0.5
+		}
+	}
+
+	cfg, err := s.DAO.ReplyStrategy.GetOrCreate(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	cfg.Strategy = models.ReplyStrategy(data.Strategy)
+	cfg.RelevanceThreshold = data.RelevanceThreshold
+	cfg.BotName = data.BotName
+
+	if err := s.DAO.ReplyStrategy.Update(ctx, cfg); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ReplyStrategyResp{
+		Strategy:           string(cfg.Strategy),
+		RelevanceThreshold: cfg.RelevanceThreshold,
+		BotName:            cfg.BotName,
+	}))
+}
+
 // ---------- helpers ----------
 
 func newUUID() string {

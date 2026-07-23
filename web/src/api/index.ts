@@ -218,3 +218,20 @@ export const cronJobApi = {
   delete: (id: string) => client.delete(`/cronjobs/${id}`),
   toggle: (id: string, is_active: boolean) => client.put(`/cronjobs/${id}/toggle`, { is_active }),
 }
+
+// ======== Reply Strategy ========
+export interface ReplyStrategyResp {
+  strategy: string
+  relevance_threshold: number
+  bot_name: string
+}
+export interface UpdateReplyStrategyReq {
+  strategy: string
+  relevance_threshold: number
+  bot_name: string
+}
+
+export const replyStrategyApi = {
+  get: () => client.get('/reply-strategy'),
+  update: (data: UpdateReplyStrategyReq) => client.put('/reply-strategy', data),
+}

@@ -124,4 +124,8 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/cronjobs/:id", auth, svc.UpdateCronJob)
 	api.DELETE("/cronjobs/:id", auth, svc.DeleteCronJob)
 	api.PUT("/cronjobs/:id/toggle", auth, svc.ToggleCronJob)
+
+	// Reply Strategy
+	api.GET("/reply-strategy", auth, svc.GetReplyStrategy)
+	api.PUT("/reply-strategy", auth, svc.UpdateReplyStrategy)
 }

@@ -147,25 +147,112 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	// CronJob 事件跳过 Plugin 拦截（插件不应拦截定时任务）
-	if ev.PostType != "cronjob" {
-		// Plugin 拦截
-		if h.PluginEngine != nil {
-			pluginEvent := pluggin.EventData{
-				PostType:    "message",
-				MessageType: ev.Message.MessageType,
-				UserID:      ev.Message.UserID,
-				GroupID:     ev.Message.GroupID,
-				RawMessage:  ev.Message.RawMessage,
-				Admins:      ev.Admins,
-			}
-			if h.PluginEngine.OnMessage(pluginEvent) {
+	// CronJob 事件跳过所有策略检查
+	if ev.PostType == "cronjob" {
+		h.handleMessage(ctx, ev)
+		return
+	}
+
+	// 后台任务结果事件（Drainer 合成）跳过策略检查，图片等媒体已由 Drainer 直接发送
+	if ev.IsBgTaskResult {
+		h.handleMessage(ctx, ev)
+		return
+	}
+
+	// === 回复策略过滤 ===
+	msg := ev.Message
+
+	// 私聊消息：除"完全不回复"外一律正常处理（无需@、无需相关性判断）
+	if msg.MessageType == "private" {
+		cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+		if err != nil {
+			slog.Warn("获取回复策略失败，跳过过滤", "err", err)
+		} else if cfg.Strategy == models.StrategyNeverReply {
+			slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
+			return
+		}
+		// 非完全不回复策略，私聊直接放行
+		h.handleMessage(ctx, ev)
+		return
+	}
+
+	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+	if err != nil {
+		slog.Warn("获取回复策略失败，跳过过滤", "err", err)
+	} else {
+		switch cfg.Strategy {
+		case models.StrategyNeverReply:
+			// 完全不处理
+			slog.Debug("回复策略: 完全不回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+			return
+		case models.StrategyAtOnly:
+			// 仅@我时回复，未被@则跳过
+			if !h.isAtSelf(msg.RawMessage) {
+				slog.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
 				return
 			}
+		case models.StrategyPluginOnly:
+			// 仅 Plugin，不调用 Agent
+			h.runPluginOnly(ctx, ev)
+			return
+		case models.StrategyRelevance:
+			// 相关性判断：@我 或 插件命令 直接通过，否则调用相关性 Agent
+			if !h.isAtSelf(msg.RawMessage) && !h.isPluginCommand(msg.RawMessage) {
+				// 获取 ChatArea 用于短期记忆查询
+				chatAreaID := ""
+				if msg.MessageType == "group" {
+					area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, msg.GroupID)
+					if err == nil {
+						chatAreaID = area.ID
+					}
+				}
+				recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
+				score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, cfg.BotName)
+				if score < cfg.RelevanceThreshold {
+					slog.Debug("回复策略: 相关性不足，跳过",
+						"score", score, "threshold", cfg.RelevanceThreshold, "reason", reason,
+						"group_id", msg.GroupID, "user_id", msg.UserID)
+					return
+				}
+				slog.Debug("回复策略: 相关性通过",
+					"score", score, "threshold", cfg.RelevanceThreshold, "reason", reason)
+			}
+		}
+		// StrategyAlways: 正常处理，无需额外操作
+	}
+
+	// Plugin 拦截
+	if h.PluginEngine != nil {
+		pluginEvent := pluggin.EventData{
+			PostType:    "message",
+			MessageType: ev.Message.MessageType,
+			UserID:      ev.Message.UserID,
+			GroupID:     ev.Message.GroupID,
+			RawMessage:  ev.Message.RawMessage,
+			Admins:      ev.Admins,
+		}
+		if h.PluginEngine.OnMessage(pluginEvent) {
+			return
 		}
 	}
 
 	h.handleMessage(ctx, ev)
+}
+
+// runPluginOnly 仅 Plugin 模式：运行插件但不调用 Agent。
+func (h *HagoCenter) runPluginOnly(ctx context.Context, ev adapter.Event) {
+	if h.PluginEngine != nil {
+		pluginEvent := pluggin.EventData{
+			PostType:    "message",
+			MessageType: ev.Message.MessageType,
+			UserID:      ev.Message.UserID,
+			GroupID:     ev.Message.GroupID,
+			RawMessage:  ev.Message.RawMessage,
+			Admins:      ev.Admins,
+		}
+		h.PluginEngine.OnMessage(pluginEvent)
+	}
+	slog.Debug("回复策略: 仅 Plugin，跳过 Agent", "group_id", ev.Message.GroupID, "user_id", ev.Message.UserID)
 }
 
 func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
@@ -281,9 +368,13 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 
 	h.Session.UpdateTokenUsage(ctx, sess.ID, int64(resp.TokenUsage))
 
+	// 获取回复策略，always 模式下跳过静默检测
+	replyCfg, _ := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+	skipSilenceCheck := replyCfg != nil && replyCfg.Strategy == models.StrategyAlways
+
 	if resp.Message.Content != "" {
-		// 群聊中 LLM 输出静默标记或静默废话时直接丢弃，不发送、不记录
-		if msg.MessageType == "group" && isSilenceResponse(resp.Message.Content) {
+		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(resp.Message.Content)
+		if silenced {
 			slog.Info("群聊静默响应已丢弃", "content", resp.Message.Content, "group_id", msg.GroupID)
 		} else {
 			h.sendReply(msg, resp.Message.Content)
@@ -295,8 +386,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	}
 
 	// 静默响应时也跳过工具调用（防止 LLM 绕过文本输出直接调 send_group_msg 发废话）
-	silenced := msg.MessageType == "group" && resp.Message.Content != "" && isSilenceResponse(resp.Message.Content)
-	if !silenced && len(resp.Message.ToolCalls) > 0 {
+	// always 模式下不跳过工具调用
+	toolSilenced := !skipSilenceCheck && msg.MessageType == "group" && resp.Message.Content != "" && isSilenceResponse(resp.Message.Content)
+	if !toolSilenced && len(resp.Message.ToolCalls) > 0 {
 		h.handleToolCalls(ctx, msg, chatArea.ID, userID, userMsg, sess.ID, messages, resp, ev.Admins)
 	}
 }
@@ -652,9 +744,20 @@ func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.Messa
 		}
 	}
 
-	// 机器人自身信息
-	if h.SelfQQ != 0 {
-		parts = append(parts, fmt.Sprintf("你的QQ: %d", h.SelfQQ))
+	// 当前消息 ID（供 Agent 使用 get_recent_messages 工具）
+	if msg.MessageID != 0 {
+		parts = append(parts, fmt.Sprintf("当前消息ID: %d", msg.MessageID))
+	}
+
+	// 机器人自身信息（优先 Adapter 实时 SelfID，防止 Init 时 QQ bot 未连接导致缓存为 0）
+	selfQQ := h.SelfQQ
+	if h.Adapter != nil {
+		if id := h.Adapter.SelfID(); id != 0 {
+			selfQQ = id
+		}
+	}
+	if selfQQ != 0 {
+		parts = append(parts, fmt.Sprintf("你的QQ: %d", selfQQ))
 	}
 	if h.SelfNickname != "" {
 		parts = append(parts, fmt.Sprintf("你的昵称: %s", h.SelfNickname))

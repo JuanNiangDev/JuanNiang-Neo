@@ -17,6 +17,7 @@ const router = createRouter({
       redirect: '/dashboard',
       children: [
         { path: 'dashboard', name: 'Dashboard', component: () => import('@/views/DashboardPage.vue') },
+        { path: 'reply-strategy', name: 'ReplyStrategy', component: () => import('@/views/ReplyStrategyPage.vue') },
         { path: 'adapter', name: 'Adapter', component: () => import('@/views/AdapterPage.vue') },
         { path: 'providers', name: 'Providers', component: () => import('@/views/ProvidersPage.vue') },
         { path: 'mcp', name: 'MCP', component: () => import('@/views/MCPPage.vue') },

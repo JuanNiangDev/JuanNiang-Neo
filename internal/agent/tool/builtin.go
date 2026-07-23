@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
@@ -64,6 +65,7 @@ func RegisterBuiltinTools(
 	imageModel provider.Provider,
 	getSessionCtx func() string,
 	getCurrentMsg func() *adapter.MessageEvent,
+	getRecentMsgs func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error),
 ) {
 	tools := []Tool{}
 
@@ -525,7 +527,7 @@ except Exception as e:
 
 	if getT2I != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片(长耗时)",
+			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片(长耗时)，系统自动发送。你只需告知用户图片已生成，无需手动发送。",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -550,9 +552,8 @@ except Exception as e:
 				if err != nil {
 					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
-				// base64 内嵌图片，避免 QQ 协议端无法访问 T2I 内部地址
 				b64 := base64.StdEncoding.EncodeToString(imgBytes)
-				return fmt.Sprintf("[CQ:image,file=base64://%s]", b64), nil
+				return fmt.Sprintf("图片已生成并发送 (%d bytes)\n[CQ:image,file=base64://%s]", len(imgBytes), b64), nil
 			},
 		})
 	}
@@ -607,25 +608,31 @@ except Exception as e:
 
 	if getCurrentMsg != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "send_face", "发送 QQ 表情（超级表情/emoji）到当前会话。注意：这是 QQ 内置表情系统，非图片。",
+			BaseTool: NewTool("", "send_face", "发送 QQ 超级表情到当前会话。⚠️ 必须先调用 list_super_faces 查询表情 ID 和 sub_type，再传入正确的 face_id 和 sub_type！不要自己编造参数。注意：这是 QQ 内置表情系统，非图片。",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
-						"face_id": map[string]any{"type": "integer", "description": "QQ 表情 ID。常用: 0=惊讶, 1=撇嘴, 2=色, 3=发呆, 4=得意, 5=流泪, 6=害羞, 7=闭嘴, 10=发怒, 12=太阳, 14=微笑, 18=可爱, 21=疑问, 22=无语, 23=晕, 27=敲打, 28=再见, 32=懵, 33=冷汗, 34=擦汗, 37=呲牙, 39=偷笑, 49=嘿哈, 53=祈祷, 55=流汗, 56=抠鼻, 63=委屈, 66=坏笑, 74=可怜, 76=酷, 89=尴尬, 97=大笑, 111=爱心, 112=心心眼, 136=双手合十, 142=抱拳, 150=墨镜笑脸, 182=耶, 188=狗头, 201=点赞, 211=笑哭, 227=旺柴, 264=FREE, 277=鲜花, 311=拳头"},
+						"face_id":  map[string]any{"type": "integer", "description": "QQ 表情 ID。必须先调用 list_super_faces 查询！常见经典小黄脸参考: 0=惊讶, 1=撇嘴, 2=色, 3=发呆, 4=得意, 5=流泪, 6=害羞, 7=闭嘴, 10=发怒, 14=微笑, 18=可爱, 21=疑问, 22=无语, 28=再见, 37=呲牙, 39=偷笑, 55=流汗, 63=委屈, 66=坏笑, 74=可怜, 76=酷, 89=尴尬, 97=大笑, 111=爱心, 142=抱拳, 182=耶, 188=狗头, 201=点赞, 211=笑哭, 277=鲜花"},
+						"sub_type": map[string]any{"type": "integer", "description": "表情 sub_type，超级表情为 3 或 5，经典小黄脸不填"},
 					},
 					"required": []string{"face_id"},
 				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				var p struct {
-					FaceID int `json:"face_id"`
+					FaceID  int `json:"face_id"`
+					SubType int `json:"sub_type"`
 				}
 				json.Unmarshal(args, &p)
 				msg := getCurrentMsg()
 				if msg == nil {
 					return "未获取到当前会话信息", nil
 				}
-				// 使用 CQ 码格式发送表情，normalizeMessage 会自动解析为消息段
-				cqCode := fmt.Sprintf("[CQ:face,id=%d]", p.FaceID)
+				var cqCode string
+				if p.SubType > 0 {
+					cqCode = fmt.Sprintf("[CQ:face,id=%d,sub_type=%d]", p.FaceID, p.SubType)
+				} else {
+					cqCode = fmt.Sprintf("[CQ:face,id=%d]", p.FaceID)
+				}
 				switch msg.MessageType {
 				case "private":
 					if _, err := adapter.SendPrivateMsg(msg.UserID, cqCode); err != nil {
@@ -639,7 +646,117 @@ except Exception as e:
 				return fmt.Sprintf("QQ 表情 (face_id=%d) 已发送", p.FaceID), nil
 			},
 		})
+
+		// list_super_faces
+		tools = append(tools, &onebotTool{
+			BaseTool: NewTool("", "list_super_faces", "查询所有可用的 QQ 超级表情（sub_type=3 动态表情 + sub_type=5 手势表情）。返回 ID 和名称列表。⚠️ 使用 send_face 前必须先调用此工具查询正确的 face_id！",
+				openai.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{},
+				}, true, false),
+			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+				type faceEntry struct {
+					ID     int    `json:"id"`
+					Name   string `json:"name"`
+					SubType int   `json:"sub_type"`
+				}
+				// sub_type=3 (动态超级表情): 98条
+				sub3 := []faceEntry{
+					{5, "流泪", 3}, {53, "蛋糕", 3}, {114, "篮球", 3}, {181, "戳一戳", 3},
+					{311, "打call", 3}, {312, "变形", 3}, {314, "仔细分析", 3}, {317, "菜汪", 3},
+					{318, "崇拜", 3}, {319, "比心", 3}, {320, "庆祝", 3}, {324, "吃糖", 3},
+					{325, "惊吓", 3}, {337, "花朵脸", 3}, {338, "我想开了", 3}, {339, "舔屏", 3},
+					{341, "打招呼", 3}, {342, "酸Q", 3}, {343, "我方了", 3}, {344, "大怨种", 3},
+					{346, "你真棒棒", 3}, {349, "坚强", 3}, {350, "贴贴", 3}, {351, "敲敲", 3},
+					{360, "亲亲", 3}, {361, "狗狗笑哭", 3}, {362, "好兄弟", 3}, {363, "狗狗可怜", 3},
+					{364, "超级赞", 3}, {365, "狗狗生气", 3}, {366, "芒狗", 3}, {367, "狗狗疑问", 3},
+					{368, "奥特笑哭", 3}, {369, "彩虹", 3}, {370, "祝贺", 3}, {371, "冒泡", 3},
+					{372, "气呼呼", 3}, {373, "忙", 3}, {374, "波波流泪", 3}, {375, "超级鼓掌", 3},
+					{376, "跺脚", 3}, {377, "嗨", 3}, {378, "企鹅笑哭", 3}, {379, "企鹅流泪", 3},
+					{380, "真棒", 3}, {381, "路过", 3}, {382, "emo", 3}, {383, "企鹅爱心", 3},
+					{384, "晚安", 3}, {385, "太气了", 3}, {386, "呜呜呜", 3}, {387, "太好笑", 3},
+					{388, "太头疼", 3}, {389, "太赞了", 3}, {390, "太头秃", 3}, {391, "太沧桑", 3},
+					{395, "略略略", 3}, {396, "狼狗", 3}, {397, "抛媚眼", 3}, {398, "超级ok", 3},
+					{399, "tui", 3}, {400, "快乐", 3}, {401, "超级转圈", 3}, {402, "别说话", 3},
+					{403, "出去玩", 3}, {404, "闪亮登场", 3}, {405, "好运来", 3}, {406, "姐是女王", 3},
+					{407, "我听听", 3}, {408, "臭美", 3}, {409, "送你花花", 3}, {410, "么么哒", 3},
+					{411, "一起嗨", 3}, {412, "开心", 3}, {413, "摇起来", 3}, {424, "续标识", 3},
+					{425, "求放过", 3}, {426, "玩火", 3}, {427, "偷感", 3}, {450, "撇嘴", 3},
+					{451, "色", 3}, {452, "微笑", 3}, {453, "发呆", 3}, {454, "得意", 3},
+					{455, "害羞", 3}, {456, "闭嘴", 3}, {457, "睡", 3}, {458, "我吗", 3},
+					{459, "优雅", 3}, {460, "硬撑", 3}, {461, "宕机", 3}, {462, "无语", 3},
+					{463, "新年快乐", 3}, {464, "马上到", 3}, {465, "拆红包", 3}, {466, "羞羞哒", 3},
+					{467, "摇花手", 3}, {468, "失眠", 3}, {469, "坚毅", 3}, {472, "心动", 3},
+					{474, "给你一拳", 3}, {475, "干饭", 3}, {476, "不是吧", 3}, {477, "你懂的", 3},
+					{478, "对的对的", 3}, {479, "不对不对", 3}, {480, "散味儿", 3}, {481, "学习", 3},
+					{482, "热化了", 3}, {483, "略", 3}, {484, "比爱心", 3},
+				}
+				// sub_type=5 (手势表情): 2种
+				sub5 := []faceEntry{
+					{2, "比心", 5}, {4, "比心_心碎", 5},
+				}
+
+				var b strings.Builder
+				b.WriteString(fmt.Sprintf("共 %d 个超级表情，按 sub_type 分组:\n", len(sub3)+len(sub5)))
+				b.WriteString("\n=== sub_type=3 动态超级表情 ===\n")
+				for _, e := range sub3 {
+					b.WriteString(fmt.Sprintf("  ID=%d  %s\n", e.ID, e.Name))
+				}
+				b.WriteString("\n=== sub_type=5 手势表情 ===\n")
+				for _, e := range sub5 {
+					b.WriteString(fmt.Sprintf("  ID=%d  %s\n", e.ID, e.Name))
+				}
+
+				return b.String(), nil
+			},
+		})
 	}
+
+	// --- 消息查询 ---
+
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "get_recent_messages", "获取当前会话中往上 N 条消息。用于了解上下文，判断群聊中是否有人@你或提到你。",
+			openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"limit": map[string]any{"type": "integer", "description": "获取的消息数量，默认 10"},
+				},
+			}, true, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Limit int `json:"limit"`
+			}
+			json.Unmarshal(args, &p)
+			if p.Limit <= 0 {
+				p.Limit = 10
+			}
+			if p.Limit > 50 {
+				p.Limit = 50
+			}
+			msg := getCurrentMsg()
+			if msg == nil {
+				return "未获取到当前会话信息", nil
+			}
+			targetID := int64(0)
+			if msg.MessageType == "private" {
+				targetID = msg.UserID
+			} else {
+				targetID = msg.GroupID
+			}
+			msgs, err := getRecentMsgs(ctx, msg.MessageType, targetID, p.Limit)
+			if err != nil {
+				return "", err
+			}
+			if len(msgs) == 0 {
+				return "暂无更早的消息记录", nil
+			}
+			result := fmt.Sprintf("最近 %d 条消息:\n", len(msgs))
+			for i, m := range msgs {
+				result += fmt.Sprintf("[%d] %s\n", i+1, m)
+			}
+			return result, nil
+		},
+	})
 
 	for _, t := range tools {
 		registry.Register(t)

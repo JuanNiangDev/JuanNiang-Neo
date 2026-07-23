@@ -24,6 +24,15 @@ export default defineConfig({
   },
   build: {
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-vue': ['vue', 'vue-router', 'pinia'],
+          'vendor-vuetify': ['vuetify'],
+          'vendor-axios': ['axios'],
+        },
+      },
+    },
   },
   server: {
     host: '0.0.0.0',

@@ -39,6 +39,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.SandboxConfig{},
 		&models.WebhookConfig{},
 		&models.CronJob{},
+		&models.ReplyStrategyConfig{},
 	)
 }
 
