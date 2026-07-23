@@ -161,6 +161,21 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 
 	// === 回复策略过滤 ===
 	msg := ev.Message
+
+	// 私聊消息：除"完全不回复"外一律正常处理（无需@、无需相关性判断）
+	if msg.MessageType == "private" {
+		cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+		if err != nil {
+			slog.Warn("获取回复策略失败，跳过过滤", "err", err)
+		} else if cfg.Strategy == models.StrategyNeverReply {
+			slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
+			return
+		}
+		// 非完全不回复策略，私聊直接放行
+		h.handleMessage(ctx, ev)
+		return
+	}
+
 	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
 		slog.Warn("获取回复策略失败，跳过过滤", "err", err)
