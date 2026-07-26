@@ -1550,8 +1550,7 @@ var systemPluginManifest string
 var systemPluginMain string
 
 // ensureEmbeddedAssets 在启动时把内嵌的 SDK 与 system 插件落盘到 data/pluggins/。
-// - SDK 始终覆盖（保持与二进制版本一致，IDE 类型与运行时同步）
-// - system 插件仅在不存在时写入（允许用户自定义修改）
+// SDK 与 system 插件始终覆盖写入，确保 Docker 挂载卷中的版本与二进制一致。
 func (pe *PluginEngine) ensureEmbeddedAssets() {
 	// 1. SDK 总是覆盖
 	sdkDir := filepath.Join(pe.basePath, "sdk")
@@ -1564,19 +1563,17 @@ func (pe *PluginEngine) ensureEmbeddedAssets() {
 		}
 	}
 
-	// 2. system 插件仅在不存在时写入
+	// 2. system 插件始终覆盖（随二进制更新同步）
 	sysDir := filepath.Join(pe.basePath, "system")
-	if _, err := os.Stat(filepath.Join(sysDir, "pluggin.yaml")); os.IsNotExist(err) {
-		if mkErr := os.MkdirAll(sysDir, 0o755); mkErr != nil {
-			slog.Warn("创建 system 插件目录失败", "err", mkErr)
-			return
-		}
-		if err := os.WriteFile(filepath.Join(sysDir, "pluggin.yaml"), []byte(systemPluginManifest), 0o644); err != nil {
-			slog.Warn("写入 system pluggin.yaml 失败", "err", err)
-		}
-		if err := os.WriteFile(filepath.Join(sysDir, "main.lua"), []byte(systemPluginMain), 0o644); err != nil {
-			slog.Warn("写入 system main.lua 失败", "err", err)
-		}
-		slog.Info("system 插件已落盘")
+	if err := os.MkdirAll(sysDir, 0o755); err != nil {
+		slog.Warn("创建 system 插件目录失败", "err", err)
+		return
 	}
+	if err := os.WriteFile(filepath.Join(sysDir, "pluggin.yaml"), []byte(systemPluginManifest), 0o644); err != nil {
+		slog.Warn("写入 system pluggin.yaml 失败", "err", err)
+	}
+	if err := os.WriteFile(filepath.Join(sysDir, "main.lua"), []byte(systemPluginMain), 0o644); err != nil {
+		slog.Warn("写入 system main.lua 失败", "err", err)
+	}
+	slog.Info("system 插件已同步到磁盘")
 }
