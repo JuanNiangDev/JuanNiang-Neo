@@ -179,6 +179,22 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 				return
 			}
 		}
+
+		// Plugin 拦截（与群聊相同）
+		if h.PluginEngine != nil {
+			pluginEvent := pluggin.EventData{
+				PostType:    "message",
+				MessageType: ev.Message.MessageType,
+				UserID:      ev.Message.UserID,
+				GroupID:     ev.Message.GroupID,
+				RawMessage:  ev.Message.RawMessage,
+				Admins:      ev.Admins,
+			}
+			if h.PluginEngine.OnMessage(pluginEvent) {
+				return
+			}
+		}
+
 		// 非完全不回复策略，私聊直接放行
 		h.handleMessage(ctx, ev)
 		return
@@ -379,7 +395,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		req.Tools = nil
 		messages = append([]provider.ChatMessage{{
 			Role:    "system",
-			Content: "【AgentLite 模式】当前处于精简模式，你无法使用任何工具或 MCP 调用，也无法分条发送消息。请将所有回复合并为一条消息返回。",
+			Content: "【AgentLite 精简模式】你无法使用任何工具、MCP 或外部能力。如果用户提出的任务需要工具或外部操作才能完成（如发送消息、查天气、生成图片、执行代码、搜索等），直接拒绝并说明当前处于精简模式无法执行该操作。回复中不要假装已经完成了需要工具的任务。",
 		}}, messages...)
 		req.Messages = messages
 	}

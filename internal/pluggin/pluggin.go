@@ -125,10 +125,11 @@ type ProviderInfo struct {
 }
 
 type MCPInfo struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	URL    string `json:"url"`
-	Active bool   `json:"active"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	Active   bool   `json:"active"`    // 运行时连接状态
+	IsActive bool   `json:"is_active"` // DB 配置的启用状态
 }
 
 type ToolInfo struct {
@@ -1247,12 +1248,31 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 			return pushResult(L, err)
 		},
 		"list_mcps": func(L *lua.LState) int {
-			if agentOp == nil {
-				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			if agentOp == nil || pe.dao == nil {
+				return pushResult(L, fmt.Errorf("agent operator 或 dao 不可用"))
+			}
+			// 从 DB 查询所有已配置的 MCP（含未启用的），再合并运行时连接状态
+			dbList, err := pe.dao.MCPServer.List(context.Background())
+			if err != nil {
+				return pushResultJSON(L, nil, err)
 			}
 			mcpGroup := agentOp.GetMCPGroup()
-			list := mcpGroup.ListMCPs()
-			return pushResultJSON(L, list, nil)
+			runtimeList := mcpGroup.ListMCPs()
+			connectedMap := make(map[string]bool, len(runtimeList))
+			for _, r := range runtimeList {
+				connectedMap[r.ID] = r.Active
+			}
+			out := make([]MCPInfo, 0, len(dbList))
+			for _, m := range dbList {
+				out = append(out, MCPInfo{
+					ID:       m.ID,
+					Name:     m.Name,
+					URL:      m.ServerURL,
+					Active:   connectedMap[m.ID],
+					IsActive: m.IsActive,
+				})
+			}
+			return pushResultJSON(L, out, nil)
 		},
 		"toggle_mcp": func(L *lua.LState) int {
 			if agentOp == nil {
@@ -1530,8 +1550,7 @@ var systemPluginManifest string
 var systemPluginMain string
 
 // ensureEmbeddedAssets 在启动时把内嵌的 SDK 与 system 插件落盘到 data/pluggins/。
-// - SDK 始终覆盖（保持与二进制版本一致，IDE 类型与运行时同步）
-// - system 插件仅在不存在时写入（允许用户自定义修改）
+// SDK 与 system 插件始终覆盖写入，确保 Docker 挂载卷中的版本与二进制一致。
 func (pe *PluginEngine) ensureEmbeddedAssets() {
 	// 1. SDK 总是覆盖
 	sdkDir := filepath.Join(pe.basePath, "sdk")
@@ -1544,19 +1563,17 @@ func (pe *PluginEngine) ensureEmbeddedAssets() {
 		}
 	}
 
-	// 2. system 插件仅在不存在时写入
+	// 2. system 插件始终覆盖（随二进制更新同步）
 	sysDir := filepath.Join(pe.basePath, "system")
-	if _, err := os.Stat(filepath.Join(sysDir, "pluggin.yaml")); os.IsNotExist(err) {
-		if mkErr := os.MkdirAll(sysDir, 0o755); mkErr != nil {
-			slog.Warn("创建 system 插件目录失败", "err", mkErr)
-			return
-		}
-		if err := os.WriteFile(filepath.Join(sysDir, "pluggin.yaml"), []byte(systemPluginManifest), 0o644); err != nil {
-			slog.Warn("写入 system pluggin.yaml 失败", "err", err)
-		}
-		if err := os.WriteFile(filepath.Join(sysDir, "main.lua"), []byte(systemPluginMain), 0o644); err != nil {
-			slog.Warn("写入 system main.lua 失败", "err", err)
-		}
-		slog.Info("system 插件已落盘")
+	if err := os.MkdirAll(sysDir, 0o755); err != nil {
+		slog.Warn("创建 system 插件目录失败", "err", err)
+		return
 	}
+	if err := os.WriteFile(filepath.Join(sysDir, "pluggin.yaml"), []byte(systemPluginManifest), 0o644); err != nil {
+		slog.Warn("写入 system pluggin.yaml 失败", "err", err)
+	}
+	if err := os.WriteFile(filepath.Join(sysDir, "main.lua"), []byte(systemPluginMain), 0o644); err != nil {
+		slog.Warn("写入 system main.lua 失败", "err", err)
+	}
+	slog.Info("system 插件已同步到磁盘")
 }

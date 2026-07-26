@@ -1,31 +1,30 @@
 # JuanNiang-Neo Web API 文档
 
 **Base URL:** `http://localhost:8090/api/v1`
+**Content-Type:** `application/json`（上传文件为 `multipart/form-data`）
 
-**Content-Type:** `application/json` (除上传文件外)
+## 统一响应格式
 
-**统一响应格式:** 所有接口都返回 `FinalResponse`:
+所有接口返回 `FinalResponse`：
 
 ```json
-{
-  "status": 0,
-  "info": "OK",
-  "data": <任意类型或 null>
-}
+{ "status": 0, "info": "OK", "data": <任意类型或 null> }
 ```
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `status` | uint | 0=成功，非 0=错误码 |
-| `info` | string | 状态描述（成功为 "OK"，失败为错误信息） |
-| `data` | any | 业务数据，失败时可为 `null` 或 `{"error_detail": "..."}` |
+| `info` | string | 状态描述（成功为 `"OK"`，失败为错误信息） |
+| `data` | any | 业务数据；失败时可为 `null` 或 `{"error_detail": "..."}` |
 
-**错误码表:**
+> 注意：逻辑错误也使用 HTTP 200，全部以信封中的 `status` 判定结果。
+
+### 错误码表
 
 | Code | 说明 |
 |------|------|
 | 0 | 成功 |
-| 40001 | 参数格式错误 |
+| 40001 | 参数格式错误（BindJSONErr） |
 | 40002 | 用户名或密码错误 |
 | 40003 | token 生成失败 |
 | 40004 | 用户不存在 |
@@ -54,766 +53,397 @@
 | 40027 | Sandbox 配置不存在 |
 | 40028 | 系统插件不允许删除或停用 |
 | 40029 | 系统提示词不允许修改或删除 |
-| 40030 | 内置工具运行时常驻, 不支持启停 |
+| 40030 | 内置工具运行时常驻，不支持启停 |
 | 40031 | CronJob 不存在 |
 | 40032 | 回复策略配置不存在 |
 | 50000 | 服务器内部错误 |
 
-**认证:** 除 `POST /login` 和 `GET /health` 外所有接口需 `Authorization: Bearer <token>` header，通过 `POST /login` 获取。
+## 认证
+
+除 `POST /login` 和根路径下的 `GET /health` 外，**所有接口需要** `Authorization: Bearer <token>` 头。Token 由 `POST /login` 获取。
+系统初始化时默认账号 `admin / Admin123`，首次启动后请尽快通过 `POST /change-password` 修改。
+
+`JWT_SECRET` 用于 HMAC 签名；Token 有效期 72 小时（`internal/api/middleware/auth.go`）。
 
 ---
 
 ## 通用数据类型
 
-| 类型 | Go 类型 | JSON 形式 | 说明 |
-|------|---------|-----------|------|
-| `JSONMap` | `map[string]any` | `{"k":"v"}` | 任意键值对 |
-| `JSONSlice` | `[]string` | `["a","b"]` | 字符串数组 |
-| `time.Time` | RFC3339 | `"2026-07-20T12:00:00Z"` | 时间戳 |
+| 类型 | JSON 形式 | 说明 |
+|------|-----------|------|
+| `JSONMap` | `{"k":"v"}` | `map[string]any`（GORM jsonb） |
+| `JSONSlice` | `["a","b"]` | `[]string`（GORM jsonb） |
+| `time.Time` | RFC3339 字符串 | `"2026-07-20T12:00:00Z"` |
 
-**枚举类型:**
+**枚举类型**
 
 - `ModelType`: `text_model` | `image_model` | `embedding_model`
-- `PromptType`: `system` | `personality` | `custom`
+- `PromptType`: `system` | `personality` | `custom`（`system` 保留给系统锁定提示词，禁止新建）
 - `AreaType`: `private` | `group`
 - `ACLScope`: `chat` | `tool` | `mcp`
 - `ACLPermission`: `allow` | `deny`
-- `ACLTargetType`: `all` | `list` （`list` 时 `user_ids` 才有效）
+- `ACLTargetType`: `all` | `list`（`list` 时 `user_ids` 才有效）
+- `ReplyStrategy`: `never_reply` | `at_only` | `always` | `plugin_only` | `relevance`
 
-**ACL 规则语义:**
-
-- 无规则 = 允许所有（默认）
-- `deny` + `all` = 拒绝所有用户
-- `deny` + `list` = 拒绝指定用户
-- `allow` + `all` = 允许所有用户
-- `allow` + `list` = 仅允许指定用户（白名单）
-
-检查优先级: `deny` > `allow`；存在 `allow` 规则时未命中即拒绝。Admins 列表中的用户绕过所有 ACL 检查。
+**ACL 语义**：无规则=允许所有；`deny`>`allow`；存在 `allow` 规则时未命中即拒绝；Admins 列表中的用户绕过所有 ACL 检查。
 
 ---
 
 ## 目录
 
-1. [认证](#1-认证)
-2. [Adapter](#2-adapter)
-3. [Provider 管理](#3-provider-管理)
-4. [MCP 管理](#4-mcp-管理)
-5. [记忆管理](#5-记忆管理)
-6. [Prompt 管理](#6-prompt-管理)
-7. [Session 管理](#7-session-管理)
-8. [Skill 管理](#8-skill-管理)
-9. [Tool 管理](#9-tool-管理)
-10. [Plugin 管理](#10-plugin-管理)
-11. [ACL 管理](#11-acl-管理)
-12. [聊天记录](#12-聊天记录)
-13. [Chat Areas](#13-chat-areas)
-14. [全局概览](#14-全局概览)
-15. [T2I](#15-t2i)
-16. [Sandbox](#16-sandbox)
-17. [Webhook](#17-webhook)
-18. [日志](#18-日志)
-19. [健康检查](#19-健康检查)
-20. [CronJob 管理](#20-cronjob-管理)
-21. [回复策略](#21-回复策略)
-22. [前端 SPA 静态服务](#22-前端-spa-静态服务)
+1. [认证](#1-认证) · [健康检查](#2-健康检查)
+2. [Adapter](#3-adapter) · [Webhook](#17-webhook)
+3. [Providers](#4-providers) · [MCP](#5-mcp) · [Tools](#10-tools) · [Skills](#9-skills)
+4. [Prompts](#7-prompts) · [Sessions](#8-sessions)
+5. [Memory](#6-memory) · [聊天记录](#12-聊天记录) · [Chat Areas](#13-chat-areas) · [Overview](#14-overview)
+6. [Plugins](#11-plugins) · [ACL](#15-acl)
+7. [T2I](#18-t2i) · [Sandbox](#19-sandbox)
+8. [Logs](#16-日志) · [Background Tasks](#120-background-tasks)
+9. [CronJob](#21-cronjob) · [回复策略](#22-回复策略)
 
 ---
 
 ## 1. 认证
 
-### 1.1 POST /login
+### POST /login
+管理员登录，返回 JWT。
 
-**功能:** 管理员登录，获取 JWT token。系统初始化时默认账号 `admin / Admin123`。
-
-**请求体** `LoginReq`:
+**Body** `LoginReq`:
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `username` | string | 是 | 用户名 |
 | `password` | string | 是 | 明文密码 |
 
-**成功响应** `data: TokenResp`:
+**data** `TokenResp`:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `token` | string | JWT token，后续请求放入 `Authorization: Bearer <token>` |
-
-**示例:**
+| `token` | string | JWT，放入后续 `Authorization: Bearer <token>` |
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/login \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"Admin123"}'
+# {"status":0,"info":"OK","data":{"token":"eyJhbGciOi..."}}
 ```
+
+### POST /change-password
+修改当前登录用户密码。
+
+**Body** `ChangePasswordReq`: `old_password` string、`new_password` string（均必填）。
+**data** `null`。
+
+---
+
+## 2. 健康检查
+
+### GET /health
+（**不在 `/api/v1` 前缀下**，无需认证）服务存活检查。
 
 ```json
-{"status":0,"info":"OK","data":{"token":"eyJhbGciOiJIUzI1NiIs..."}}
-```
-
-### 1.2 POST /change-password
-
-**功能:** 修改当前登录用户密码（实际查 `admin` 用户）。
-
-**请求体** `ChangePasswordReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `old_password` | string | 是 | 原密码 |
-| `new_password` | string | 是 | 新密码 |
-
-**响应** `data: null`
-
-**示例:**
-
-```bash
-curl -X POST http://localhost:8090/api/v1/change-password \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"old_password":"Admin123","new_password":"NewPass456"}'
-```
-
-```json
-{"status":0,"info":"OK","data":null}
+{"status":"ok"}
 ```
 
 ---
 
-## 2. Adapter
+## 3. Adapter
 
-OneBot11 适配器状态查询与配置更新。
+OneBot11 反向 WebSocket 适配器状态查询与配置更新。
 
-> **重要变更:**
-> - `listen_addr` 由 `Adapter.listenAddr()` 规范化为 `host:port` 格式，兼容 `host-only` / `:port` / `host:port` / 空串四种形态（空串时退化为 `:<port>`）。
-> - `conns` 字段新增，返回每条 WS 连接的 `{id, ip, self_id}` 详情；`Adapter.Stop()` 修复了 close of closed channel panic（关闭后置 nil，`Start` 时若 `events==nil` 重建）。
-> - `SyncConfig` 简化：Enable 时 Stop+Start 重启；禁用时仅 Stop。`newWSServer` 改用 `context.Background()` 而非派生 caller ctx，避免 SyncConfig 的 5s 超时 ctx cancel 后级联取消 ws server。
-> - 管理员 QQ 列表持久化在 DB 的 `AdminQQNumbers` 字段（前端 `v-combobox` 编辑），不再仅靠 `OB_ADMINS` env。
+> 说明：`listen_addr` 由 `Adapter.listenAddr()` 规范化为 `host:port`；管理员 QQ 列表持久化在 DB 的 `AdminQQNumbers` 字段；`SyncConfig` 在启用时 Stop+Start 重启，禁用时仅 Stop。
 
-### 2.1 GET /adapter
+### GET /adapter
+返回适配器运行状态（不含配置）。
 
-**功能:** 获取 OneBot11 适配器当前运行状态（不含配置）。
-
-**响应** `data: AdapterStatus`:
+**data** `AdapterStatus`:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `running` | bool | 适配器是否在运行 |
-| `listen_addr` | string | 监听地址 `host:port`（已规范化） |
-| `self_id` | int64 | 机器人 QQ 号 |
-| `conn_count` | int | 当前 WebSocket 连接数 |
-| `conn_ids` | int64[] | 已连接客户端 QQ 号列表 |
-| `conns` | ConnDetail[] | 每条连接的详情列表 |
+| `running` | bool | 是否在运行 |
+| `listen_addr` | string | 规范化后的 `host:port` |
+| `self_id` | int64 | 机器人 QQ |
+| `conn_count` | int | WS 连接数 |
+| `conn_ids` | int64[] | 已连接客户端 QQ 列表 |
+| `conns` | ConnDetail[] | 每条连接详情 `{id, ip, self_id}` |
 
-`ConnDetail`:
+### GET /adapter/config
+读取持久化的适配器配置。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | int64 | 客户端 self_id (QQ 号) |
-| `ip` | string | 客户端 RemoteAddr（`handleWS` 时由 `r.RemoteAddr` 记录） |
-| `self_id` | int64 | 同 `id`，冗余字段便于前端展示 |
+**data** `AdapterConfigResp`: `addr` string、`port` int、`token` string、`admin_qq_numbers` string[]、`enabled` bool。
 
-### 2.2 PUT /adapter
+### PUT /adapter
+更新适配器配置并同步到运行时。
 
-**功能:** 更新 OneBot11 适配器配置（地址、Token、管理员列表、启用状态），同步到运行时。
-
-**请求体** `UpdateAdapterConfigReq`:
+**Body** `UpdateAdapterConfigReq`:
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `addr` | string | 是 | 监听地址（支持 host / `:port` / `host:port` 形态，由 `listenAddr()` 规范化） |
+| `addr` | string | 是 | 监听地址（支持 host / `:port` / `host:port`） |
 | `port` | int | 是 | 监听端口 |
 | `token` | string | 是 | OneBot access token |
-| `admin_qq_numbers` | string[] | 是 | 管理员 QQ 号列表（持久化到 DB） |
+| `admin_qq_numbers` | string[] | 是 | 管理员 QQ 列表 |
 | `enabled` | bool | 是 | 是否启用 |
 
-**响应** `data: null`
+**data** `null`。
 
-### 2.3 POST /adapter/restart
-
-**功能:** 重启 OneBot11 适配器。
-
-**响应** `data: null`
+### POST /adapter/restart
+重启 OneBot11 适配器。**data** `null`。
 
 ---
 
-## 3. Provider 管理
+## 4. Providers
 
-LLM Provider (text/image/embedding) CRUD。同类型只能有一个 Active，激活时自动停用同类型其他 Provider。
+LLM Provider (text/image/embedding) CRUD。同类型只能一个 Active，激活时自动停用同类型其他 Provider。
 
-### 3.1 GET /providers
+### GET /providers
+列出所有 Provider。
 
-**功能:** 列出所有 Provider。
-
-**响应** `data: ProviderResp[]`:
+**data** `ProviderResp[]`:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | string | UUID |
-| `created_at` | time | 创建时间 |
 | `name` | string | 名称 |
-| `type` | ModelType | `text_model`/`image_model`/`embedding_model` |
+| `type` | ModelType | 类型 |
 | `endpoint` | string | API 地址 |
 | `token` | string | API token |
 | `model` | string | 模型名 |
-| `temperature` | float32 | 温度 |
+| `temperature` | float32 | 温度（默认 0.7） |
 | `is_active` | bool | 是否激活 |
+| `created_at` | time | 创建时间 |
 
-### 3.2 GET /providers/:id
+### GET /providers/:id
+获取单个 Provider。`data` `ProviderResp`。
 
-**路径参数:**
+### POST /providers
+新增 Provider。若 `is_active=true` 自动停用同类型其他 Provider。
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | Provider UUID |
+**Body** `AddProviderReq`: `name`、`type`、`endpoint`、`token`、`model`（均必填），`temperature` float32（可选），`isActive` bool（必填）。
 
-**响应** `data: ProviderResp`（同上）
+**data** `ProviderResp`（含生成的 UUID）。
 
-### 3.3 POST /providers
+### PUT /providers/:id
+覆盖更新。**Body** `UpdateProviderReq`（同 Add）。**data** `null`。
 
-**功能:** 新增 Provider。若 `is_active=true`，自动停用同类型其他 Provider。
+### DELETE /providers/:id
+删除 Provider 并从运行时 ProviderGroup 移除。**data** `null`。
 
-**请求体** `AddProviderReq`:
+### PUT /providers/:id/toggle
+启停 Provider。
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `name` | string | 是 | 名称 |
-| `type` | ModelType | 是 | 类型 |
-| `endpoint` | string | 是 | API 地址 |
-| `token` | string | 是 | API token |
-| `model` | string | 是 | 模型名 |
-| `temperature` | float32 | 否 | 温度（默认 0.7） |
-| `isActive` | bool | 是 | 是否激活 |
-
-**响应** `data: AddProviderReq`（回显请求体）
-
-### 3.4 PUT /providers/:id
-
-**路径参数:** `id` (Provider UUID)
-
-**请求体** `UpdateProviderReq`（同 AddProviderReq 字段，覆盖更新）
-
-**响应** `data: null`
-
-### 3.5 DELETE /providers/:id
-
-**路径参数:** `id` (Provider UUID)
-
-**功能:** 删除 Provider，同时从运行时 ProviderGroup 移除。
-
-**响应** `data: null`
-
-### 3.6 PUT /providers/:id/toggle
-
-**功能:** 启用/停用 Provider。启用时自动停用同类型其他 Provider。
-
-**路径参数:** `id` (Provider UUID)
-
-**请求体** `ToggleProviderReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `is_active` | bool | 是 | 目标状态 |
-
-**响应** `data: null`
+**Body** `ToggleProviderReq`: `is_active` bool（必填）。**data** `null`。
 
 ---
 
-## 4. MCP 管理
+## 5. MCP
 
-MCP (Model Context Protocol) 服务器配置 CRUD，支持运行时连接/断开。
+MCP（Model Context Protocol，SSE 传输）服务器配置 CRUD，支持运行时连接/断开。
 
-### 4.1 GET /mcp
+### GET /mcp
+列出所有 MCP 服务器。注意：返回会合并运行时连接状态。
 
-**功能:** 列出所有 MCP 服务器。
-
-**响应** `data: MCPServerResp[]`:
+**data** `MCPServerResp[]`:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | string | UUID |
 | `name` | string | 名称 |
-| `server_url` | string | SSE 端点 URL |
+| `server_url` | string | SSE 端点 |
 | `headers` | JSONMap | 自定义请求头 |
 | `timeout` | int | 超时毫秒 |
 | `retry_count` | int | 重试次数 |
-| `tool_filter` | string[] | 工具白名单（空表示全量） |
-| `auto_reconnect` | bool | 是否自动重连 |
+| `tool_filter` | string[] | 工具白名单（空=全量） |
+| `auto_reconnect` | bool | 自动重连 |
 | `is_active` | bool | 是否激活 |
 | `created_at` | time | 创建时间 |
 
-### 4.2 GET /mcp/:id
+### GET /mcp/:id
+获取单个。**data** `MCPServerResp`。
 
-**路径参数:** `id` (MCP UUID)
+### POST /mcp
+新增 MCP。若 `is_active=true` 立即建立 SSE 连接。
 
-**响应** `data: MCPServerResp`
+**Body** `AddMCPServerReq`：`name`、`server_url`（必填）；`headers` JSONMap、`timeout` int、`retry_count` int、`tool_filter` string[]、`auto_reconnect` bool（可选）；`is_active` bool（必填）。
 
-### 4.3 POST /mcp
+**data** `MCPServerResp`。
 
-**功能:** 新增 MCP 配置，若 `is_active=true` 立即建立 SSE 连接。
+### PUT /mcp/:id
+覆盖更新。断开旧连接，若 `is_active=true` 重新建立 SSE。**data** `MCPServerResp`。
 
-**请求体** `AddMCPServerReq`:
+### DELETE /mcp/:id
+断开连接并删除。**data** `null`。
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `name` | string | 是 | 名称 |
-| `server_url` | string | 是 | SSE 端点 URL |
-| `headers` | JSONMap | 否 | 自定义请求头 |
-| `timeout` | int | 否 | 超时毫秒 |
-| `retry_count` | int | 否 | 重试次数 |
-| `tool_filter` | string[] | 否 | 工具白名单 |
-| `auto_reconnect` | bool | 否 | 是否自动重连 |
-| `is_active` | bool | 是 | 是否激活 |
+### GET /mcp/:id/check
+实时检测指定 MCP SSE 连接状态。**data** `{"connected": bool}`。
 
-**响应** `data: MCPServerResp`（含生成的 UUID）
+> 注：`GET /mcp/:id/check` 与 `PUT /mcp/:id/toggle` 配合使用，前者探活，后者启停。
 
-### 4.4 PUT /mcp/:id
-
-**路径参数:** `id` (MCP UUID)
-
-**请求体** `UpdateMCPServerReq`（同 AddMCPServerReq 字段）
-
-**功能:** 覆盖更新，断开旧连接，若 `is_active=true` 重新建立 SSE 连接。
-
-**响应** `data: MCPServerResp`
-
-### 4.5 DELETE /mcp/:id
-
-**路径参数:** `id` (MCP UUID)
-
-**功能:** 断开连接并删除配置。
-
-**响应** `data: null`
-
-### 4.6 PUT /mcp/:id/toggle
-
-**功能:** 启用/停用 MCP，对应建立/断开 SSE 连接。
-
-**路径参数:** `id` (MCP UUID)
-
-**请求体** `ToggleMCPServerReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `is_active` | bool | 是 | 目标状态 |
-
-**响应** `data: null`
+### PUT /mcp/:id/toggle
+启停 MCP，对应建立/断开 SSE 连接。
+**Body** `ToggleMCPServerReq`: `is_active` bool。**data** `null`。
 
 ---
 
-## 5. 记忆管理
+## 6. Memory
 
-短期/长期记忆配置管理（按 ChatArea）。短期记忆的实际消息存储在 Redis，长期记忆条目存储在 Postgres。本组接口只管理**配置**。
+短期/长期记忆**配置**管理（按 ChatArea）。短期消息实际存 Redis，长期条目存 Postgres，本组接口只管理配置元数据。
 
-### 5.1 GET /memory/:chatAreaID/short-term
+### GET /memory/:chatAreaID/short-term
+获取短期记忆配置，不存在则自动创建（`window_size=20, auto_compact=false`）。
 
-**功能:** 获取指定 ChatArea 的短期记忆配置，不存在则自动创建（默认 `window_size=20, auto_compact=false`）。
+**data** `ShortTermMemoryResp`: `id`、`chat_area_id`、`window_size` int、`auto_compact` bool、`created_at`。
 
-**路径参数:**
+### PUT /memory/:chatAreaID/short-term
+更新短期记忆配置，同步运行时 MemoryGroup。
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `chatAreaID` | string | ChatArea UUID |
+**Body**: `window_size` int、`auto_compact` bool（均必填）。**data** `ShortTermMemoryResp`。
 
-**响应** `data: ShortTermMemoryResp`:
+### GET /memory/:chatAreaID/long-term
+获取长期记忆配置，不存在自动创建（`hot_area_size=10, hot_memory_ttl=86400`）。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | 配置 UUID |
-| `chat_area_id` | string | 所属 ChatArea |
-| `window_size` | int | 滑动窗口大小（保留最近 N 条） |
-| `auto_compact` | bool | 是否自动压缩 |
-| `created_at` | time | 创建时间 |
+**data** `LongTermMemoryResp`: `id`、`chat_area_id`、`hot_area_size` int、`hot_memory_ttl` int（秒）、`created_at`。
 
-### 5.2 PUT /memory/:chatAreaID/short-term
+### PUT /memory/:chatAreaID/long-term
+更新长期记忆配置。
 
-**功能:** 更新短期记忆配置，同步到运行时 MemoryGroup。
-
-**路径参数:** `chatAreaID`
-
-**请求体** `UpdateShortTermMemoryReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `window_size` | int | 是 | 滑动窗口大小 |
-| `auto_compact` | bool | 是 | 是否自动压缩 |
-
-**响应** `data: ShortTermMemoryResp`（更新后的配置）
-
-### 5.3 GET /memory/:chatAreaID/long-term
-
-**功能:** 获取长期记忆配置，不存在则自动创建（默认 `hot_area_size=10, hot_memory_ttl=86400`）。
-
-**路径参数:** `chatAreaID`
-
-**响应** `data: LongTermMemoryResp`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | 配置 UUID |
-| `chat_area_id` | string | 所属 ChatArea |
-| `hot_area_size` | int | 热区大小 |
-| `hot_memory_ttl` | int | 热区 TTL（秒） |
-| `created_at` | time | 创建时间 |
-
-### 5.4 PUT /memory/:chatAreaID/long-term
-
-**功能:** 更新长期记忆配置，同步到运行时 MemoryGroup。
-
-**路径参数:** `chatAreaID`
-
-**请求体** `UpdateLongTermMemoryReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `hot_area_size` | int | 是 | 热区大小 |
-| `hot_memory_ttl` | int | 是 | 热区 TTL（秒） |
-
-**响应** `data: LongTermMemoryResp`（更新后的配置）
+**Body**: `hot_area_size` int、`hot_memory_ttl` int（均必填）。**data** `LongTermMemoryResp`。
 
 ---
 
-## 6. Prompt 管理
+## 7. Prompts
 
 Prompt 模板 CRUD。
 
-> **重要变更:** 已移除模板渲染（`RenderTemplate` / `GetDefaultVars`）与 `variables` 字段。Prompt 内容按优先级直接拼接：**SystemLocked → system → personality → custom**。SystemLocked 类型由二进制在启动时幂等播种（`__system_locked__`），`IsSystem=true`，不受 `IsActive` 影响，强制拼接；Service 层 Update/Delete/Toggle 拒绝 `IsSystem` 行，新增 Prompt 也禁止使用 `system` 类型（保留给系统锁定提示词）。
+> SystemLocked 提示词：启动时 `EnsureSystemPrompt` 幂等播种名为 `__system_locked__`、`IsSystem=true` 的种子，不受 `IsActive` 影响强制拼接。Service 层 Update/Delete/Toggle 拒绝 `IsSystem` 行；新建 Prompt 禁止使用 `type=system`（返回 40029）。拼接顺序：**SystemLocked → system → personality → custom**。
 
-### 6.1 GET /prompts
+### GET /prompts
+列出所有 Prompt（含系统锁定，前端只读）。
 
-**功能:** 列出所有 Prompt（含系统锁定提示词，前端可读但不可改）。
-
-**响应** `data: PromptResp[]`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | UUID |
-| `name` | string | 名称 |
-| `content` | string | 模板内容 |
-| `type` | PromptType | `system`/`personality`/`custom` |
-| `is_active` | bool | 是否激活 |
-| `is_system` | bool | 是否系统锁定提示词（true 时禁止 Update/Delete/Toggle 停用） |
-| `created_at` | time | 创建时间 |
-
-### 6.2 POST /prompts
-
-**功能:** 新增 Prompt。**禁止创建 `type=system` 的 Prompt**（该类型保留给系统锁定提示词），违规返回 `40029 PromptIsSystem`。
-
-**请求体** `AddPromptReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `name` | string | 是 | 名称 |
-| `content` | string | 是 | 模板内容 |
-| `type` | PromptType | 是 | 类型（仅 `personality`/`custom`） |
-| `is_active` | bool | 是 | 是否激活 |
-
-**响应** `data: PromptResp`
-
-### 6.3 PUT /prompts/:id
-
-**路径参数:** `id` (Prompt UUID)
-
-**功能:** 更新 Prompt。若目标行 `IsSystem=true` 返回 `40029`；若请求体 `type=system` 返回 `40029`。
-
-**请求体** `UpdatePromptReq`（同 AddPromptReq 字段）
-
-**响应** `data: PromptResp`
-
-### 6.4 DELETE /prompts/:id
-
-**路径参数:** `id` (Prompt UUID)
-
-**功能:** 删除 Prompt。若目标行 `IsSystem=true` 返回 `40029`。
-
-**响应** `data: null`
-
-### 6.5 PUT /prompts/:id/toggle
-
-**功能:** 启用/停用 Prompt。系统锁定提示词**允许启用但不允许停用**，停用 `IsSystem=true` 的行返回 `40029`。
-
-**路径参数:** `id` (Prompt UUID)
-
-**请求体** `TogglePromptReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `is_active` | bool | 是 | 目标状态 |
-
-**响应** `data: null`
-
----
-
-## 7. Session 管理
-
-会话状态查询。每个 ChatArea 对应一个 Session。
-
-### 7.1 GET /sessions
-
-**功能:** 列出所有 Session。
-
-**响应** `data: SessionResp[]`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | Session UUID |
-| `chat_area_id` | string | 所属 ChatArea |
-| `model` | string | 当前模型名 |
-| `token_usage` | int64 | 累计 Token 用量 |
-| `meta_data` | JSONMap | 自定义元数据 |
-| `created_at` | time | 创建时间 |
-
-### 7.2 GET /sessions/:id
-
-**路径参数:**
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | Session UUID |
-
-**响应** `data: SessionResp`
-
-### 7.3 DELETE /sessions/:id
-
-**功能:** 删除 Session，同时清除 Redis 中的消息缓存。
-
-**路径参数:** `id` (Session UUID)
-
-**响应** `data: null`
-
----
-
-## 8. Skill 管理
-
-Skill 是关键词/正则触发的工具/Prompt 组合配置。
-
-### 8.1 GET /skills
-
-**功能:** 列出所有 Skill。
-
-**响应** `data: SkillResp[]`:
+**data** `PromptResp[]`:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | string | UUID |
 | `name` | string | 名称 |
-| `description` | string | 描述 |
-| `keywords` | string[] | 触发关键词 |
-| `regex_pattern` | string | 触发正则 |
-| `prompt_ref` | string | 关联 Prompt UUID |
-| `tool_refs` | string[] | 关联 Tool ID 列表 |
-| `mcp_refs` | string[] | 关联 MCP ID 列表 |
+| `content` | string | 内容 |
+| `type` | PromptType | 类型 |
 | `is_active` | bool | 是否激活 |
-| `is_system` | bool | 是否系统内置 |
-| `priority` | int | 优先级（数字越大越优先） |
+| `is_system` | bool | 系统锁定（禁改/删/停用） |
 | `created_at` | time | 创建时间 |
 
-### 8.2 POST /skills
+### POST /prompts
+新增 Prompt。**禁止 `type=system`**。
 
-**请求体** `AddSkillReq`:
+**Body** `AddPromptReq`: `name`、`content`、`type`（personality/custom）、`is_active`（均必填）。
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `name` | string | 是 | 名称 |
-| `description` | string | 否 | 描述 |
-| `keywords` | string[] | 否 | 触发关键词 |
-| `regex_pattern` | string | 否 | 触发正则 |
-| `prompt_ref` | string | 否 | 关联 Prompt UUID |
-| `tool_refs` | string[] | 否 | 关联 Tool ID |
-| `mcp_refs` | string[] | 否 | 关联 MCP ID |
-| `is_active` | bool | 是 | 是否激活 |
-| `is_system` | bool | 否 | 是否系统内置 |
-| `priority` | int | 否 | 优先级 |
+**data** `PromptResp`。
 
-**响应** `data: SkillResp`
+### PUT /prompts/:id
+更新。若目标行 `IsSystem=true` 或请求 `type=system` 返回 40029。**Body** `UpdatePromptReq`（同 Add）。**data** `PromptResp`。
 
-### 8.3 PUT /skills/:id
+### DELETE /prompts/:id
+删除。`IsSystem=true` 返回 40029。**data** `null`。
 
-**路径参数:** `id` (Skill UUID)
-
-**请求体** `UpdateSkillReq`（同 AddSkillReq）
-
-**响应** `data: SkillResp`
-
-### 8.4 DELETE /skills/:id
-
-**路径参数:** `id` (Skill UUID)
-
-**响应** `data: null`
+### PUT /prompts/:id/toggle
+启停。系统锁定提示词**允许启用、不允许停用**（停用返回 40029）。
+**Body** `TogglePromptReq`: `is_active` bool。**data** `null`。
 
 ---
 
-## 9. Tool 管理
+## 8. Sessions
 
-工具配置查看与启用/停用。
+每个 ChatArea 对应一个 Session。
 
-**ListTools 合并策略:** `GET /tools` 合并两份数据源：
-1. **运行时 `ToolRegistry.List()` 中的内置工具** —— 这些工具 ID 形如 `builtin:<name>`，`is_builtin=true`，运行时常驻（`is_active=true`），不支持启停。
-2. **DB 中的 `ToolConfig` 表** —— 用户自定义工具 + 历史保留的内置工具条目。
+### GET /sessions
+列出所有 Session（Preload ChatArea）。
 
-若 DB 中存在同名条目，合并时使用 DB 的 ID 与 `is_active`/`created_at` 字段，但 `is_builtin` 与 `parameters` 仍以运行时注册表为准。
+**data** `SessionResp[]`: `id`、`chat_area_id`、`model`、`token_usage` int64、`meta_data` JSONMap、`created_at`。
 
-### 9.1 GET /tools
+### GET /sessions/:id
+**data** `SessionResp`。
 
-**功能:** 列出所有 Tool 配置（内置 + 自定义）。
-
-**响应** `data: ToolConfigResp[]`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | UUID；内置工具为 `builtin:<name>` 前缀 |
-| `name` | string | 工具名 |
-| `description` | string | 描述 |
-| `parameters` | JSONMap | JSON Schema 参数定义 |
-| `timeout` | int | 超时毫秒 |
-| `is_active` | bool | 是否激活 |
-| `is_builtin` | bool | 是否内置工具 |
-| `created_at` | time | 创建时间 |
-
-### 9.2 PUT /tools/:id/toggle
-
-**功能:** 启用/停用 Tool。**内置工具（`id` 以 `builtin:` 开头）运行时常驻，不支持启停**，违规返回 `40030 ToolIsBuiltin`。停用自定义工具时从注册表移除；启用时若为内置工具已在 init 时注册，无需重复。
-
-**路径参数:** `id` (Tool UUID 或 `builtin:<name>`)
-
-**请求体** `ToggleToolReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `is_active` | bool | 是 | 目标状态 |
-
-**响应** `data: null`
+### DELETE /sessions/:id
+删除 Session，同时清除 Redis 短期消息缓存。**data** `null`。
 
 ---
 
-## 10. Plugin 管理
+## 9. Skills
+
+Skill = 关键词/正则触发的 Prompt+Tool 组合配置。`priority` 越大越优先。
+
+### GET /skills
+**data** `SkillResp[]`: `id`、`name`、`description`、`keywords` string[]、`regex_pattern`、`prompt_ref`、`tool_refs` string[]、`mcp_refs` string[]、`is_active`、`is_system`、`priority` int、`created_at`。
+
+### POST /skills
+**Body** `AddSkillReq`: `name`（必填）；`description`、`keywords`、`regex_pattern`、`prompt_ref`、`tool_refs`、`mcp_refs`（可选）；`is_active`（必填）；`is_system`、`priority`（可选）。
+
+**data** `SkillResp`。
+
+### PUT /skills/:id
+覆盖更新。**Body** `UpdateSkillReq`（同 Add）。**data** `SkillResp`。
+
+### DELETE /skills/:id
+**data** `null`。
+
+---
+
+## 10. Tools
+
+工具配置查看与启停。
+
+> `GET /tools` 合并两份数据源：运行时 `ToolRegistry.List()` 中的内置工具（ID 形如 `builtin:<name>`，`is_builtin=true`，常驻不可启停）+ DB 中 `ToolConfig` 表（自定义工具与历史条目）。同名条目用 DB 的 ID/`is_active`/`created_at`，但 `is_builtin` 与 `parameters` 以运行时注册表为准。
+
+### GET /tools
+**data** `ToolConfigResp[]`: `id`、`name`、`description`、`parameters` JSONMap、`timeout` int、`is_active`、`is_builtin`、`created_at`。
+
+### PUT /tools/:id/toggle
+启停 Tool。**内置工具（`id` 以 `builtin:` 开头）运行时常驻，不支持启停**，返回 40030。
+
+**Body** `ToggleToolReq`: `is_active` bool。**data** `null`。
+
+---
+
+## 11. Plugins
 
 Lua 插件管理。插件通过 ZIP 上传，自动解压到 `data/pluggins/<name>/`。
 
-> **重要变更:** `GET /plugins` 改用 `PluginEngine.ListMaps()` 作为数据源，返回的条目字段与旧 `PluginResp` 不同（不再有 `path`/`config`/`created_at`，新增 `permissions`/`commands`/`is_system`/`author`/`description`）。**系统插件（`is_system=true`）禁止删除与停用**，违规返回 `40028 PluginIsSystem`。系统插件三层保护：Manifest.System 字段 + `PluginEngine.IsSystem()` + Service 层 Toggle/Delete 守卫。
+> `GET /plugins` 改用 `PluginEngine.ListMaps()`：不再有 `path`/`config`/`created_at`，新增 `permissions`/`commands`/`is_system`/`author`/`description`。系统插件（`is_system=true`）三层保护（Manifest.System + `PluginEngine.IsSystem()` + Service 守卫）禁止删除与停用，违规返回 40028。`POST /plugins/upload` 用 `multipart/form-data`。CronJob/Provider/MCP 新建后自动 reload 对应调度器/运行时。
 
-### 10.1 GET /plugins
+### GET /plugins
+列出所有插件配置。
 
-**功能:** 列出所有插件配置（来自运行时 `PluginEngine.ListMaps()`，含 manifest 元数据 + 注册命令列表）。
-
-**响应** `data: PluginListMap[]`:
+**data** `PluginListMap[]`:
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| `name` | string | 插件名（与目录名一致，作为 `id` 使用） |
+| `name` | string | 插件名（=目录名，作为 `id`） |
+| `ppid` | string | 稳定 UUID |
 | `version` | string | 版本 |
 | `author` | string | 作者 |
 | `description` | string | 描述 |
-| `permissions` | string[] | 权限列表（来自 manifest） |
-| `is_system` | bool | 是否系统插件（true 时禁止 Toggle 停用 / Delete） |
-| `is_active` | bool | 是否激活（已加载即视为 true） |
-| `commands` | PluginCommandInfo[] | 该插件通过 `jn.command.register` 注册的所有命令路径 |
+| `permissions` | string[] | 权限列表 |
+| `is_system` | bool | 系统插件（禁删/停） |
+| `is_active` | bool | 是否激活 |
+| `commands` | PluginCommandInfo[] | 注册命令列表 |
 
-`PluginCommandInfo`:
+`PluginCommandInfo`: `path` string[]、`description`、`usage`、`is_leaf` bool。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `path` | string[] | 完整命令路径，如 `["system","provider","switch"]` |
-| `description` | string | 命令描述 |
-| `usage` | string | 用法示例 |
-| `is_leaf` | bool | 是否为可执行命令（handler != nil） |
-
-> 若 `PluginEngine` 未初始化，回退到 DB 静态记录（`PluginResp[]`，字段同旧版）。
-
-### 10.2 POST /plugins/upload
-
-**功能:** 上传 ZIP 插件包。解压到 `data/pluggins/<name>/`，自动调用 `PluginEngine.Load`。
-
-**请求体:** `multipart/form-data`
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `file` | file | 是 | ZIP 文件 |
-
-**响应** `data: PluginUploadResp`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | string | 插件名 |
-| `status` | string | 状态（`loaded`） |
-
-**示例:**
+### POST /plugins/upload
+**Body**: `multipart/form-data`，字段 `file` 为 ZIP。
+**data** `PluginUploadResp`: `name`、`status`（`loaded`）。
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/plugins/upload \
-  -H "Authorization: Bearer <token>" \
-  -F "file=@my-plugin.zip"
+  -H "Authorization: Bearer <token>" -F "file=@my-plugin.zip"
 ```
 
-### 10.3 PUT /plugins/:id/toggle
+### PUT /plugins/:id/toggle
+启停插件。启用 `Load`，停用 `Unload`。系统插件禁停用（40028）。
+**Body** `TogglePluginReq`: `is_active` bool。**data** `null`。
 
-**功能:** 启用/停用插件。启用时调用 `PluginEngine.Load`，停用时 `Unload`。**系统插件禁止停用**（但允许"启用"以支持幂等场景），违规返回 `40028 PluginIsSystem`。
-
-**路径参数:** `id` (插件名)
-
-**请求体** `TogglePluginReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `is_active` | bool | 是 | 目标状态 |
-
-**响应** `data: null`
-
-### 10.4 DELETE /plugins/:id
-
-**功能:** 卸载并删除插件配置（不删除文件）。**系统插件禁止删除**，违规返回 `40028 PluginIsSystem`。
-
-**路径参数:** `id` (插件名)
-
-**响应** `data: null`
-
----
-
-## 11. ACL 管理
-
-访问控制规则管理。规则以 ChatArea 为单位组织。
-
-### 11.1 GET /acl
-
-**功能:** 列出所有 ACL 规则。
-
-**响应** `data: ACLRuleResp[]`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | int64 | 自增 ID |
-| `chat_area_id` | string | 所属 ChatArea |
-| `scope` | ACLScope | `chat`/`tool`/`mcp` |
-| `permission` | ACLPermission | `allow`/`deny` |
-| `target_type` | ACLTargetType | `all`/`list` |
-| `user_ids` | string[] | 目标用户列表（`target_type=list` 时有效） |
-| `created_at` | time | 创建时间 |
-
-### 11.2 POST /acl
-
-**功能:** 新增或更新 ACL 规则（同 ChatArea + Scope 已存在则覆盖）。
-
-**请求体** `AddACLRuleReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `chat_area_id` | string | 是 | 所属 ChatArea |
-| `scope` | ACLScope | 是 | 管理范围 |
-| `permission` | ACLPermission | 是 | 允许或拒绝 |
-| `target_type` | ACLTargetType | 是 | 目标类型 |
-| `user_ids` | string[] | 否 | 用户列表（`target_type=list` 时有效） |
-
-**响应** `data: ACLRuleResp`
-
-### 11.3 DELETE /acl/:id
-
-**功能:** 删除 ACL 规则，同步到运行时 ACL 管理器。
-
-**路径参数:**
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `id` | int64 | ACL 规则 ID |
-
-**响应** `data: null`
+### DELETE /plugins/:id
+卸载并删除插件配置（**不删磁盘文件**）。系统插件禁删（40028）。**data** `null`。
 
 ---
 
@@ -821,297 +451,79 @@ curl -X POST http://localhost:8090/api/v1/plugins/upload \
 
 按 ChatArea 分页查询持久化聊天记录（Postgres）。
 
-### 12.1 GET /chat-records/:chatAreaID
-
-**功能:** 分页查询指定 ChatArea 的聊天记录，支持按 role 过滤。
-
-**路径参数:**
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `chatAreaID` | string | ChatArea UUID |
-
-**Query 参数:**
-
-| 参数 | 类型 | 默认 | 说明 |
-|------|------|------|------|
+### GET /chat-records/:chatAreaID
+| Query | 类型 | 默认 | 说明 |
+|-------|------|------|------|
 | `limit` | int | 20 | 每页数量 |
-| `offset` | int | 0 | 偏移量 |
-| `role` | string | (空) | 可选过滤角色: `user`/`assistant`/`tool` |
+| `offset` | int | 0 | 偏移 |
+| `role` | string | (空) | 过滤角色 `user`/`assistant`/`tool` |
 
-**响应** `data: ChatRecordListResp`:
+**data** `ChatRecordListResp`: `total` int64、`list` ChatRecordResp[]。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `total` | int64 | 总记录数 |
-| `list` | ChatRecordResp[] | 当前页记录列表 |
+`ChatRecordResp`: `id` int64、`chat_area_id`、`user_id` int64、`role`、`content`、`token_count` int、`tool_calls` JSONMap、`created_at` time。
 
-`ChatRecordResp`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | int64 | 记录 ID |
-| `chat_area_id` | string | 所属 ChatArea |
-| `user_id` | int64 | 发送者 QQ（assistant/tool 为 0） |
-| `role` | string | `user`/`assistant`/`tool` |
-| `content` | string | 消息内容 |
-| `token_count` | int | Token 数 |
-| `tool_calls` | JSONMap | 工具调用详情（role=tool 时有效） |
-| `created_at` | time | 创建时间 |
-
-**示例:**
-
-```bash
-curl "http://localhost:8090/api/v1/chat-records/area-001?limit=20&offset=0&role=user" \
-  -H "Authorization: Bearer <token>"
-```
-
-### 12.2 GET /chat-records/:chatAreaID/token-usage
-
-**功能:** 获取指定 ChatArea 的会话 Token 用量（实际是 Session.GetOrCreate 返回）。
-
-**路径参数:** `chatAreaID`
-
-**响应** `data: SessionResp`
+### GET /chat-records/:chatAreaID/token-usage
+返回该 ChatArea 的会话 Token 用量（实际是 `Session.GetOrCreate`）。**data** `SessionResp`。
 
 ---
 
 ## 13. Chat Areas
 
-聊天区域查询。ChatArea 由消息驱动自动创建（私聊/群聊各一个）。
+聊天区域自动由消息驱动创建（私聊/群聊各一个）。
 
-### 13.1 GET /chat-areas
-
-**功能:** 列出所有 ChatArea。
-
-**响应** `data: ChatAreaResp[]`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | UUID |
-| `area_type` | AreaType | `private`/`group` |
-| `target_id` | int64 | 私聊=用户QQ，群聊=群号 |
-| `created_at` | time | 创建时间 |
+### GET /chat-areas
+**data** `ChatAreaResp[]`: `id`、`area_type`、`target_id` int64、`created_at`。
 
 ---
 
-## 14. 全局概览
+## 14. Overview
 
-### 14.1 GET /overview
+### GET /overview
+返回系统全局概览（资源计数 + 系统状态 + T2I/Sandbox 健康）。
 
-**功能:** 返回系统全局概览，包括资源计数、系统状态、T2I/Sandbox 健康状态。
-
-**响应** `data: OverviewResp`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `chat_area_count` | int64 | ChatArea 总数 |
-| `mcp_count` | int64 | MCP 数量 |
-| `adapter_count` | int64 | Adapter 数量（固定 1） |
-| `plugin_count` | int64 | Plugin 数量 |
-| `provider_count` | int | Provider 数量 |
-| `skill_count` | int | Skill 数量 |
-| `session_count` | int | Session 数量 |
-| `total_token_usage` | int64 | 累计 Token 用量 |
-| `cpu_count` | int | 逻辑 CPU 核数 |
-| `goroutine_num` | int | 当前 goroutine 数 |
-| `mem_alloc_bytes` | uint64 | 堆已分配（活跃对象） |
-| `mem_sys_bytes` | uint64 | 从 OS 获取的内存总量 |
-| `mem_heap_inuse_bytes` | uint64 | 堆中正在使用 |
-| `go_version` | string | Go 版本 |
-| `t2i_active` | bool | T2I 客户端已加载 |
-| `t2i_healthy` | bool | T2I HealthCheck 通过 |
-| `sandbox_active` | bool | Sandbox 客户端已加载 |
-| `sandbox_healthy` | bool | Sandbox HealthCheck 通过 |
-
-**示例:**
-
-```bash
-curl -H "Authorization: Bearer <token>" http://localhost:8090/api/v1/overview
-```
-
-```json
-{
-  "status": 0,
-  "info": "OK",
-  "data": {
-    "chat_area_count": 42,
-    "mcp_count": 3,
-    "adapter_count": 1,
-    "plugin_count": 5,
-    "provider_count": 2,
-    "skill_count": 8,
-    "session_count": 42,
-    "total_token_usage": 1234567,
-    "cpu_count": 8,
-    "goroutine_num": 47,
-    "mem_alloc_bytes": 33554432,
-    "mem_sys_bytes": 67108864,
-    "mem_heap_inuse_bytes": 16777216,
-    "go_version": "go1.25",
-    "t2i_active": true,
-    "t2i_healthy": true,
-    "sandbox_active": false,
-    "sandbox_healthy": false
-  }
-}
-```
+**data** `OverviewResp`: `chat_area_count`、`mcp_count`、`adapter_count`（固定 1）、`plugin_count`、`provider_count`、`skill_count`、`session_count`、`total_token_usage` int64、`cpu_count`、`goroutine_num`、`mem_alloc_bytes`、`mem_sys_bytes`、`mem_heap_inuse_bytes` uint64、`go_version`、`t2i_active`、`t2i_healthy`、`sandbox_active`、`sandbox_healthy` bool。
 
 ---
 
-## 15. T2I
+## 15. ACL
 
-Text-to-Image 配置与健康管理。单行配置（ID=1）。
+访问控制规则管理。规则以 ChatArea 为单位组织。
 
-### 15.1 GET /t2i/config
+### GET /acl
+**data** `ACLRuleResp[]`: `id` int64、`chat_area_id`、`scope`、`permission`、`target_type`、`user_ids` string[]、`created_at`。
 
-**功能:** 获取 T2I 配置与当前健康状态。
+### POST /acl
+新增或覆盖规则（同 ChatArea + Scope 已存在则覆盖）。
 
-**响应** `data: T2IConfigResp`:
+**Body** `AddACLRuleReq`: `chat_area_id`、`scope`、`permission`、`target_type`（均必填）；`user_ids` string[]（`target_type=list` 时有效）。**data** `ACLRuleResp`。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `base_url` | string | T2I 服务地址 |
-| `timeout` | int | 超时毫秒 |
-| `is_active` | bool | 是否启用 |
-| `healthy` | bool | 当前健康状态 |
-
-### 15.2 PUT /t2i/config
-
-**功能:** 更新 T2I 配置，运行时同步客户端（启用则创建新客户端并注入 HagoCenter，停用则置空）。
-
-**请求体** `UpdateT2IConfigReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `base_url` | string | 是 | 服务地址 |
-| `timeout` | int | 否 | 超时毫秒 |
-| `is_active` | bool | 是 | 是否启用 |
-
-**响应** `data: T2IConfigResp`（含最新 healthy 状态）
-
-### 15.3 GET /t2i/health
-
-**功能:** 实时检查 T2I 服务健康状态（调用客户端 `HealthCheck`）。
-
-**响应** `data: {"healthy": bool}`
+### DELETE /acl/:id
+删除规则并同步运行时 ACL 管理器。**data** `null`。
 
 ---
 
-## 16. Sandbox
+## 16. 日志
 
-代码沙箱配置与健康管理。单行配置（ID=1）。
+日志由 `internal/logging` Hub 维护，环形缓冲区保留最近 250 条。
 
-### 16.1 GET /sandbox/config
+### GET /logs
+返回最近 250 条，**最新排在最前**。
 
-**功能:** 获取 Sandbox 配置与当前健康状态。
+**data** `LogEntryResp[]`: `time` time、`level` string、`message` string、`attrs` map。
 
-**响应** `data: SandboxConfigResp`:
+### GET /logs/stream
+SSE 实时日志流。`text/event-stream`。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `base_url` | string | Sandbox 服务地址 |
-| `api_key` | string | API key |
-| `timeout` | int | 超时毫秒 |
-| `is_active` | bool | 是否启用 |
-| `healthy` | bool | 当前健康状态 |
+- 先按时间顺序发送最近 250 条历史
+- 再订阅 Hub 实时推送；每 15 秒发送一次 keepalive 心跳
+- 客户端断开或服务停止时退出
 
-### 16.2 PUT /sandbox/config
-
-**功能:** 更新 Sandbox 配置，运行时同步客户端。
-
-**请求体** `UpdateSandboxConfigReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `base_url` | string | 是 | 服务地址 |
-| `api_key` | string | 是 | API key |
-| `timeout` | int | 否 | 超时毫秒 |
-| `is_active` | bool | 是 | 是否启用 |
-
-**响应** `data: SandboxConfigResp`（含最新 healthy 状态）
-
-### 16.3 GET /sandbox/health
-
-**功能:** 实时检查 Sandbox 健康状态。
-
-**响应** `data: {"healthy": bool}`
-
----
-
-## 17. Webhook
-
-Webhook 适配器配置（监听独立端口接收外部事件）。
-
-### 17.1 GET /webhook/config
-
-**功能:** 获取 Webhook 配置与运行状态。
-
-**响应** `data: WebhookConfigResp`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `addr` | string | 监听地址 |
-| `port` | int | 监听端口 |
-| `token` | string | 鉴权 token |
-| `enabled` | bool | 是否启用 |
-| `running` | bool | 当前是否在运行 |
-
-### 17.2 PUT /webhook/config
-
-**功能:** 更新 Webhook 配置，同步到运行时 WebhookAdapter。
-
-**请求体** `UpdateWebhookConfigReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `addr` | string | 是 | 监听地址 |
-| `port` | int | 是 | 监听端口 |
-| `token` | string | 是 | 鉴权 token |
-| `enabled` | bool | 是 | 是否启用 |
-
-**响应** `data: WebhookConfigResp`（含最新 running 状态）
-
----
-
-## 18. 日志
-
-日志查询与实时 SSE 流推送。日志由 `internal/logging` Hub 维护，环形缓冲区保留最近 250 条。
-
-### 18.1 GET /logs
-
-**功能:** 返回最近 250 条日志，**最新的排在最前**（`GetLogs` 在 Hub `Recent()` 基础上反序，便于前端按"最新优先"展示）。
-
-**响应** `data: LogEntryResp[]`:
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `time` | time | 日志时间 |
-| `level` | string | 日志级别（`INFO`/`WARN`/`ERROR` 等） |
-| `message` | string | 日志消息 |
-| `attrs` | map[string]any | 结构化字段（可选） |
-
-### 18.2 GET /logs/stream
-
-**功能:** 通过 SSE 推送实时日志。
-
-**响应类型:** `text/event-stream`
-
-**事件流:**
-
-1. 连接建立后先发送最近 250 条历史日志（按时间顺序，最早→最新）
-2. 然后订阅 Hub，实时推送新日志
-3. 每 15 秒发送一次 keepalive 心跳
-4. 客户端断开或服务停止时退出
-
-**事件格式:**
+事件：
 
 ```
 event: log
 data: {"time":"2026-07-20T12:00:00Z","level":"INFO","message":"...","attrs":{}}
 ```
-
-**客户端示例 (JavaScript):**
 
 ```javascript
 const es = new EventSource('/api/v1/logs/stream', {
@@ -1125,247 +537,148 @@ es.addEventListener('log', (e) => {
 
 ---
 
-## 19. 健康检查
+## 17. Webhook
 
-### 19.1 GET /health
+Webhook 适配器配置（监听独立端口接收外部 HTTP 事件）。详见 [webhook-cronjob.md](webhook-cronjob.md)。
 
-**功能:** 服务存活检查，无需认证。
+### GET /webhook/config
+**data** `WebhookConfigResp`: `addr`、`port` int、`token`、`enabled` bool、`running` bool。
 
-**路径:** `http://localhost:8090/health` (注意不在 `/api/v1` 前缀下)
-
-**响应** `200`:
-
-```json
-{"status": "ok"}
-```
+### PUT /webhook/config
+**Body** `UpdateWebhookConfigReq`: `addr`、`port`、`token`、`enabled`（均必填）。**data** `WebhookConfigResp`（含最新 `running`）。
 
 ---
 
-## 附:典型调用流程
+## 18. T2I
 
-1. `POST /login` 拿到 `token`
-2. 后续所有请求都加 `Authorization: Bearer <token>` header
-3. `GET /overview` 查看系统总览
-4. `GET /reply-strategy` + `PUT /reply-strategy` 配置回复策略
-5. `GET /providers` + `POST /providers` 配置 LLM
-6. `GET /mcp` + `POST /mcp` 配置 MCP
-7. `GET /prompts` + `POST /prompts` 配置 Prompt
-8. `GET /skills` + `POST /skills` 配置 Skill
-9. `GET /acl` + `POST /acl` 配置访问控制
-10. `GET /cronjobs` + `POST /cronjobs` 配置定时任务
-11. `PUT /t2i/config` + `PUT /sandbox/config` 配置 T2I/Sandbox
-12. `GET /chat-records/:chatAreaID` 查看历史聊天
-13. `GET /logs/stream` 实时查看日志
+Text-to-Image 配置与健康管理。单行配置（ID=1）。详见 [external-services.md](external-services.md#t2i)。
 
-**注意事项:**
+### GET /t2i/config
+**data** `T2IConfigResp`: `base_url`、`timeout` int、`is_active` bool、`healthy` bool。
 
-- Provider 同类型只能一个 Active，激活时自动停用其他
-- 回复策略为单例配置（`GET/PUT /reply-strategy`），默认 `strategy=always, relevance_threshold=0.5`；首次 GET 不存在时自动创建
-- Plugin 的 `id` 是插件名（不是 UUID），通过 `POST /plugins/upload` 上传 ZIP 后自动生成；系统插件（`is_system=true`，如内置 `system`）禁止删除与停用
-- Skill 的 `priority` 数字越大优先级越高
-- Memory 接口只管理配置；实际短期消息在 Redis、长期条目在 Postgres
-- ChatArea 由系统自动创建（消息驱动），无手动创建接口
-- T2I/Sandbox/Webhook 都是单行配置（ID=1）；首次访问 `GET /t2i/config` / `GET /sandbox/config` 若 DB 无配置会自动调用 `InitConfig` 创建默认行
-- Prompt 禁止创建 `type=system` 类型（保留给系统锁定提示词 `__system_locked__`）；系统锁定提示词不允许修改/删除/停用
-- Tool ID 以 `builtin:` 前缀的为内置工具，运行时常驻，`PUT /tools/:id/toggle` 收到 `builtin:` 前缀返回 `40030 ToolIsBuiltin`
-- Adapter `listen_addr` 由 `listenAddr()` 规范化为 `host:port`；管理员列表持久化在 DB `admin_qq_numbers` 字段
-- CronJob 增删改/toggle 后自动 reload 调度器（基于 `robfig/cron`），无需手动重启；cron 表达式为 6 字段标准格式（秒 分 时 日 月 周）
+### PUT /t2i/config
+更新配置。运行时若启用则重建客户端并注入 HagoCenter，停用则置空。
+**Body** `UpdateT2IConfigReq`: `base_url`（必填）、`timeout` int（可选）、`is_active` bool（必填）。**data** `T2IConfigResp`。
+
+### GET /t2i/health
+实时健康检查。**data** `{"healthy": bool}`。
 
 ---
 
-## 20. CronJob 管理
+## 19. Sandbox
 
-定时任务管理，按 cron 表达式定时发送消息到指定私聊或群聊。CronJob 的调度依赖 `CronJobManager`（基于 `robfig/cron`），增删改后自动 reload 调度器。
+代码沙箱配置与健康管理。单行配置（ID=1）。详见 [external-services.md](external-services.md#sandbox)。
 
-### CronJobResp 结构
+### GET /sandbox/config
+**data** `SandboxConfigResp`: `base_url`、`api_key`、`timeout` int、`is_active` bool、`healthy` bool。
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | UUID |
-| `name` | string | 任务名称 |
-| `cron_expr` | string | 标准 cron 表达式（6 字段：秒 分 时 日 月 周） |
-| `message` | string | 触发时发送的消息内容 |
-| `message_type` | string | 消息类型：`private`（私聊）/ `group`（群聊），默认 `private` |
-| `target_id` | int64 | 目标 QQ 号（私聊）或群号（群聊） |
-| `is_active` | bool | 是否启用 |
-| `last_run_at` | time | 上次执行时间（可为 null） |
-| `last_error` | string | 上次错误信息 |
-| `created_at` | time | 创建时间 |
-| `updated_at` | time | 更新时间 |
+### PUT /sandbox/config
+**Body** `UpdateSandboxConfigReq`: `base_url`、`api_key`、`is_active`（必填），`timeout`（可选）。**data** `SandboxConfigResp`。
 
-### 20.1 GET /cronjobs
+### GET /sandbox/health
+**data** `{"healthy": bool}`。
 
-**功能:** 列出所有定时任务。
+---
 
-**响应** `data: CronJobResp[]`
+## 1.20 Background Tasks
 
-### 20.2 GET /cronjobs/:id
+后台任务查看（BackgroundTaskExecutor 产物）。
 
-**功能:** 获取单个定时任务详情。
+### GET /background-tasks
+列出所有后台任务（最多 200 条）。
 
-**路径参数:**
+**data** `BackgroundTaskResp[]`: `id`、`chat_area_id`、`status`（`pending`/`running`/`done`/`failed`）、`message_type`、`target_id` int64、`user_prompt`、`steps` JSONMap、`results` JSONMap、`created_at`、`updated_at`。
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | CronJob UUID |
+### GET /background-tasks/:id
+单个详情。**data** `BackgroundTaskResp`。
 
-**响应** `data: CronJobResp`
+---
 
-### 20.3 POST /cronjobs
+## 21. CronJob
 
-**功能:** 新增定时任务，创建后自动同步调度器。
+定时任务管理。详见 [webhook-cronjob.md](webhook-cronjob.md)。
 
-**请求体** `AddCronJobReq`:
+CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字段：秒 分 时 日 月 周）。
+
+### GET /cronjobs
+**data** `CronJobResp[]`。
+
+### GET /cronjobs/:id
+**data** `CronJobResp`。
+
+### POST /cronjobs
+新增，自动同步调度器。
+
+**Body** `AddCronJobReq`:
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `name` | string | 是 | 任务名称 |
-| `cron_expr` | string | 是 | cron 表达式（6 字段：秒 分 时 日 月 周），如 `0 0 9 * * *` 表示每天 9:00 |
+| `name` | string | 是 | 名称 |
+| `cron_expr` | string | 是 | 6 字段 cron，如 `0 0 9 * * *` 每天 9:00 |
 | `message` | string | 是 | 触发时发送的消息 |
-| `message_type` | string | 否 | 消息类型，默认 `private` |
-| `target_id` | int64 | 是 | 目标 QQ 号或群号 |
+| `message_type` | string | 否 | `private`/`group`，默认 `private` |
+| `target_id` | int64 | 是 | 目标 QQ 或群号 |
 | `is_active` | bool | 是 | 是否立即启用 |
 
-**响应** `data: CronJobResp`
+**data** `CronJobResp`。
 
-**示例:**
+`CronJobResp`: `id`、`name`、`cron_expr`、`message`、`message_type`、`target_id` int64、`is_active`、`last_run_at` *time、`last_error`、`created_at`、`updated_at`。
 
-```bash
-curl -X POST http://localhost:8090/api/v1/cronjobs \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"早安提醒","cron_expr":"0 0 9 * * *","message":"早上好！","message_type":"private","target_id":123456,"is_active":true}'
-```
+### PUT /cronjobs/:id
+覆盖更新，自动 reload。**Body** `UpdateCronJobReq`（同 Add）。**data** `CronJobResp`。
 
-### 20.4 PUT /cronjobs/:id
+### DELETE /cronjobs/:id
+删除，自动 reload。**data** `null`。
 
-**功能:** 更新定时任务（覆盖更新），更新后自动同步调度器。
-
-**路径参数:** `id` (CronJob UUID)
-
-**请求体** `UpdateCronJobReq`（字段同 `AddCronJobReq`）
-
-**响应** `data: CronJobResp`
-
-### 20.5 DELETE /cronjobs/:id
-
-**功能:** 删除定时任务，删除后自动同步调度器。
-
-**路径参数:** `id` (CronJob UUID)
-
-**响应** `data: null`
-
-### 20.6 PUT /cronjobs/:id/toggle
-
-**功能:** 启用/停用定时任务，同步调度器。
-
-**路径参数:** `id` (CronJob UUID)
-
-**请求体** `ToggleCronJobReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `is_active` | bool | 是 | 目标状态 |
-
-**响应** `data: null`
+### PUT /cronjobs/:id/toggle
+启停，自动 reload。**Body** `ToggleCronJobReq`: `is_active` bool。**data** `null`。
 
 ---
 
-## 21. 回复策略
+## 22. 回复策略
 
-系统回复策略配置（单例，只有一行记录），控制在群聊中 Agent 对消息的回复行为。
+系统回复策略（单例，仅一行）。控制群聊中 Agent 对消息的回复行为。
 
-**ReplyStrategy 枚举值:**
-- `never_reply` — 完全不回复任何消息
-- `at_only` — 仅被 @ 时回复
-- `always` — 始终回复（默认）
-- `plugin_only` — 仅插件处理，不调用 LLM Agent
-- `relevance` — LLM 评估相关性后决定是否回复
+**ReplyStrategy 枚举**
 
-### ReplyStrategyResp 结构
+| 值 | 含义 |
+|----|------|
+| `never_reply` | 完全不回复 |
+| `at_only` | 仅被 @ 时回复 |
+| `always` | 始终回复（默认） |
+| `plugin_only` | 仅插件处理，不调用 LLM Agent |
+| `relevance` | LLM 评估相关性后决定是否回复（受 `relevance_threshold` 影响） |
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `id` | string | UUID（单例固定 ID） |
-| `strategy` | string | 策略模式（枚举值） |
-| `relevance_threshold` | float64 | 相关性阈值（0-1），仅在 `relevance` 模式下生效 |
-| `bot_name` | string | 机器人名字（如"小卷"），用于相关性 prompt 辅助判断 |
-| `created_at` | time | 创建时间 |
-| `updated_at` | time | 更新时间 |
+### GET /reply-strategy
+获取配置。首次 GET 不存在时自动创建（`strategy=always, relevance_threshold=0.5`）。
 
-### 21.1 GET /reply-strategy
+**data** `ReplyStrategyResp`: `id`、`strategy`、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`created_at`、`updated_at`。
 
-**功能:** 获取当前回复策略配置。
+### PUT /reply-strategy
+更新。
 
-**响应** `data: ReplyStrategyResp`
+**Body** `UpdateReplyStrategyReq`: `strategy`、`relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）。
 
-### 21.2 PUT /reply-strategy
-
-**功能:** 更新回复策略配置。初次调用前系统会自动创建默认记录（`strategy=always, relevance_threshold=0.5`）。
-
-**请求体** `UpdateReplyStrategyReq`:
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `strategy` | string | 是 | 策略模式 |
-| `relevance_threshold` | float64 | 是 | 相关性阈值（0-1） |
-| `bot_name` | string | 否 | 机器人名字 |
-
-**响应** `data: ReplyStrategyResp`
-
-**示例:**
+**data** `ReplyStrategyResp`。
 
 ```bash
 curl -X PUT http://localhost:8090/api/v1/reply-strategy \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
   -d '{"strategy":"relevance","relevance_threshold":0.6,"bot_name":"小卷"}'
-```
-
-```json
-{
-  "status": 0,
-  "info": "OK",
-  "data": {
-    "id": "...",
-    "strategy": "relevance",
-    "relevance_threshold": 0.6,
-    "bot_name": "小卷",
-    "created_at": "2026-07-20T12:00:00Z",
-    "updated_at": "2026-07-23T17:00:00Z"
-  }
-}
 ```
 
 ---
 
-## 22. 前端 SPA 静态服务
+## 附：前端 SPA 静态服务
 
-后端通过 Hertz `NoRoute` 兜底, 同端口 (`:8090`) 服务 Vue 前端 SPA, 路径与 API 互不冲突:
+后端复用 Hertz 引擎同端口（`:8090`）服务前端 SPA：
 
-| 请求路径模式            | 行为                                                    |
-|-------------------------|---------------------------------------------------------|
-| `/api/v1/<已注册路由>`   | 走 Hertz 路由, JWT 鉴权 (除 `/login`)                   |
-| `/health`                | 内联健康检查 (root, 不需鉴权)                            |
-| `/api/*` (未命中)        | 标准信封 404: `{status:40400, info:"资源不存在", data:null}` |
-| 其它任何路径             | 文件存在 → serve 文件; 不存在 → 回退 `index.html` (Vue Router history 模式) |
-| 前端未构建 (`index.html` 缺失) | 返回 200 + 文本引导页 ("请先构建前端")                |
+| 请求路径模式 | 行为 |
+|--------------|------|
+| `/api/v1/<已注册路由>` | Hertz 路由，JWT 鉴权（除 `/login`） |
+| `/health` | 内联健康检查（root，无需鉴权） |
+| `/api/*`（未命中） | 标准信封 404：`{"status":40400,"info":"资源不存在","data":null}` |
+| 其它任何路径 | 文件存在→serve 文件；不存在→回退 `index.html` |
+| 前端未构建（`index.html` 缺失） | 200 + 引导提示页（"请先构建前端"） |
 
-**入口与配置:**
-
-- 启动: `cmd/server/main.go` 读取环境变量 `WEB_DIR` (默认 `web/dist`), 传入 `engine.New(addr, webDir, svc)`。
-- 实现: `internal/web/web.go` 的 `SPAHandler(webDir)`, 在 `internal/api/engine/engine.go` 中通过 `h.NoRoute(...)` 注册。
-- 路径穿越防护: 通过 `filepath.Rel` 校验, 文件必须落在 `webDir` 之内。
-- **不嵌入二进制**: 前端是磁盘文件, 便于只换前端不重编 Go 的部署节奏。
-- 开发模式: Vite `:3000` 热更新, `vite.config.ts` 代理 `/api` → `:8090`, 因此开发期 Go 的 SPA fallback 不会被触发。
-- 生产模式: 容器内 `WEB_DIR=/app/web/dist`, 单端口暴露 Web 面板 + API + 前端。
-
-**404 信封示例** (未命中的 `/api/*`):
-
-```json
-{
-  "status": 40400,
-  "info": "资源不存在",
-  "data": null
-}
-```
+实现：`internal/web/web.go::SPAHandler(webDir)`，在 `engine.New` 中通过 `h.NoRoute(...)` 注册；不嵌入二进制，磁盘上 `WEB_DIR`（默认 `web/dist`）为准；开发期 Vite `:3000` 代理 `/api`→`:8090`，Go 的 fallback 不会被触发。
