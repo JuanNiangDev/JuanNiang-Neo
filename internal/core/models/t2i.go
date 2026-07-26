@@ -13,9 +13,9 @@ type T2IConfig struct {
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 
-	BaseURL  string `gorm:"column:base_url;type:varchar(512);not null;comment:T2I 服务地址"`
-	Timeout  int    `gorm:"column:timeout;default:30;comment:超时(秒)"`
-	IsActive bool   `gorm:"column:is_active;type:boolean;default:true;comment:是否启用"`
+	BaseURL  string `json:"base_url" gorm:"column:base_url;type:varchar(512);not null;comment:T2I 服务地址"`
+	Timeout  int    `json:"timeout" gorm:"column:timeout;default:30;comment:超时(秒)"`
+	IsActive bool   `json:"is_active" gorm:"column:is_active;type:boolean;default:true;comment:是否启用"`
 }
 
 func (T2IConfig) TableName() string {

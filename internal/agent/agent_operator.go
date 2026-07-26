@@ -296,9 +296,10 @@ func (m *mcpGroupAccess) ListMCPs() []pluggin.MCPInfo {
 	out := make([]pluggin.MCPInfo, 0, len(list))
 	for _, mc := range list {
 		out = append(out, pluggin.MCPInfo{
-			ID:     mc.ID(),
-			Name:   mc.Name(),
-			Active: mc.IsConnected(),
+			ID:       mc.ID(),
+			Name:     mc.Name(),
+			Active:   mc.IsConnected(),
+			IsActive: mc.IsConnected(),
 		})
 	}
 	return out

@@ -125,10 +125,11 @@ type ProviderInfo struct {
 }
 
 type MCPInfo struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	URL    string `json:"url"`
-	Active bool   `json:"active"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	URL      string `json:"url"`
+	Active   bool   `json:"active"`    // 运行时连接状态
+	IsActive bool   `json:"is_active"` // DB 配置的启用状态
 }
 
 type ToolInfo struct {
@@ -1247,12 +1248,31 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 			return pushResult(L, err)
 		},
 		"list_mcps": func(L *lua.LState) int {
-			if agentOp == nil {
-				return pushResult(L, fmt.Errorf("agent operator 不可用"))
+			if agentOp == nil || pe.dao == nil {
+				return pushResult(L, fmt.Errorf("agent operator 或 dao 不可用"))
+			}
+			// 从 DB 查询所有已配置的 MCP（含未启用的），再合并运行时连接状态
+			dbList, err := pe.dao.MCPServer.List(context.Background())
+			if err != nil {
+				return pushResultJSON(L, nil, err)
 			}
 			mcpGroup := agentOp.GetMCPGroup()
-			list := mcpGroup.ListMCPs()
-			return pushResultJSON(L, list, nil)
+			runtimeList := mcpGroup.ListMCPs()
+			connectedMap := make(map[string]bool, len(runtimeList))
+			for _, r := range runtimeList {
+				connectedMap[r.ID] = r.Active
+			}
+			out := make([]MCPInfo, 0, len(dbList))
+			for _, m := range dbList {
+				out = append(out, MCPInfo{
+					ID:       m.ID,
+					Name:     m.Name,
+					URL:      m.ServerURL,
+					Active:   connectedMap[m.ID],
+					IsActive: m.IsActive,
+				})
+			}
+			return pushResultJSON(L, out, nil)
 		},
 		"toggle_mcp": func(L *lua.LState) int {
 			if agentOp == nil {
