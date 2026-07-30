@@ -17,10 +17,11 @@ import (
 	"sync"
 	"time"
 
+	"JuanNiang-Neo/internal/adapter"
+
 	lua "github.com/yuin/gopher-lua"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
-	"JuanNiang-Neo/internal/adapter"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
@@ -403,8 +404,8 @@ type EventData struct {
 
 	// --- request 事件字段 ---
 	RequestType string `json:"request_type,omitempty"` // friend / group
-	Comment      string `json:"comment,omitempty"`     // 验证消息
-	Flag         string `json:"flag,omitempty"`        // 请求标识（用于同意/拒绝）
+	Comment     string `json:"comment,omitempty"`      // 验证消息
+	Flag        string `json:"flag,omitempty"`         // 请求标识（用于同意/拒绝）
 
 	// --- message 事件附加字段 ---
 	MessageID int64          `json:"message_id,omitempty"` // 消息 ID
@@ -845,60 +846,92 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 	if pe.adapter == nil {
 		return
 	}
-	adapter := pe.adapter
+	sendAdp := pe.adapter
+
+	// resolveImage 解析图片路径。URL/base64 直接透传，相对路径从插件目录读取并转 base64。
+	resolveImage := func(path string) string {
+		if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "base64://") {
+			return path
+		}
+		pluginDir := filepath.Join(pe.basePath, pluginName)
+		fullPath := filepath.Join(pluginDir, path)
+		data, err := os.ReadFile(fullPath)
+		if err != nil {
+			slog.Warn("读取插件图片文件失败", "plugin", pluginName, "path", fullPath, "err", err)
+			return path
+		}
+		ext := strings.TrimPrefix(filepath.Ext(fullPath), ".")
+		if ext == "" {
+			ext = "png"
+		}
+		return "base64://" + base64.StdEncoding.EncodeToString(data)
+	}
+
+	// buildSegments 将 Lua table 转为 []Segment，自动解析 image 的 file 字段。
+	buildSegments := func(tbl *lua.LTable) []adapter.Segment {
+		segs := luaTableToSegments(L, tbl)
+		for i := range segs {
+			if segs[i].Type == "image" {
+				if file, ok := segs[i].Data["file"].(string); ok && file != "" {
+					segs[i].Data["file"] = resolveImage(file)
+				}
+			}
+		}
+		return segs
+	}
 
 	obTable := L.NewTable()
 	funcs := map[string]lua.LGFunction{
-			"send_private_msg": func(L *lua.LState) int {
-				userID := int64(L.CheckNumber(1))
-				arg := L.Get(2)
-				var msg any
-				if arg.Type() == lua.LTTable {
-					msg = luaTableToSegments(L, arg.(*lua.LTable))
-				} else if arg.Type() == lua.LTString {
-					msg = string(arg.(lua.LString))
-				} else {
-					msg = arg.String()
-				}
-				_, err := adapter.SendPrivateMsg(userID, msg)
-				return pushResult(L, err)
-			},
-			"send_group_msg": func(L *lua.LState) int {
-				groupID := int64(L.CheckNumber(1))
-				arg := L.Get(2)
-				var msg any
-				if arg.Type() == lua.LTTable {
-					msg = luaTableToSegments(L, arg.(*lua.LTable))
-				} else if arg.Type() == lua.LTString {
-					msg = string(arg.(lua.LString))
-				} else {
-					msg = arg.String()
-				}
-				_, err := adapter.SendGroupMsg(groupID, msg)
-				return pushResult(L, err)
-			},
+		"send_private_msg": func(L *lua.LState) int {
+			userID := int64(L.CheckNumber(1))
+			arg := L.Get(2)
+			var msg any
+			if arg.Type() == lua.LTTable {
+				msg = buildSegments(arg.(*lua.LTable))
+			} else if arg.Type() == lua.LTString {
+				msg = string(arg.(lua.LString))
+			} else {
+				msg = arg.String()
+			}
+			_, err := sendAdp.SendPrivateMsg(userID, msg)
+			return pushResult(L, err)
+		},
+		"send_group_msg": func(L *lua.LState) int {
+			groupID := int64(L.CheckNumber(1))
+			arg := L.Get(2)
+			var msg any
+			if arg.Type() == lua.LTTable {
+				msg = buildSegments(arg.(*lua.LTable))
+			} else if arg.Type() == lua.LTString {
+				msg = string(arg.(lua.LString))
+			} else {
+				msg = arg.String()
+			}
+			_, err := sendAdp.SendGroupMsg(groupID, msg)
+			return pushResult(L, err)
+		},
 		"delete_msg": func(L *lua.LState) int {
-			err := adapter.DeleteMsg(int64(L.CheckNumber(1)))
+			err := sendAdp.DeleteMsg(int64(L.CheckNumber(1)))
 			return pushResult(L, err)
 		},
 		"get_msg": func(L *lua.LState) int {
-			msg, err := adapter.GetMsg(int64(L.CheckNumber(1)))
+			msg, err := sendAdp.GetMsg(int64(L.CheckNumber(1)))
 			return pushResultJSON(L, msg, err)
 		},
 		"get_group_info": func(L *lua.LState) int {
-			info, err := adapter.GetGroupInfo(int64(L.CheckNumber(1)))
+			info, err := sendAdp.GetGroupInfo(int64(L.CheckNumber(1)))
 			return pushResultJSON(L, info, err)
 		},
 		"get_group_member_list": func(L *lua.LState) int {
-			list, err := adapter.GetGroupMemberList(int64(L.CheckNumber(1)))
+			list, err := sendAdp.GetGroupMemberList(int64(L.CheckNumber(1)))
 			return pushResultJSON(L, list, err)
 		},
 		"get_group_member_info": func(L *lua.LState) int {
-			info, err := adapter.GetGroupMemberInfo(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)))
+			info, err := sendAdp.GetGroupMemberInfo(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)))
 			return pushResultJSON(L, info, err)
 		},
 		"get_group_honor_info": func(L *lua.LState) int {
-			info, err := adapter.GetGroupHonorInfo(int64(L.CheckNumber(1)))
+			info, err := sendAdp.GetGroupHonorInfo(int64(L.CheckNumber(1)))
 			return pushResultJSON(L, info, err)
 		},
 		"kick_group_member": func(L *lua.LState) int {
@@ -907,70 +940,70 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			if n >= 3 {
 				reject = bool(L.CheckBool(3))
 			}
-			err := adapter.KickGroupMember(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)), reject)
+			err := sendAdp.KickGroupMember(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)), reject)
 			return pushResult(L, err)
 		},
 		"ban_group_member": func(L *lua.LState) int {
-			err := adapter.BanGroupMember(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)), int(L.CheckInt(3)))
+			err := sendAdp.BanGroupMember(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)), int(L.CheckInt(3)))
 			return pushResult(L, err)
 		},
 		"set_group_whole_ban": func(L *lua.LState) int {
-			err := adapter.SetGroupWholeBan(int64(L.CheckNumber(1)), bool(L.CheckBool(2)))
+			err := sendAdp.SetGroupWholeBan(int64(L.CheckNumber(1)), bool(L.CheckBool(2)))
 			return pushResult(L, err)
 		},
 		"set_group_card": func(L *lua.LState) int {
-			err := adapter.SetGroupCard(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)), L.CheckString(3))
+			err := sendAdp.SetGroupCard(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)), L.CheckString(3))
 			return pushResult(L, err)
 		},
 		"handle_friend_request": func(L *lua.LState) int {
-			err := adapter.HandleFriendRequest(L.CheckString(1), bool(L.CheckBool(2)), L.CheckString(3))
+			err := sendAdp.HandleFriendRequest(L.CheckString(1), bool(L.CheckBool(2)), L.CheckString(3))
 			return pushResult(L, err)
 		},
 		"handle_group_request": func(L *lua.LState) int {
-			err := adapter.HandleGroupRequest(L.CheckString(1), L.CheckString(2), bool(L.CheckBool(3)), L.CheckString(4))
+			err := sendAdp.HandleGroupRequest(L.CheckString(1), L.CheckString(2), bool(L.CheckBool(3)), L.CheckString(4))
 			return pushResult(L, err)
 		},
 		"get_login_info": func(L *lua.LState) int {
-			info, err := adapter.GetLoginInfo()
+			info, err := sendAdp.GetLoginInfo()
 			return pushResultJSON(L, info, err)
 		},
 		"get_stranger_info": func(L *lua.LState) int {
-			info, err := adapter.GetStrangerInfo(int64(L.CheckNumber(1)))
+			info, err := sendAdp.GetStrangerInfo(int64(L.CheckNumber(1)))
 			return pushResultJSON(L, info, err)
 		},
 		"get_friend_list": func(L *lua.LState) int {
-			list, err := adapter.GetFriendList()
+			list, err := sendAdp.GetFriendList()
 			return pushResultJSON(L, list, err)
 		},
 		"get_group_list": func(L *lua.LState) int {
-			list, err := adapter.GetGroupList()
+			list, err := sendAdp.GetGroupList()
 			return pushResultJSON(L, list, err)
 		},
 		"send_like": func(L *lua.LState) int {
-			err := adapter.SendLike(int64(L.CheckNumber(1)), int(L.CheckInt(2)))
+			err := sendAdp.SendLike(int64(L.CheckNumber(1)), int(L.CheckInt(2)))
 			return pushResult(L, err)
 		},
 		"get_status": func(L *lua.LState) int {
-			s, err := adapter.GetStatus()
+			s, err := sendAdp.GetStatus()
 			return pushResultJSON(L, s, err)
 		},
 		"get_version_info": func(L *lua.LState) int {
-			v, err := adapter.GetVersionInfo()
+			v, err := sendAdp.GetVersionInfo()
 			return pushResultJSON(L, v, err)
 		},
-			"read_file_base64": func(L *lua.LState) int {
-				filePath := L.CheckString(1)
-				pluginDir := filepath.Join(pe.basePath, pluginName)
-				fullPath := filepath.Join(pluginDir, filePath)
-				data, err := os.ReadFile(fullPath)
-				if err != nil {
-					L.Push(lua.LNil)
-					L.Push(lua.LString(err.Error()))
-					return 2
-				}
-				L.Push(lua.LString("base64://" + base64.StdEncoding.EncodeToString(data)))
-				return 1
-			},
+		"read_file_base64": func(L *lua.LState) int {
+			filePath := L.CheckString(1)
+			pluginDir := filepath.Join(pe.basePath, pluginName)
+			fullPath := filepath.Join(pluginDir, filePath)
+			data, err := os.ReadFile(fullPath)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			L.Push(lua.LString("base64://" + base64.StdEncoding.EncodeToString(data)))
+			return 1
+		},
 	}
 	L.SetFuncs(obTable, funcs)
 	L.SetGlobal("onebot11", obTable)

@@ -1,10 +1,10 @@
-# poke-reply 插件清单
-name: "戳一戳回复"
-version: "1.0.0"
-author: "JuanNiang"
-description: "监听戳一戳事件，回复消息"
-entry: "main.lua"
+ppid: 5d1e0d14-17ce-446a-a3c6-4f377bfb73e6
+name: 戳一戳回复
+version: 1.0.0
+author: JuanNiang
+description: 监听戳一戳事件，回复消息
+entry: main.lua
 permissions:
-  - onebot11
+    - onebot11
 system: false
 enabled: true
