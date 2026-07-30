@@ -57,8 +57,7 @@ RUN go build -trimpath -ldflags "-s -w" -o /juan-niang-neo ./cmd/server/
 FROM ${REGISTRY}/alpine:latest
 
 # 安全 & 时区支持
-RUN apk --no-cache add ca-certificates tzdata wget \
-    && addgroup -S jn && adduser -S -G jn jn
+RUN apk --no-cache add ca-certificates tzdata wget
 
 WORKDIR /app
 
@@ -68,8 +67,7 @@ COPY --from=web-builder  /app/web/dist /app/web/dist
 COPY config/ /etc/juan-niang-neo/config
 
 # 运行时数据 (plugin 目录由 compose bind-mount 进来; 这里只准备兜底空目录)
-RUN mkdir -p /app/data/pluggins \
-    && chown -R jn:jn /app /etc/juan-niang-neo
+RUN mkdir -p /app/data/pluggins
 
 ENV WEB_DIR=/app/web/dist \
     TZ=Asia/Shanghai \
@@ -84,8 +82,6 @@ ENV WEB_DIR=/app/web/dist \
     REDIS_PASSWORD=root
 
 EXPOSE 8081 8090
-
-USER jn
 
 # 健康检查: 后端 /health 在 root 路径, 无需鉴权。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

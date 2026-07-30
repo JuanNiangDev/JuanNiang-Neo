@@ -83,7 +83,7 @@ make lint
 
 1. **`web-builder`** (`node:20-alpine`)：`npm ci || npm install` → `npm run build` → `dist/`
 2. **`go-builder`** (`golang:1.25-alpine`)：`go mod download` → `go build -trimpath -ldflags "-s -w" -o /juan-niang-neo ./cmd/server/`
-3. **runtime** (`alpine:latest`)：装 `ca-certificates tzdata wget`，建非 root 用户 `jn`，复制 binary 与 `web/dist`，`WEB_DIR=/app/web/dist` `TZ=Asia/Shanghai`，`EXPOSE 8081 8090`，`HEALTHCHECK` `wget -qO- http://127.0.0.1:8090/health`，`USER jn`
+3. **runtime** (`alpine:latest`)：装 `ca-certificates tzdata wget`，以 root 运行，复制 binary 与 `web/dist`，`WEB_DIR=/app/web/dist` `TZ=Asia/Shanghai`，`EXPOSE 8081 8090`，`HEALTHCHECK` `wget -qO- http://127.0.0.1:8090/health`
 
 另有 `Dockerfile.cn` 使用国内镜像加速。
 
