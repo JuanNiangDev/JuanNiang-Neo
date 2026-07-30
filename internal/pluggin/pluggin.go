@@ -893,8 +893,13 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
-			_, err := sendAdp.SendPrivateMsg(userID, msg)
-			return pushResult(L, err)
+			// 插件发消息异步，不阻塞命令 handler 返回
+			go func() {
+				if _, err := sendAdp.SendPrivateMsg(userID, msg); err != nil {
+					slog.Warn("插件异步发送私聊消息失败", "plugin", pluginName, "user_id", userID, "err", err)
+				}
+			}()
+			return pushOk(L)
 		},
 		"send_group_msg": func(L *lua.LState) int {
 			groupID := int64(L.CheckNumber(1))
@@ -907,8 +912,13 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
-			_, err := sendAdp.SendGroupMsg(groupID, msg)
-			return pushResult(L, err)
+			// 插件发消息异步，不阻塞命令 handler 返回
+			go func() {
+				if _, err := sendAdp.SendGroupMsg(groupID, msg); err != nil {
+					slog.Warn("插件异步发送群消息失败", "plugin", pluginName, "group_id", groupID, "err", err)
+				}
+			}()
+			return pushOk(L)
 		},
 		"delete_msg": func(L *lua.LState) int {
 			err := sendAdp.DeleteMsg(int64(L.CheckNumber(1)))
@@ -1580,6 +1590,13 @@ func pushResult(L *lua.LState, err error) int {
 	}
 	L.Push(lua.LBool(true))
 	return 1
+}
+
+// pushOk 异步消息发送成功占位，返回 {true, "ok"}
+func pushOk(L *lua.LState) int {
+	L.Push(lua.LBool(true))
+	L.Push(lua.LString("ok"))
+	return 2
 }
 
 func pushResultJSON(L *lua.LState, v any, err error) int {
