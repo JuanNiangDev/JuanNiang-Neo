@@ -68,6 +68,9 @@ make dev
 # 仅跑后端 go run, 前端走 web/dist
 make run
 
+# Debug 模式：pprof (:6060) + Debug 级别日志
+make run-debug
+
 # 综合检查 (go vet + 前端 typecheck)
 make lint
 ```
@@ -99,6 +102,39 @@ make lint
 - 命令行查看：`docker logs -f juan-niang-neo` 或 `journalctl -u juan-niang-neo -f`（systemd）
 - 插件日志带 `[plugin:<name>]` 前缀
 - 启动日志会打印各模块就绪状态、adapter 监听地址、加载的插件数与 Adapter Admins 列表
+
+## Debug 模式
+
+启动时加 `-debug` 标志开启：
+
+```bash
+make run-debug
+# 或
+./bin/juan-niang-neo -debug
+# 自定义 pprof 端口
+./bin/juan-niang-neo -debug -pprof-addr :6061
+```
+
+Debug 模式下：
+
+| 功能 | 说明 |
+|------|------|
+| 日志级别 | Debug，所有 `slog.Debug(...)` 可见（插件图片处理耗时、异步消息发送耗时等） |
+| pprof | HTTP 服务 `:6060`，支持 CPU/heap/goroutine 等 profile |
+| 启动详情 | 打印 Go 版本、CPU 核数、每个插件的 name/version/permissions |
+
+pprof 常用命令：
+
+```bash
+# CPU 火焰图（采集 30s）
+go tool pprof -http :8080 http://127.0.0.1:6060/debug/pprof/profile
+
+# goroutine 快照
+go tool pprof -http :8080 http://127.0.0.1:6060/debug/pprof/goroutine
+
+# 内存分配
+go tool pprof -http :8080 http://127.0.0.1:6060/debug/pprof/heap
+```
 
 ## 优雅退出
 
