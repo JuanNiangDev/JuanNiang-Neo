@@ -79,6 +79,10 @@ services:
     volumes:
       # Lua 插件目录 (convention: data/pluggins/<name>/{main.lua,pluggin.yaml})
       # 容器内二进制 CWD=/app, 硬编码加载 "data/pluggins" -> /app/data/pluggins。
+      #
+      # ⚠️ 首次启动前必须先在宿主机创建此目录并赋予写权限，否则容器内非 root 用户
+      # 无法写入内嵌的 SDK 与 system 插件：
+      #   mkdir -p data/pluggins && chmod 777 data/pluggins
       - ../data/pluggins:/app/data/pluggins
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
