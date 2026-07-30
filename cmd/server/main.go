@@ -149,6 +149,9 @@ func main() {
 	}
 	hago.PluginEngine = pluginEngine
 
+	// 将 PluginEngine 的 OnTimerCall 注入 CronJob 调度器
+	hago.CronJobManager.SetPluginTimer(pluginEngine, adapterCfg.Admins)
+
 	// ---------- 7. Web API ----------
 
 	svc := service.New(coreInst.DAO, adapterProv, webhookAdapter, pluginEngine)

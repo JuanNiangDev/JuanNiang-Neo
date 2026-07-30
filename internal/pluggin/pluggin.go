@@ -329,14 +329,15 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 		loaded[name] = true
 		m := p.Manifest
 		entry := map[string]any{
-			"id":          name, // 目录名，用于 API 操作 (toggle/delete)
-			"name":        m.Name,
-			"version":     m.Version,
-			"author":      m.Author,
-			"description": m.Description,
-			"permissions": m.Permissions,
-			"is_system":   m.System,
-			"is_active":   true, // 已加载即视为 active
+			"id":             name, // 目录名，用于 API 操作 (toggle/delete)
+			"name":           m.Name,
+			"version":        m.Version,
+			"author":         m.Author,
+			"description":    m.Description,
+			"permissions":    m.Permissions,
+			"is_system":      m.System,
+			"is_active":      true, // 已加载即视为 active
+			"supports_timer": p.SupportsTimer(),
 		}
 		// 使用 Load 时的 name（目录名）查找命令，而非 manifest.Name
 		// 因为命令注册使用的 plugin 参数是 Load 的 name 参数
@@ -361,15 +362,16 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 				continue
 			}
 			out = append(out, map[string]any{
-				"id":          entry.Name(), // 目录名，用于 API 操作
-				"name":        manifest.Name,
-				"version":     manifest.Version,
-				"author":      manifest.Author,
-				"description": manifest.Description,
-				"permissions": manifest.Permissions,
-				"is_system":   manifest.System,
-				"is_active":   manifest.Enabled, // 从 YAML enabled 字段读取，兼容旧版默认 true
-				"commands":    []map[string]any{},
+				"id":             entry.Name(), // 目录名，用于 API 操作
+				"name":           manifest.Name,
+				"version":        manifest.Version,
+				"author":         manifest.Author,
+				"description":    manifest.Description,
+				"permissions":    manifest.Permissions,
+				"is_system":      manifest.System,
+				"is_active":      manifest.Enabled, // 从 YAML enabled 字段读取，兼容旧版默认 true
+				"supports_timer": false,            // 未加载的插件无法检测，默认 false
+				"commands":       []map[string]any{},
 			})
 		}
 	}
@@ -387,6 +389,7 @@ type EventData struct {
 	RawMessage  string         `json:"raw_message"`
 	Admins      []string       `json:"admins"`
 	Webhook     map[string]any `json:"webhook,omitempty"`
+	Payload     map[string]any `json:"payload,omitempty"` // on_timer_call 携带的 payload
 }
 
 // HasPluginCommand 检查消息是否匹配已注册的插件命令（不执行，仅供策略层判断）。
@@ -485,6 +488,64 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 		}
 	}
 	return false
+}
+
+// OnTimerCall 定时任务触发插件 on_timer_call 回调。
+// pluginIDs 指定要调用的插件（目录名列表），payload 为 CronJob 配置的 JSON payload，
+// admins 为系统管理员 QQ 列表。
+// 实现 cronjob.PluginTimerDispatcher 接口。
+func (pe *PluginEngine) OnTimerCall(pluginIDs []string, payload map[string]any, admins []string) {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+
+	event := EventData{
+		PostType: "timer",
+		Admins:   admins,
+		Payload:  payload,
+	}
+
+	for _, name := range pluginIDs {
+		p, ok := pe.plugins[name]
+		if !ok {
+			slog.Warn("OnTimerCall: 插件未加载", "plugin", name)
+			continue
+		}
+		fn := p.State.GetGlobal("on_timer_call")
+		if fn.Type() != lua.LTFunction {
+			slog.Warn("OnTimerCall: 插件未定义 on_timer_call", "plugin", name)
+			continue
+		}
+		table := eventToLuaTable(p.State, event)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 0, nil); err != nil {
+			slog.Error("插件 on_timer_call 错误", "plugin", name, "err", err)
+		}
+	}
+}
+
+// SupportsTimer 检查插件是否支持定时任务回调（定义了 on_timer_call 全局函数）。
+func (p *LoadedPlugin) SupportsTimer() bool {
+	fn := p.State.GetGlobal("on_timer_call")
+	return fn.Type() == lua.LTFunction
+}
+
+// ReloadAll 卸载所有非系统插件后重新加载全部插件。
+func (pe *PluginEngine) ReloadAll() error {
+	pe.mu.Lock()
+	// 先卸载非系统插件
+	for name, p := range pe.plugins {
+		if p.Manifest.System {
+			continue
+		}
+		pe.commands.UnregisterPlugin(name)
+		p.State.Close()
+		delete(pe.plugins, name)
+	}
+	pe.mu.Unlock()
+
+	// LoadAll 在内部会重新取锁并加载所有插件
+	return pe.LoadAll()
 }
 
 func (p *LoadedPlugin) HasPermission(perm string) bool {
@@ -1466,6 +1527,9 @@ func eventToLuaTable(L *lua.LState, ev EventData) *lua.LTable {
 	}
 	if len(ev.Webhook) > 0 {
 		L.SetField(t, "webhook", goToLuaValue(L, ev.Webhook))
+	}
+	if len(ev.Payload) > 0 {
+		L.SetField(t, "payload", goToLuaValue(L, ev.Payload))
 	}
 	return t
 }

@@ -141,17 +141,17 @@ type UpdateSkillReq struct {
 // ---------- Prompt ----------
 
 type AddPromptReq struct {
-	Name      string            `json:"name"`
-	Content   string            `json:"content"`
-	Type      models.PromptType `json:"type"`
-	IsActive  bool              `json:"is_active"`
+	Name     string            `json:"name"`
+	Content  string            `json:"content"`
+	Type     models.PromptType `json:"type"`
+	IsActive bool              `json:"is_active"`
 }
 
 type UpdatePromptReq struct {
-	Name      string            `json:"name"`
-	Content   string            `json:"content"`
-	Type      models.PromptType `json:"type"`
-	IsActive  bool              `json:"is_active"`
+	Name     string            `json:"name"`
+	Content  string            `json:"content"`
+	Type     models.PromptType `json:"type"`
+	IsActive bool              `json:"is_active"`
 }
 
 type TogglePromptReq struct {
@@ -223,21 +223,25 @@ type UpdateWebhookConfigReq struct {
 // ---------- CronJob ----------
 
 type AddCronJobReq struct {
-	Name        string `json:"name"`
-	CronExpr    string `json:"cron_expr"`
-	Message     string `json:"message"`
-	MessageType string `json:"message_type"`
-	TargetID    int64  `json:"target_id"`
-	IsActive    bool   `json:"is_active"`
+	Name        string   `json:"name"`
+	CronExpr    string   `json:"cron_expr"`
+	Message     string   `json:"message"`
+	MessageType string   `json:"message_type"`
+	TargetID    int64    `json:"target_id"`
+	IsActive    bool     `json:"is_active"`
+	PluginIDs   []string `json:"plugin_ids"` // 触发时调用的插件目录名列表
+	Payload     string   `json:"payload"`    // JSON 字符串：传给 on_timer_call 的 payload
 }
 
 type UpdateCronJobReq struct {
-	Name        string `json:"name"`
-	CronExpr    string `json:"cron_expr"`
-	Message     string `json:"message"`
-	MessageType string `json:"message_type"`
-	TargetID    int64  `json:"target_id"`
-	IsActive    bool   `json:"is_active"`
+	Name        string   `json:"name"`
+	CronExpr    string   `json:"cron_expr"`
+	Message     string   `json:"message"`
+	MessageType string   `json:"message_type"`
+	TargetID    int64    `json:"target_id"`
+	IsActive    bool     `json:"is_active"`
+	PluginIDs   []string `json:"plugin_ids"` // 触发时调用的插件目录名列表
+	Payload     string   `json:"payload"`    // JSON 字符串：传给 on_timer_call 的 payload
 }
 
 type ToggleCronJobReq struct {

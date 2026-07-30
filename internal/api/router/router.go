@@ -72,6 +72,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	// Plugins
 	api.GET("/plugins", auth, svc.ListPlugins)
 	api.POST("/plugins/upload", auth, svc.UploadPlugin)
+	api.POST("/plugins/reload", auth, svc.ReloadAllPlugins)
 	api.PUT("/plugins/:id/toggle", auth, svc.TogglePlugin)
 	api.DELETE("/plugins/:id", auth, svc.DeletePlugin)
 

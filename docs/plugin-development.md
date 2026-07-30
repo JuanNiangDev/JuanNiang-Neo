@@ -498,6 +498,36 @@ function on_webhook(event)
 end
 ```
 
+## 回调: `on_timer_call`
+
+定时任务回调，由 CronJob 的 Plugin 分发模式触发。
+
+```lua
+function on_timer_call(event)  -- 无返回值
+```
+
+| event 字段 | 类型 | 说明 |
+|----------|------|------|
+| `post_type` | string | `"timer"` |
+| `payload` | table | CronJob 配置的 Payload JSON 对象 |
+| `admins` | []string | admin QQ 列表 |
+
+- 只有定义了 `on_timer_call` 全局函数且已加载的插件才会被 CronJob 调用
+- 前端多选下拉框自动过滤 `supports_timer=true` 的已启用插件
+- 新增/修改 `on_timer_call` 后需通过前端"重载全部"或 `POST /api/v1/plugins/reload` 热重载
+
+```lua
+-- 示例：向 Payload 指定的 QQ 发定时消息
+function on_timer_call(event)
+    local p = event.payload or {}
+    if p.target_qq and p.message then
+        jn.onebot11.send_private_msg(p.target_qq, p.message)
+    end
+end
+```
+
+完整示例见 `data/pluggins/cron-example/`。
+
 ## 权限速查
 
 | 权限 | 暴露的全局表 |
@@ -511,6 +541,7 @@ end
 | `sandbox` | `sandbox.*` |
 | `agent` | `agent.*` |
 | (webhook 调用层过滤) | `on_webhook` 会被调用 |
+| (timer 调用层过滤) | `on_timer_call` 会被调用 |
 
 ---
 

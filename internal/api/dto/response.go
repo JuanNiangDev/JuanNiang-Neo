@@ -289,6 +289,8 @@ type CronJobResp struct {
 	MessageType string     `json:"message_type"`
 	TargetID    int64      `json:"target_id"`
 	IsActive    bool       `json:"is_active"`
+	PluginIDs   []string   `json:"plugin_ids"` // 触发时调用的插件目录名列表
+	Payload     string     `json:"payload"`    // JSON 字符串：传给 on_timer_call 的 payload
 	LastRunAt   *time.Time `json:"last_run_at"`
 	LastError   string     `json:"last_error"`
 	CreatedAt   time.Time  `json:"created_at"`

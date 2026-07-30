@@ -445,6 +445,11 @@ curl -X POST http://localhost:8090/api/v1/plugins/upload \
 ### DELETE /plugins/:id
 卸载并删除插件配置（**不删磁盘文件**）。系统插件禁删（40028）。**data** `null`。
 
+### POST /plugins/reload
+**热重载所有非系统插件**。先卸载全部非系统插件，再调用 `LoadAll()` 重新扫描并加载。
+适用于：新增/修改 `on_timer_call` 或注册了新命令后无需重启进程即可生效。
+**Body** 无。**data** `null`。
+
 ---
 
 ## 12. 聊天记录

@@ -1,0 +1,10 @@
+ppid: a49cd506-b50a-4dd4-bbb0-7bee2c76b6bd
+name: Cron 示例插件
+version: 1.0.0
+author: JuanNiang
+description: 示例插件：通过 CronJob 定时触发，向 Payload 中指定的 QQ 号发送消息
+entry: main.lua
+permissions:
+    - onebot11
+system: false
+enabled: true

@@ -1080,6 +1080,20 @@ func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+// ReloadAllPlugins 重载所有插件（先卸载非系统插件，再全量加载）。
+func (s *Service) ReloadAllPlugins(ctx context.Context, c *app.RequestContext) {
+	if s.PluginEngine == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "PluginEngine 未初始化"}))
+		return
+	}
+	if err := s.PluginEngine.ReloadAll(); err != nil {
+		slog.Error("重载所有插件失败", "err", err)
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
 // ====================================================================
 // ACL
 // ====================================================================
@@ -1701,6 +1715,7 @@ func (s *Service) AddCronJob(ctx context.Context, c *app.RequestContext) {
 		data.MessageType = "private"
 	}
 
+	pluginIDsJSON, _ := json.Marshal(data.PluginIDs)
 	m := models.CronJob{
 		Name:        data.Name,
 		CronExpr:    data.CronExpr,
@@ -1708,6 +1723,8 @@ func (s *Service) AddCronJob(ctx context.Context, c *app.RequestContext) {
 		MessageType: data.MessageType,
 		TargetID:    data.TargetID,
 		IsActive:    data.IsActive,
+		PluginIDs:   string(pluginIDsJSON),
+		Payload:     data.Payload,
 	}
 	if err := s.DAO.CronJob.Create(ctx, &m); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -1745,6 +1762,9 @@ func (s *Service) UpdateCronJob(ctx context.Context, c *app.RequestContext) {
 	raw.MessageType = data.MessageType
 	raw.TargetID = data.TargetID
 	raw.IsActive = data.IsActive
+	pluginIDsJSON, _ := json.Marshal(data.PluginIDs)
+	raw.PluginIDs = string(pluginIDsJSON)
+	raw.Payload = data.Payload
 
 	if err := s.DAO.CronJob.Update(ctx, raw); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))

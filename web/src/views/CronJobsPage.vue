@@ -2,7 +2,7 @@
   <div>
     <div class="page-header">
       <div class="page-title">CronJob 定时任务</div>
-      <div class="page-subtitle">在指定时间模拟 OneBot11 事件，注入 Agent 自动处理</div>
+      <div class="page-subtitle">在指定时间触发 Agent 消息或调用插件 on_timer_call 回调</div>
     </div>
     <div class="d-flex justify-end mb-4">
       <v-btn color="primary" prepend-icon="mdi-plus" @click="openAdd">新增任务</v-btn>
@@ -12,10 +12,16 @@
         <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details
           @update:model-value="(v: any) => toggle(item.id, !!v)" />
       </template>
-      <template #item.message_type="{ item }">
-        <v-chip :color="item.message_type === 'group' ? 'info' : 'warning'" size="small" variant="tonal">
-          {{ item.message_type === 'group' ? '群聊' : '私聊' }}
-        </v-chip>
+      <template #item.dispatch_type="{ item }">
+        <v-chip v-if="item.plugin_ids && item.plugin_ids.length > 0" size="small" color="success" variant="tonal">Plugin</v-chip>
+        <v-chip v-if="item.message" size="small" color="info" variant="tonal" class="ml-1">Agent</v-chip>
+        <span v-if="!item.message && (!item.plugin_ids || item.plugin_ids.length === 0)" class="text-disabled">未配置</span>
+      </template>
+      <template #item.plugin_ids="{ item }">
+        <div class="d-flex flex-wrap" style="gap:4px" v-if="item.plugin_ids && item.plugin_ids.length > 0">
+          <v-chip v-for="pid in item.plugin_ids" :key="pid" size="x-small" variant="tonal" color="success">{{ pid }}</v-chip>
+        </div>
+        <span v-else class="text-disabled">-</span>
       </template>
       <template #item.last_run_at="{ item }">
         <span v-if="item.last_run_at">{{ new Date(item.last_run_at).toLocaleString() }}</span>
@@ -32,7 +38,7 @@
     </v-data-table>
 
     <!-- 新增/编辑弹窗 -->
-    <v-dialog v-model="dialog" max-width="640">
+    <v-dialog v-model="dialog" max-width="700">
       <v-card rounded="lg">
         <v-card-title>{{ editing ? '编辑 CronJob' : '新增 CronJob' }}</v-card-title>
         <v-card-text>
@@ -40,11 +46,54 @@
             <v-text-field v-model="form.name" label="任务名称" class="mb-3" />
             <v-text-field v-model="form.cron_expr" label="Cron 表达式" class="mb-3"
               hint="秒 分 时 日 月 周。例如: 0 0 8 * * * 表示每天8点" persistent-hint />
-            <v-select v-model="form.message_type" :items="msgTypeOptions" label="消息类型" class="mb-3" />
-            <v-text-field v-model.number="form.target_id" label="目标 ID (QQ号/群号)" type="number" class="mb-3" />
-            <v-textarea v-model="form.message" label="消息内容" class="mb-3" rows="3"
-              hint="该文本将作为用户消息发送给 Agent，Agent 会据此生成回复。不会发送 Markdown 格式。" />
-            <v-switch v-model="form.is_active" label="启用" color="primary" />
+            <v-switch v-model="form.is_active" label="启用" color="primary" class="mb-3" />
+
+            <v-divider class="mb-3" />
+
+            <!-- Tab: Agent / Plugin -->
+            <v-tabs v-model="tab" color="primary" class="mb-4">
+              <v-tab value="agent">Agent 分发</v-tab>
+              <v-tab value="plugin">Plugin 分发</v-tab>
+            </v-tabs>
+
+            <v-window v-model="tab">
+              <!-- Agent 分发表单 -->
+              <v-window-item value="agent">
+                <v-select v-model="form.message_type" :items="msgTypeOptions" label="消息类型" class="mb-3" />
+                <v-text-field v-model.number="form.target_id" label="目标 ID (QQ号/群号)" type="number" class="mb-3" />
+                <v-textarea v-model="form.message" label="消息内容" class="mb-3" rows="3"
+                  hint="给 Agent 的用户消息。留空则不发给 Agent。" />
+              </v-window-item>
+
+              <!-- Plugin 分发表单 -->
+              <v-window-item value="plugin">
+                <v-select
+                  v-model="form.plugin_ids"
+                  :items="timerPlugins"
+                  item-title="name"
+                  item-value="id"
+                  label="触发插件"
+                  multiple
+                  chips
+                  closable-chips
+                  class="mb-3"
+                  hint="仅显示支持 on_timer_call 且已启用的插件"
+                  persistent-hint
+                />
+                <div class="text-caption text-medium-emphasis mb-1">Payload (JSON)</div>
+                <div class="editor-wrapper mb-3">
+                  <Codemirror
+                    v-model="form.payload"
+                    :extensions="cmExtensions"
+                    :style="{ height: '200px' }"
+                    :indent-with-tab="true"
+                    :tab-size="2"
+                    placeholder='{"target_qq": 123456, "message": "定时提醒"}'
+                  />
+                </div>
+                <div v-if="payloadError" class="text-error text-caption mb-2">{{ payloadError }}</div>
+              </v-window-item>
+            </v-window>
           </v-form>
         </v-card-text>
         <v-card-actions>
@@ -70,8 +119,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { Codemirror } from 'vue-codemirror'
+import { json } from '@codemirror/lang-json'
+import { basicSetup } from 'codemirror'
 import { cronJobApi, type CronJobResp, type AddCronJobReq } from '@/api'
+import { pluginApi } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
@@ -80,6 +133,7 @@ const items = ref<CronJobResp[]>([])
 const dialog = ref(false); const deleteDialog = ref(false)
 const editing = ref<string | null>(null); const saving = ref(false); const deleting = ref(false)
 const deleteTarget = ref<CronJobResp | null>(null); const formRef = ref()
+const tab = ref('agent')
 
 const msgTypeOptions = [
   { title: '私聊', value: 'private' },
@@ -89,8 +143,8 @@ const msgTypeOptions = [
 const headers = [
   { title: '名称', key: 'name' },
   { title: 'Cron 表达式', key: 'cron_expr' },
-  { title: '消息类型', key: 'message_type' },
-  { title: '目标 ID', key: 'target_id' },
+  { title: '分发类型', key: 'dispatch_type' },
+  { title: '触发插件', key: 'plugin_ids' },
   { title: '上次执行', key: 'last_run_at' },
   { title: '上次错误', key: 'last_error' },
   { title: '启用', key: 'is_active', align: 'center' as const },
@@ -99,9 +153,33 @@ const headers = [
 
 const defaultForm = (): AddCronJobReq => ({
   name: '', cron_expr: '', message: '', message_type: 'private', target_id: 0, is_active: true,
+  plugin_ids: [], payload: '',
 })
 
 const form = ref<AddCronJobReq>(defaultForm())
+
+// CodeMirror 配置
+const cmExtensions = [basicSetup, json()]
+
+// JSON payload 实时校验
+const payloadError = computed(() => {
+  const v = form.value.payload?.trim()
+  if (!v) return ''
+  try { JSON.parse(v); return '' }
+  catch (e: any) { return `JSON 格式错误: ${e.message}` }
+})
+
+// 获取支持 on_timer_call 且启用的插件列表
+const timerPlugins = ref<Array<{ id: string; name: string }>>([])
+async function loadTimerPlugins() {
+  try {
+    const res = await pluginApi.list()
+    const plugins = (res.data.data || []) as any[]
+    timerPlugins.value = plugins
+      .filter((p: any) => p.supports_timer && p.is_active)
+      .map((p: any) => ({ id: p.id || p.name, name: `${p.name} (v${p.version})` }))
+  } catch { /* ignore */ }
+}
 
 async function fetch() {
   loading.value = true
@@ -109,13 +187,20 @@ async function fetch() {
   catch { toastStore.error('获取失败') }
   finally { loading.value = false }
 }
-function openAdd() { editing.value = null; form.value = defaultForm(); dialog.value = true }
+function openAdd() {
+  editing.value = null; form.value = defaultForm(); tab.value = 'agent'
+  loadTimerPlugins(); dialog.value = true
+}
 function openEdit(item: CronJobResp) {
   editing.value = item.id
   form.value = {
     name: item.name, cron_expr: item.cron_expr, message: item.message,
     message_type: item.message_type, target_id: item.target_id, is_active: item.is_active,
+    plugin_ids: item.plugin_ids || [], payload: item.payload || '',
   }
+  // 根据已有数据决定默认 tab
+  tab.value = (item.plugin_ids && item.plugin_ids.length > 0) ? 'plugin' : 'agent'
+  loadTimerPlugins()
   dialog.value = true
 }
 async function toggle(id: string, v: boolean) {
@@ -143,3 +228,26 @@ async function handleDelete() {
 }
 onMounted(fetch)
 </script>
+
+<style scoped>
+.editor-wrapper {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.editor-wrapper :deep(.cm-editor) {
+  outline: none !important;
+}
+.editor-wrapper :deep(.cm-focused) {
+  outline: none !important;
+}
+.editor-wrapper :deep(.cm-gutters) {
+  background: #000 !important;
+  color: #888 !important;
+  border-right: 1px solid #333 !important;
+}
+.editor-wrapper :deep(.cm-activeLineGutter) {
+  background: #1a1a1a !important;
+  color: #ccc !important;
+}
+</style>

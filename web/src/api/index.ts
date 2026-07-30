@@ -128,6 +128,7 @@ export const toolApi = {
 export const pluginApi = {
   list: () => client.get('/plugins'),
   upload: (file: File) => { const fd = new FormData(); fd.append('file', file); return client.post('/plugins/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } }) },
+  reloadAll: () => client.post('/plugins/reload'),
   toggle: (id: string, is_active: boolean) => client.put(`/plugins/${id}/toggle`, { is_active }),
   delete: (id: string) => client.delete(`/plugins/${id}`),
 }
@@ -202,12 +203,15 @@ export const backgroundTaskApi = {
 // ======== CronJob ========
 export interface CronJobResp {
   id: string; name: string; cron_expr: string; message: string; message_type: string
-  target_id: number; is_active: boolean; last_run_at?: string; last_error: string
+  target_id: number; is_active: boolean
+  plugin_ids: string[]; payload: string
+  last_run_at?: string; last_error: string
   created_at: string; updated_at: string
 }
 export interface AddCronJobReq {
   name: string; cron_expr: string; message: string; message_type: string
   target_id: number; is_active: boolean
+  plugin_ids: string[]; payload: string
 }
 
 export const cronJobApi = {

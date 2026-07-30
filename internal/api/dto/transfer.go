@@ -3,6 +3,7 @@ package dto
 import (
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
+	"encoding/json"
 )
 
 func RawProviderList2Resp(raw []models.Provider) []ProviderResp {
@@ -268,6 +269,10 @@ func RawLogEntryList2Resp(raw []logging.Entry) []LogEntryResp {
 // ---------- CronJob ----------
 
 func RawCronJob2Resp(raw *models.CronJob) CronJobResp {
+	var pluginIDs []string
+	if raw.PluginIDs != "" {
+		json.Unmarshal([]byte(raw.PluginIDs), &pluginIDs)
+	}
 	return CronJobResp{
 		ID:          raw.ID,
 		Name:        raw.Name,
@@ -276,6 +281,8 @@ func RawCronJob2Resp(raw *models.CronJob) CronJobResp {
 		MessageType: raw.MessageType,
 		TargetID:    raw.TargetID,
 		IsActive:    raw.IsActive,
+		PluginIDs:   pluginIDs,
+		Payload:     raw.Payload,
 		LastRunAt:   raw.LastRunAt,
 		LastError:   raw.LastError,
 		CreatedAt:   raw.CreatedAt,
