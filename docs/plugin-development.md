@@ -218,6 +218,7 @@ jn.onebot11.send_group_msg(123456, "Hello")
 -- 富文本消息段
 jn.onebot11.send_group_msg(123456, {
     { type = "text", data = { text = "看图：" } },
+    { type = "at", data = { qq = "123456789" } },
     { type = "image", data = { file = "img/cat.png" } },  -- 插件目录下文件自动转 base64
     { type = "image", data = { file = "https://example.com/dog.jpg" } },
     { type = "face", data = { id = "66" } },  -- CQ 表情 ID

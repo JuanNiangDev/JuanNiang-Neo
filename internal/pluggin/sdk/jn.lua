@@ -47,10 +47,11 @@ local M = {}
 ---@field sender table? 发送者信息 {user_id, nickname, sex, age, card}
 ---
 --- 消息段格式 (用于 send_private_msg / send_group_msg 第二个参数):
---- 传入 Lua 数组，每项为 {type="text|image|face|...", data={...}}:
+--- 传入 Lua 数组，每项为 {type="text|image|face|at|...", data={...}}:
 ---   type="text"   → data={text="Hello"}
 ---   type="image"  → data={file="http://..."}  支持 URL / base64:// / 相对路径
 ---   type="face"   → data={id="1"}       CQ 表情 ID
+---   type="at"     → data={qq="123456"}  @某人（仅群聊有效）
 ---
 --- 图片 file 字段支持三种来源:
 ---   1. URL:     "http://..." 或 "https://..."
