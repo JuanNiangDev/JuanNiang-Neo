@@ -198,9 +198,36 @@ log.error("操作失败: " .. err)
 
 | 函数 | 说明 |
 |------|------|
-| `onebot11.send_private_msg(user_id, message) → bool [, err]` | user_id 数字（不是字符串） |
-| `onebot11.send_group_msg(group_id, message) → bool [, err]` | |
-| `onebot11.delete_msg(message_id) → bool [, err]` | 撤回 |
+| `onebot11.send_private_msg(user_id, message) → bool, string` | **异步发送**私聊，立即返回。`message` 可为 string 或消息段数组 |
+| `onebot11.send_group_msg(group_id, message) → bool, string` | **异步发送**群聊，立即返回 |
+| `onebot11.send_private_msg_sync(user_id, message) → bool [, err]` | **同步发送**私聊，阻塞等待结果返回 |
+| `onebot11.send_group_msg_sync(group_id, message) → bool [, err]` | **同步发送**群聊，阻塞等待结果返回 |
+| `onebot11.delete_msg(message_id) → bool [, err]` | 撤回消息 |
+| `onebot11.read_file_base64(path) → string, err` | 从插件目录读取文件并返回 `base64://...` 字符串 |
+
+> **异步 vs 同步**：默认 `send_xxx_msg` 为异步（fire-and-forget），适合大多数场景。需要确认发送结果或获取 `message_id` 时用 `send_xxx_msg_sync`。
+
+#### 消息段格式（富文本）
+
+`message` 参数支持 Lua 数组格式的消息段：
+
+```lua
+-- 纯文本
+jn.onebot11.send_group_msg(123456, "Hello")
+
+-- 富文本消息段
+jn.onebot11.send_group_msg(123456, {
+    { type = "text", data = { text = "看图：" } },
+    { type = "image", data = { file = "img/cat.png" } },  -- 插件目录下文件自动转 base64
+    { type = "image", data = { file = "https://example.com/dog.jpg" } },
+    { type = "face", data = { id = "66" } },  -- CQ 表情 ID
+})
+```
+
+图片 `file` 字段支持三种来源：
+- `http://` / `https://` → 直接透传 URL
+- `base64://` → 直接透传
+- 相对路径（如 `img/photo.png`）→ 从插件目录自动读取并转 base64
 
 ### 群信息查询
 
@@ -468,6 +495,8 @@ function on_message(event) → (consumed, reply)
 | `user_id` | number | 发送者 QQ |
 | `group_id` | number | 群号 |
 | `raw_message` | string | 消息原文 |
+| `message_id` | number | 消息 ID |
+| `sender` | table | 发送者信息 `{user_id, nickname, sex, age, card}` |
 | `admins` | []string | admin QQ 列表（透传 OB AdminQQNumbers） |
 
 `consumed=true` → 跳过 Agent 处理与后续插件。
@@ -527,6 +556,67 @@ end
 ```
 
 完整示例见 `data/pluggins/cron-example/`。
+
+## 回调: `on_notice`
+
+通知事件回调，由 OneBot11 的 notice 事件触发（群成员增减、禁言、文件上传、戳一戳等）。
+
+```lua
+function on_notice(event)  -- 无返回值
+```
+
+| event 字段 | 类型 | 说明 |
+|----------|------|------|
+| `post_type` | string | `"notice"` |
+| `notice_type` | string | `group_upload` / `group_admin` / `group_decrease` / `group_increase` / `group_ban` / `friend_add` / `group_recall` / `friend_recall` / `notify` |
+| `sub_type` | string | 子类型（如 `approve`/`invite` 对应 group_increase，`poke` 对应 notify） |
+| `user_id` | number | 触发事件的 QQ（如加入群的人） |
+| `group_id` | number | 群号 |
+| `operator_id` | number | 操作者 QQ（如邀请人、管理员） |
+| `target_id` | number | 被操作者 QQ（如被禁言的人） |
+| `duration` | number | 禁言时长（秒，仅 group_ban） |
+| `file` | table | 文件信息 `{id, name, size, busid}`（仅 group_upload） |
+| `admins` | []string | admin QQ 列表 |
+
+```lua
+-- 示例：入群欢迎
+function on_notice(event)
+    if event.notice_type == "group_increase" then
+        jn.onebot11.send_group_msg(event.group_id,
+            "欢迎 [CQ:at,qq=" .. event.user_id .. "] 加入！")
+    end
+end
+```
+
+完整示例见 `data/pluggins/welcome/` 和 `data/pluggins/poke-reply/`。
+
+## 回调: `on_request`
+
+请求事件回调（加好友申请、加群邀请）。
+
+```lua
+function on_request(event)  -- 无返回值
+```
+
+| event 字段 | 类型 | 说明 |
+|----------|------|------|
+| `post_type` | string | `"request"` |
+| `request_type` | string | `friend` / `group` |
+| `sub_type` | string | `add` / `invite` |
+| `user_id` | number | 请求发起者 QQ |
+| `group_id` | number | 群号 |
+| `comment` | string | 验证消息 |
+| `flag` | string | 请求标识（传给 `handle_friend_request` / `handle_group_request`） |
+| `admins` | []string | admin QQ 列表 |
+
+```lua
+-- 示例：自动同意加好友
+function on_request(event)
+    if event.request_type == "friend" and event.comment == "暗号" then
+        jn.onebot11.handle_friend_request(event.flag, true, "欢迎")
+    end
+end
+```
 
 ## 权限速查
 
