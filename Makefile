@@ -4,7 +4,8 @@
 # 用法:
 #   make            # 等价于 make build (前端 + 后端单二进制)
 #   make dev        # 并行启动 Vite (:3000) + Go API (:8090)
-#   make run        # 跑已构建的 binary (走 web/dist 服务前端)
+#   make run        # 跑 go run (走 web/dist 服务前端)
+#   make run-debug  # 跑 go run debug 模式 (pprof + 详细日志)
 #   make docker-up  # docker compose 起整套 (postgres/redis/app)
 #   make help       # 查看全部目标
 
@@ -32,6 +33,7 @@ BUILD_TAGS  :=
 API_ADDR    ?= :8090
 OB_PORT     ?= 8081
 WEB_DIR_ENV ?= $(WEB_DIST)   # 默认服务前端构建产物
+RUN_ARGS    ?=                # 透传给 ./cmd/server 的参数, 如: make run RUN_ARGS=-debug
 
 # Docker
 COMPOSE_FILE := deployments/docker-compose.yaml
@@ -126,7 +128,11 @@ dev: check-go check-node ## 并行启动 Vite (:3000) + Go (:8090); Ctrl-C 一�
 
 run: check-go ## 跑 go run (前端走 web/dist, 用于验证生产 SPA 配置)
 	@printf "$(C_CYAN)>>> 启动后端 (go run, WEB_DIR=$(WEB_DIR_ENV))$(C_RESET)\n"
-	@cd $(ROOT_DIR) && API_ADDR=$(API_ADDR) OB_PORT=$(OB_PORT) WEB_DIR=$(WEB_DIR_ENV) $(GO) run ./cmd/server
+	@cd $(ROOT_DIR) && API_ADDR=$(API_ADDR) OB_PORT=$(OB_PORT) WEB_DIR=$(WEB_DIR_ENV) $(GO) run ./cmd/server -- $(RUN_ARGS)
+
+run-debug: check-go ## 跑 go run (debug 模式: pprof + Debug 级别日志)
+	@printf "$(C_CYAN)>>> 启动后端 DEBUG 模式 (pprof :6060)$(C_RESET)\n"
+	@cd $(ROOT_DIR) && API_ADDR=$(API_ADDR) OB_PORT=$(OB_PORT) WEB_DIR=$(WEB_DIR_ENV) $(GO) run ./cmd/server -- -debug
 
 fmt: check-go ## go fmt
 	@cd $(ROOT_DIR) && $(GO) fmt ./...
