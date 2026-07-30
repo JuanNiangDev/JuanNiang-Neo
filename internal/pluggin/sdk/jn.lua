@@ -82,8 +82,10 @@ M.json = json
 -- ====================================================================
 
 ---@class jn.OneBot11
----@field send_private_msg fun(user_id: number, message: string): boolean, string?
----@field send_group_msg fun(group_id: number, message: string): boolean, string?
+---@field send_private_msg fun(user_id: number, message: string|table): boolean, string? 异步发送私聊消息，不阻塞
+---@field send_group_msg fun(group_id: number, message: string|table): boolean, string? 异步发送群消息，不阻塞
+---@field send_private_msg_sync fun(user_id: number, message: string|table): boolean, string? 同步发送私聊消息，等待结果
+---@field send_group_msg_sync fun(group_id: number, message: string|table): boolean, string? 同步发送群消息，等待结果
 ---@field delete_msg fun(message_id: number): boolean, string?
 ---@field get_msg fun(message_id: number): table, string? 根据消息 ID 获取消息完整内容
 ---@field get_group_info fun(group_id: number): table, string?

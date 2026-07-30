@@ -933,6 +933,34 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			}()
 			return pushOk(L)
 		},
+		"send_private_msg_sync": func(L *lua.LState) int {
+			userID := int64(L.CheckNumber(1))
+			arg := L.Get(2)
+			var msg any
+			if arg.Type() == lua.LTTable {
+				msg = buildSegments(arg.(*lua.LTable))
+			} else if arg.Type() == lua.LTString {
+				msg = string(arg.(lua.LString))
+			} else {
+				msg = arg.String()
+			}
+			_, err := sendAdp.SendPrivateMsg(userID, msg)
+			return pushResult(L, err)
+		},
+		"send_group_msg_sync": func(L *lua.LState) int {
+			groupID := int64(L.CheckNumber(1))
+			arg := L.Get(2)
+			var msg any
+			if arg.Type() == lua.LTTable {
+				msg = buildSegments(arg.(*lua.LTable))
+			} else if arg.Type() == lua.LTString {
+				msg = string(arg.(lua.LString))
+			} else {
+				msg = arg.String()
+			}
+			_, err := sendAdp.SendGroupMsg(groupID, msg)
+			return pushResult(L, err)
+		},
 		"delete_msg": func(L *lua.LState) int {
 			err := sendAdp.DeleteMsg(int64(L.CheckNumber(1)))
 			return pushResult(L, err)
