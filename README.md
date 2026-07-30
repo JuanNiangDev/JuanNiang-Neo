@@ -124,9 +124,10 @@ networks:
     driver: bridge
 ```
 
-同目录放 `.env`（按需修改），然后：
+同目录放 `.env`（按需修改）。**首次启动前**需创建插件目录并赋权：
 
 ```bash
+mkdir -p data/pluggins && chmod 777 data/pluggins
 docker compose up -d
 # 仪表板  http://localhost:8090   初始账号 admin / Admin123（首次启动务必改密码）
 # OneBot11 反向 WS  ws://localhost:8081/   带头 Authorization: Bearer <OB_TOKEN>

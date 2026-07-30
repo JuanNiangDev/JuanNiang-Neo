@@ -1616,6 +1616,12 @@ var systemPluginMain string
 // ensureEmbeddedAssets 在启动时把内嵌的 SDK 与 system 插件落盘到 data/pluggins/。
 // SDK 与 system 插件始终覆盖写入，确保 Docker 挂载卷中的版本与二进制一致。
 func (pe *PluginEngine) ensureEmbeddedAssets() {
+	// 0. 确保 basePath 存在且可写
+	if err := os.MkdirAll(pe.basePath, 0o755); err != nil {
+		slog.Error("无法创建插件根目录，内嵌资源写入跳过", "basePath", pe.basePath, "err", err)
+		return
+	}
+
 	// 1. SDK 总是覆盖
 	sdkDir := filepath.Join(pe.basePath, "sdk")
 	if err := os.MkdirAll(sdkDir, 0o755); err != nil {
@@ -1623,7 +1629,9 @@ func (pe *PluginEngine) ensureEmbeddedAssets() {
 	} else {
 		sdkFile := filepath.Join(sdkDir, "jn.lua")
 		if err := os.WriteFile(sdkFile, []byte(jnSDKSource), 0o644); err != nil {
-			slog.Warn("写入 SDK 文件失败", "err", err)
+			slog.Warn("写入 SDK 文件失败", "path", sdkFile, "err", err)
+		} else {
+			slog.Info("SDK 已同步到磁盘", "path", sdkFile)
 		}
 	}
 
