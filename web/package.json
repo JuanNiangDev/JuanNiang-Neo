@@ -12,11 +12,14 @@
     "lint": "eslint . --ext .vue,.js,.ts --fix"
   },
   "dependencies": {
+    "@codemirror/lang-json": "^6.0.2",
     "@mdi/font": "^7.4.47",
     "axios": "^1.6.0",
+    "codemirror": "^6.0.2",
     "date-fns": "^2.30.0",
     "pinia": "^2.1.6",
     "vue": "^3.3.4",
+    "vue-codemirror": "^6.1.1",
     "vue-router": "^4.2.4",
     "vuetify": "^3.7.0"
   },
