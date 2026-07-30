@@ -5,6 +5,7 @@
       <div class="page-subtitle">管理 Lua 插件，支持 ZIP 上传</div>
     </div>
     <div class="d-flex justify-end mb-4" style="gap:12px">
+      <v-btn color="warning" variant="tonal" prepend-icon="mdi-refresh" @click="handleReloadAll" :loading="reloading">重载全部</v-btn>
       <v-btn color="primary" variant="tonal" prepend-icon="mdi-upload" @click="triggerUpload">上传 ZIP</v-btn>
       <input ref="fileInput" type="file" accept=".zip" style="display:none" @change="handleFile" />
     </div>
@@ -18,6 +19,10 @@
           <v-chip v-for="p in (item.permissions || [])" :key="p" size="x-small" variant="tonal" color="info">{{ p }}</v-chip>
           <span v-if="!item.permissions || item.permissions.length === 0" class="text-caption text-medium-emphasis">(无)</span>
         </div>
+      </template>
+      <template #item.supports_timer="{ item }">
+        <v-chip v-if="item.supports_timer" size="small" color="success" variant="tonal">支持</v-chip>
+        <v-chip v-else size="small" color="grey" variant="tonal">不支持</v-chip>
       </template>
       <template #item.is_active="{ item }">
         <v-switch
@@ -119,11 +124,13 @@ interface PluginItem {
   permissions?: string[]
   is_system?: boolean
   is_active?: boolean
+  supports_timer?: boolean
   commands?: Array<{ path: string[]; description: string; usage: string; is_leaf: boolean }>
 }
 
 const toastStore = useToastStore()
 const loading = ref(true)
+const reloading = ref(false)
 const items = ref<PluginItem[]>([])
 const fileInput = ref<HTMLInputElement | null>(null)
 const deleteDialog = ref(false)
@@ -136,6 +143,7 @@ const headers = [
   { title: '名称', key: 'name' },
   { title: '版本', key: 'version' },
   { title: '权限', key: 'permissions' },
+  { title: '定时支持', key: 'supports_timer', align: 'center' as const },
   { title: '类型', key: 'is_system' },
   { title: 'Active', key: 'is_active', align: 'center' as const },
   { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
@@ -162,6 +170,13 @@ async function handleFile(e: Event) {
   if (!f) return
   try { await pluginApi.upload(f); toastStore.success('上传成功'); await fetch() }
   catch (err: any) { toastStore.error(err?.message || '上传失败') }
+}
+
+async function handleReloadAll() {
+  reloading.value = true
+  try { await pluginApi.reloadAll(); toastStore.success('已重载全部插件'); await fetch() }
+  catch (e: any) { toastStore.error(e?.response?.data?.info || '重载失败') }
+  finally { reloading.value = false }
 }
 
 async function toggle(id: string, v: boolean) {
