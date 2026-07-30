@@ -855,7 +855,9 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		}
 		pluginDir := filepath.Join(pe.basePath, pluginName)
 		fullPath := filepath.Join(pluginDir, path)
+		t0 := time.Now()
 		data, err := os.ReadFile(fullPath)
+		readDur := time.Since(t0)
 		if err != nil {
 			slog.Warn("读取插件图片文件失败", "plugin", pluginName, "path", fullPath, "err", err)
 			return path
@@ -864,7 +866,12 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		if ext == "" {
 			ext = "png"
 		}
-		return "base64://" + base64.StdEncoding.EncodeToString(data)
+		t1 := time.Now()
+		b64 := "base64://" + base64.StdEncoding.EncodeToString(data)
+		encDur := time.Since(t1)
+		slog.Debug("插件图片处理耗时", "plugin", pluginName, "file", path, "size_bytes", len(data),
+			"read_us", readDur.Microseconds(), "encode_us", encDur.Microseconds(), "total_us", time.Since(t0).Microseconds())
+		return b64
 	}
 
 	// buildSegments 将 Lua table 转为 []Segment，自动解析 image 的 file 字段。
@@ -895,8 +902,11 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			}
 			// 插件发消息异步，不阻塞命令 handler 返回
 			go func() {
+				t0 := time.Now()
 				if _, err := sendAdp.SendPrivateMsg(userID, msg); err != nil {
 					slog.Warn("插件异步发送私聊消息失败", "plugin", pluginName, "user_id", userID, "err", err)
+				} else {
+					slog.Debug("插件异步发送私聊消息完成", "plugin", pluginName, "user_id", userID, "dur_ms", time.Since(t0).Milliseconds())
 				}
 			}()
 			return pushOk(L)
@@ -914,8 +924,11 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			}
 			// 插件发消息异步，不阻塞命令 handler 返回
 			go func() {
+				t0 := time.Now()
 				if _, err := sendAdp.SendGroupMsg(groupID, msg); err != nil {
 					slog.Warn("插件异步发送群消息失败", "plugin", pluginName, "group_id", groupID, "err", err)
+				} else {
+					slog.Debug("插件异步发送群消息完成", "plugin", pluginName, "group_id", groupID, "dur_ms", time.Since(t0).Milliseconds())
 				}
 			}()
 			return pushOk(L)
