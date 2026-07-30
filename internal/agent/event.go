@@ -124,7 +124,7 @@ func (h *HagoCenter) bgTaskOutputToEvent(output DrainerOutput) adapter.Event {
 	}
 }
 
-// processEvent 派发事件：webhook 走 on_webhook，message 走 handleMessage。
+// processEvent 派发事件：webhook/notice/request 走 PluginEngine 回调，message 走 Agent。
 func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	// Webhook 事件交给插件 on_webhook 处理
 	if ev.PostType == "webhook" && ev.Webhook != nil {
@@ -139,6 +139,53 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 				},
 			}
 			h.PluginEngine.OnWebhook(pluginEvent)
+		}
+		return
+	}
+
+	// Notice 事件交给插件 on_notice 处理
+	if ev.PostType == "notice" && ev.Notice != nil {
+		if h.PluginEngine != nil {
+			n := ev.Notice
+			pluginEvent := pluggin.EventData{
+				PostType:   "notice",
+				NoticeType: n.NoticeType,
+				SubType:    n.SubType,
+				UserID:     n.UserID,
+				GroupID:    n.GroupID,
+				OperatorID: n.OperatorID,
+				TargetID:   n.TargetID,
+				Duration:   n.Duration,
+				Admins:     ev.Admins,
+			}
+			if n.File != nil {
+				pluginEvent.File = map[string]any{
+					"id":    n.File.ID,
+					"name":  n.File.Name,
+					"size":  n.File.Size,
+					"busid": n.File.BusID,
+				}
+			}
+			h.PluginEngine.OnNotice(pluginEvent)
+		}
+		return
+	}
+
+	// Request 事件交给插件 on_request 处理
+	if ev.PostType == "request" && ev.Request != nil {
+		if h.PluginEngine != nil {
+			r := ev.Request
+			pluginEvent := pluggin.EventData{
+				PostType:    "request",
+				RequestType: r.RequestType,
+				SubType:     r.SubType,
+				UserID:      r.UserID,
+				GroupID:     r.GroupID,
+				Comment:     r.Comment,
+				Flag:        r.Flag,
+				Admins:      ev.Admins,
+			}
+			h.PluginEngine.OnRequest(pluginEvent)
 		}
 		return
 	}
@@ -188,7 +235,15 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 				UserID:      ev.Message.UserID,
 				GroupID:     ev.Message.GroupID,
 				RawMessage:  ev.Message.RawMessage,
+				MessageID:   ev.Message.MessageID,
 				Admins:      ev.Admins,
+				Sender: map[string]any{
+					"user_id":  ev.Message.Sender.UserID,
+					"nickname": ev.Message.Sender.Nickname,
+					"sex":      ev.Message.Sender.Sex,
+					"age":      float64(ev.Message.Sender.Age),
+					"card":     ev.Message.Sender.Card,
+				},
 			}
 			if h.PluginEngine.OnMessage(pluginEvent) {
 				return
@@ -255,7 +310,15 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 			UserID:      ev.Message.UserID,
 			GroupID:     ev.Message.GroupID,
 			RawMessage:  ev.Message.RawMessage,
+			MessageID:   ev.Message.MessageID,
 			Admins:      ev.Admins,
+			Sender: map[string]any{
+				"user_id":  ev.Message.Sender.UserID,
+				"nickname": ev.Message.Sender.Nickname,
+				"sex":      ev.Message.Sender.Sex,
+				"age":      float64(ev.Message.Sender.Age),
+				"card":     ev.Message.Sender.Card,
+			},
 		}
 		if h.PluginEngine.OnMessage(pluginEvent) {
 			return
@@ -274,7 +337,15 @@ func (h *HagoCenter) runPluginOnly(ctx context.Context, ev adapter.Event) {
 			UserID:      ev.Message.UserID,
 			GroupID:     ev.Message.GroupID,
 			RawMessage:  ev.Message.RawMessage,
+			MessageID:   ev.Message.MessageID,
 			Admins:      ev.Admins,
+			Sender: map[string]any{
+				"user_id":  ev.Message.Sender.UserID,
+				"nickname": ev.Message.Sender.Nickname,
+				"sex":      ev.Message.Sender.Sex,
+				"age":      float64(ev.Message.Sender.Age),
+				"card":     ev.Message.Sender.Card,
+			},
 		}
 		h.PluginEngine.OnMessage(pluginEvent)
 	}
@@ -581,7 +652,7 @@ func (h *HagoCenter) handleToolCalls(
 		}
 	}
 
-followUp, err := llm.Chat(ctx, provider.ChatRequest{
+	followUp, err := llm.Chat(ctx, provider.ChatRequest{
 		Messages:    history,
 		Tools:       h.buildToolList(ctx),
 		Temperature: 0.7,

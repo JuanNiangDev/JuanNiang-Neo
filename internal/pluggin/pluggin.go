@@ -5,6 +5,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	lua "github.com/yuin/gopher-lua"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
+	"JuanNiang-Neo/internal/adapter"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
@@ -390,6 +392,23 @@ type EventData struct {
 	Admins      []string       `json:"admins"`
 	Webhook     map[string]any `json:"webhook,omitempty"`
 	Payload     map[string]any `json:"payload,omitempty"` // on_timer_call 携带的 payload
+
+	// --- notice 事件字段 ---
+	NoticeType string         `json:"notice_type,omitempty"` // group_upload / group_admin / group_decrease / group_increase / group_ban / friend_add / group_recall / friend_recall / notify
+	SubType    string         `json:"sub_type,omitempty"`    // 子类型
+	OperatorID int64          `json:"operator_id,omitempty"` // 操作者 QQ
+	TargetID   int64          `json:"target_id,omitempty"`   // 被操作者 QQ（禁言/踢人等）
+	Duration   int64          `json:"duration,omitempty"`    // 禁言时长（秒）
+	File       map[string]any `json:"file,omitempty"`        // 群文件上传信息
+
+	// --- request 事件字段 ---
+	RequestType string `json:"request_type,omitempty"` // friend / group
+	Comment      string `json:"comment,omitempty"`     // 验证消息
+	Flag         string `json:"flag,omitempty"`        // 请求标识（用于同意/拒绝）
+
+	// --- message 事件附加字段 ---
+	MessageID int64          `json:"message_id,omitempty"` // 消息 ID
+	Sender    map[string]any `json:"sender,omitempty"`     // 发送者信息（nickname/card/sex/age）
 }
 
 // HasPluginCommand 检查消息是否匹配已注册的插件命令（不执行，仅供策略层判断）。
@@ -488,6 +507,42 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 		}
 	}
 	return false
+}
+
+// OnNotice 通知事件（群成员增减、禁言、文件上传等）。
+func (pe *PluginEngine) OnNotice(event EventData) {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	for _, p := range pe.plugins {
+		fn := p.State.GetGlobal("on_notice")
+		if fn.Type() != lua.LTFunction {
+			continue
+		}
+		table := eventToLuaTable(p.State, event)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 0, nil); err != nil {
+			slog.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
+		}
+	}
+}
+
+// OnRequest 请求事件（加好友、加群邀请）。
+func (pe *PluginEngine) OnRequest(event EventData) {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	for _, p := range pe.plugins {
+		fn := p.State.GetGlobal("on_request")
+		if fn.Type() != lua.LTFunction {
+			continue
+		}
+		table := eventToLuaTable(p.State, event)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 0, nil); err != nil {
+			slog.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
+		}
+	}
 }
 
 // OnTimerCall 定时任务触发插件 on_timer_call 回调。
@@ -758,6 +813,32 @@ func (pe *PluginEngine) injectJSON(L *lua.LState) {
 	L.SetGlobal("json", jsonTable)
 }
 
+// luaTableToSegments 将 Lua 的 {{type="text",data={text="hello"}}, ...} 转为 []adapter.Segment
+func luaTableToSegments(L *lua.LState, tbl *lua.LTable) []adapter.Segment {
+	var segs []adapter.Segment
+	tbl.ForEach(func(_, segVal lua.LValue) {
+		segTable, ok := segVal.(*lua.LTable)
+		if !ok {
+			return
+		}
+		seg := adapter.Segment{Data: make(map[string]any)}
+		if t := segTable.RawGetString("type"); t.Type() == lua.LTString {
+			seg.Type = string(t.(lua.LString))
+		}
+		if d := segTable.RawGetString("data"); d.Type() == lua.LTTable {
+			d.(*lua.LTable).ForEach(func(k, v lua.LValue) {
+				if v.Type() == lua.LTString {
+					seg.Data[k.String()] = string(v.(lua.LString))
+				} else if v.Type() == lua.LTNumber {
+					seg.Data[k.String()] = float64(v.(lua.LNumber))
+				}
+			})
+		}
+		segs = append(segs, seg)
+	})
+	return segs
+}
+
 // ---------- OneBot11 ----------
 
 func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
@@ -768,14 +849,34 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 
 	obTable := L.NewTable()
 	funcs := map[string]lua.LGFunction{
-		"send_private_msg": func(L *lua.LState) int {
-			_, err := adapter.SendPrivateMsg(int64(L.CheckNumber(1)), L.CheckString(2))
-			return pushResult(L, err)
-		},
-		"send_group_msg": func(L *lua.LState) int {
-			_, err := adapter.SendGroupMsg(int64(L.CheckNumber(1)), L.CheckString(2))
-			return pushResult(L, err)
-		},
+			"send_private_msg": func(L *lua.LState) int {
+				userID := int64(L.CheckNumber(1))
+				arg := L.Get(2)
+				var msg any
+				if arg.Type() == lua.LTTable {
+					msg = luaTableToSegments(L, arg.(*lua.LTable))
+				} else if arg.Type() == lua.LTString {
+					msg = string(arg.(lua.LString))
+				} else {
+					msg = arg.String()
+				}
+				_, err := adapter.SendPrivateMsg(userID, msg)
+				return pushResult(L, err)
+			},
+			"send_group_msg": func(L *lua.LState) int {
+				groupID := int64(L.CheckNumber(1))
+				arg := L.Get(2)
+				var msg any
+				if arg.Type() == lua.LTTable {
+					msg = luaTableToSegments(L, arg.(*lua.LTable))
+				} else if arg.Type() == lua.LTString {
+					msg = string(arg.(lua.LString))
+				} else {
+					msg = arg.String()
+				}
+				_, err := adapter.SendGroupMsg(groupID, msg)
+				return pushResult(L, err)
+			},
 		"delete_msg": func(L *lua.LState) int {
 			err := adapter.DeleteMsg(int64(L.CheckNumber(1)))
 			return pushResult(L, err)
@@ -857,6 +958,19 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			v, err := adapter.GetVersionInfo()
 			return pushResultJSON(L, v, err)
 		},
+			"read_file_base64": func(L *lua.LState) int {
+				filePath := L.CheckString(1)
+				pluginDir := filepath.Join(pe.basePath, pluginName)
+				fullPath := filepath.Join(pluginDir, filePath)
+				data, err := os.ReadFile(fullPath)
+				if err != nil {
+					L.Push(lua.LNil)
+					L.Push(lua.LString(err.Error()))
+					return 2
+				}
+				L.Push(lua.LString("base64://" + base64.StdEncoding.EncodeToString(data)))
+				return 1
+			},
 	}
 	L.SetFuncs(obTable, funcs)
 	L.SetGlobal("onebot11", obTable)
@@ -1530,6 +1644,30 @@ func eventToLuaTable(L *lua.LState, ev EventData) *lua.LTable {
 	}
 	if len(ev.Payload) > 0 {
 		L.SetField(t, "payload", goToLuaValue(L, ev.Payload))
+	}
+	// notice 字段
+	if ev.NoticeType != "" {
+		L.SetField(t, "notice_type", lua.LString(ev.NoticeType))
+		L.SetField(t, "sub_type", lua.LString(ev.SubType))
+		L.SetField(t, "operator_id", lua.LNumber(ev.OperatorID))
+		L.SetField(t, "target_id", lua.LNumber(ev.TargetID))
+		L.SetField(t, "duration", lua.LNumber(ev.Duration))
+		if len(ev.File) > 0 {
+			L.SetField(t, "file", goToLuaValue(L, ev.File))
+		}
+	}
+	// request 字段
+	if ev.RequestType != "" {
+		L.SetField(t, "request_type", lua.LString(ev.RequestType))
+		L.SetField(t, "comment", lua.LString(ev.Comment))
+		L.SetField(t, "flag", lua.LString(ev.Flag))
+	}
+	// message 附加字段
+	if ev.MessageID != 0 {
+		L.SetField(t, "message_id", lua.LNumber(ev.MessageID))
+	}
+	if len(ev.Sender) > 0 {
+		L.SetField(t, "sender", goToLuaValue(L, ev.Sender))
 	}
 	return t
 }
