@@ -225,6 +225,11 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 				slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
 				return
 			}
+			if cfg.Strategy == models.StrategyPluginOnly {
+				// 仅 Plugin，不调用 Agent
+				h.runPluginOnly(ctx, ev)
+				return
+			}
 		}
 
 		// Plugin 拦截（与群聊相同）
