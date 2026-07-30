@@ -19,14 +19,15 @@ local M = {}
 -- 事件类型
 -- ====================================================================
 
----@class jn.Event OneBot11 消息事件
----@field post_type string 事件类型 ("message")
+---@class jn.Event OneBot11 消息/定时/webhook 事件
+---@field post_type string 事件类型 ("message" | "timer" | "webhook")
 ---@field message_type string "private" | "group"
 ---@field user_id number 发送者 QQ 号
 ---@field group_id number 群号 (private 时为 0)
 ---@field raw_message string 原始消息文本
 ---@field admins string[] 系统管理员 QQ 号列表
 ---@field webhook table? webhook 事件专属字段
+---@field payload table? on_timer_call 携带的 CronJob payload
 
 -- ====================================================================
 -- log 日志

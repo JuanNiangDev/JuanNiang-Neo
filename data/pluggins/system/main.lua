@@ -166,16 +166,10 @@ jn.command.register("system mcp", function(args, event)
         reply(event, "获取 MCP 失败: " .. tostring(err))
         return true
     end
-    local lines = {"MCP 服务器列表:"}
+    local lines = {"运行时 MCP 列表:"}
     for _, m in ipairs(list) do
-        local status = m.is_active and "已启用" or "已停用"
-        if m.is_active and m.active then
-            status = "已连接"
-        elseif m.is_active and not m.active then
-            status = "已启用(未连接)"
-        end
-        lines[#lines+1] = string.format("- id=%s  name=%s  %s",
-            m.id, m.name, status)
+        lines[#lines+1] = string.format("- id=%s  name=%s  active=%s",
+            m.id, m.name, tostring(m.active))
     end
     if #list == 0 then
         lines[#lines+1] = "(空)"
@@ -185,7 +179,7 @@ jn.command.register("system mcp", function(args, event)
     reply(event, table.concat(lines, "\n"))
     return true
 end, {
-    description = "管理 MCP 服务器（默认列出全部）",
+    description = "管理 MCP 服务器（默认列出）",
     usage = "/system mcp [list|toggle <id> <on|off>]",
 })
 
@@ -198,16 +192,10 @@ jn.command.register("system mcp list", function(args, event)
         reply(event, "获取 MCP 失败: " .. tostring(err))
         return true
     end
-    local lines = {"MCP 服务器列表:"}
+    local lines = {"运行时 MCP 列表:"}
     for _, m in ipairs(list) do
-        local status = m.is_active and "已启用" or "已停用"
-        if m.is_active and m.active then
-            status = "已连接"
-        elseif m.is_active and not m.active then
-            status = "已启用(未连接)"
-        end
-        lines[#lines+1] = string.format("- id=%s  name=%s  %s",
-            m.id, m.name, status)
+        lines[#lines+1] = string.format("- id=%s  name=%s  active=%s",
+            m.id, m.name, tostring(m.active))
     end
     if #list == 0 then
         lines[#lines+1] = "(空)"
@@ -215,7 +203,7 @@ jn.command.register("system mcp list", function(args, event)
     reply(event, table.concat(lines, "\n"))
     return true
 end, {
-    description = "列出全部 MCP 服务器及其状态",
+    description = "列出运行时 MCP 服务器",
     usage = "/system mcp list",
 })
 

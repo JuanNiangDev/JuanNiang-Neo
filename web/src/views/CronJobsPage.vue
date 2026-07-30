@@ -241,4 +241,13 @@ onMounted(fetch)
 .editor-wrapper :deep(.cm-focused) {
   outline: none !important;
 }
+.editor-wrapper :deep(.cm-gutters) {
+  background: #000 !important;
+  color: #888 !important;
+  border-right: 1px solid #333 !important;
+}
+.editor-wrapper :deep(.cm-activeLineGutter) {
+  background: #1a1a1a !important;
+  color: #ccc !important;
+}
 </style>

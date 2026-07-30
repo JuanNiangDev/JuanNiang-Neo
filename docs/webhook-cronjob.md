@@ -104,9 +104,47 @@ curl -X POST http://localhost:8091/webhook \
 
 ### 用途
 
-让 Agent 定时"被提醒发消息"。每个 CronJob 存 `cron_expr` + `message` + `MessageType`（`private`/`group`）+ `TargetID`（QQ 号或群号）。到点时 `CronJobManager.makeJobFunc` 构造一个合成 `Event{PostType:"cronjob", IsCronJob:true}`，注入主 EventLoop，走 `handleMessage` 标准路径——Agent 把 `message` 当用户输入处理。
+CronJob 支持**两种分发模式**，可独立或同时使用：
+
+| 模式 | 字段 | 说明 |
+|------|------|------|
+| **Agent 分发** | `message` + `message_type` + `target_id` | 定时向 Agent 注入一条消息，Agent 将其作为用户输入处理并回复（原有行为） |
+| **Plugin 分发** | `plugin_ids` + `payload` | 定时触发指定插件的 `on_timer_call(event)` 回调，传递 JSON payload |
+
+当 `message` 为空时不发给 Agent，当 `plugin_ids` 为空时不触发插件。两者可同时配置。
+
+#### Agent 分发
+
+到点时 `CronJobManager.makeJobFunc` 构造一个合成 `Event{PostType:"cronjob", IsCronJob:true}`，注入主 EventLoop，走 `handleMessage` 标准路径——Agent 把 `message` 当用户输入处理。
 
 合成事件会**跳过回复策略与 ACL**（`event.go:150`），因为这是系统主动任务，必须回复。
+
+#### Plugin 分发
+
+到点时 `CronJobManager.makeJobFunc` 解析 `plugin_ids`（插件目录名列表），调用 `PluginEngine.OnTimerCall()`。只有**已加载且定义了 `on_timer_call` 全局函数**的插件会被调用。`payload` 作为 JSON 对象传入 `event.payload`。
+
+前端"定时任务"页面在新建/编辑时通过 Tab 切换 Agent/Plugin 模式，Plugin 模式下多选下拉框自动过滤显示 `supports_timer=true` 的已启用插件。
+
+检测方式：运行时检查插件 Lua 全局 `on_timer_call` 是否为函数 → `ListMaps()` 返回 `supports_timer: bool`。
+
+**示例插件**：`data/pluggins/cron-example/` 提供了一个完整的定时触发示例——向 payload 中指定的 QQ 号或群发送消息。
+
+示例 Payload（私聊）：
+```json
+{
+  "target_qq": 123456789,
+  "message": "⏰ 定时提醒：该喝水啦！"
+}
+```
+
+示例 Payload（群聊）：
+```json
+{
+  "message_type": "group",
+  "group_id": 123456,
+  "message": "⏰ 群每日播报：今日天气..."
+}
+```
 
 ### Cron 表达式
 
@@ -133,9 +171,9 @@ curl -X POST http://localhost:8091/webhook \
 | `DELETE` | `/api/v1/cronjobs/:id` | 删除（自动 reload） |
 | `PUT` | `/api/v1/cronjobs/:id/toggle` | 启停（自动 reload） |
 
-`AddCronJobReq` body 字段：`name`、`cron_expr`、`message`、`message_type`（默认 `private`）、`target_id`、`is_active`。
+`AddCronJobReq` body 字段：`name`、`cron_expr`、`message`（可选，空则不发给 Agent）、`message_type`（默认 `private`）、`target_id`、`is_active`、`plugin_ids`（`string[]`，可选）、`payload`（JSON 字符串，可选）。
 
-### 示例：每天早上 9 点私聊提醒
+### 示例：每天早上 9 点私聊提醒（Agent 分发）
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/cronjobs \
@@ -150,7 +188,7 @@ curl -X POST http://localhost:8090/api/v1/cronjobs \
   }'
 ```
 
-### 示例：群每日播报
+### 示例：群每日播报（Agent 分发）
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/cronjobs \
@@ -165,10 +203,25 @@ curl -X POST http://localhost:8090/api/v1/cronjobs \
   }'
 ```
 
+### 示例：每 10 秒触发插件发消息（Plugin 分发）
+
+```bash
+curl -X POST http://localhost:8090/api/v1/cronjobs \
+  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
+  -d '{
+    "name": "定时通知",
+    "cron_expr": "*/10 * * * * *",
+    "plugin_ids": ["cron-example"],
+    "payload": "{\"target_qq\":123456789,\"message\":\"每10秒的提醒\"}",
+    "is_active": true
+  }'
+```
+
 到点后 Agent 会接到一条"群 987654321 发来消息 '今天有什么新闻？'"，按它能力回复。`message` 等同用户输入，会被 LLM 处理并可调工具（如 `browser_search`）。
 
 ### 运行时流（细节）
 
+**Agent 分发路径**（`message` 非空）：
 ```
 robfig/cron 到期 → CronJobManager.makeJobFunc(job)
   ├─ DAO.CronJob.UpdateLastRun(now, err)
@@ -182,6 +235,19 @@ EventLoop 分支5 → processEvent (PostType=="cronjob") → handleMessage
   跳过策略与 ACL，正常 SendMessage 给 LLM，LLM 可调工具再 sendReply
 ```
 
+**Plugin 分发路径**（`plugin_ids` 非空）：
+```
+robfig/cron 到期 → CronJobManager.makeJobFunc(job)
+  ├─ DAO.CronJob.UpdateLastRun(now, err)
+  ├─ 解析 plugin_ids JSON → []string
+  ├─ 解析 payload JSON → map[string]any
+  └─ PluginTimerDispatcher.OnTimerCall(pluginIDs, payload, admins)
+     └─ PluginEngine.OnTimerCall → 遍历指定插件
+        └─ 调用 Lua on_timer_call(event) （event.payload = payload）
+```
+
+两种路径**相互独立**：若同时配置则都会执行。
+
 `LastRunAt`/`LastError` 回写 DB，前端"定时任务"页可看历史。删改/toggle 后由 `Service.AddCronJob/...` 调 `CronJobManager.Reload()` 同步调度器，无需重启进程。
 
 ### 注意
@@ -191,6 +257,9 @@ EventLoop 分支5 → processEvent (PostType=="cronjob") → handleMessage
 - **Token 计费**：CronJob 触发的消息也走 Session，按账记 `TokenUsage`
 - **跨容器时区**：`TZ=Asia/Shanghai` 容器内是北京时间；裸机部署注意主机时区
 - **target 必须 ChatArea 已存在**：`GetOrCreate` 会自动按 (type, targetID) 创建新 ChatArea，所以首次触发 Session 是新建的（无短期历史）
+- **Plugin 调用的检测**：只有定义了 `on_timer_call` 全局函数且已加载的插件才会被调用；前端多选下拉框自动过滤
+- **Plugin Payload**：必须是合法 JSON 字符串，保存时前端 CodeMirror 编辑器会实时校验格式
+- **插件重载**：`POST /api/v1/plugins/reload` 可热重载全部非系统插件，新增/修改 `on_timer_call` 后需重载才生效
 
 ## 二者结合场景
 

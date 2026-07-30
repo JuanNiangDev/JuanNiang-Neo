@@ -20,7 +20,7 @@
 
 local jn = require("jn")
 
---- 定时任务回调
+-- 定时任务回调
 ---@param event jn.Event
 function on_timer_call(event)
     local payload = event.payload or {}
@@ -30,8 +30,8 @@ function on_timer_call(event)
     local group_id = payload.group_id
 
     -- 参数校验
-    if not target_qq or not message then
-        jn.log.error("[cron-example] Payload 缺少必填字段 target_qq 或 message")
+    if not message then
+        jn.log.error("[cron-example] Payload 缺少必填字段 message")
         return
     end
 
@@ -43,6 +43,10 @@ function on_timer_call(event)
         jn.onebot11.send_group_msg(group_id, message)
         jn.log.info(string.format("[cron-example] 已向群 %d 发送定时消息", group_id))
     else
+        if not target_qq then
+            jn.log.error("[cron-example] message_type=private 需要提供 target_qq")
+            return
+        end
         jn.onebot11.send_private_msg(target_qq, message)
         jn.log.info(string.format("[cron-example] 已向 QQ %d 发送定时消息", target_qq))
     end
