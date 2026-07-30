@@ -19,15 +19,44 @@ local M = {}
 -- 事件类型
 -- ====================================================================
 
----@class jn.Event OneBot11 消息/定时/webhook 事件
----@field post_type string 事件类型 ("message" | "timer" | "webhook")
+---@class jn.Event OneBot11 消息/通知/请求/定时/webhook 事件
+---@field post_type string 事件类型 ("message" | "notice" | "request" | "timer" | "webhook")
 ---@field message_type string "private" | "group"
----@field user_id number 发送者 QQ 号
----@field group_id number 群号 (private 时为 0)
+---@field user_id number 发送者/操作者 QQ 号
+---@field group_id number 群号
 ---@field raw_message string 原始消息文本
 ---@field admins string[] 系统管理员 QQ 号列表
 ---@field webhook table? webhook 事件专属字段
 ---@field payload table? on_timer_call 携带的 CronJob payload
+---
+--- notice 事件字段:
+---@field notice_type string? 通知类型: group_upload / group_admin / group_decrease / group_increase / group_ban / friend_add / group_recall / friend_recall / notify
+---@field sub_type string? 子类型
+---@field operator_id number? 操作者 QQ
+---@field target_id number? 被操作者 QQ（禁言/踢人等）
+---@field duration number? 禁言时长（秒）
+---@field file table? 群文件上传信息 {id, name, size, busid}
+---
+--- request 事件字段:
+---@field request_type string? 请求类型: friend / group
+---@field comment string? 验证消息
+---@field flag string? 请求标识（用于同意/拒绝）
+---
+--- message 事件附加字段:
+---@field message_id number? 消息 ID
+---@field sender table? 发送者信息 {user_id, nickname, sex, age, card}
+---
+--- 消息段格式 (用于 send_private_msg / send_group_msg 第二个参数):
+--- 传入 Lua 数组，每项为 {type="text|image|face|...", data={...}}:
+---   type="text"   → data={text="Hello"}
+---   type="image"  → data={file="http://..."}  支持 URL / base64:// / 相对路径
+---   type="face"   → data={id="1"}       CQ 表情 ID
+---
+--- 图片 file 字段支持三种来源:
+---   1. URL:     "http://..." 或 "https://..."
+---   2. Base64:  "base64://..."
+---   3. 相对路径: "img/photo.png" → 自动从插件目录读取并转 base64
+---   (也可用 jn.onebot11.read_file_base64(path) 手动读取)
 
 -- ====================================================================
 -- log 日志

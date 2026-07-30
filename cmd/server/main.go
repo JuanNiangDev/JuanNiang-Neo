@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,13 +40,39 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// 日志：同时输出到 stdio 与前端（Hub），Hub 维护最近 250 条 + SSE 实时推送。
+	// ---------- 命令行参数 ----------
+	debug := flag.Bool("debug", false, "启用 debug 模式：pprof + 详细日志")
+	pprofAddr := flag.String("pprof-addr", ":6060", "pprof HTTP 监听地址（仅 debug 模式有效）")
+	flag.Parse()
+
+	// ---------- 日志 ----------
+	logLevel := slog.LevelInfo
+	if *debug {
+		logLevel = slog.LevelDebug
+	}
 	slog.SetDefault(slog.New(logging.NewHandler(os.Stdout, logging.Default, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: logLevel,
 	})))
 
 	slog.Info("JuanNiang-Neo 启动中...")
 
+	// ---------- Debug 模式 ----------
+	if *debug {
+		slog.Info("🐛 Debug 模式已启用",
+			"pprof_addr", *pprofAddr,
+			"go_version", runtime.Version(),
+			"cpu_num", runtime.NumCPU(),
+			"goroot", runtime.GOROOT(),
+		)
+		go func() {
+			slog.Info("pprof HTTP 已启动", "addr", *pprofAddr)
+			if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
+				slog.Error("pprof 服务异常退出", "err", err)
+			}
+		}()
+	}
+
+	// ---------- 1. 基础设施 ----------
 	db, err := postgres.NewPostgresClient(
 		postgres.WithHost(env("DB_HOST", "localhost")),
 		postgres.WithPort(env("DB_PORT", "5432")),
@@ -147,6 +177,13 @@ func main() {
 	if err := pluginEngine.LoadAll(); err != nil {
 		slog.Error("插件加载失败", "err", err)
 	}
+	if *debug {
+		plugins := pluginEngine.List()
+		slog.Debug("插件加载完毕", "count", len(plugins))
+		for _, p := range plugins {
+			slog.Debug("  → 插件", "name", p.Name, "version", p.Version, "system", p.System, "permissions", p.Permissions)
+		}
+	}
 	hago.PluginEngine = pluginEngine
 
 	// 将 PluginEngine 的 OnTimerCall 注入 CronJob 调度器
@@ -194,6 +231,7 @@ func main() {
 		"adapter_addr", adapterProv.Status().ListenAddr,
 		"api_addr", env("API_ADDR", ":8090"),
 		"plugins", len(pluginEngine.List()),
+		"goroutines", runtime.NumGoroutine(),
 	)
 
 	// ---------- 8. 等待退出 ----------
