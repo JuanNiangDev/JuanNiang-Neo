@@ -128,7 +128,7 @@ func (c *Client) GenerateURL(ctx context.Context, req GenerateRequest) (string, 
 	if err != nil {
 		return "", err
 	}
-	return c.Config.BaseURL + "/text2img/data/" + genResp.ID, nil
+	return c.Config.BaseURL + "/text2img/data/" + genResp.Data.ID, nil
 }
 
 // GetImage 根据 ID 获取图片。

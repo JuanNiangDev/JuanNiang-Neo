@@ -1260,7 +1260,7 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(err.Error()))
 				return 2
 			}
-			L.Push(lua.LString(resp.ID))
+			L.Push(lua.LString(resp.Data.ID))
 			return 1
 		},
 		"generate_url": func(L *lua.LState) int {
