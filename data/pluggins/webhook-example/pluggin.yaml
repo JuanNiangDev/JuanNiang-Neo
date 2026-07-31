@@ -1,0 +1,10 @@
+name: "webhook-example"
+version: "1.0.0"
+author: "JuanNiang"
+description: "Webhook 示例插件：处理 GitHub/告警/钉钉等外部推送，转发到 QQ 群"
+entry: "main.lua"
+permissions:
+  - webhook
+  - onebot11
+system: false
+enabled: true
