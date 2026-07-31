@@ -9,54 +9,237 @@
 
 ### 用途
 
-让外部服务（GitHub、GitLab、监控告警、表单 webhook 等）触发机器人动作。Webhook **不走 LLM Agent**，只把 Payload 交给有 `webhook` 权限的 Lua 插件处理——这是给插件做外部集成的钩子。
+让外部服务（GitHub、GitLab、监控告警、表单 webhook 等）通过 HTTP 请求触发机器人动作。Webhook **不走 LLM Agent**，只把 Payload 交给有 `webhook` 权限的 Lua 插件处理——这是给插件做外部集成的专用钩子。
+
+### 架构与数据流
+
+```
+外部服务 (GitHub / 监控 / 自定义)
+  │  POST http://your-server:8091/github
+  │  Body: {"action":"opened","pull_request":{...}}
+  ▼
+WebhookAdapter (独立端口 8091, 默认关闭)
+  │  1. Token 校验 → 不匹配返回 401
+  │  2. 读取 Body → JSON 解析成功则直接使用, 失败则包装为
+  │     {"raw":"原文","type":"non-json"}
+  │  3. 构造 Event{
+  │       PostType:"webhook",
+  │       Webhook:{Path:"/github", Method:"POST", Payload:{...}},
+  │       Admins: OB 管理员列表
+  │     }
+  │  4. 非阻塞写入 events channel (cap=128)
+  │     · 满 → 丢弃事件, 返回 HTTP 503 → 外部服务应重试
+  ▼
+HagoCenter.runEventLoop (事件循环 goroutine)
+  │  select 收到 webhook 事件
+  │  → processEvent(): PostType=="webhook" 分支, 构造
+  │    pluggin.EventData{
+  │      PostType:"webhook",
+  │      Webhook:{path, method, payload},
+  │      Admins: OB 管理员
+  │    }
+  │  → PluginEngine.OnWebhook(event) → 遍历所有已加载插件
+  ▼
+PluginEngine.OnWebhook
+  │  遍历所有已加载插件
+  │  ├— 插件无 webhook 权限 → 跳过
+  │  └— 插件有 webhook 权限 → 调 on_webhook(event)
+  ▼
+Lua 插件 on_webhook(event)
+  │  event.webhook.path    = "/github"
+  │  event.webhook.method  = "POST"
+  │  event.webhook.payload = {action:"opened", ...}
+  │  event.admins          = {"管理员QQ号"}
+  │
+  │  插件自行判断是否处理该事件:
+  │    · 检查 payload 字段 → 不相关则 return false
+  │    · 相关 → 执行逻辑 → return true (已消费)
+  ▼
+  处理完毕, 事件循环继续等待下一个事件
+```
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| 独立端口 | `:8091`，与 API `:8090`、OB `:8081` 完全隔离 |
+| Token 鉴权 | Bearer token，配了才校验，不配则任何请求都通过 |
+| 不走 Agent | `PostType=="webhook"` 在事件循环中直接短路，永远不会进 LLM |
+| 广播模式 | 每个 webhook 事件会调用**所有**有 `webhook` 权限的插件 |
+| 插件自决 | 插件自己在 `on_webhook` 里判断 payload 并决定是否处理 |
+| 队列丢弃 | events channel cap=128，满了返回 HTTP 503，外部服务应重试 |
+| 热更新 | Web 面板点"启用"即生效，无需重启 |
 
 ### 配置入口
 
-Web 面板"Webhook"页：`PUT /api/v1/webhook/config` 启用：
+Web 面板"Webhook"页 → `PUT /api/v1/webhook/config`：
 
 | 字段 | 类型 | 默认 | 说明 |
 |------|------|------|------|
 | `addr` | string | `0.0.0.0` | 监听地址 |
-| `port` | int | `8091` | 监听端口（独立于 API `:8090` 与 OB `:8081`，编排上需放行） |
-| `token` | string | (空) | Bearer 鉴权令牌；空=不验证 |
-| `enabled` | bool | `false` | 启用 |
+| `port` | int | `8091` | 监听端口 |
+| `token` | string | (空) | Bearer 鉴权令牌；空=不校验 |
+| `enabled` | bool | `false` | 启用开关 |
 
-`POST?enabled=true` 后由 `WebhookAdapter.Start` 起 HTTP server。**默认关闭**。
+配置是 DB 单行 `id=1`，不读 env。docker compose 默认未映射 `:8091`，需自行添加：
+
+```yaml
+# docker-compose.yaml
+services:
+  juan-niang-neo:
+    ports:
+      - "8091:8091"   # Webhook
+```
 
 ### HTTP 协议
 
-- 监听路径：`/` 与 `/webhook` 都接受
-- 方法：任意（常用 `POST`）
-- Header：`Authorization: Bearer <token>`（若配 `token`）；不匹配返回 401
-- Body：任意。`WebhookAdapter.handleRequest` 先尝试 JSON unmarshal 若失败则包装为 `{"raw": "<原文>", "type": "non-json"}`
-- 成功返回 `200 No-Body`/`503`（事件队列满时丢）
+| 项目 | 说明 |
+|------|------|
+| 监听路径 | `/` 和 `/webhook` 都受理，路径透传到 event.webhook.path |
+| 方法 | 任意（常用 POST） |
+| Header | `Authorization: Bearer <token>`（配了 token 才校验） |
+| Body | 任意。先尝试 JSON unmarshal；失败则包装为 `{"raw":"原文","type":"non-json"}` |
+| 成功 | `200 OK`，body 为空 |
+| 队列满 | `503 Service Unavailable`，事件被丢弃 |
+| 鉴权失败 | `401 Unauthorized` |
 
-合成事件结构（喂给 Lua）：
+### Event 数据结构（Lua 侧）
 
 ```lua
-event.post_type       == "webhook"
-event.webhook.path    = "/webhook"
-event.webhook.method  = "POST"
-event.webhook.payload = { raw="...", action="opened", ... }
-event.admins          = { "QQ号" }   -- 透传 OB AdminQQNumbers; 无连入则为 nil
+-- on_webhook(event) 收到的 event 结构
+
+event.post_type  = "webhook"        -- 固定
+
+event.webhook = {
+    path    = "/github",             -- string: 请求路径
+    method  = "POST",                -- string: HTTP 方法
+    payload = {                      -- table: Body JSON 解析结果
+        action       = "opened",     --   (示例: GitHub PR opened)
+        pull_request = { ... },
+        repository   = { ... },
+        sender       = { ... },
+    }
+}
+
+event.admins = { "10001", "10002" } -- 系统管理员 QQ 列表
 ```
 
-### 示例：GitHub PR 通知群消息
+### 多插件共存：如何区分事件归属
 
-`pluggin.yaml`（注意 `permissions: [webhook, onebot11]`）:
+webhook 是**广播模式**——每个请求会调用所有有 `webhook` 权限的插件。插件通过以下三种方式自行判断是否处理。
+
+#### 方式一：payload 字段自识别（推荐）
+
+每个插件检查自己关心的字段，不相关则立即 `return false`：
+
+```lua
+-- GitHub 插件
+function on_webhook(event)
+    local p = event.webhook.payload
+    if not p.repository or not p.sender then return false end
+    -- 处理 GitHub 事件...
+end
+
+-- 告警插件
+function on_webhook(event)
+    local p = event.webhook.payload
+    if not p.alert_name then return false end
+    -- 处理告警事件...
+end
+```
+
+> **优点是解耦**：外部服务不需要知道"该调哪个 URL"，只要发一个 JSON 就行。插件靠字段自我识别。
+
+#### 方式二：路径区分
+
+外部服务请求不同路径，插件检查 `event.webhook.path`：
+
+```bash
+# GitHub 配置这个 URL
+http://host:8091/github
+
+# 监控配置这个 URL
+http://host:8091/alert
+```
+
+```lua
+-- GitHub 插件
+function on_webhook(event)
+    if event.webhook.path ~= "/github" then return false end
+    -- ...
+end
+```
+
+#### 方式三：约定 action 字段
+
+在 payload 里约定一个标识字段：
+
+```json
+{"_source": "github", "pull_request": {...}}
+{"_source": "alert", "message": "CPU 超了"}
+```
+
+```lua
+function on_webhook(event)
+    if event.webhook.payload._source ~= "alert" then return false end
+    -- ...
+end
+```
+
+### 配置与测试
+
+#### 开启 webhook
+
+```bash
+curl -X PUT http://localhost:8090/api/v1/webhook/config \
+  -H "Authorization: Bearer <admin-token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "addr": "0.0.0.0",
+    "port": 8091,
+    "token": "my-secret-token",
+    "enabled": true
+  }'
+```
+
+#### curl 测试
+
+```bash
+# 测试 1：简单 JSON
+curl -X POST http://localhost:8091/ \
+  -H "Authorization: Bearer my-secret-token" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "服务器负载过高", "level": "error", "group_id": 1076723599}'
+
+# 测试 2：非 JSON body（会被包装）
+curl -X POST http://localhost:8091/ \
+  -H "Authorization: Bearer my-secret-token" \
+  -d "raw text body"
+# 插件收到: event.webhook.payload = {raw="raw text body", type="non-json"}
+
+# 测试 3：不配 token 时不需要 Authorization 头
+curl -X POST http://localhost:8091/ \
+  -H "Content-Type: application/json" \
+  -d '{"hi":"there"}'
+```
+
+### 完整示例
+
+**pluggin.yaml**：
 
 ```yaml
-name: github-pr
+name: github-notify
 version: "1.0.0"
+author: me
+description: "GitHub Webhook 通知"
+entry: main.lua
 permissions:
   - webhook
   - onebot11
 enabled: true
-entry: main.lua
 ```
 
-`main.lua`:
+**main.lua**：
 
 ```lua
 local jn = require("jn")
@@ -64,41 +247,51 @@ local GROUP = 987654321
 
 function on_webhook(event)
     local p = event.webhook and event.webhook.payload or {}
-    if p.action == "opened" then
+
+    -- GitHub PR opened
+    if p.action == "opened" and p.pull_request then
         local repo = (p.repository and p.repository.full_name) or "?"
-        local title = (p.pull_request and p.pull_request.title) or "?"
-        local url = (p.pull_request and p.pull_request.html_url) or ""
+        local title = p.pull_request.title or "?"
+        local url  = p.pull_request.html_url or ""
+        local user = p.sender.login or "?"
         jn.onebot11.send_group_msg(GROUP,
-            "GitHub PR 新开 [" .. repo .. "]\n" ..
-            title .. "\n" .. url)
+            string.format("🔀 %s 提了新 PR\n[%s] %s\n%s", user, repo, title, url))
+        return true
     end
-    return false
+
+    -- GitHub Issue opened
+    if p.action == "opened" and p.issue and not p.pull_request then
+        local title = p.issue.title or "?"
+        local url   = p.issue.html_url or ""
+        jn.onebot11.send_group_msg(GROUP,
+            string.format("🐛 新 Issue: %s\n%s", title, url))
+        return true
+    end
+
+    -- GitHub Push
+    if p.commits and p.ref then
+        local branch = p.ref:gsub("refs/heads/", "")
+        local n = #(p.commits or {})
+        jn.onebot11.send_group_msg(GROUP,
+            string.format("📤 %s pushed to %s (%d commits)",
+                p.pusher.name, branch, n))
+        return true
+    end
+
+    return false  -- 不是 GitHub 事件，放行给其他插件
 end
 ```
 
-外部服务配置 GitHub webhook → `https://your-bot:8091/webhook`，Header `Authorization: Bearer <token>`，content-type `application/json`。
-
-### 示例：任意 HTTP 触发私聊提醒（curl 测试）
-
-```bash
-# 启用 webhook + 设 token=secret123
-curl -X PUT http://localhost:8090/api/v1/webhook/config \
-  -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
-  -d '{"addr":"0.0.0.0","port":8091,"token":"secret123","enabled":true}'
-
-# 插件 on_webhook 收到 payload: {"hi":"there"}
-curl -X POST http://localhost:8091/webhook \
-  -H "Authorization: Bearer secret123" \
-  -H "Content-Type: application/json" \
-  -d '{"hi":"there"}'
-```
+配套 `data/pluggins/webhook-example/` 插件提供了完整的多格式支持（GitHub / 通用告警 / 钉钉飞书），可直接使用或参考。
 
 ### 注意
 
-- Webhook 默认关闭；记得放行 `:8091`（docker compose 默认未映射此端口，需自行加 `ports:`）
-- 事件队列满（128）会丢并返回 503，外部服务应重试
+- Webhook 默认关闭；docker compose 默认未映射 `:8091`，需自行加 `ports:`
+- 事件队列满（128）会丢并返回 503，外部服务应实现重试
 - 无 SPA 兜底，仅 webhook + `/` 路由
 - Webhook 配置是 DB 单行 `id=1`，不读 env
+- 插件需声明 `webhook` 权限才会被调用；想在回调里发消息需同时声明 `onebot11`
+- 多个 webhook 插件共存时，每个插件在 `on_webhook` 开头做字段判断快速 `return false` 避免冲突
 
 ## CronJob
 
