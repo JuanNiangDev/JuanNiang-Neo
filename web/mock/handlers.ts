@@ -608,6 +608,16 @@ export const mockHandlers: MockHandler[] = [
     }
   },
 
+  // ============ Reply Strategy ============
+  {
+    method: 'GET', path: '/reply-strategy',
+    handler() { return ok({ strategy: 'always', relevance_threshold: 0.5, bot_name: '', strip_markdown: false, agent_lite: false, skip_silence_check: false }) }
+  },
+  {
+    method: 'PUT', path: '/reply-strategy',
+    handler({ body }) { return ok({ ...body }) }
+  },
+
   // ============ Planner ============
   {
     method: 'GET', path: '/planner/config',

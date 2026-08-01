@@ -230,6 +230,7 @@ export interface ReplyStrategyResp {
   bot_name: string
   strip_markdown: boolean
   agent_lite: boolean
+  skip_silence_check: boolean
 }
 export interface UpdateReplyStrategyReq {
   strategy: string
@@ -237,6 +238,7 @@ export interface UpdateReplyStrategyReq {
   bot_name: string
   strip_markdown: boolean
   agent_lite: boolean
+  skip_silence_check: boolean
 }
 
 export const replyStrategyApi = {

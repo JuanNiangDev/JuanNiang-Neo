@@ -57,10 +57,10 @@
 
       <!-- 其他设置 -->
       <v-col cols="12" md="4">
-        <v-card rounded="lg" elevation="1" class="mb-4">
+        <v-card rounded="lg" elevation="1">
           <v-card-item>
             <template #title><span class="text-h6 font-weight-bold">消息格式</span></template>
-            <template #subtitle>AgentLite &amp; Markdown 去除</template>
+            <template #subtitle>AgentLite &amp; Markdown &amp; 静默检测</template>
           </v-card-item>
           <v-card-text>
             <v-form @submit.prevent="handleSave">
@@ -71,28 +71,26 @@
                 </div>
                 <v-switch v-model="form.agent_lite" color="primary" hide-details density="compact" />
               </div>
+              <v-divider class="mb-4" />
+
               <div class="d-flex align-start mb-4">
                 <div class="flex-grow-1 me-3">
                   <div class="text-subtitle-2 font-weight-bold">去除 Markdown</div>
-                  <div class="text-caption text-medium-emphasis mt-1">发送前去除加粗/斜体/代码块/链接等格式。</div>
+                  <div class="text-caption text-medium-emphasis mt-1">发送前去除加粗/斜体/代码块/链接等格式，发送纯文本。</div>
                 </div>
                 <v-switch v-model="form.strip_markdown" color="primary" hide-details density="compact" />
               </div>
               <v-divider class="mb-4" />
 
-              <!-- 回复策略 (legacy) -->
-              <div class="text-subtitle-2 font-weight-bold mb-2">回复策略 (Legacy)</div>
-              <v-select
-                v-model="form.strategy"
-                :items="strategyOptions"
-                item-title="label"
-                item-value="value"
-                density="compact"
-                hide-details
-                class="mb-3"
-              />
-              <div class="text-caption text-medium-emphasis">
-                注意：推荐使用上方的 Planner 打分系统。Legacy 策略在 Planner 启用时作为兜底。
+              <div class="d-flex align-start mb-4">
+                <div class="flex-grow-1 me-3">
+                  <div class="text-subtitle-2 font-weight-bold">跳过静默检测</div>
+                  <div class="text-caption text-medium-emphasis mt-1">
+                    调试用。开启后 __NO_REPLY__ 等静默输出也会发送到 QQ。<br/>
+                    正常使用请关闭。
+                  </div>
+                </div>
+                <v-switch v-model="form.skip_silence_check" color="warning" hide-details density="compact" />
               </div>
 
               <v-btn type="submit" color="primary" variant="tonal" :loading="saving" block class="mt-4">
@@ -117,17 +115,17 @@ const saving = ref(false)
 interface FormState {
   threshold: number
   weights: Record<string, number>
-  strategy: string
   agent_lite: boolean
   strip_markdown: boolean
+  skip_silence_check: boolean
 }
 
 const form = reactive<FormState>({
   threshold: 0.30,
   weights: { mention: 0.35, keyword: 0.25, context: 0.20, quality: 0.10, history: 0.10 },
-  strategy: 'always',
   agent_lite: false,
   strip_markdown: false,
+  skip_silence_check: false,
 })
 
 const dimensions = [
@@ -136,14 +134,6 @@ const dimensions = [
   { key: 'context', label: '上下文', desc: '近期有 bot 发言', color: 'text-purple', sliderColor: 'purple' },
   { key: 'quality', label: '内容质量', desc: '消息长度 & 非纯表情', color: 'text-orange', sliderColor: 'orange' },
   { key: 'history', label: '历史互动', desc: '积极互动比例', color: 'text-teal', sliderColor: 'teal' },
-]
-
-const strategyOptions = [
-  { label: '完全回复 — always', value: 'always' },
-  { label: '仅@我 — at_only', value: 'at_only' },
-  { label: '完全不回复 — never_reply', value: 'never_reply' },
-  { label: '仅 Plugin — plugin_only', value: 'plugin_only' },
-  { label: '按相关性 — relevance', value: 'relevance' },
 ]
 
 async function load() {
@@ -165,9 +155,9 @@ async function load() {
     }
     const rd = (reply.data as any)?.data
     if (rd) {
-      form.strategy = rd.strategy || 'always'
       form.agent_lite = rd.agent_lite || false
       form.strip_markdown = rd.strip_markdown || false
+      form.skip_silence_check = rd.skip_silence_check || false
     }
   } catch (_e: any) {}
 }
@@ -187,11 +177,12 @@ async function handleSave() {
         },
       }),
       replyStrategyApi.update({
-        strategy: form.strategy,
+        strategy: 'always',
         relevance_threshold: 0.5,
         bot_name: '',
         strip_markdown: form.strip_markdown,
         agent_lite: form.agent_lite,
+        skip_silence_check: form.skip_silence_check,
       }),
     ])
     toastStore.success('Planner 配置已保存')

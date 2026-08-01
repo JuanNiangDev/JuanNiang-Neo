@@ -16,11 +16,12 @@ const (
 // ReplyStrategyConfig 系统回复策略配置（单例，DB 中只保留一行）。
 type ReplyStrategyConfig struct {
 	ID                 string        `gorm:"primaryKey;type:uuid" json:"id"`
-	Strategy           ReplyStrategy `gorm:"not null;default:'always'" json:"strategy"`
+	Strategy           ReplyStrategy `gorm:"not null;default:'always'" json:"strategy"` // ⚠ 已被 Planner 取代，仅保留用于 DB 兼容
 	RelevanceThreshold float64       `gorm:"default:0.5" json:"relevance_threshold"`
 	BotName            string        `gorm:"default:''" json:"bot_name"`
-	StripMarkdown      bool          `gorm:"default:false" json:"strip_markdown"` // 是否去除 Agent 消息中的 Markdown 格式
-	AgentLite          bool          `gorm:"default:false" json:"agent_lite"`    // AgentLite 模式：不调用工具/MCP，无 Agent 循环
+	StripMarkdown      bool          `gorm:"default:false" json:"strip_markdown"`     // 去除 Markdown 格式
+	AgentLite          bool          `gorm:"default:false" json:"agent_lite"`         // AgentLite: 不调工具/MCP
+	SkipSilenceCheck   bool          `gorm:"default:false" json:"skip_silence_check"` // 跳过静默检测 (debug用)
 	CreatedAt          time.Time     `json:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at"`
 }
