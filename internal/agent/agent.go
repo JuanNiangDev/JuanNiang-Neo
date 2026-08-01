@@ -17,6 +17,7 @@ import (
 	"JuanNiang-Neo/internal/agent/planner"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/agent/replyer"
 	"JuanNiang-Neo/internal/agent/session"
 	"JuanNiang-Neo/internal/agent/skill"
 	"JuanNiang-Neo/internal/agent/tool"
@@ -52,6 +53,8 @@ type HagoCenter struct {
 	CronJobManager   *cronjob.Manager
 	CronJobEvents    chan adapter.Event // CronJob → 主 Agent 事件循环
 	PluginEngine     *pluggin.PluginEngine
+	LatencyTracker   *ToolLatencyTracker // 工具延迟跟踪 (自动后台任务检测)
+	Replyer          *replyer.Replyer    // 回复发送模块
 
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
 	SelfQQ       int64
@@ -94,6 +97,7 @@ func NewHagoCenter() *HagoCenter {
 		OutputChan:       make(chan DrainerOutput, 128),
 		BgTaskResultChan: make(chan DrainerOutput, 128),
 		CronJobEvents:    make(chan adapter.Event, 64),
+		LatencyTracker:   NewToolLatencyTracker(),
 	}
 }
 
@@ -105,6 +109,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.ACL = cfg.ACL
 	h.Providers = cfg.Providers
 	h.MCP = cfg.MCPGroup
+
+	// 初始化 Replyer（回复发送模块）
+	h.Replyer = replyer.New(h.Adapter)
 
 	// 缓存机器人自己的 QQ 号和昵称
 	h.SelfQQ = h.Adapter.SelfID()

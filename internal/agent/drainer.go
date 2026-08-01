@@ -2,14 +2,12 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"time"
+
 	"JuanNiang-Neo/internal/logging"
-	"regexp"
-	"strings"
 )
 
-// cqCodeMatch 匹配 [CQ:type,key=val,...] 格式的 CQ 码。
-var cqCodeMatch = regexp.MustCompile(`\[CQ:[^\]]+\]`)
+var drainLog = logging.NewLogger("drainer")
 
 // DrainerOutput 后台任务步骤/整体完成时的输出。
 type DrainerOutput struct {
@@ -27,28 +25,50 @@ type DrainerOutput struct {
 	MediaPayloads []string `json:"media_payloads,omitempty"`
 }
 
-// DrainerAgent 排水 Agent，消费后台任务结果，汇总后发送给主 Agent 处理。
+// DrainerAgent 排水 Agent，消费后台任务步骤结果，全部完成后汇报给主 Agent。
+// 不再发送消息到 QQ，只产出 DrainerOutput 到 BgTaskResultChan。
 type DrainerAgent struct {
 	inputChan  <-chan DrainerOutput
-	resultChan chan<- DrainerOutput // 汇总后的最终结果发给主 Agent
+	resultChan chan<- DrainerOutput
 
-	// 按 ChatArea 分组累积结果
-	pending map[string][]DrainerOutput
+	// 按任务跟踪
+	tasks map[string]*DrainTask
 }
 
-func NewDrainerAgent(
-	inputChan <-chan DrainerOutput,
-	resultChan chan<- DrainerOutput,
-) *DrainerAgent {
+// DrainTask 排水任务跟踪。
+type DrainTask struct {
+	TaskID      string
+	ChatAreaID  string
+	MessageType string
+	TargetID    int64
+	UserPrompt  string
+	TotalSteps  int
+	Steps       map[string]DrainStepResult
+	Status      string // pending / running / done / failed
+	StartedAt   time.Time
+	FinishedAt  time.Time
+}
+
+// DrainStepResult 单步执行结果。
+type DrainStepResult struct {
+	ToolName string
+	Status   string // running / done / failed
+	Result   string
+	Error    string
+}
+
+// NewDrainerAgent 创建排水 Agent。
+func NewDrainerAgent(inputChan <-chan DrainerOutput, resultChan chan<- DrainerOutput) *DrainerAgent {
 	return &DrainerAgent{
 		inputChan:  inputChan,
 		resultChan: resultChan,
-		pending:    make(map[string][]DrainerOutput),
+		tasks:      make(map[string]*DrainTask),
 	}
 }
 
+// Run 启动排水 Agent 事件循环。
 func (d *DrainerAgent) Run(ctx context.Context) {
-	logging.Info("DrainerAgent 已启动 (result → bgTaskResultChan)")
+	drainLog.Info("DrainerAgent 已启动 (仅汇报最终结果)")
 	for {
 		select {
 		case <-ctx.Done():
@@ -57,96 +77,101 @@ func (d *DrainerAgent) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			d.handle(ctx, output)
+			d.handle(output)
 		}
 	}
 }
 
-func (d *DrainerAgent) handle(ctx context.Context, output DrainerOutput) {
-	chatAreaID := output.ChatAreaID
+func (d *DrainerAgent) handle(output DrainerOutput) {
+	task, exists := d.tasks[output.TaskID]
+	if !exists {
+		task = &DrainTask{
+			TaskID:      output.TaskID,
+			ChatAreaID:  output.ChatAreaID,
+			MessageType: output.MessageType,
+			TargetID:    output.TargetID,
+			UserPrompt:  output.UserPrompt,
+			Steps:       make(map[string]DrainStepResult),
+			Status:      "running",
+			StartedAt:   time.Now(),
+		}
+		d.tasks[output.TaskID] = task
+	}
 
-	d.pending[chatAreaID] = append(d.pending[chatAreaID], output)
+	// 记录步骤结果
+	if output.StepID != "" {
+		task.Steps[output.StepID] = DrainStepResult{
+			Status: output.Status,
+			Result: output.Result,
+			Error:  output.Error,
+		}
+	}
 
-	// 最终完成信号（含 failed 状态），整合所有结果发送给主 Agent
+	// 最终完成信号（step 级输出不转发给主 Agent）
 	if (output.Status == "done" || output.Status == "failed") && output.StepID == "" {
-		d.finalize(ctx, chatAreaID)
+		task.Status = output.Status
+		task.FinishedAt = time.Now()
+
+		// 构造汇总报告，发一条给主 Agent
+		summary := d.buildSummary(task)
+		d.resultChan <- DrainerOutput{
+			TaskID:      task.TaskID,
+			ChatAreaID:  task.ChatAreaID,
+			MessageType: task.MessageType,
+			TargetID:    task.TargetID,
+			Status:      task.Status,
+			Result:      summary,
+			UserPrompt:  task.UserPrompt,
+		}
+
+		drainLog.Info("排水任务完成，汇报给主 Agent", "task_id", task.TaskID, "status", task.Status)
 	}
 }
 
-func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
-	outputs := d.pending[chatAreaID]
-	if len(outputs) == 0 {
-		return
-	}
-	delete(d.pending, chatAreaID)
-
-	// 收集步骤结果
-	var stepOutputs []DrainerOutput
-	var failedSteps []DrainerOutput
-	var allMedia []string
-	for _, o := range outputs {
-		if o.StepID != "" {
-			if o.Status == "failed" {
-				failedSteps = append(failedSteps, o)
-			}
-			if o.Result != "" {
-				// 从结果中提取 CQ 码，记录到 MediaPayloads
-				media := cqCodeMatch.FindAllString(o.Result, -1)
-				allMedia = append(allMedia, media...)
-				stepOutputs = append(stepOutputs, o)
-			}
+func (d *DrainerAgent) buildSummary(task *DrainTask) string {
+	summary := "[后台任务已完成]\n"
+	doneCount := 0
+	failedCount := 0
+	for _, step := range task.Steps {
+		if step.Status == "failed" {
+			summary += "- [失败] " + step.ToolName + ": " + step.Error + "\n"
+			failedCount++
+		} else if step.Status == "done" {
+			summary += "- [完成] " + step.ToolName + ": " + truncate(step.Result, 200) + "\n"
+			doneCount++
 		}
 	}
-
-	// 汇总所有步骤结果 + 错误（CQ 码替换为占位符，不截断）
-	var summaryParts []string
-	for _, o := range failedSteps {
-		summaryParts = append(summaryParts, fmt.Sprintf("[失败] %s: %s", o.StepID, o.Error))
-	}
-	for _, o := range stepOutputs {
-		if o.Status != "failed" {
-			// 清除 CQ 码，替换为 [图片/文件] 占位符
-			cleanResult := cqCodeMatch.ReplaceAllString(o.Result, "[媒体内容]")
-			summaryParts = append(summaryParts, fmt.Sprintf("[完成] %s: %s", o.StepID, truncateClean(cleanResult, 500)))
-		}
-	}
-
-	summary := fmt.Sprintf("[后台任务已完成]\n%s", strings.Join(summaryParts, "\n"))
-	userPrompt := ""
-	errMsg := ""
-	if len(outputs) > 0 {
-		userPrompt = outputs[0].UserPrompt
-	}
-	if len(failedSteps) > 0 {
-		errMsg = fmt.Sprintf("%d 个步骤失败", len(failedSteps))
-	}
-
-	finalStatus := "done"
-	if len(stepOutputs) == 0 && len(failedSteps) > 0 {
-		finalStatus = "failed"
-	}
-
-	logging.Info("Drainer 汇总完成，发送给主 Agent", "chat_area_id", chatAreaID,
-		"status", finalStatus, "failed", len(failedSteps), "success", len(stepOutputs), "media", len(allMedia))
-
-	// 发送汇总结果给主 Agent
-	d.resultChan <- DrainerOutput{
-		TaskID:        outputs[0].TaskID,
-		ChatAreaID:    chatAreaID,
-		MessageType:   outputs[0].MessageType,
-		TargetID:      outputs[0].TargetID,
-		Status:        finalStatus,
-		Result:        summary,
-		Error:         errMsg,
-		UserPrompt:    userPrompt,
-		MediaPayloads: allMedia,
-	}
+	summary += "---\n"
+	summary += "成功: " + itoa(doneCount) + ", 失败: " + itoa(failedCount)
+	return summary
 }
 
-// truncateClean 截断已清理的纯文本到指定长度。
-func truncateClean(s string, maxLen int) string {
-	if len(s) <= maxLen {
+// QueryProgress 查询任务进度（主 Agent 可主动调用）。
+func (d *DrainerAgent) QueryProgress(taskID string) (*DrainTask, bool) {
+	task, ok := d.tasks[taskID]
+	return task, ok
+}
+
+// CleanTask 清理已完成的任务（释放内存）。
+func (d *DrainerAgent) CleanTask(taskID string) {
+	delete(d.tasks, taskID)
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return s[:max] + "..."
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	digits := ""
+	for n > 0 {
+		digits = string(rune('0'+n%10)) + digits
+		n /= 10
+	}
+	return digits
 }
