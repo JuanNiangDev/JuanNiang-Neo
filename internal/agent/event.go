@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -66,24 +67,32 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 			if !ok {
 				continue
 			}
-			logging.Info("收到后台任务结果，注入主 Agent", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID, "media", len(output.MediaPayloads))
-			// 先发送媒体负载（图片等 CQ 码）直接到 QQ
-			if len(output.MediaPayloads) > 0 {
-				// 构造临时 MessageEvent 用于 sendReply
-				tmpMsg := &adapter.MessageEvent{
-					MessageType: output.MessageType,
-				}
-				if output.MessageType == "private" {
-					tmpMsg.UserID = output.TargetID
-				} else {
-					tmpMsg.GroupID = output.TargetID
-				}
-				for _, media := range output.MediaPayloads {
-					logging.Info("BgTaskResult 直接发送媒体", "cq_len", len(media))
-					h.sendReply(tmpMsg, media)
+			logging.Info("收到后台任务结果，注入主 Agent", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID)
+
+			// 自动发送结果中的图片 URL
+			tmpMsg := &adapter.MessageEvent{
+				MessageType: output.MessageType,
+			}
+			if output.MessageType == "private" {
+				tmpMsg.UserID = output.TargetID
+			} else {
+				tmpMsg.GroupID = output.TargetID
+			}
+
+			// MediaPayloads (CQ码) 直接发送
+			for _, media := range output.MediaPayloads {
+				h.sendReply(tmpMsg, media)
+			}
+
+			// 提取结果中的图片 URL 并自动发送
+			if imgURLs := extractImageURLs(output.Result); len(imgURLs) > 0 {
+				for _, imgURL := range imgURLs {
+					logging.Info("BgTask 自动发送图片", "url", imgURL)
+					h.sendReply(tmpMsg, fmt.Sprintf("[CQ:image,file=%s]", imgURL))
 				}
 			}
-			// 将 DrainerOutput 转换为合成 Event，触发主 Agent 处理（LLM 只需生成文字回复）
+
+			// 将 DrainerOutput 转换为合成 Event，触发主 Agent 处理
 			syntheticEvent := h.bgTaskOutputToEvent(output)
 			h.processEvent(ctx, syntheticEvent)
 		case ev, ok := <-h.CronJobEvents:
@@ -579,10 +588,10 @@ func (h *HagoCenter) handleToolCalls(
 					continue
 				}
 				logging.Info("MCP 长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
-				h.sendReply(msg, fmt.Sprintf("MCP 任务 %s 已提交后台执行...", toolName))
+				// 不发送消息通知用户，静默提交
 				history = append(history, provider.ChatMessage{
 					Role:       "tool",
-					Content:    fmt.Sprintf("[系统] MCP 任务 %s 已提交后台执行 (task_id: %s)。你不需要做任何后续处理——禁止编造或猜测执行结果。只需告知用户任务已提交。", toolName, taskID),
+					Content:    fmt.Sprintf("[系统] 任务 %s 已提交后台执行 (task_id: %s)。结果会由系统自动处理并发送，你不需要告知用户任务已提交，也禁止编造结果。", toolName, taskID),
 					ToolCallID: tc.ID,
 				})
 				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("MCP 任务 %s -> 后台执行: %s", toolName, taskID), 0, nil)
@@ -633,10 +642,10 @@ func (h *HagoCenter) handleToolCalls(
 				}
 
 				logging.Info("内置长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
-				h.sendReply(msg, fmt.Sprintf("任务 %s 已提交后台执行...", toolName))
+				// 不发送消息通知用户，静默提交
 				history = append(history, provider.ChatMessage{
 					Role:       "tool",
-					Content:    fmt.Sprintf("[系统] 任务 %s 已提交后台执行 (task_id: %s)。你不需要做任何后续处理——禁止编造或猜测执行结果。只需告知用户任务已提交。", toolName, taskID),
+					Content:    fmt.Sprintf("[系统] 任务 %s 已提交后台执行 (task_id: %s)。结果会由系统自动处理并发送，你不需要告知用户任务已提交，也禁止编造结果。", toolName, taskID),
 					ToolCallID: tc.ID,
 				})
 				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("任务 %s -> 后台执行: %s", toolName, taskID), 0, nil)
@@ -911,4 +920,19 @@ func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.Messa
 	}
 
 	return "[当前聊天环境]\n" + strings.Join(parts, "\n")
+}
+
+// extractImageURLs 从文本中提取图片 URL (http/https 开头，常见图片后缀)。
+func extractImageURLs(text string) []string {
+	var urls []string
+	// 匹配 http(s)://... .jpg/.png/.jpeg/.gif/.webp 的 URL
+	re := regexp.MustCompile(`https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s]*)?`)
+	matches := re.FindAllString(text, -1)
+	for _, m := range matches {
+		if !strings.HasPrefix(m, "http") {
+			continue
+		}
+		urls = append(urls, m)
+	}
+	return urls
 }

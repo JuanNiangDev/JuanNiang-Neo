@@ -2,16 +2,15 @@ package tool
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"JuanNiang-Neo/internal/adapter"
-	"JuanNiang-Neo/internal/agent/provider"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
+	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/provider"
 
 	"github.com/openai/openai-go/v3"
 )
@@ -52,7 +51,7 @@ type SessionInfo struct {
 	SenderRole  string `json:"sender_role"` // owner / admin / member (群聊); 私聊为空
 	SelfQQ      int64  `json:"self_qq"`
 	SelfName    string `json:"self_name"` // 机器人昵称
-	Admins      string `json:"admins"`   // 管理员 QQ 列表
+	Admins      string `json:"admins"`    // 管理员 QQ 列表
 }
 
 // RegisterBuiltinTools 注册所有内置工具到注册表。
@@ -136,7 +135,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "delete_msg", "撤回消息",
 			Int64Param("message_id", "消息 ID", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ MessageID int64 `json:"message_id"` }
+			var p struct {
+				MessageID int64 `json:"message_id"`
+			}
 			json.Unmarshal(args, &p)
 			if err := adapter.DeleteMsg(p.MessageID); err != nil {
 				return "", err
@@ -149,7 +150,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "get_msg", "根据消息 ID 获取消息的完整内容（包括被引用的消息）",
 			Int64Param("message_id", "消息 ID", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ MessageID int64 `json:"message_id"` }
+			var p struct {
+				MessageID int64 `json:"message_id"`
+			}
 			json.Unmarshal(args, &p)
 			msg, err := adapter.GetMsg(p.MessageID)
 			if err != nil {
@@ -166,7 +169,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "get_group_info", "获取群信息",
 			Int64Param("group_id", "群号", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ GroupID int64 `json:"group_id"` }
+			var p struct {
+				GroupID int64 `json:"group_id"`
+			}
 			json.Unmarshal(args, &p)
 			info, err := adapter.GetGroupInfo(p.GroupID)
 			if err != nil {
@@ -181,7 +186,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "get_group_member_list", "获取群成员列表",
 			Int64Param("group_id", "群号", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ GroupID int64 `json:"group_id"` }
+			var p struct {
+				GroupID int64 `json:"group_id"`
+			}
 			json.Unmarshal(args, &p)
 			list, err := adapter.GetGroupMemberList(p.GroupID)
 			if err != nil {
@@ -387,7 +394,9 @@ func RegisterBuiltinTools(
 				if sandbox == nil {
 					return "", fmt.Errorf("沙箱服务未启用")
 				}
-				var p struct{ Status string `json:"status"` }
+				var p struct {
+					Status string `json:"status"`
+				}
 				json.Unmarshal(args, &p)
 				list, err := sandbox.ListSandboxes(ctx, 20, "", p.Status)
 				if err != nil {
@@ -527,7 +536,7 @@ except Exception as e:
 
 	if getT2I != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片(长耗时)，系统自动发送。你只需告知用户图片已生成，无需手动发送。",
+			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片(长耗时)，系统自动发送。你不需要手动发送图片。",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -540,9 +549,11 @@ except Exception as e:
 				if t2i == nil {
 					return "", fmt.Errorf("T2I 服务未启用")
 				}
-				var p struct{ HTML string `json:"html"` }
+				var p struct {
+					HTML string `json:"html"`
+				}
 				json.Unmarshal(args, &p)
-				imgBytes, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
+				url, err := t2i.GenerateURL(ctx, t2icaller.GenerateRequest{
 					HTML: p.HTML,
 					Options: &t2icaller.GenerateOptions{
 						Type:    t2icaller.ImageTypeJPEG,
@@ -552,8 +563,7 @@ except Exception as e:
 				if err != nil {
 					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
-				b64 := base64.StdEncoding.EncodeToString(imgBytes)
-				return fmt.Sprintf("图片已生成并发送 (%d bytes)\n[CQ:image,file=base64://%s]", len(imgBytes), b64), nil
+				return fmt.Sprintf("图片已生成: %s", url), nil
 			},
 		})
 	}
@@ -651,14 +661,14 @@ except Exception as e:
 		tools = append(tools, &onebotTool{
 			BaseTool: NewTool("", "list_super_faces", "查询所有可用的 QQ 超级表情（sub_type=3 动态表情 + sub_type=5 手势表情）。返回 ID 和名称列表。⚠️ 使用 send_face 前必须先调用此工具查询正确的 face_id！",
 				openai.FunctionParameters{
-					"type": "object",
+					"type":       "object",
 					"properties": map[string]any{},
 				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				type faceEntry struct {
-					ID     int    `json:"id"`
-					Name   string `json:"name"`
-					SubType int   `json:"sub_type"`
+					ID      int    `json:"id"`
+					Name    string `json:"name"`
+					SubType int    `json:"sub_type"`
 				}
 				// sub_type=3 (动态超级表情): 98条
 				sub3 := []faceEntry{
