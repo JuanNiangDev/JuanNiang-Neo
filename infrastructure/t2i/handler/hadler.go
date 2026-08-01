@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -128,7 +129,8 @@ func (c *Client) GenerateURL(ctx context.Context, req GenerateRequest) (string, 
 	if err != nil {
 		return "", err
 	}
-	return c.Config.BaseURL + "/text2img/data/" + genResp.Data.ID, nil
+	id := strings.TrimPrefix(genResp.Data.ID, "data/")
+	return c.Config.BaseURL + "/text2img/data/" + id, nil
 }
 
 // GetImage 根据 ID 获取图片。
