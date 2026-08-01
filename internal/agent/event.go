@@ -97,18 +97,31 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 				h.sendReply(tmpMsg, cqImg)
 			}
 
-			// 去除已发送的图片 URL 后，检查是否还有有意义的文本内容需要通知 LLM
+			// 去除已发送的图片 URL 后，检查是否还有有意义的文本
 			cleanResult := output.Result
 			for _, imgURL := range imgURLs {
 				cleanResult = strings.ReplaceAll(cleanResult, imgURL, "")
 			}
-			cleanResult = strings.TrimSpace(cleanResult)
-			// 去掉"图片已生成: "等无意义前缀
-			cleanResult = strings.TrimPrefix(cleanResult, "图片已生成:")
-			cleanResult = strings.TrimSpace(cleanResult)
+			// 移除匹配的步骤报告行、分隔线和统计行
+			for _, pattern := range []string{
+				"图片已生成:", "[后台任务已完成]", "[完成]", "[失败]",
+				"---", "成功:", "失败:",
+			} {
+				cleanResult = strings.ReplaceAll(cleanResult, pattern, "")
+			}
+			// 移除纯空白行
+			lines := strings.Split(cleanResult, "\n")
+			var meaningful []string
+			for _, line := range lines {
+				trimmed := strings.TrimSpace(line)
+				if trimmed != "" && !strings.HasPrefix(trimmed, "- [") {
+					meaningful = append(meaningful, trimmed)
+				}
+			}
+			cleanResult = strings.TrimSpace(strings.Join(meaningful, " "))
 
-			// 只有存在有意义的文本结果（非纯图片任务）时，才通知 LLM
-			if cleanResult != "" && cleanResult != "[后台任务已完成]" {
+			// 只有存在有意义的非元数据文本时，才通知 LLM
+			if cleanResult != "" {
 				output.Result = cleanResult
 				syntheticEvent := h.bgTaskOutputToEvent(output)
 				h.processEvent(ctx, syntheticEvent)

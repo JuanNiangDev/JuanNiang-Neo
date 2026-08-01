@@ -1,9 +1,9 @@
 package adapter
 
 import (
+	"JuanNiang-Neo/internal/logging"
 	"encoding/json"
 	"fmt"
-	"JuanNiang-Neo/internal/logging"
 )
 
 // ============================================================
@@ -334,10 +334,36 @@ func normalizeMessage(msg any) any {
 		return v
 	case *MessageBuilder:
 		return v.Build()
+	case []interface{}:
+		// LLM 工具调用传入的 OneBot11 segment 数组格式
+		// [{type: "image", data: {file: "..."}}, {type: "text", data: {text: "..."}}]
+		return normalizeSlice(v)
 	default:
 		logging.Warn("未知消息类型", "type", fmt.Sprintf("%T", msg))
 		return fmt.Sprint(v)
 	}
+}
+
+// normalizeSlice 将 []interface{} 转为 OneBot11 Segment 数组。
+func normalizeSlice(items []interface{}) []Segment {
+	segments := make([]Segment, 0, len(items))
+	for _, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		seg := Segment{}
+		if t, ok := m["type"].(string); ok {
+			seg.Type = t
+		}
+		if d, ok := m["data"].(map[string]interface{}); ok {
+			seg.Data = d
+		}
+		if seg.Type != "" {
+			segments = append(segments, seg)
+		}
+	}
+	return segments
 }
 
 // callAndParse 调用 API 并解析单个对象响应。
