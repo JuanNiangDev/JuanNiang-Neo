@@ -1,8 +1,8 @@
 package core
 
 import (
-	"context"
 	"JuanNiang-Neo/internal/logging"
+	"context"
 	"os"
 	"sync"
 
@@ -40,6 +40,8 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.WebhookConfig{},
 		&models.CronJob{},
 		&models.ReplyStrategyConfig{},
+		&models.MemoryGCConfig{},
+		&models.LearnerConfig{},
 	)
 }
 
