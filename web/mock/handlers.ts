@@ -42,9 +42,9 @@ let sessions = [
 
 // --- Skills ---
 let skills = [
-  { id: UUID(), name: 'Code Execute', description: 'Execute code in sandbox', keywords: ['run', 'execute', 'code'], regex_pattern: '', prompt_ref: prompts[2].id, tool_refs: [UUID()], mcp_refs: [], is_active: true, is_system: false, priority: 10, created_at: now() },
-  { id: UUID(), name: 'File Read', description: 'Read file from filesystem via MCP', keywords: ['read', 'file', 'cat'], regex_pattern: '^/read\\s+', prompt_ref: '', tool_refs: [], mcp_refs: [mcpServers[0].id], is_active: true, is_system: false, priority: 5, created_at: now() },
-  { id: UUID(), name: 'System Greeting', description: 'Auto greet new users', keywords: [], regex_pattern: '', prompt_ref: prompts[0].id, tool_refs: [], mcp_refs: [], is_active: true, is_system: true, priority: 0, created_at: now() },
+  { id: UUID(), name: 'Code Execute', description: 'Execute code in sandbox', keywords: ['run', 'execute', 'code'], regex_pattern: '', prompt_refs: [prompts[2].id], tool_refs: [UUID()], mcp_refs: [], is_active: true, is_system: false, priority: 10, created_at: now() },
+  { id: UUID(), name: 'File Read', description: 'Read file from filesystem via MCP', keywords: ['read', 'file', 'cat'], regex_pattern: '^/read\\s+', prompt_refs: [], tool_refs: [], mcp_refs: [mcpServers[0].id], is_active: true, is_system: false, priority: 5, created_at: now() },
+  { id: UUID(), name: 'System Greeting', description: 'Auto greet new users', keywords: [], regex_pattern: '', prompt_refs: [prompts[0].id], tool_refs: [], mcp_refs: [], is_active: true, is_system: true, priority: 0, created_at: now() },
 ]
 
 // --- Tools ---
@@ -394,7 +394,7 @@ export const mockHandlers: MockHandler[] = [
   {
     method: 'POST', path: '/skills',
     handler({ body }) {
-      const s = { id: UUID(), name: body.name, description: body.description || '', keywords: body.keywords || [], regex_pattern: body.regex_pattern || '', prompt_ref: body.prompt_ref || '', tool_refs: body.tool_refs || [], mcp_refs: body.mcp_refs || [], is_active: body.is_active, is_system: body.is_system ?? false, priority: body.priority ?? 0, created_at: now() }
+      const s = { id: UUID(), name: body.name, description: body.description || '', keywords: body.keywords || [], regex_pattern: body.regex_pattern || '', prompt_refs: body.prompt_refs || [], tool_refs: body.tool_refs || [], mcp_refs: body.mcp_refs || [], is_active: body.is_active, is_system: body.is_system ?? false, priority: body.priority ?? 0, created_at: now() }
       skills.push(s)
       return ok(s)
     }
@@ -589,25 +589,76 @@ export const mockHandlers: MockHandler[] = [
   {
     method: 'GET', path: '/logs',
     handler() {
-      const levels = ['INFO', 'INFO', 'INFO', 'WARN', 'INFO', 'ERROR', 'INFO', 'DEBUG', 'WARN', 'INFO']
-      const messages = [
-        'Adapter started successfully on 0.0.0.0:8080',
-        'WebSocket client connected: QQ=123456789',
-        'Provider "OpenAI GPT-4o" health check passed',
-        'Token usage approaching limit for session abc-123',
-        'MCP server "File System" connected',
-        'Failed to connect to sandbox: connection refused',
-        'Plugin "weather-plugin" loaded successfully (v1.2.0)',
-        'Memory compaction triggered for chat_area=def-456',
-        'Rate limit warning: 80% of quota used',
-        'Session expired, cleaning up Redis cache',
+      const entries = [
+        { level: 'INFO', module: 'main', message: 'JuanNiang-Neo 启动中...', attrs: { version: '1.0.4' } },
+        { level: 'INFO', module: 'adapter', message: 'adapter 已启动', attrs: { addr: '0.0.0.0:8081' } },
+        { level: 'INFO', module: 'agent', message: 'HagoCenter 已启动', attrs: {} },
+        { level: 'WARN', module: 'webhook', message: 'Webhook 配置加载失败', attrs: { err: 'EOF' }, rich: { caller_file: 'cmd/server/main.go:125', goroutines: 42 } },
+        { level: 'INFO', module: 'mcp', message: 'MCP 加载完成', attrs: { count: 3 } },
+        { level: 'ERROR', module: 'sandbox', message: 'Sandbox 连接失败', attrs: { err: 'connection refused', base_url: 'http://localhost:8888' }, rich: { caller_file: 'infrastructure/sandbox/handler/client.go:42', goroutines: 87 } },
+        { level: 'INFO', module: 'planner', message: 'Planner 打分通过', attrs: { score: 0.65 } },
+        { level: 'DEBUG', module: 'gorm', message: 'SQL', attrs: { elapsed_ms: 12, rows: 1, sql: 'SELECT * FROM skills' } },
+        { level: 'WARN', module: 'drainer', message: 'SQL 慢查询', attrs: { elapsed_ms: 345, rows: 500, sql: 'SELECT * FROM chat_records' }, rich: { caller_file: 'infrastructure/postgres/client.go:83', goroutines: 56 } },
+        { level: 'INFO', module: 'replyer', message: '发送文字消息成功', attrs: { target_type: 'group' } },
       ]
-      return ok(levels.map((level, i) => ({
-        time: new Date(Date.now() - (levels.length - i) * 30000).toISOString(),
-        level,
-        message: messages[i],
-        attrs: i === 5 ? { error: 'ECONNREFUSED', address: 'localhost:8888' } : {},
+      return ok(entries.map((e, i) => ({
+        time: new Date(Date.now() - (entries.length - i) * 30000).toISOString(),
+        ...e,
       })))
     }
+  },
+
+  // ============ Planner ============
+  {
+    method: 'GET', path: '/planner/config',
+    handler() { return ok({ threshold: 0.30, weights: { mention: 0.35, keyword: 0.25, context: 0.20, quality: 0.10, history: 0.10 } }) }
+  },
+  {
+    method: 'PUT', path: '/planner/config',
+    handler({ body }) { return ok({ ...body }) }
+  },
+
+  // ============ Memory GC ============
+  {
+    method: 'GET', path: '/memory/gc',
+    handler() { return ok({ enable: true, cold_threshold: 7, max_per_agent: 1000, interval_mins: 60 }) }
+  },
+  {
+    method: 'PUT', path: '/memory/gc',
+    handler({ body }) { return ok({ ...body }) }
+  },
+  {
+    method: 'POST', path: '/memory/gc/run',
+    handler() { return ok({ status: 'triggered' }) }
+  },
+
+  // ============ Splitter ============
+  {
+    method: 'GET', path: '/splitter/config',
+    handler() { return ok({ max_segments: 5, auto_split: true, enable_typo: false, typo_rate: 0.03, strip_markdown: false }) }
+  },
+  {
+    method: 'PUT', path: '/splitter/config',
+    handler({ body }) { return ok({ ...body }) }
+  },
+
+  // ============ Learners ============
+  {
+    method: 'GET', path: '/learners',
+    handler() { return ok({ behavior_enabled: true, expression_enabled: true, jargon_enabled: true, learn_interval: 1, max_concurrent_learn: 2 }) }
+  },
+  {
+    method: 'PUT', path: '/learners',
+    handler({ body }) { return ok({ ...body }) }
+  },
+
+  // ============ Auto BgTask ============
+  {
+    method: 'GET', path: '/tools/auto-bgtask',
+    handler() { return ok({ marked_tools: ['send_group_msg', 'generate_image'] }) }
+  },
+  {
+    method: 'PUT', path: '/tools/:id/mark-bgtask',
+    handler({ params, body }) { return ok({ tool: params.id, is_long_running: body.is_long_running }) }
   },
 ]
