@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"JuanNiang-Neo/internal/adapter"
 	"encoding/json"
 	"fmt"
 
@@ -28,12 +29,12 @@ type BaseTool struct {
 	longRunning bool
 }
 
-func (b BaseTool) ID() string                             { return b.id }
-func (b BaseTool) Name() string                           { return b.name }
-func (b BaseTool) Description() string                     { return b.description }
-func (b BaseTool) Parameters() openai.FunctionParameters    { return b.parameters }
-func (b BaseTool) IsBuiltin() bool                         { return b.builtin }
-func (b BaseTool) IsLongRunning() bool                     { return b.longRunning }
+func (b BaseTool) ID() string                            { return b.id }
+func (b BaseTool) Name() string                          { return b.name }
+func (b BaseTool) Description() string                   { return b.description }
+func (b BaseTool) Parameters() openai.FunctionParameters { return b.parameters }
+func (b BaseTool) IsBuiltin() bool                       { return b.builtin }
+func (b BaseTool) IsLongRunning() bool                   { return b.longRunning }
 
 // ---------- 便利构造 ----------
 
@@ -148,10 +149,24 @@ func BuildMessageFromJSON(raw json.RawMessage) (any, error) {
 		return text, nil
 	}
 
-	// 解析为消息段数组
+	// 解析为消息段数组 → 转为 []Segment
 	var segments []map[string]any
 	if err := json.Unmarshal(raw, &segments); err != nil {
 		return nil, fmt.Errorf("无效的消息格式: %w", err)
 	}
-	return segments, nil
+
+	result := make([]adapter.Segment, 0, len(segments))
+	for _, seg := range segments {
+		s := adapter.Segment{}
+		if t, ok := seg["type"].(string); ok {
+			s.Type = t
+		}
+		if d, ok := seg["data"].(map[string]any); ok {
+			s.Data = d
+		}
+		if s.Type != "" {
+			result = append(result, s)
+		}
+	}
+	return result, nil
 }
