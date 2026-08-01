@@ -35,6 +35,9 @@
         <template #item.level="{ item }">
           <v-chip size="x-small" variant="tonal" :color="levelColor(item.level)">{{ item.level }}</v-chip>
         </template>
+        <template #item.module="{ item }">
+          <v-chip size="x-small" variant="flat" color="grey-darken-1" class="text-caption">{{ item.module || '-' }}</v-chip>
+        </template>
         <template #item.time="{ item }">
           <span class="text-caption text-medium-emphasis">{{ formatTime(item.time) }}</span>
         </template>
@@ -79,8 +82,20 @@
                 <v-chip size="small" variant="tonal" :color="levelColor(detail.level)">{{ detail.level }}</v-chip>
               </div>
 
+              <div class="text-caption text-medium-emphasis mb-1">模块</div>
+              <div class="mb-4"><v-chip size="small" variant="flat" color="grey-darken-1">{{ detail.module || '-' }}</v-chip></div>
+
               <div class="text-caption text-medium-emphasis mb-1">消息</div>
-              <div class="text-body-2">{{ detail.message }}</div>
+              <div class="text-body-2 mb-4">{{ detail.message }}</div>
+
+              <!-- Rich 诊断信息 (WARN/ERROR) -->
+              <template v-if="detail.rich && Object.keys(detail.rich).length">
+                <v-divider class="my-3" />
+                <div class="text-caption text-medium-emphasis mb-2">诊断信息</div>
+                <div v-if="detail.rich.caller_file" class="text-caption mb-1 font-weight-bold">调用位置</div>
+                <code v-if="detail.rich.caller_file" class="text-caption d-block mb-2" style="word-break:break-all">{{ detail.rich.caller_file }}</code>
+                <div v-if="detail.rich.goroutines" class="text-caption">Goroutines: <strong>{{ detail.rich.goroutines }}</strong></div>
+              </template>
             </v-col>
 
             <!-- 右侧：JSON 详情 (2 份) -->
@@ -142,10 +157,11 @@ const levelOptions = [
 ]
 
 const headers = [
-  { title: '级别', key: 'level', width: '90px' },
-  { title: '时间', key: 'time', width: '160px' },
+  { title: '级别', key: 'level', width: '80px' },
+  { title: '模块', key: 'module', width: '100px' },
+  { title: '时间', key: 'time', width: '150px' },
   { title: '消息', key: 'message' },
-  { title: '属性', key: 'attrs', width: '110px', align: 'center' as const },
+  { title: '属性', key: 'attrs', width: '100px', align: 'center' as const },
 ]
 
 const filtered = computed(() => {
@@ -169,7 +185,7 @@ const jsonText = computed(() => {
 const jsonLineCount = computed(() => jsonText.value.split('\n').length)
 
 function emptyDetail(): LogEntryResp & { rowKey: number } {
-  return { time: '', level: '', message: '', attrs: {}, rowKey: 0 }
+  return { time: '', level: '', module: '', message: '', attrs: {}, rowKey: 0 }
 }
 
 const levelColor = (lvl: string): string =>

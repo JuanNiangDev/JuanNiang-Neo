@@ -1,62 +1,54 @@
 <template>
   <div>
     <div class="page-header">
-      <div class="page-title"><v-icon class="me-2" color="primary">mdi-reply-circle</v-icon>系统回复设置</div>
-      <div class="page-subtitle">控制机器人的回复行为与消息格式</div>
+      <div class="page-title"><v-icon class="me-2" color="primary">mdi-brain</v-icon>Planner 设置</div>
+      <div class="page-subtitle">控制机器人的回复决策：规则打分权重 + LLM 规划</div>
     </div>
 
     <v-row>
-      <!-- 回复策略 -->
-      <v-col cols="12" md="7">
-        <v-card rounded="lg" elevation="1" class="h-100">
+      <!-- 打分权重 -->
+      <v-col cols="12" md="8">
+        <v-card rounded="lg" elevation="1">
           <v-card-item>
-            <template #title><span class="text-h6 font-weight-bold">回复策略</span></template>
-            <template #subtitle>群聊/私聊消息路由方式</template>
+            <template #title><span class="text-h6 font-weight-bold">规则打分权重</span></template>
+            <template #subtitle>消息综合评分 &ge; 阈值时进入 LLM 规划</template>
           </v-card-item>
           <v-card-text>
             <v-form @submit.prevent="handleSave">
-              <v-radio-group v-model="form.strategy" class="mb-4">
-                <v-radio label="完全不回复 — 不处理任何消息" value="never_reply" color="error" />
-                <v-radio label="仅@我时回复 — 只有被@时才交给 Plugin 和 Agent" value="at_only" color="warning" />
-                <v-radio label="完全回复 — 正常处理所有消息（默认）" value="always" color="success" />
-                <v-radio label="仅 Plugin — 只给 Plugin 处理，不给 Agent" value="plugin_only" color="info" />
-                <v-radio label="按相关性回复 — 由 Agent 判断消息是否相关后再回复" value="relevance" color="primary" />
-              </v-radio-group>
+              <!-- 阈值 -->
+              <div class="text-subtitle-2 font-weight-bold mb-2">总阈值</div>
+              <div class="d-flex align-center mb-4" style="gap:16px">
+                <v-slider v-model="form.threshold" :min="0" :max="1" :step="0.05" color="primary" thumb-label="always" hide-details style="flex:1" />
+                <v-text-field v-model.number="form.threshold" type="number" :min="0" :max="1" :step="0.05" density="compact" style="width:80px" hide-details variant="outlined" />
+              </div>
+              <div class="text-caption text-medium-emphasis mb-6">
+                消息评分 &ge; 阈值时触发回复。值越低越容易回复，默认 0.30。
+              </div>
 
-              <v-expand-transition>
-                <v-card v-if="form.strategy === 'relevance'" variant="outlined" class="mb-4 pa-3" rounded="lg">
-                  <div class="text-subtitle-2 font-weight-bold mb-2">相关性阈值</div>
-                  <div class="d-flex align-center" style="gap: 16px">
-                    <v-slider
-                      v-model="form.relevance_threshold"
-                      :min="0" :max="1" :step="0.05"
-                      color="primary" thumb-label="always" hide-details style="flex: 1"
-                    />
-                    <v-text-field
-                      v-model.number="form.relevance_threshold"
-                      type="number" :min="0" :max="1" :step="0.05"
-                      density="compact" style="width: 90px" hide-details variant="outlined"
-                    />
+              <!-- 各维度权重 -->
+              <div class="text-subtitle-2 font-weight-bold mb-3">各维度权重</div>
+
+              <div v-for="dim in dimensions" :key="dim.key" class="mb-4">
+                <div class="d-flex align-center justify-space-between mb-1">
+                  <div>
+                    <span class="text-body-2 font-weight-bold">{{ dim.label }}</span>
+                    <span class="text-caption text-medium-emphasis ml-2">{{ dim.desc }}</span>
                   </div>
-                  <div class="text-caption text-medium-emphasis mt-2">
-                    Agent 判断消息相关性 &ge; 阈值时才会回复。被@时自动绕过此判断。
-                    <br />当前阈值: {{ form.relevance_threshold.toFixed(2) }}
-                  </div>
+                  <span class="text-caption font-weight-bold" :class="dim.color">{{ (form.weights[dim.key] as number).toFixed(2) }}</span>
+                </div>
+                <v-slider
+                  v-model="form.weights[dim.key]"
+                  :min="0" :max="1" :step="0.05"
+                  :color="dim.sliderColor"
+                  hide-details
+                  thumb-label="always"
+                />
+              </div>
 
-                  <v-divider class="my-3" />
+              <v-divider class="my-4" />
 
-                  <div class="text-subtitle-2 font-weight-bold mb-2">机器人名字</div>
-                  <v-text-field
-                    v-model="form.bot_name"
-                    label="用于相关性判断，如「小卷」"
-                    placeholder="例如：小卷"
-                    density="comfortable" variant="outlined" hide-details clearable
-                  />
-                </v-card>
-              </v-expand-transition>
-
-              <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!form.strategy">
-                <v-icon class="me-1">mdi-content-save</v-icon> 保存
+              <v-btn type="submit" color="primary" variant="tonal" :loading="saving">
+                <v-icon class="me-1">mdi-content-save</v-icon> 保存 Planner 配置
               </v-btn>
             </v-form>
           </v-card-text>
@@ -64,40 +56,46 @@
       </v-col>
 
       <!-- 其他设置 -->
-      <v-col cols="12" md="5">
-        <v-card rounded="lg" elevation="1" class="h-100">
+      <v-col cols="12" md="4">
+        <v-card rounded="lg" elevation="1" class="mb-4">
           <v-card-item>
-            <template #title><span class="text-h6 font-weight-bold">其他设置</span></template>
-            <template #subtitle>消息格式与 Agent 行为</template>
+            <template #title><span class="text-h6 font-weight-bold">消息格式</span></template>
+            <template #subtitle>AgentLite &amp; Markdown 去除</template>
           </v-card-item>
           <v-card-text>
             <v-form @submit.prevent="handleSave">
-              <!-- AgentLite -->
               <div class="d-flex align-start mb-4">
                 <div class="flex-grow-1 me-3">
                   <div class="text-subtitle-2 font-weight-bold">AgentLite 模式</div>
-                  <div class="text-caption text-medium-emphasis mt-1">
-                    关闭工具/MCP 调用和 Agent 循环。消息直接发给 LLM，回复后即结束。<br />
-                    记忆、提示词、Skill 行为不受影响。
-                  </div>
+                  <div class="text-caption text-medium-emphasis mt-1">关闭工具/MCP，消息直接发给 LLM 回复后结束。</div>
                 </div>
                 <v-switch v-model="form.agent_lite" color="primary" hide-details density="compact" />
               </div>
-
-              <v-divider class="mb-4" />
-
-              <!-- Strip Markdown -->
               <div class="d-flex align-start mb-4">
                 <div class="flex-grow-1 me-3">
-                  <div class="text-subtitle-2 font-weight-bold">去除 Markdown 格式</div>
-                  <div class="text-caption text-medium-emphasis mt-1">
-                    Agent 发送消息前去除加粗、斜体、代码块、链接等格式，发送纯文本到 QQ。
-                  </div>
+                  <div class="text-subtitle-2 font-weight-bold">去除 Markdown</div>
+                  <div class="text-caption text-medium-emphasis mt-1">发送前去除加粗/斜体/代码块/链接等格式。</div>
                 </div>
                 <v-switch v-model="form.strip_markdown" color="primary" hide-details density="compact" />
               </div>
+              <v-divider class="mb-4" />
 
-              <v-btn type="submit" color="primary" variant="tonal" :loading="saving">
+              <!-- 回复策略 (legacy) -->
+              <div class="text-subtitle-2 font-weight-bold mb-2">回复策略 (Legacy)</div>
+              <v-select
+                v-model="form.strategy"
+                :items="strategyOptions"
+                item-title="label"
+                item-value="value"
+                density="compact"
+                hide-details
+                class="mb-3"
+              />
+              <div class="text-caption text-medium-emphasis">
+                注意：推荐使用上方的 Planner 打分系统。Legacy 策略在 Planner 启用时作为兜底。
+              </div>
+
+              <v-btn type="submit" color="primary" variant="tonal" :loading="saving" block class="mt-4">
                 <v-icon class="me-1">mdi-content-save</v-icon> 保存
               </v-btn>
             </v-form>
@@ -109,31 +107,67 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, reactive } from 'vue'
 import { useToastStore } from '@/stores/toast'
-import { replyStrategyApi } from '@/api'
+import { plannerApi, replyStrategyApi, type PlannerConfigResp } from '@/api'
 
 const toastStore = useToastStore()
 const saving = ref(false)
 
-const form = ref({
+interface FormState {
+  threshold: number
+  weights: Record<string, number>
+  strategy: string
+  agent_lite: boolean
+  strip_markdown: boolean
+}
+
+const form = reactive<FormState>({
+  threshold: 0.30,
+  weights: { mention: 0.35, keyword: 0.25, context: 0.20, quality: 0.10, history: 0.10 },
   strategy: 'always',
-  relevance_threshold: 0.5,
-  bot_name: '',
-  strip_markdown: false,
   agent_lite: false,
+  strip_markdown: false,
 })
+
+const dimensions = [
+  { key: 'mention', label: '@提及', desc: '@或名字出现在消息中', color: 'text-green', sliderColor: 'green' },
+  { key: 'keyword', label: '关键词', desc: '匹配 Skill 关键词 / 疑问词', color: 'text-blue', sliderColor: 'blue' },
+  { key: 'context', label: '上下文', desc: '近期有 bot 发言', color: 'text-purple', sliderColor: 'purple' },
+  { key: 'quality', label: '内容质量', desc: '消息长度 & 非纯表情', color: 'text-orange', sliderColor: 'orange' },
+  { key: 'history', label: '历史互动', desc: '积极互动比例', color: 'text-teal', sliderColor: 'teal' },
+]
+
+const strategyOptions = [
+  { label: '完全回复 — always', value: 'always' },
+  { label: '仅@我 — at_only', value: 'at_only' },
+  { label: '完全不回复 — never_reply', value: 'never_reply' },
+  { label: '仅 Plugin — plugin_only', value: 'plugin_only' },
+  { label: '按相关性 — relevance', value: 'relevance' },
+]
 
 async function load() {
   try {
-    const res = await replyStrategyApi.get()
-    const d = (res.data as any)?.data
-    if (d) {
-      form.value.strategy = d.strategy || 'always'
-      form.value.relevance_threshold = d.relevance_threshold ?? 0.5
-      form.value.bot_name = d.bot_name || ''
-      form.value.strip_markdown = d.strip_markdown || false
-      form.value.agent_lite = d.agent_lite || false
+    const [planner, reply] = await Promise.all([
+      plannerApi.getConfig(),
+      replyStrategyApi.get(),
+    ])
+    const pd = (planner.data as any)?.data
+    if (pd) {
+      form.threshold = pd.threshold ?? 0.30
+      if (pd.weights) {
+        form.weights.mention = pd.weights.mention ?? 0.35
+        form.weights.keyword = pd.weights.keyword ?? 0.25
+        form.weights.context = pd.weights.context ?? 0.20
+        form.weights.quality = pd.weights.quality ?? 0.10
+        form.weights.history = pd.weights.history ?? 0.10
+      }
+    }
+    const rd = (reply.data as any)?.data
+    if (rd) {
+      form.strategy = rd.strategy || 'always'
+      form.agent_lite = rd.agent_lite || false
+      form.strip_markdown = rd.strip_markdown || false
     }
   } catch (_e: any) {}
 }
@@ -141,14 +175,26 @@ async function load() {
 async function handleSave() {
   saving.value = true
   try {
-    await replyStrategyApi.update({
-      strategy: form.value.strategy,
-      relevance_threshold: form.value.relevance_threshold,
-      bot_name: form.value.bot_name,
-      strip_markdown: form.value.strip_markdown,
-      agent_lite: form.value.agent_lite,
-    })
-    toastStore.success('回复设置已保存')
+    await Promise.all([
+      plannerApi.updateConfig({
+        threshold: form.threshold,
+        weights: {
+          mention: form.weights.mention,
+          keyword: form.weights.keyword,
+          context: form.weights.context,
+          quality: form.weights.quality,
+          history: form.weights.history,
+        },
+      }),
+      replyStrategyApi.update({
+        strategy: form.strategy,
+        relevance_threshold: 0.5,
+        bot_name: '',
+        strip_markdown: form.strip_markdown,
+        agent_lite: form.agent_lite,
+      }),
+    ])
+    toastStore.success('Planner 配置已保存')
   } catch (e: any) {
     toastStore.error(e?.response?.data?.info || e?.message || '保存失败')
   } finally { saving.value = false }

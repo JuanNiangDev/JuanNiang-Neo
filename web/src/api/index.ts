@@ -49,7 +49,7 @@ export interface UpdateSandboxConfigReq { base_url: string; api_key: string; tim
 export interface WebhookConfigResp { addr: string; port: number; token: string; enabled: boolean; running: boolean }
 export interface UpdateWebhookConfigReq { addr: string; port: number; token: string; enabled: boolean }
 
-export interface LogEntryResp { time: string; level: string; message: string; attrs: Record<string, any> }
+export interface LogEntryResp { time: string; level: string; module: string; message: string; attrs: Record<string, any>; rich?: Record<string, any> }
 
 // ======== Auth ========
 export const authApi = {
@@ -223,7 +223,7 @@ export const cronJobApi = {
   toggle: (id: string, is_active: boolean) => client.put(`/cronjobs/${id}/toggle`, { is_active }),
 }
 
-// ======== Reply Strategy ========
+// ======== Reply Strategy (Legacy, replaced by Planner) ========
 export interface ReplyStrategyResp {
   strategy: string
   relevance_threshold: number
@@ -242,4 +242,66 @@ export interface UpdateReplyStrategyReq {
 export const replyStrategyApi = {
   get: () => client.get('/reply-strategy'),
   update: (data: UpdateReplyStrategyReq) => client.put('/reply-strategy', data),
+}
+
+// ======== Planner ========
+export interface PlannerConfigResp {
+  threshold: number
+  weights: { mention: number; keyword: number; context: number; quality: number; history: number }
+}
+export interface UpdatePlannerConfigReq {
+  threshold: number
+  weights: { mention: number; keyword: number; context: number; quality: number; history: number }
+}
+export const plannerApi = {
+  getConfig: () => client.get('/planner/config'),
+  updateConfig: (data: UpdatePlannerConfigReq) => client.put('/planner/config', data),
+}
+
+// ======== Memory GC ========
+export interface MemoryGCConfigResp {
+  enable: boolean; cold_threshold: number; max_per_agent: number; interval_mins: number
+}
+export interface UpdateMemoryGCConfigReq {
+  enable: boolean; cold_threshold: number; max_per_agent: number; interval_mins: number
+}
+export const memoryGCApi = {
+  getConfig: () => client.get('/memory/gc'),
+  updateConfig: (data: UpdateMemoryGCConfigReq) => client.put('/memory/gc', data),
+  run: () => client.post('/memory/gc/run'),
+}
+
+// ======== Splitter ========
+export interface SplitterConfigResp {
+  max_segments: number; auto_split: boolean; enable_typo: boolean; typo_rate: number; strip_markdown: boolean
+}
+export interface UpdateSplitterConfigReq {
+  max_segments: number; auto_split: boolean; enable_typo: boolean; typo_rate: number; strip_markdown: boolean
+}
+export const splitterApi = {
+  getConfig: () => client.get('/splitter/config'),
+  updateConfig: (data: UpdateSplitterConfigReq) => client.put('/splitter/config', data),
+}
+
+// ======== Learners ========
+export interface LearnerConfigResp {
+  behavior_enabled: boolean; expression_enabled: boolean; jargon_enabled: boolean
+  learn_interval: number; max_concurrent_learn: number
+}
+export interface UpdateLearnerConfigReq {
+  behavior_enabled: boolean; expression_enabled: boolean; jargon_enabled: boolean
+  learn_interval: number; max_concurrent_learn: number
+}
+export const learnerApi = {
+  getConfig: () => client.get('/learners'),
+  updateConfig: (data: UpdateLearnerConfigReq) => client.put('/learners', data),
+}
+
+// ======== Auto BgTask ========
+export interface AutoBgtaskStatusResp {
+  marked_tools: string[]
+}
+export const autoBgtaskApi = {
+  getStatus: () => client.get('/tools/auto-bgtask'),
+  markTool: (id: string, is_long_running: boolean) => client.put(`/tools/${id}/mark-bgtask`, { is_long_running }),
 }
