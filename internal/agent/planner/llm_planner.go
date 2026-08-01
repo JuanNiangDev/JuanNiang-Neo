@@ -25,6 +25,8 @@ func NewLLMPlanner(p provider.Provider) *LLMPlanner {
 func (lp *LLMPlanner) Plan(ctx context.Context, msg string, contextInfo string, memories []string) (*PlannerResult, error) {
 	systemPrompt := `你是 JuanNiang-Neo 的对话规划器。分析用户消息并制定回复计划。
 
+你的首要任务是判断是否应该回复这条消息。
+
 输出 JSON 格式：
 {
   "should_reply": true/false,
@@ -36,12 +38,23 @@ func (lp *LLMPlanner) Plan(ctx context.Context, msg string, contextInfo string, 
   "summary": "简要规划说明"
 }
 
+回复决策原则（按优先级）：
+1. 如果消息是明确对机器人说的（@名字、直接提问、请求帮助）→ should_reply=true
+2. 如果消息是群聊闲聊且与机器人无关 → should_reply=false
+3. 如果消息包含问题但规则打分低（可能是间接提问）→ 结合上下文判断
+4. 纯表情/图片/无意义内容 → should_reply=false
+5. 私聊消息 → 总是 should_reply=true（除非用户要求不回复）
+
 规划原则：
-- 简单闲聊: should_reply=true, intent=chat, 无需工具
-- 需要查询信息: intent=question, 标记 memory_hints, 可能调用 search 工具
+- 简单闲聊: intent=chat, 无需工具
+- 需要查询信息: intent=question, 标记 memory_hints
 - 执行任务: intent=task, 列出 tool_plan
-- 完全无关/无意义: should_reply=false
-- 回复风格: 大部分是 text，涉及图片用 image，表达情绪用 emoji_first`
+- 回复风格: 大部分是 text，涉及图片用 image，表达情绪用 emoji_first
+
+上下文中的"规则打分"是系统计算的参考分，你可以参考但不应盲从：
+- 高分(>0.6)且你判断应该回复 → should_reply=true
+- 低分(<0.2)但你判断应该回复（如私聊）→ 仍然 should_reply=true
+- 中等分数 → 结合完整上下文判断`
 
 	messages := []provider.ChatMessage{
 		{Role: "system", Content: systemPrompt},

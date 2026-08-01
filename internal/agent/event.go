@@ -158,33 +158,56 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	// ====== 第3步：Planner - 阶段一 (规则打分) ======
+	// ====== 第3步：Planner 判断是否回复 ======
 	msg := ev.Message
 	if h.Planner != nil {
 		evalCtx := h.buildEvalContext(msg)
-		result, passed := h.Planner.Evaluate(ev, evalCtx)
-		if !passed {
-			logging.Debug("Planner 打分未通过", "score", result.Total, "threshold", h.Planner.Threshold())
-			return
-		}
-		logging.Debug("Planner 打分通过", "score", result.Total)
+		// 阶段一：规则打分 (不再作为硬闸门，作为 Planner 输入参考)
+		scoreResult, _ := h.Planner.Evaluate(ev, evalCtx)
 
-		// ====== 第4步：Planner - 阶段二 (LLM 规划) ======
+		// 阶段二：LLM Planner 做最终回复决策
 		if h.Planner.LLM() != nil {
 			memories := h.collectMemoriesForPlanner(ctx, msg)
-			planResult, err := h.Planner.LLM().Plan(ctx, msg.RawMessage,
-				h.buildPlannerContext(msg), memories)
+			// 将打分结果注入 Planner 上下文
+			scoreCtx := fmt.Sprintf("规则打分: %.2f/1.00 (阈值 %.2f) | 各维度: @提及=%.2f 关键词=%.2f 上下文=%.2f 质量=%.2f 历史=%.2f",
+				scoreResult.Total, h.Planner.Threshold(),
+				scoreResult.Details["mention"], scoreResult.Details["keyword"],
+				scoreResult.Details["context"], scoreResult.Details["quality"],
+				scoreResult.Details["history"])
+			fullContext := h.buildPlannerContext(msg) + "\n" + scoreCtx
+
+			planResult, err := h.Planner.LLM().Plan(ctx, msg.RawMessage, fullContext, memories)
 			if err == nil && planResult != nil {
 				h.currentPlanResult = planResult
 				if !planResult.ShouldReply {
-					logging.Debug("Planner 决定不回复", "confidence", planResult.Confidence)
+					logging.Debug("Planner 决定不回复",
+						"score", scoreResult.Total,
+						"confidence", planResult.Confidence,
+						"summary", planResult.Summary)
 					return
 				}
+				logging.Debug("Planner 决定回复",
+					"score", scoreResult.Total,
+					"confidence", planResult.Confidence,
+					"intent", planResult.Intent,
+					"style", planResult.ReplyStyle)
+			} else {
+				// Planner 调用失败，回退到规则打分
+				logging.Debug("Planner LLM 调用失败，回退规则打分", "score", scoreResult.Total)
+				if scoreResult.Total < h.Planner.Threshold() {
+					return
+				}
+			}
+		} else {
+			// 无 LLM Planner，纯规则打分
+			if scoreResult.Total < h.Planner.Threshold() {
+				logging.Debug("规则打分未通过", "score", scoreResult.Total, "threshold", h.Planner.Threshold())
+				return
 			}
 		}
 	}
 
-	// ====== 第5步：主 Agent 处理 ======
+	// ====== 第4步：主 Agent 处理 ======
 	h.handleMessage(ctx, ev)
 }
 
