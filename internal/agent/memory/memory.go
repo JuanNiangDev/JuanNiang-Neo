@@ -7,6 +7,7 @@ import (
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/core/models"
 )
 
 type ShortTermMemoryConfig = shortterm.Config
@@ -67,6 +68,11 @@ func (m *MemoryGroup) GetLongTermMemory(ctx context.Context, areaID, query strin
 
 func (m *MemoryGroup) UpdateLongTermConfig(conf LongTermMemoryConfig) {
 	m.LongTerm.UpdateConfig(conf)
+}
+
+// GetLongTermMemoryItems 返回原始 LongTermMemoryItem 供 Planner 使用。
+func (m *MemoryGroup) GetLongTermMemoryItems(ctx context.Context, areaID, query string, limit int) ([]models.LongTermMemoryItem, error) {
+	return m.LongTerm.Search(ctx, areaID, query, limit)
 }
 
 func (m *MemoryGroup) AddBackGroundTask(meta bgtask.BackGroundTaskMetaInfo) string {

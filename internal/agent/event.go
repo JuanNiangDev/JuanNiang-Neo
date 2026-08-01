@@ -1,16 +1,17 @@
 package agent
 
 import (
+	"JuanNiang-Neo/internal/logging"
 	"context"
 	"encoding/json"
 	"fmt"
-	"JuanNiang-Neo/internal/logging"
 	"strconv"
 	"strings"
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
+	"JuanNiang-Neo/internal/agent/planner"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/pluggin"
@@ -124,83 +125,30 @@ func (h *HagoCenter) bgTaskOutputToEvent(output DrainerOutput) adapter.Event {
 	}
 }
 
-// processEvent 派发事件：webhook/notice/request 走 PluginEngine 回调，message 走 Agent。
+// processEvent 统一事件分发：所有事件先走 Plugin → 类型判断 → Planner(打分+规划) → Agent。
 func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
-	// Webhook 事件交给插件 on_webhook 处理
-	if ev.PostType == "webhook" && ev.Webhook != nil {
-		if h.PluginEngine != nil {
-			pluginEvent := pluggin.EventData{
-				PostType: "webhook",
-				Admins:   ev.Admins,
-				Webhook: map[string]any{
-					"path":    ev.Webhook.Path,
-					"method":  ev.Webhook.Method,
-					"payload": ev.Webhook.Payload,
-				},
-			}
-			h.PluginEngine.OnWebhook(pluginEvent)
-		}
+	// ====== 第1步：统一先走 Plugin ======
+	consumed := h.dispatchToPlugin(ev)
+	if consumed {
 		return
 	}
 
-	// Notice 事件交给插件 on_notice 处理
-	if ev.PostType == "notice" && ev.Notice != nil {
-		if h.PluginEngine != nil {
-			n := ev.Notice
-			pluginEvent := pluggin.EventData{
-				PostType:   "notice",
-				NoticeType: n.NoticeType,
-				SubType:    n.SubType,
-				UserID:     n.UserID,
-				GroupID:    n.GroupID,
-				OperatorID: n.OperatorID,
-				TargetID:   n.TargetID,
-				Duration:   n.Duration,
-				Admins:     ev.Admins,
-			}
-			if n.File != nil {
-				pluginEvent.File = map[string]any{
-					"id":    n.File.ID,
-					"name":  n.File.Name,
-					"size":  n.File.Size,
-					"busid": n.File.BusID,
-				}
-			}
-			h.PluginEngine.OnNotice(pluginEvent)
-		}
+	// ====== 第2步：事件类型分流 ======
+	switch ev.PostType {
+	case "webhook", "notice", "request":
+		// 非消息类事件：Plugin 未消费就停止
 		return
-	}
-
-	// Request 事件交给插件 on_request 处理
-	if ev.PostType == "request" && ev.Request != nil {
-		if h.PluginEngine != nil {
-			r := ev.Request
-			pluginEvent := pluggin.EventData{
-				PostType:    "request",
-				RequestType: r.RequestType,
-				SubType:     r.SubType,
-				UserID:      r.UserID,
-				GroupID:     r.GroupID,
-				Comment:     r.Comment,
-				Flag:        r.Flag,
-				Admins:      ev.Admins,
-			}
-			h.PluginEngine.OnRequest(pluginEvent)
-		}
-		return
-	}
-
-	if (ev.PostType != "message" && ev.PostType != "cronjob") || ev.Message == nil {
-		return
-	}
-
-	// CronJob 事件跳过所有策略检查
-	if ev.PostType == "cronjob" {
+	case "cronjob":
+		// 定时任务：跳过 Planner，直入 Agent
 		h.handleMessage(ctx, ev)
 		return
 	}
 
-	// 后台任务结果事件（Drainer 合成）跳过策略检查，图片等媒体已由 Drainer 直接发送
+	if ev.PostType != "message" || ev.Message == nil {
+		return
+	}
+
+	// 后台任务结果：跳过 Plugin + Planner，直入 Agent
 	if ev.IsBgTaskResult {
 		if cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx); err == nil {
 			h.StripMarkdown = cfg.StripMarkdown
@@ -210,127 +158,168 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	// === 回复策略过滤 ===
+	// ====== 第3步：Planner - 阶段一 (规则打分) ======
 	msg := ev.Message
-
-	// 私聊消息：除"完全不回复"外一律正常处理（无需@、无需相关性判断）
-	if msg.MessageType == "private" {
-		cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
-		if err != nil {
-			logging.Warn("获取回复策略失败，跳过过滤", "err", err)
-		} else {
-			h.StripMarkdown = cfg.StripMarkdown
-			h.DisableSplit = cfg.AgentLite
-			if cfg.Strategy == models.StrategyNeverReply {
-				logging.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
-				return
-			}
-			if cfg.Strategy == models.StrategyPluginOnly {
-				// 仅 Plugin，不调用 Agent
-				h.runPluginOnly(ctx, ev)
-				return
-			}
-		}
-
-		// Plugin 拦截（与群聊相同）
-		if h.PluginEngine != nil {
-			pluginEvent := pluggin.EventData{
-				PostType:    "message",
-				MessageType: ev.Message.MessageType,
-				UserID:      ev.Message.UserID,
-				GroupID:     ev.Message.GroupID,
-				RawMessage:  ev.Message.RawMessage,
-				MessageID:   ev.Message.MessageID,
-				Admins:      ev.Admins,
-				Sender: map[string]any{
-					"user_id":  ev.Message.Sender.UserID,
-					"nickname": ev.Message.Sender.Nickname,
-					"sex":      ev.Message.Sender.Sex,
-					"age":      float64(ev.Message.Sender.Age),
-					"card":     ev.Message.Sender.Card,
-				},
-			}
-			if h.PluginEngine.OnMessage(pluginEvent) {
-				return
-			}
-		}
-
-		// 非完全不回复策略，私聊直接放行
-		h.handleMessage(ctx, ev)
-		return
-	}
-
-	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
-	if err != nil {
-		logging.Warn("获取回复策略失败，跳过过滤", "err", err)
-	} else {
-		h.StripMarkdown = cfg.StripMarkdown
-		h.DisableSplit = cfg.AgentLite
-		switch cfg.Strategy {
-		case models.StrategyNeverReply:
-			// 完全不处理
-			logging.Debug("回复策略: 完全不回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+	if h.Planner != nil {
+		evalCtx := h.buildEvalContext(msg)
+		result, passed := h.Planner.Evaluate(ev, evalCtx)
+		if !passed {
+			logging.Debug("Planner 打分未通过", "score", result.Total, "threshold", h.Planner.Threshold())
 			return
-		case models.StrategyAtOnly:
-			// 仅@我时回复，未被@则跳过
-			if !h.isAtSelf(msg.RawMessage) {
-				logging.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
-				return
-			}
-		case models.StrategyPluginOnly:
-			// 仅 Plugin，不调用 Agent
-			h.runPluginOnly(ctx, ev)
-			return
-		case models.StrategyRelevance:
-			// 相关性判断：@我 或 插件命令 直接通过，否则调用相关性 Agent
-			if !h.isAtSelf(msg.RawMessage) && !h.isPluginCommand(msg.RawMessage) {
-				// 获取 ChatArea 用于短期记忆查询
-				chatAreaID := ""
-				if msg.MessageType == "group" {
-					area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, msg.GroupID)
-					if err == nil {
-						chatAreaID = area.ID
-					}
-				}
-				recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
-				score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, cfg.BotName)
-				if score < cfg.RelevanceThreshold {
-					logging.Debug("回复策略: 相关性不足，跳过",
-						"score", score, "threshold", cfg.RelevanceThreshold, "reason", reason,
-						"group_id", msg.GroupID, "user_id", msg.UserID)
+		}
+		logging.Debug("Planner 打分通过", "score", result.Total)
+
+		// ====== 第4步：Planner - 阶段二 (LLM 规划) ======
+		if h.Planner.LLM() != nil {
+			memories := h.collectMemoriesForPlanner(ctx, msg)
+			planResult, err := h.Planner.LLM().Plan(ctx, msg.RawMessage,
+				h.buildPlannerContext(msg), memories)
+			if err == nil && planResult != nil {
+				h.currentPlanResult = planResult
+				if !planResult.ShouldReply {
+					logging.Debug("Planner 决定不回复", "confidence", planResult.Confidence)
 					return
 				}
-				logging.Debug("回复策略: 相关性通过",
-					"score", score, "threshold", cfg.RelevanceThreshold, "reason", reason)
 			}
 		}
-		// StrategyAlways: 正常处理，无需额外操作
 	}
 
-	// Plugin 拦截
-	if h.PluginEngine != nil {
-		pluginEvent := pluggin.EventData{
-			PostType:    "message",
-			MessageType: ev.Message.MessageType,
-			UserID:      ev.Message.UserID,
-			GroupID:     ev.Message.GroupID,
-			RawMessage:  ev.Message.RawMessage,
-			MessageID:   ev.Message.MessageID,
-			Admins:      ev.Admins,
-			Sender: map[string]any{
-				"user_id":  ev.Message.Sender.UserID,
-				"nickname": ev.Message.Sender.Nickname,
-				"sex":      ev.Message.Sender.Sex,
-				"age":      float64(ev.Message.Sender.Age),
-				"card":     ev.Message.Sender.Card,
-			},
-		}
-		if h.PluginEngine.OnMessage(pluginEvent) {
-			return
-		}
-	}
-
+	// ====== 第5步：主 Agent 处理 ======
 	h.handleMessage(ctx, ev)
+}
+
+// dispatchToPlugin 将事件统一派发给 PluginEngine，返回是否被消费。
+func (h *HagoCenter) dispatchToPlugin(ev adapter.Event) bool {
+	if h.PluginEngine == nil {
+		return false
+	}
+
+	switch ev.PostType {
+	case "webhook":
+		if ev.Webhook != nil {
+			return h.PluginEngine.OnWebhook(pluggin.EventData{
+				PostType: "webhook", Admins: ev.Admins,
+				Webhook: map[string]any{"path": ev.Webhook.Path, "method": ev.Webhook.Method, "payload": ev.Webhook.Payload},
+			})
+		}
+	case "notice":
+		if ev.Notice != nil {
+			n := ev.Notice
+			pe := pluggin.EventData{
+				PostType: "notice", NoticeType: n.NoticeType, SubType: n.SubType,
+				UserID: n.UserID, GroupID: n.GroupID, OperatorID: n.OperatorID,
+				TargetID: n.TargetID, Duration: n.Duration, Admins: ev.Admins,
+			}
+			if n.File != nil {
+				pe.File = map[string]any{"id": n.File.ID, "name": n.File.Name, "size": n.File.Size, "busid": n.File.BusID}
+			}
+			h.PluginEngine.OnNotice(pe)
+		}
+	case "request":
+		if ev.Request != nil {
+			r := ev.Request
+			h.PluginEngine.OnRequest(pluggin.EventData{
+				PostType: "request", RequestType: r.RequestType, SubType: r.SubType,
+				UserID: r.UserID, GroupID: r.GroupID, Comment: r.Comment, Flag: r.Flag, Admins: ev.Admins,
+			})
+		}
+	case "message", "cronjob":
+		if ev.Message != nil {
+			pe := pluggin.EventData{
+				PostType: "message", MessageType: ev.Message.MessageType,
+				UserID: ev.Message.UserID, GroupID: ev.Message.GroupID,
+				RawMessage: ev.Message.RawMessage, MessageID: ev.Message.MessageID, Admins: ev.Admins,
+				Sender: map[string]any{
+					"user_id": ev.Message.Sender.UserID, "nickname": ev.Message.Sender.Nickname,
+					"sex": ev.Message.Sender.Sex, "age": float64(ev.Message.Sender.Age), "card": ev.Message.Sender.Card,
+				},
+			}
+			if h.PluginEngine.OnMessage(pe) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// buildEvalContext 构建 Planner 打分上下文。
+func (h *HagoCenter) buildEvalContext(msg *adapter.MessageEvent) *planner.EvaluationContext {
+	ctx := &planner.EvaluationContext{
+		BotQQ:       h.SelfQQ,
+		BotName:     h.SelfNickname,
+		BotNickname: h.SelfNickname,
+	}
+
+	// 收集所有激活 Skill 的关键词
+	for _, s := range h.Skills.ListSkills() {
+		if s.IsActive {
+			ctx.SkillKeywords = append(ctx.SkillKeywords, s.Keywords...)
+		}
+	}
+
+	// 检测近期交互
+	if h.Memory != nil {
+		chatAreaID := ""
+		if msg.MessageType == "group" {
+			area, err := h.DAO.ChatArea.GetOrCreate(context.Background(), models.AreaTypeGroup, msg.GroupID)
+			if err == nil {
+				chatAreaID = area.ID
+			}
+		}
+		msgs, _ := h.Memory.GetShortTermMessages(context.Background(), chatAreaID)
+		for _, m := range msgs {
+			if m.Role == "assistant" {
+				ctx.RecentInteraction = true
+				break
+			}
+		}
+	}
+
+	return ctx
+}
+
+// buildPlannerContext 构建 Planner LLM 阶段上下文描述。
+func (h *HagoCenter) buildPlannerContext(msg *adapter.MessageEvent) string {
+	if msg.MessageType == "group" {
+		return fmt.Sprintf("群聊消息, group_id=%d, user_id=%d, sender=%s",
+			msg.GroupID, msg.UserID, msg.Sender.Nickname)
+	}
+	return fmt.Sprintf("私聊消息, user_id=%d, sender=%s", msg.UserID, msg.Sender.Nickname)
+}
+
+// collectMemoriesForPlanner 为 Planner 收集相关记忆。
+func (h *HagoCenter) collectMemoriesForPlanner(ctx context.Context, msg *adapter.MessageEvent) []string {
+	var memories []string
+	if h.Memory != nil {
+		chatAreaID := h.resolveChatAreaID(msg)
+		if items, err := h.Memory.GetLongTermMemoryItems(ctx, chatAreaID, "", 3); err == nil {
+			for _, item := range items {
+				memories = append(memories, item.Content)
+			}
+		}
+	}
+	return memories
+}
+
+// resolveChatAreaID 根据消息事件解析 ChatArea ID。
+func (h *HagoCenter) resolveChatAreaID(msg *adapter.MessageEvent) string {
+	var areaType models.AreaType
+	var targetID int64
+	switch msg.MessageType {
+	case "private":
+		areaType = models.AreaTypePrivate
+		targetID = msg.UserID
+	case "group":
+		areaType = models.AreaTypeGroup
+		targetID = msg.GroupID
+	default:
+		return ""
+	}
+	area, err := h.DAO.ChatArea.GetOrCreate(context.Background(), areaType, targetID)
+	if err != nil {
+		return ""
+	}
+	return area.ID
 }
 
 // runPluginOnly 仅 Plugin 模式：运行插件但不调用 Agent。

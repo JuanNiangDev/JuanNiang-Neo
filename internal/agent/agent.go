@@ -1,8 +1,8 @@
 package agent
 
 import (
-	"context"
 	"JuanNiang-Neo/internal/logging"
+	"context"
 	"time"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
@@ -14,6 +14,7 @@ import (
 	"JuanNiang-Neo/internal/agent/memory/bgtask"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
+	"JuanNiang-Neo/internal/agent/planner"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/session"
@@ -38,6 +39,7 @@ type HagoCenter struct {
 	Skills         *skill.SkillEngine
 	ACL            *acl.ACL
 	DAO            *dao.Bundle
+	Planner        *planner.Planner // Planner：规则打分 + LLM 规划
 
 	// T2I 和 Sandbox 运行时客户端（可通过 API 热更新）
 	SandboxClient *sandboxcaller.Client
@@ -64,6 +66,9 @@ type HagoCenter struct {
 	CurrentSessionCtx string
 	// CurrentMsg 当前正在处理的消息（供工具获取发送目标）
 	CurrentMsg *adapter.MessageEvent
+
+	// currentPlanResult 当前轮的 Planner 结果
+	currentPlanResult *planner.PlannerResult
 }
 
 // Config HagoCenter 初始化配置。
