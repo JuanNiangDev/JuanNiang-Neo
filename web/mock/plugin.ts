@@ -12,55 +12,63 @@ export function mockPlugin(): Plugin {
 
       // Use a catch-all middleware to intercept API requests
       server.middlewares.use(async (req, res, next) => {
-        const url = new URL(req.url || '/', `http://127.0.0.1`)
-        const fullPath = url.pathname
+        try {
+          const url = new URL(req.url || '/', `http://127.0.0.1`)
+          const fullPath = url.pathname
 
-        // Only handle /api/v1/ requests
-        if (!fullPath.startsWith('/api/v1/')) {
-          return next()
-        }
+          // Only handle /api/v1/ requests
+          if (!fullPath.startsWith('/api/v1/')) {
+            return next()
+          }
 
-        const pathname = fullPath.replace(/^\/api\/v1/, '')
-        const method = req.method?.toUpperCase() || 'GET'
+          const pathname = fullPath.replace(/^\/api\/v1/, '')
+          const method = req.method?.toUpperCase() || 'GET'
 
-        // Parse body for POST/PUT requests
-        let body: any = null
-        if (['POST', 'PUT', 'PATCH'].includes(method)) {
-          body = await parseBody(req)
-        }
+          // Parse body for POST/PUT requests
+          let body: any = null
+          if (['POST', 'PUT', 'PATCH'].includes(method)) {
+            body = await parseBody(req)
+          }
 
-        // Find matching handler
-        const handler = mockHandlers.find(
-          (h) => h.method === method && matchRoute(h.path, pathname)
-        )
+          // Find matching handler
+          const handler = mockHandlers.find(
+            (h) => h.method === method && matchRoute(h.path, pathname)
+          )
 
-        if (handler) {
-          const params = extractParams(handler.path, pathname)
-          const query = Object.fromEntries(url.searchParams.entries())
+          if (handler) {
+            const params = extractParams(handler.path, pathname)
+            const query = Object.fromEntries(url.searchParams.entries())
 
-          // Simulate network delay
-          await delay(100 + Math.random() * 200)
+            // Simulate network delay
+            await delay(100 + Math.random() * 200)
 
-          const result = handler.handler({ params, query, body })
+            const result = handler.handler({ params, query, body })
+            res.setHeader('Content-Type', 'application/json')
+            res.setHeader('Access-Control-Allow-Origin', '*')
+            res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
+            res.statusCode = 200
+            res.end(JSON.stringify(result))
+            return
+          }
+
+          // Handle OPTIONS preflight
+          if (method === 'OPTIONS') {
+            res.setHeader('Access-Control-Allow-Origin', '*')
+            res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
+            res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+            res.statusCode = 204
+            res.end()
+            return
+          }
+
+          // No handler found, let Vite fallback to proxy or 404
+          next()
+        } catch (e: any) {
+          console.error('[mock] handler error:', e.message || e)
+          res.statusCode = 500
           res.setHeader('Content-Type', 'application/json')
-          res.setHeader('Access-Control-Allow-Origin', '*')
-          res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
-          res.statusCode = 200
-          res.end(JSON.stringify(result))
-          return
+          res.end(JSON.stringify({ status: 50000, info: 'Mock internal error: ' + (e.message || 'unknown'), data: null }))
         }
-
-        // Handle OPTIONS preflight
-        if (method === 'OPTIONS') {
-          res.setHeader('Access-Control-Allow-Origin', '*')
-          res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
-          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-          res.statusCode = 204
-          res.end()
-          return
-        }
-
-        next()
       })
     },
   }
@@ -100,6 +108,14 @@ function extractParams(pattern: string, pathname: string): Record<string, string
 
 function parseBody(req: any): Promise<any> {
   return new Promise((resolve) => {
+    // Vite 可能已解析 body，优先使用
+    if (req.body) {
+      return resolve(req.body)
+    }
+    // 尝试读取已缓存的 raw body
+    if (req._body) {
+      try { return resolve(JSON.parse(req._body)) } catch { return resolve({}) }
+    }
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
     req.on('end', () => {
@@ -110,6 +126,8 @@ function parseBody(req: any): Promise<any> {
         resolve({})
       }
     })
+    // 超时兜底：如果 500ms 内没有 data 事件，body 已被消费
+    setTimeout(() => resolve({}), 500)
   })
 }
 
