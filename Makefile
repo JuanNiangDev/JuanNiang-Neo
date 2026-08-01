@@ -26,7 +26,10 @@ BIN_PATH   := $(BIN_DIR)/$(BIN_NAME)
 # Go 构建参数
 GOPROXY     ?= direct
 GOFLAGS     := -trimpath
-LDFLAGS     := -s -w
+VERSION     := $(shell grep -oP 'version:\s*\K.*' metainfo.yaml | tr -d ' ')
+BUILD_TIME  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+GIT_COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+LDFLAGS     := -s -w -X JuanNiang-Neo/internal/metainfo.version=$(VERSION) -X JuanNiang-Neo/internal/metainfo.buildTime=$(BUILD_TIME) -X JuanNiang-Neo/internal/metainfo.gitCommit=$(GIT_COMMIT)
 BUILD_TAGS  :=
 
 # 运行参数 (dev/run)

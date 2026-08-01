@@ -35,9 +35,12 @@ COPY go.mod go.sum ./
 # GONOSUMCHECK/GONOSUMDB 内联到 RUN，避免 CI 缓存层跳过 env 变更
 RUN go mod download
 
-COPY . .
 # 仅编译后端, 不嵌入前端 (运行时由 WEB_DIR 指向容器内 /app/web/dist)
-RUN go build -trimpath -ldflags "-s -w" -o /juan-niang-neo ./cmd/server/
+# 从 metainfo.yaml 读取版本号注入二进制
+RUN VERSION=$(grep -oP 'version:\s*\K.*' metainfo.yaml | tr -d ' ') && \
+    go build -trimpath \
+      -ldflags "-s -w -X JuanNiang-Neo/internal/metainfo.version=${VERSION} -X JuanNiang-Neo/internal/metainfo.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      -o /juan-niang-neo ./cmd/server/
 
 
 # ===== Stage 3: 运行时镜像 =====

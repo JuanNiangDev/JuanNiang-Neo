@@ -8,6 +8,7 @@
 # 暴露端口:
 #   8081 -> OneBot11 反向 WebSocket 服务端
 #   8090 -> Web 管理面板 + API
+#   8091 -> Webhook HTTP 服务 (可选)
 
 name: juanniang-neo
 
@@ -47,6 +48,21 @@ services:
     networks:
       - juanniang-net
 
+  # Mem0 向量记忆服务 (可选)
+  # 如需使用长期记忆和启发式记忆，取消下方注释并配置 MEM0_BASE_URL
+  # mem0:
+  #   image: mem0ai/mem0:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8000:8000"
+  #   environment:
+  #     MEM0_CONFIG: /app/config.yaml
+  #   volumes:
+  #     - mem0data:/app/data
+  #     - ./mem0-config.yaml:/app/config.yaml
+  #   networks:
+  #     - juanniang-net
+
   juan-niang-neo:
     build:
       context: ..
@@ -54,8 +70,9 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "8081:8081"
-      - "8090:8090"
+      - "8081:8081"   # OneBot11 反向 WS
+      - "8090:8090"   # Web API + 仪表板
+      - "8091:8091"   # Webhook HTTP 服务 (可选)
     environment:
       WEB_DIR: /app/web/dist
       OB_PORT: "8081"
@@ -71,6 +88,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       OB_TOKEN: ${OB_TOKEN:-}
       OB_ADMINS: ${OB_ADMINS:-}
+      # Mem0 记忆服务地址 (可选)
+      MEM0_BASE_URL: ${MEM0_BASE_URL:-}
+      MEM0_API_KEY: ${MEM0_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -80,7 +100,7 @@ services:
       # Lua 插件目录 (convention: data/pluggins/<name>/{main.lua,pluggin.yaml})
       # 容器内二进制 CWD=/app, 硬编码加载 "data/pluggins" -> /app/data/pluggins。
       #
-      # ⚠️ 首次启动前必须先在宿主机创建此目录并赋予写权限，否则容器内非 root 用户
+      # ⚠ 首次启动前必须先在宿主机创建此目录并赋予写权限，否则容器内非 root 用户
       # 无法写入内嵌的 SDK 与 system 插件：
       #   mkdir -p data/pluggins && chmod 777 data/pluggins
       - ../data/pluggins:/app/data/pluggins
@@ -95,6 +115,7 @@ services:
 
 volumes:
   pgdata:
+  # mem0data:
 
 networks:
   juanniang-net:

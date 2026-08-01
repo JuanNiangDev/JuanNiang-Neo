@@ -6,7 +6,7 @@
 
 ## 概述
 
-JuanNiang-Neo 是基于 OneBot11 协议的 LLM QQ 聊天 Agent 系统（红岩网校吉祥物"卷娘"）。核心由 LLM 驱动的对话 Agent（`HagoCenter`，聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成。长任务以 errgroup 风格在后台执行，由独立 Drainer Agent 排空缓冲并发送 QQ 消息。项目还包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
+JuanNiang-Neo 是基于 OneBot11 协议的 LLM QQ 聊天 Agent 系统（红岩网校吉祥物"卷娘"）。核心由**两阶段 Planner**（规则打分 + LLM 规划）驱动的对话 Agent（`HagoCenter`，聚合 Planner / Replyer / Splitter / Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成。长任务通过独立的**Drainer 排水循环**执行，主 Agent 可主动查询进度。项目包含五层记忆体系、Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Mem0 + Sandbox + T2I 等可插拔基础设施。
 
 ## 分层架构
 
@@ -19,23 +19,24 @@ flowchart TB
     OB["adapter/: OneBot11 反向 WS + Webhook<br/>事件接收 / API 调用 / 消息段构造"]
   end
   subgraph Core["核心层"]
-    API["api/: Hertz Web 引擎 + JWT + 路由 + Service(68 handler)"]
+    API["api/: Hertz Web 引擎 + JWT + 路由 + Service"]
     Plugin["pluggin/: gopher-lua 引擎<br/>生命周期 / API 暴露 / 命令树 / 事件拦截"]
-    Agent["agent/: HagoCenter<br/>Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL"]
-    CoreLib["core/: models(22表) / dao.Bundle / cache / acl"]
+    Agent["agent/: HagoCenter<br/>Planner/Replyer/Splitter/Provider<br/>MCP/Memory/Prompt/Session/Skill/Tool"]
+    CoreLib["core/: models(24表) / dao.Bundle / cache / acl"]
   end
   subgraph Infra["基础设施层"]
     PG["postgres"]
     Red["redis"]
+    M0["mem0 (向量记忆)"]
     SB["sandbox (+/handler caller)"]
     T2I["t2i (+/handler caller)"]
   end
   subgraph Web["前端服务"]
     SPA["internal/web: SPAHandler (Hertz NoRoute 兜底)"]
-    FE["web/: Vue 3 + Vuetify 3 仪表板 (22 views)"]
+    FE["web/: Vue 3 + Vuetify 3 仪表板"]
   end
   subgraph Logging["日志"]
-    LogHub["logging: slog.Handler 双写 stdout + Hub(SSE)"]
+    LogHub["logging: fatih/color 彩色输出 + Hub(SSE)"]
   end
 
   Main --> OB
@@ -53,25 +54,50 @@ flowchart TB
   FE -.构建.-> SPA
 ```
 
+## 事件流
+
+```
+所有事件 (OneBot11/CronJob/Webhook/BgTaskResult)
+    │
+    ▼
+Plugin Engine (统一入口，插件拦截)
+    │ 未消费
+    ▼
+事件类型分流
+    ├─ webhook/notice/request → 停止
+    ├─ cronjob/bgtask → 跳过Planner，直入Agent
+    └─ message → Planner
+                  ├─ ① 规则打分 (5维: @提及/关键词/上下文/质量/历史)
+                  │    分数 < 阈值 → 不回复
+                  │    分数 ≥ 阈值 → ② LLM 规划
+                  └─ ② LLM 规划 (意图/风格/工具计划/记忆提示)
+                        决定不回复 → 停止
+                        决定回复 → Agent.handleMessage()
+```
+
 ## 模块职责
 
 | 模块 | 包路径 | 职责 |
 |------|--------|------|
 | **入口** | `cmd/server/main.go` | 组装所有模块、启动服务、反向优雅退出（带 15s watchdog） |
 | **适配器** | `internal/adapter/` | OneBot11 反向 WS 服务端 + Webhook HTTP 服务端：事件解析、API 封装、消息段构造 |
-| **Agent** | `internal/agent/` | Agent 核心：`HagoCenter` 聚合 Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL，事件循环、后台任务、Drainer、CronJob、回复策略 |
-| **核心库** | `internal/core/` | 数据模型 (GORM)、DAO Bundle、Redis 缓存、ACL |
-| **Web API** | `internal/api/` | Hertz Web 引擎、JWT 中间件、路由、Service（68 个管理 handler） |
+| **Agent** | `internal/agent/` | Agent 核心：`HagoCenter` 聚合 Planner/Replyer/Splitter/Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL，事件循环、后台任务、Drainer、CronJob |
+| **Planner** | `internal/agent/planner/` | 两阶段规划器：① 规则打分（5 维可配权重）② LLM 规划（意图/风格/工具计划）|
+| **Replyer** | `internal/agent/replyer/` | 独立回复模块：SendText/Image/Mixed，CQ 码自动转换，URL/base64 处理 |
+| **Splitter** | `internal/agent/splitter/` | 消息切分：Markdown去除 → 保护 → 概率合并 → 错别字注入 → 发送决策 |
+| **核心库** | `internal/core/` | 数据模型 (GORM 24表)、DAO Bundle、Redis 缓存、ACL |
+| **Web API** | `internal/api/` | Hertz Web 引擎、JWT 中间件、路由、Service（78+ handler）|
 | **插件** | `internal/pluggin/` | gopher-lua 引擎：生命周期、Lua API 暴露、命令树、事件拦截 |
-| **基础设施** | `infrastructure/` | postgres、redis、sandbox、t2i 客户端（每个含 `handler` 子包，功能选项风格） |
+| **基础设施** | `infrastructure/` | postgres、redis、mem0、sandbox、t2i 客户端 |
 | **前端服务** | `internal/web/` | `SPAHandler` 通过 Hertz `NoRoute` 兜底服务 `web/dist` |
-| **日志** | `internal/logging/` | slog Handler 双写 stdout + Hub（环形 250 条 + SSE 订阅） |
+| **日志** | `internal/logging/` | fatih/color 彩色输出 + Hub（环形 250 条 + SSE 订阅），WARN/ERROR 携带 rich 元数据 |
+| **元信息** | `internal/metainfo/` | 从 metainfo.yaml 读取版本，构建时 ldflags 注入 |
 
 > **术语陷阱**：`internal/adapter.Provider`=OneBot11 反向 WS 适配器；`internal/agent/provider.ProviderGroup`=LLM Provider 组。`pluggin` 是有意拼写（Lua 插件系统），不要改成 `plugin`。`docs/guidance.md` 拼成 `inferstructure` 是错的，真实路径是 `infrastructure/`。
 
 ## 数据模型
 
-共 22 个 GORM 表（见 `internal/core/core.go::AutoMigrate`）。
+共 24 个 GORM 表（见 `internal/core/core.go::AutoMigrate`）。
 
 ```mermaid
 classDiagram
