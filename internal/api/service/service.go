@@ -1952,3 +1952,64 @@ func buildSkillConfig(s *models.Skill) *skill.SkillConfig {
 		Priority:     s.Priority,
 	}
 }
+
+// ---------- Planner ----------
+
+func (s *Service) GetPlannerConfig(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+		"threshold": 0.3,
+		"weights": map[string]float64{
+			"mention": 0.35, "keyword": 0.25, "context": 0.20, "quality": 0.10, "history": 0.10,
+		},
+	}))
+}
+
+func (s *Service) UpdatePlannerConfig(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- Memory GC ----------
+
+func (s *Service) GetMemoryGCConfig(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+func (s *Service) UpdateMemoryGCConfig(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+func (s *Service) TriggerMemoryGC(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]string{"status": "triggered"}))
+}
+
+// ---------- Splitter ----------
+
+func (s *Service) GetSplitterConfig(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+		"max_segments": 5, "auto_split": true, "enable_typo": false, "typo_rate": 0.03,
+	}))
+}
+
+func (s *Service) UpdateSplitterConfig(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- Learners ----------
+
+func (s *Service) GetLearnerConfig(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+func (s *Service) UpdateLearnerConfig(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- Auto BgTask ----------
+
+func (s *Service) GetAutoBgtaskStatus(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+func (s *Service) MarkToolBgtask(ctx context.Context, c *app.RequestContext) {
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}

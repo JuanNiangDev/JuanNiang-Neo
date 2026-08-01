@@ -129,4 +129,25 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	// Reply Strategy
 	api.GET("/reply-strategy", auth, svc.GetReplyStrategy)
 	api.PUT("/reply-strategy", auth, svc.UpdateReplyStrategy)
+
+	// Planner
+	api.GET("/planner/config", auth, svc.GetPlannerConfig)
+	api.PUT("/planner/config", auth, svc.UpdatePlannerConfig)
+
+	// Memory GC
+	api.GET("/memory/gc", auth, svc.GetMemoryGCConfig)
+	api.PUT("/memory/gc", auth, svc.UpdateMemoryGCConfig)
+	api.POST("/memory/gc/run", auth, svc.TriggerMemoryGC)
+
+	// Splitter
+	api.GET("/splitter/config", auth, svc.GetSplitterConfig)
+	api.PUT("/splitter/config", auth, svc.UpdateSplitterConfig)
+
+	// Learners
+	api.GET("/learners", auth, svc.GetLearnerConfig)
+	api.PUT("/learners", auth, svc.UpdateLearnerConfig)
+
+	// Tools - auto bgtask
+	api.GET("/tools/auto-bgtask", auth, svc.GetAutoBgtaskStatus)
+	api.PUT("/tools/:id/mark-bgtask", auth, svc.MarkToolBgtask)
 }

@@ -1,9 +1,9 @@
 package prompt
 
 import (
+	"JuanNiang-Neo/internal/logging"
 	"context"
 	"crypto/rand"
-	"JuanNiang-Neo/internal/logging"
 	"strings"
 
 	"JuanNiang-Neo/internal/core/dao"
@@ -191,10 +191,11 @@ func NewPromptManager(dao *dao.PromptDAO) *PromptManager {
 }
 
 // BuildSystemPrompt 构建系统提示词，按优先级拼接：
-//   1. SystemLocked (IsSystem=true)  最优先，强制拼接，不受 IsActive 影响
-//   2. system 类型                    常规系统提示词
-//   3. personality 类型               人格设定
-//   4. custom 类型                    用户自定义补充
+//  1. SystemLocked (IsSystem=true)  最优先，强制拼接，不受 IsActive 影响
+//  2. system 类型                    常规系统提示词
+//  3. personality 类型               人格设定
+//  4. custom 类型                    用户自定义补充
+//
 // 提示词内容直接拼接，不再进行模板渲染。
 func (pm *PromptManager) BuildSystemPrompt(ctx context.Context) (string, error) {
 	var parts []string
@@ -248,7 +249,7 @@ func (pm *PromptManager) BuildSystemPrompt(ctx context.Context) (string, error) 
 	return strings.Join(parts, "\n\n"), nil
 }
 
-// BuildFullContext 构建完整上下文 (system prompts + 长期记忆 + 工具/技能描述)。
+// BuildFullContext 构建完整上下文，按结构化分层组织。
 func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories []string, toolDescriptions string) (string, error) {
 	systemPrompt, err := pm.BuildSystemPrompt(ctx)
 	if err != nil {
@@ -256,23 +257,30 @@ func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories 
 	}
 
 	var parts []string
+
+	// 第一层：系统铁律 (最高优先级)
 	if systemPrompt != "" {
 		parts = append(parts, systemPrompt)
 	}
 
+	// 第二层：长期记忆层
 	if len(longTermMemories) > 0 {
-		parts = append(parts, "以下是相关的长期记忆：")
-		for _, mem := range longTermMemories {
-			parts = append(parts, mem)
-		}
+		parts = append(parts, "# 相关长期记忆\n"+strings.Join(longTermMemories, "\n"))
 	}
 
+	// 第三层：工具层
 	if toolDescriptions != "" {
-		parts = append(parts, "可用工具：\n"+toolDescriptions)
+		parts = append(parts, "# 可用工具\n"+toolDescriptions)
 	}
+
+	// 第四层：输出规范
+	parts = append(parts, "# 输出格式规范\n- 回复使用纯文本，不使用 Markdown\n- 代码片段用缩进表示\n- 回复简洁自然，像真人聊天\n- 不回复时输出 "+SilenceToken)
 
 	return strings.Join(parts, "\n\n"), nil
 }
+
+// SilenceToken LLM 不回复时的输出标记。
+const SilenceToken = "__NO_REPLY__"
 
 // GetByID 获取指定 Prompt。
 func (pm *PromptManager) GetByID(ctx context.Context, id string) (*models.Prompt, error) {
