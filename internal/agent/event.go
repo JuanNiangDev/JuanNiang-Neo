@@ -1,10 +1,12 @@
 package agent
 
 import (
-	"JuanNiang-Neo/internal/logging"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"JuanNiang-Neo/internal/agent/planner"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
 )
 
@@ -67,34 +70,51 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 			if !ok {
 				continue
 			}
-			logging.Info("收到后台任务结果，注入主 Agent", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID)
+			logging.Info("收到后台任务结果", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID)
 
-			// 自动发送结果中的图片 URL
-			tmpMsg := &adapter.MessageEvent{
-				MessageType: output.MessageType,
-			}
+			// 构造临时消息目标
+			tmpMsg := &adapter.MessageEvent{MessageType: output.MessageType}
 			if output.MessageType == "private" {
 				tmpMsg.UserID = output.TargetID
 			} else {
 				tmpMsg.GroupID = output.TargetID
 			}
 
-			// MediaPayloads (CQ码) 直接发送
+			// CQ码 直接发送
 			for _, media := range output.MediaPayloads {
 				h.sendReply(tmpMsg, media)
 			}
 
-			// 提取结果中的图片 URL 并自动发送
-			if imgURLs := extractImageURLs(output.Result); len(imgURLs) > 0 {
-				for _, imgURL := range imgURLs {
-					logging.Info("BgTask 自动发送图片", "url", imgURL)
-					h.sendReply(tmpMsg, fmt.Sprintf("[CQ:image,file=%s]", imgURL))
+			// 提取结果中的图片 URL 并自动发送 (下载后转 base64，QQ 无法直连内网)
+			imgURLs := extractImageURLs(output.Result)
+			for _, imgURL := range imgURLs {
+				logging.Info("BgTask 自动发送图片", "url", imgURL)
+				cqImg, err := downloadAndEncodeImage(imgURL)
+				if err != nil {
+					logging.Error("BgTask 图片下载失败", "url", imgURL, "err", err)
+					continue
 				}
+				h.sendReply(tmpMsg, cqImg)
 			}
 
-			// 将 DrainerOutput 转换为合成 Event，触发主 Agent 处理
-			syntheticEvent := h.bgTaskOutputToEvent(output)
-			h.processEvent(ctx, syntheticEvent)
+			// 去除已发送的图片 URL 后，检查是否还有有意义的文本内容需要通知 LLM
+			cleanResult := output.Result
+			for _, imgURL := range imgURLs {
+				cleanResult = strings.ReplaceAll(cleanResult, imgURL, "")
+			}
+			cleanResult = strings.TrimSpace(cleanResult)
+			// 去掉"图片已生成: "等无意义前缀
+			cleanResult = strings.TrimPrefix(cleanResult, "图片已生成:")
+			cleanResult = strings.TrimSpace(cleanResult)
+
+			// 只有存在有意义的文本结果（非纯图片任务）时，才通知 LLM
+			if cleanResult != "" && cleanResult != "[后台任务已完成]" {
+				output.Result = cleanResult
+				syntheticEvent := h.bgTaskOutputToEvent(output)
+				h.processEvent(ctx, syntheticEvent)
+			} else {
+				logging.Debug("BgTask 纯媒体结果，跳过 Agent 通知", "task_id", output.TaskID)
+			}
 		case ev, ok := <-h.CronJobEvents:
 			if !ok {
 				continue
@@ -925,7 +945,6 @@ func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.Messa
 // extractImageURLs 从文本中提取图片 URL (http/https 开头，常见图片后缀)。
 func extractImageURLs(text string) []string {
 	var urls []string
-	// 匹配 http(s)://... .jpg/.png/.jpeg/.gif/.webp 的 URL
 	re := regexp.MustCompile(`https?://[^\s]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s]*)?`)
 	matches := re.FindAllString(text, -1)
 	for _, m := range matches {
@@ -935,4 +954,25 @@ func extractImageURLs(text string) []string {
 		urls = append(urls, m)
 	}
 	return urls
+}
+
+// downloadAndEncodeImage 下载图片并转为 base64 CQ 码。
+func downloadAndEncodeImage(url string) (string, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", fmt.Errorf("下载图片失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("下载图片 HTTP %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取图片失败: %w", err)
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("[CQ:image,file=base64://%s]", b64), nil
 }
