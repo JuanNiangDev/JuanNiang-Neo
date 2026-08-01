@@ -14,7 +14,7 @@ type Skill struct {
 	Description  string
 	Keywords     JSONSlice `gorm:"type:jsonb;default:'[]'"`
 	RegexPattern string
-	PromptRef    string
+	PromptRefs   JSONSlice `gorm:"type:jsonb;default:'[]'"`
 	ToolRefs     JSONSlice `gorm:"type:jsonb;default:'[]'"`
 	McpRefs      JSONSlice `gorm:"type:jsonb;default:'[]'"`
 	IsActive     bool      `gorm:"default:true"`

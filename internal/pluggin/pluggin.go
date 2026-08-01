@@ -510,6 +510,51 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 	return false
 }
 
+// RouteWebhook routes a webhook request to a specific plugin by name.
+// Returns (consumed, reply).
+func (pe *PluginEngine) RouteWebhook(pluginName string, path string, method string, payload map[string]any) (consumed bool, reply string) {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+
+	for _, p := range pe.plugins {
+		if p.Manifest.Name != pluginName {
+			continue
+		}
+		if !p.HasPermission("webhook") {
+			return false, "plugin does not have webhook permission"
+		}
+		fn := p.State.GetGlobal("on_webhook")
+		if fn.Type() != lua.LTFunction {
+			return false, "plugin has no on_webhook handler"
+		}
+		event := EventData{
+			PostType: "webhook",
+			Webhook: map[string]any{
+				"path":    path,
+				"method":  method,
+				"payload": payload,
+			},
+		}
+		table := eventToLuaTable(p.State, event)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 2, nil); err != nil {
+			return false, err.Error()
+		}
+		replyRet := p.State.Get(-1)
+		consumedRet := p.State.Get(-2)
+		p.State.Pop(2)
+
+		r := ""
+		if replyRet.Type() == lua.LTString {
+			r = string(replyRet.(lua.LString))
+		}
+		c := consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool))
+		return c, r
+	}
+	return false, "plugin not found"
+}
+
 // OnNotice 通知事件（群成员增减、禁言、文件上传等）。
 func (pe *PluginEngine) OnNotice(event EventData) {
 	pe.mu.RLock()

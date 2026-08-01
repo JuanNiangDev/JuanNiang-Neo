@@ -430,12 +430,17 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		})
 	}
 
-	if skillMatched && matchedSkill.PromptRef != "" {
-		skillPrompt, err := h.Prompt.GetByID(ctx, matchedSkill.PromptRef)
-		if err == nil {
-			messages = append(messages, provider.ChatMessage{
-				Role: "system", Content: "[Active Skill: " + matchedSkill.Name + "]\n" + skillPrompt.Content,
-			})
+	if skillMatched {
+		for _, refID := range matchedSkill.PromptRefs {
+			if refID == "" {
+				continue
+			}
+			skillPrompt, err := h.Prompt.GetByID(ctx, refID)
+			if err == nil {
+				messages = append(messages, provider.ChatMessage{
+					Role: "system", Content: "[Active Skill: " + matchedSkill.Name + "]\n" + skillPrompt.Content,
+				})
+			}
 		}
 	}
 

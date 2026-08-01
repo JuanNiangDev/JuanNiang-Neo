@@ -23,8 +23,8 @@ export interface AddPromptReq { name: string; content: string; type: string; is_
 
 export interface SessionResp { id: string; chat_area_id: string; model: string; token_usage: number; meta_data: Record<string, any>; created_at: string }
 
-export interface SkillResp { id: string; name: string; description: string; keywords: string[]; regex_pattern: string; prompt_ref: string; tool_refs: string[]; mcp_refs: string[]; is_active: boolean; is_system: boolean; priority: number; created_at: string }
-export interface AddSkillReq { name: string; description?: string; keywords?: string[]; regex_pattern?: string; prompt_ref?: string; tool_refs?: string[]; mcp_refs?: string[]; is_active: boolean; is_system?: boolean; priority?: number }
+export interface SkillResp { id: string; name: string; description: string; keywords: string[]; regex_pattern: string; prompt_refs: string[]; tool_refs: string[]; mcp_refs: string[]; is_active: boolean; is_system: boolean; priority: number; created_at: string }
+export interface AddSkillReq { name: string; description?: string; keywords?: string[]; regex_pattern?: string; prompt_refs?: string[]; tool_refs?: string[]; mcp_refs?: string[]; is_active: boolean; is_system?: boolean; priority?: number }
 
 export interface ToolConfigResp { id: string; name: string; description: string; parameters: Record<string, any>; timeout: number; is_active: boolean; is_builtin: boolean; created_at: string }
 

@@ -15,21 +15,23 @@
 
 ```
 外部服务 (GitHub / 监控 / 自定义)
-  │  POST http://your-server:8091/github
+  │  POST http://your-server:8091/webhook/my-plugin
   │  Body: {"action":"opened","pull_request":{...}}
   ▼
 WebhookAdapter (独立端口 8091, 默认关闭)
-  │  1. Token 校验 → 不匹配返回 401
+  │  1. Token 校验 → 不匹配返回 {"code":403,"message":"forbidden"}
   │  2. 读取 Body → JSON 解析成功则直接使用, 失败则包装为
   │     {"raw":"原文","type":"non-json"}
-  │  3. 构造 Event{
-  │       PostType:"webhook",
-  │       Webhook:{Path:"/github", Method:"POST", Payload:{...}},
-  │       Admins: OB 管理员列表
-  │     }
-  │  4. 非阻塞写入 events channel (cap=128)
-  │     · 满 → 丢弃事件, 返回 HTTP 503 → 外部服务应重试
-  ▼
+  │  3. 路径解析:
+  │     · /webhook/{plugin_name} → 调用 pluginRouter.RouteWebhook()
+  │       路由到指定插件 (按名称精确匹配)
+  │       - 命中 → {"code":0,"message":"ok"}
+  │       - 未命中 → {"code":404,"message":"plugin not found"} (HTTP 404)
+  │     · /webhook 或 / (无插件名) → legacy 广播模式
+  │       构造 Event{PostType:"webhook", Webhook:{Path, Method, Payload}, Admins}
+  │       非阻塞写入 events channel (cap=128)
+  │       - 满 → {"code":503,"message":"events channel full"}
+  ▼ (legacy 模式)
 HagoCenter.runEventLoop (事件循环 goroutine)
   │  select 收到 webhook 事件
   │  → processEvent(): PostType=="webhook" 分支, 构造
@@ -40,13 +42,12 @@ HagoCenter.runEventLoop (事件循环 goroutine)
   │    }
   │  → PluginEngine.OnWebhook(event) → 遍历所有已加载插件
   ▼
-PluginEngine.OnWebhook
-  │  遍历所有已加载插件
-  │  ├— 插件无 webhook 权限 → 跳过
-  │  └— 插件有 webhook 权限 → 调 on_webhook(event)
+PluginEngine (插件引擎)
+  │  定向模式: RouteWebhook() 按名称查找插件 → 调 on_webhook(event)
+  │  广播模式: OnWebhook() 遍历所有有 webhook 权限的插件 → 调 on_webhook(event)
   ▼
 Lua 插件 on_webhook(event)
-  │  event.webhook.path    = "/github"
+  │  event.webhook.path    = "/webhook/my-plugin" 或子路径
   │  event.webhook.method  = "POST"
   │  event.webhook.payload = {action:"opened", ...}
   │  event.admins          = {"管理员QQ号"}
@@ -54,8 +55,11 @@ Lua 插件 on_webhook(event)
   │  插件自行判断是否处理该事件:
   │    · 检查 payload 字段 → 不相关则 return false
   │    · 相关 → 执行逻辑 → return true (已消费)
+  │
+  │  定向模式下, 插件还可以 return (consumed, reply_string)
+  │  第二个返回值会作为响应 metadata 返回给调用方
   ▼
-  处理完毕, 事件循环继续等待下一个事件
+  处理完毕, 返回响应
 ```
 
 ### 核心特性
@@ -65,9 +69,12 @@ Lua 插件 on_webhook(event)
 | 独立端口 | `:8091`，与 API `:8090`、OB `:8081` 完全隔离 |
 | Token 鉴权 | Bearer token，配了才校验，不配则任何请求都通过 |
 | 不走 Agent | `PostType=="webhook"` 在事件循环中直接短路，永远不会进 LLM |
-| 广播模式 | 每个 webhook 事件会调用**所有**有 `webhook` 权限的插件 |
+| **定向模式** | `/webhook/{plugin_name}` 按名称精确路由到指定插件，其他插件不会收到事件 |
+| **广播模式** | `/webhook` 或 `/` 路径无插件名时，广播给所有有 `webhook` 权限的插件 |
 | 插件自决 | 插件自己在 `on_webhook` 里判断 payload 并决定是否处理 |
-| 队列丢弃 | events channel cap=128，满了返回 HTTP 503，外部服务应重试 |
+| 定向返回 | 定向模式下插件可返回 `(consumed, reply)`，reply 会作为响应 metadata 返回调用方 |
+| 统一响应 | 所有响应使用 `{"code":<int>,"message":"<str>","metadata":<any>}` 格式 |
+| 队列丢弃 | 广播模式 events channel cap=128，满了返回 `{"code":503,"message":"..."}` |
 | 热更新 | Web 面板点"启用"即生效，无需重启 |
 
 ### 配置入口
@@ -95,13 +102,32 @@ services:
 
 | 项目 | 说明 |
 |------|------|
-| 监听路径 | `/` 和 `/webhook` 都受理，路径透传到 event.webhook.path |
+| 路由 | **定向**: `/webhook/{plugin_name}` → 路由到指定插件；**广播**: `/` 或 `/webhook` → 广播给所有插件 |
 | 方法 | 任意（常用 POST） |
 | Header | `Authorization: Bearer <token>`（配了 token 才校验） |
 | Body | 任意。先尝试 JSON unmarshal；失败则包装为 `{"raw":"原文","type":"non-json"}` |
-| 成功 | `200 OK`，body 为空 |
-| 队列满 | `503 Service Unavailable`，事件被丢弃 |
-| 鉴权失败 | `401 Unauthorized` |
+| 成功 | `200 OK`，body: `{"code":0,"message":"ok"}`（定向命中时可能带 `metadata`） |
+| 未找到 | `404 Not Found`，body: `{"code":404,"message":"plugin not found"}` |
+| 队列满 | `503 Service Unavailable`，body: `{"code":503,"message":"events channel full"}` |
+| 鉴权失败 | `403 Forbidden`，body: `{"code":403,"message":"forbidden"}` |
+
+#### 响应格式
+
+所有 webhook 响应统一为：
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "metadata": null
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `code` | int | `0`=成功, `403`=鉴权失败, `404`=插件未找到, `503`=队列满 |
+| `message` | string | 人类可读的描述 |
+| `metadata` | any | 定向模式下插件 `on_webhook` 返回的 reply 字符串；否则 `null` |
 
 ### Event 数据结构（Lua 侧）
 
@@ -126,9 +152,45 @@ event.admins = { "10001", "10002" } -- 系统管理员 QQ 列表
 
 ### 多插件共存：如何区分事件归属
 
-webhook 是**广播模式**——每个请求会调用所有有 `webhook` 权限的插件。插件通过以下三种方式自行判断是否处理。
+webhook 有**两种路由模式**：
+- **定向模式** (`/webhook/{plugin_name}`)：精确路由到指定插件，其他插件不会收到事件。这是推荐的隔离方式。
+- **广播模式** (`/webhook` 或 `/`)：无插件名时，广播给所有有 `webhook` 权限的插件。插件通过以下三种方式自行判断是否处理。
 
-#### 方式一：payload 字段自识别（推荐）
+#### 方式零：定向路由（推荐）
+
+使用 `/webhook/{plugin_name}` 路径，消息直接路由到指定插件：
+
+```bash
+# GitHub 插件配置这个 URL
+http://host:8091/webhook/my-github-plugin
+
+# 监控插件配置这个 URL
+http://host:8091/webhook/my-alert-plugin
+```
+
+```lua
+-- my-github-plugin 的 on_webhook
+function on_webhook(event)
+    local p = event.webhook.payload
+    -- 无需路径判断，只有本插件会收到此事件
+    onebot11.send_group_msg(987654321, "新 PR: " .. (p.pull_request.title or "?"))
+    return true
+end
+```
+
+定向模式下，插件可以返回 `(consumed, reply_string)`，reply 会作为响应的 `metadata` 返回给调用方：
+
+```lua
+function on_webhook(event)
+    local p = event.webhook.payload
+    if p.action == "opened" then
+        return true, "PR opened notification sent"
+    end
+    return false, "unhandled action: " .. (p.action or "?")
+end
+```
+
+#### 方式一：payload 字段自识别（广播模式下推荐）
 
 每个插件检查自己关心的字段，不相关则立即 `return false`：
 

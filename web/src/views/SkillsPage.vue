@@ -19,20 +19,29 @@
     </v-data-table>
 
     <!-- 新增/编辑对话框 -->
-    <v-dialog v-model="dialog" max-width="860">
+    <v-dialog v-model="dialog" max-width="960">
       <v-card rounded="lg">
         <v-card-title>{{ editing ? '编辑 Skill' : '新增 Skill' }}</v-card-title>
         <v-card-text>
           <v-form ref="formRef">
             <v-row>
-              <v-col cols="6">
-                <v-text-field v-model="form.name" label="名称" class="mb-3" />
-                <v-text-field v-model="form.regex_pattern" label="正则模式" class="mb-3" />
-                <v-text-field v-model="form.priority" label="优先级" type="number" class="mb-3" />
-                <v-switch v-model="form.is_active" label="激活" color="primary" />
-              </v-col>
-              <v-col cols="6">
-                <v-text-field v-model="form.prompt_ref" label="Prompt 引用" class="mb-3" />
+              <!-- 左侧：设置选项 -->
+              <v-col cols="4">
+                <v-text-field v-model="form.name" label="名称" density="compact" class="mb-3" />
+                <v-text-field v-model="form.regex_pattern" label="正则模式" density="compact" class="mb-3" />
+                <v-text-field v-model="form.priority" label="优先级" type="number" density="compact" class="mb-3" />
+                <v-select
+                  v-model="form.prompt_refs"
+                  :items="promptOptions"
+                  item-title="label"
+                  item-value="value"
+                  label="Prompt 引用"
+                  multiple
+                  chips
+                  closable-chips
+                  density="compact"
+                  class="mb-3"
+                />
                 <v-combobox
                   v-model="form.keywords"
                   label="关键词"
@@ -40,6 +49,7 @@
                   chips
                   closable-chips
                   hint="回车添加关键词"
+                  density="compact"
                   class="mb-3"
                 />
                 <v-select
@@ -49,6 +59,7 @@
                   item-value="value"
                   label="工具引用"
                   multiple
+                  density="compact"
                   class="mb-3"
                 />
                 <v-select
@@ -58,22 +69,22 @@
                   item-value="value"
                   label="MCP 引用"
                   multiple
+                  density="compact"
                   class="mb-3"
                 />
+                <v-switch v-model="form.is_active" label="激活" color="primary" density="compact" hide-details />
               </v-col>
-            </v-row>
-            <div class="text-subtitle-2 mb-2">描述 (Markdown)</div>
-            <v-row>
-              <v-col cols="6">
+
+              <!-- 右侧：描述 Markdown 编辑器 -->
+              <v-col cols="8">
+                <div class="text-subtitle-2 mb-2">描述 (Markdown)</div>
                 <v-textarea
                   v-model="form.description"
-                  label="编辑"
-                  rows="6"
+                  label="Markdown 编辑"
+                  rows="16"
                   hide-details
+                  class="markdown-editor"
                 />
-              </v-col>
-              <v-col cols="6">
-                <div class="markdown-preview border rounded pa-3" style="min-height:140px;max-height:200px;overflow-y:auto" v-html="renderMarkdown(form.description || '')" />
               </v-col>
             </v-row>
           </v-form>
@@ -93,7 +104,7 @@
               <div class="mb-3"><strong>优先级:</strong> {{ viewItem?.priority }}</div>
               <div class="mb-3"><strong>状态:</strong> <v-chip size="small" :color="viewItem?.is_active?'success':'grey'" variant="tonal">{{ viewItem?.is_active ? '启用' : '停用' }}</v-chip></div>
               <div class="mb-3"><strong>正则模式:</strong> {{ viewItem?.regex_pattern || '-' }}</div>
-              <div class="mb-3"><strong>Prompt 引用:</strong> {{ viewItem?.prompt_ref || '-' }}</div>
+              <div class="mb-3"><strong>Prompt 引用:</strong> {{ (viewItem?.prompt_refs||[]).join(', ') || '-' }}</div>
               <div class="mb-3">
                 <strong>关键词:</strong>
                 <template v-if="(viewItem?.keywords||[]).length">
@@ -120,7 +131,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { skillApi, toolApi, mcpApi, type SkillResp, type AddSkillReq, type ToolConfigResp, type MCPServerResp } from '@/api'
+import { skillApi, toolApi, mcpApi, promptApi, type SkillResp, type AddSkillReq, type ToolConfigResp, type MCPServerResp, type PromptResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
@@ -129,6 +140,7 @@ const editing = ref<string | null>(null); const saving = ref(false); const delet
 const deleteTarget = ref<SkillResp | null>(null); const viewItem = ref<SkillResp | null>(null); const formRef = ref()
 const toolOptions = ref<{label: string; value: string}[]>([])
 const mcpOptions = ref<{label: string; value: string}[]>([])
+const promptOptions = ref<{label: string; value: string}[]>([])
 
 const headers = [
   { title: '名称', key: 'name' }, { title: '描述', key: 'description' }, { title: '关键词', key: 'keywords' },
@@ -136,14 +148,15 @@ const headers = [
   { title: '状态', key: 'is_active' }, { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
 ]
 
-const defaultForm = (): AddSkillReq => ({ name: '', is_active: false, description: '', keywords: [], regex_pattern: '', prompt_ref: '', tool_refs: [], mcp_refs: [], priority: 0 })
+const defaultForm = (): AddSkillReq => ({ name: '', is_active: false, description: '', keywords: [], regex_pattern: '', prompt_refs: [], tool_refs: [], mcp_refs: [], priority: 0 })
 const form = ref<AddSkillReq>(defaultForm())
 
 async function fetch() { loading.value = true; try { items.value = (await skillApi.list()).data.data } catch { toastStore.error('获取失败') } finally { loading.value = false } }
 async function fetchToolOptions() { try { const list = (await toolApi.list()).data.data || []; toolOptions.value = list.map((t: ToolConfigResp) => ({ label: `${t.name}${t.is_builtin ? ' (内置)' : ''}`, value: t.name })) } catch { /* ignore */ } }
 async function fetchMcpOptions() { try { const list = (await mcpApi.list()).data.data || []; mcpOptions.value = list.map((m: MCPServerResp) => ({ label: m.name, value: m.name })) } catch { /* ignore */ } }
+async function fetchPromptOptions() { try { const list = (await promptApi.list()).data.data || []; promptOptions.value = list.map((p: PromptResp) => ({ label: `${p.name}${p.is_system ? ' (系统)' : ''}`, value: p.id })) } catch { /* ignore */ } }
 function openAdd() { editing.value = null; form.value = defaultForm(); dialog.value = true }
-function openEdit(item: SkillResp) { editing.value = item.id; form.value = { name: item.name, is_active: item.is_active, description: item.description, keywords: item.keywords, regex_pattern: item.regex_pattern, prompt_ref: item.prompt_ref, tool_refs: item.tool_refs, mcp_refs: item.mcp_refs, priority: item.priority }; dialog.value = true }
+function openEdit(item: SkillResp) { editing.value = item.id; form.value = { name: item.name, is_active: item.is_active, description: item.description, keywords: item.keywords, regex_pattern: item.regex_pattern, prompt_refs: item.prompt_refs, tool_refs: item.tool_refs, mcp_refs: item.mcp_refs, priority: item.priority }; dialog.value = true }
 function openView(item: SkillResp) { viewItem.value = item; viewDialog.value = true }
 async function handleSave() { saving.value = true; try { if (editing.value) await skillApi.update(editing.value, form.value); else await skillApi.create(form.value); toastStore.success(editing.value ? '已更新' : '已创建'); dialog.value = false; await fetch() } catch (e: any) { toastStore.error(e?.message || '保存失败') } finally { saving.value = false } }
 function confirmDelete(item: SkillResp) { deleteTarget.value = item; deleteDialog.value = true }
@@ -179,10 +192,15 @@ function renderMarkdown(md: string): string {
   return html
 }
 
-onMounted(() => { fetch(); fetchToolOptions(); fetchMcpOptions() })
+onMounted(() => { fetch(); fetchToolOptions(); fetchMcpOptions(); fetchPromptOptions() })
 </script>
 
 <style scoped>
+.markdown-editor :deep(textarea) {
+  font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
 .markdown-preview :deep(h1) { font-size: 1.25rem; margin: 0.5rem 0; }
 .markdown-preview :deep(h2) { font-size: 1.1rem; margin: 0.4rem 0; }
 .markdown-preview :deep(h3) { font-size: 1rem; margin: 0.3rem 0; }

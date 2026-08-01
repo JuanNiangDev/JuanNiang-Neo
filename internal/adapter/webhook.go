@@ -13,25 +13,31 @@ import (
 	"time"
 )
 
+// PluginWebhookRouter routes webhook requests to specific plugins by name.
+type PluginWebhookRouter interface {
+	RouteWebhook(pluginName string, path string, method string, payload map[string]any) (consumed bool, reply string)
+}
+
 // WebhookConfig Webhook 适配器配置。
 type WebhookConfig struct {
-	Addr    string
-	Port    int
-	Token   string
-	Admins  []string
-	Enable  bool
+	Addr   string
+	Port   int
+	Token  string
+	Admins []string
+	Enable bool
 }
 
 // WebhookAdapter 是特殊的 adapter：监听独立端口接收 HTTP 请求，
 // 把请求转换为 webhook 事件发送给事件循环。
 // 插件层通过 on_webhook 回调处理此类事件，与 on_message 区分。
 type WebhookAdapter struct {
-	cfg     WebhookConfig
-	server  *http.Server
-	events  chan Event
-	mu      sync.RWMutex
-	closed  bool
-	listener net.Listener
+	cfg          WebhookConfig
+	server       *http.Server
+	events       chan Event
+	pluginRouter PluginWebhookRouter
+	mu           sync.RWMutex
+	closed       bool
+	listener     net.Listener
 }
 
 // NewWebhookAdapter 创建 Webhook adapter。events 为事件输出 channel。
@@ -40,6 +46,13 @@ func NewWebhookAdapter(cfg WebhookConfig, events chan Event) *WebhookAdapter {
 		cfg:    cfg,
 		events: events,
 	}
+}
+
+// SetPluginRouter 设置插件路由器，用于将 webhook 请求路由到指定插件。
+func (w *WebhookAdapter) SetPluginRouter(router PluginWebhookRouter) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pluginRouter = router
 }
 
 // Start 启动 Webhook adapter。
@@ -136,11 +149,27 @@ func (w *WebhookAdapter) SyncConfig(ctx context.Context, conf WebhookConfig) err
 	return w.Start(ctx)
 }
 
+// WebhookResponse 统一的 webhook 响应格式。
+type WebhookResponse struct {
+	Code     int    `json:"code"`
+	Message  string `json:"message"`
+	Metadata any    `json:"metadata,omitempty"`
+}
+
+// writeJSON 写入 JSON 响应并设置 HTTP 状态码。
+func writeJSON(rw http.ResponseWriter, status int, v any) {
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(status)
+	if err := json.NewEncoder(rw).Encode(v); err != nil {
+		slog.Error("webhook 响应写入失败", "err", err)
+	}
+}
+
 // handleRequest 处理进入的 HTTP 请求。
 func (w *WebhookAdapter) handleRequest(rw http.ResponseWriter, r *http.Request) {
 	// Token 校验
 	if w.cfg.Token != "" && !checkWebhookAuth(r, w.cfg.Token) {
-		http.Error(rw, "forbidden", http.StatusForbidden)
+		writeJSON(rw, http.StatusForbidden, WebhookResponse{Code: 403, Message: "forbidden"})
 		return
 	}
 
@@ -149,7 +178,7 @@ func (w *WebhookAdapter) handleRequest(rw http.ResponseWriter, r *http.Request) 
 	if r.Body != nil {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			http.Error(rw, "read body failed", http.StatusBadRequest)
+			writeJSON(rw, http.StatusBadRequest, WebhookResponse{Code: 400, Message: "read body failed"})
 			return
 		}
 		if len(body) > 0 {
@@ -163,6 +192,41 @@ func (w *WebhookAdapter) handleRequest(rw http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// 解析路径：/webhook/{plugin_name} → 路由到指定插件
+	path := strings.Trim(r.URL.Path, "/")
+	parts := strings.SplitN(path, "/", 3)
+
+	if len(parts) >= 2 && parts[0] == "webhook" && parts[1] != "" {
+		// 有插件名，走插件路由
+		pluginName := parts[1]
+		subPath := "/"
+		if len(parts) > 2 {
+			subPath = "/" + parts[2]
+		}
+
+		w.mu.RLock()
+		router := w.pluginRouter
+		w.mu.RUnlock()
+
+		if router != nil {
+			consumed, reply := router.RouteWebhook(pluginName, subPath, r.Method, payload)
+			if consumed {
+				var meta any
+				if reply != "" {
+					meta = reply
+				}
+				writeJSON(rw, http.StatusOK, WebhookResponse{Code: 0, Message: "ok", Metadata: meta})
+			} else {
+				writeJSON(rw, http.StatusNotFound, WebhookResponse{Code: 404, Message: reply})
+			}
+			return
+		}
+		// pluginRouter 未设置
+		writeJSON(rw, http.StatusNotFound, WebhookResponse{Code: 404, Message: "plugin router not available"})
+		return
+	}
+
+	// 无插件名：legacy 行为，广播到 events channel
 	ev := Event{
 		PostType: "webhook",
 		Time:     time.Now().Unix(),
@@ -176,11 +240,10 @@ func (w *WebhookAdapter) handleRequest(rw http.ResponseWriter, r *http.Request) 
 
 	select {
 	case w.events <- ev:
-		rw.WriteHeader(http.StatusOK)
-		rw.Write([]byte(`{"status":"ok"}`))
+		writeJSON(rw, http.StatusOK, WebhookResponse{Code: 0, Message: "ok"})
 	default:
 		slog.Warn("webhook events channel 满，丢弃事件")
-		http.Error(rw, "events channel full", http.StatusServiceUnavailable)
+		writeJSON(rw, http.StatusServiceUnavailable, WebhookResponse{Code: 503, Message: "events channel full"})
 	}
 }
 

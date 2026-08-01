@@ -16,7 +16,7 @@ type SkillConfig struct {
 	Description  string   `json:"description"`
 	Keywords     []string `json:"keywords"`
 	RegexPattern string   `json:"regex_pattern,omitempty"`
-	PromptRef    string   `json:"prompt_ref"`
+	PromptRefs   []string `json:"prompt_refs"`
 	ToolRefs     []string `json:"tool_refs,omitempty"`
 	McpRefs      []string `json:"mcp_refs,omitempty"`
 	IsActive     bool     `json:"is_active"`
@@ -27,9 +27,9 @@ type SkillConfig struct {
 // ---------- 引擎 ----------
 
 type SkillEngine struct {
-	mu      sync.RWMutex
-	skills  map[string]*SkillConfig // id -> skill
-	sorted  []*SkillConfig          // 按优先级排序
+	mu     sync.RWMutex
+	skills map[string]*SkillConfig // id -> skill
+	sorted []*SkillConfig          // 按优先级排序
 }
 
 func NewSkillEngine() *SkillEngine {

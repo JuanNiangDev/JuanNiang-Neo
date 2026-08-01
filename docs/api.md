@@ -370,13 +370,13 @@ Prompt 模板 CRUD。
 
 ## 9. Skills
 
-Skill = 关键词/正则触发的 Prompt+Tool 组合配置。`priority` 越大越优先。
+Skill = 关键词/正则触发的 Prompt+Tool 组合配置。`priority` 越大越优先。`prompt_refs` 支持引用多个 Prompt。
 
 ### GET /skills
-**data** `SkillResp[]`: `id`、`name`、`description`、`keywords` string[]、`regex_pattern`、`prompt_ref`、`tool_refs` string[]、`mcp_refs` string[]、`is_active`、`is_system`、`priority` int、`created_at`。
+**data** `SkillResp[]`: `id`、`name`、`description`、`keywords` string[]、`regex_pattern`、`prompt_refs` string[]、`tool_refs` string[]、`mcp_refs` string[]、`is_active`、`is_system`、`priority` int、`created_at`。
 
 ### POST /skills
-**Body** `AddSkillReq`: `name`（必填）；`description`、`keywords`、`regex_pattern`、`prompt_ref`、`tool_refs`、`mcp_refs`（可选）；`is_active`（必填）；`is_system`、`priority`（可选）。
+**Body** `AddSkillReq`: `name`（必填）；`description`、`keywords`、`regex_pattern`、`prompt_refs`、`tool_refs`、`mcp_refs`（可选）；`is_active`（必填）；`is_system`、`priority`（可选）。
 
 **data** `SkillResp`。
 

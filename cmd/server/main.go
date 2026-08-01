@@ -186,6 +186,9 @@ func main() {
 	}
 	hago.PluginEngine = pluginEngine
 
+	// 将 PluginEngine 注册为 Webhook 插件路由器
+	webhookAdapter.SetPluginRouter(pluginEngine)
+
 	// 将 PluginEngine 的 OnTimerCall 注入 CronJob 调度器
 	hago.CronJobManager.SetPluginTimer(pluginEngine, adapterCfg.Admins)
 

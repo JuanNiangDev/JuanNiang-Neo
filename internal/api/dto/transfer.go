@@ -54,7 +54,7 @@ func RawSkill2Resp(raw *models.Skill) SkillResp {
 		Description:  raw.Description,
 		Keywords:     raw.Keywords,
 		RegexPattern: raw.RegexPattern,
-		PromptRef:    raw.PromptRef,
+		PromptRefs:   raw.PromptRefs,
 		ToolRefs:     raw.ToolRefs,
 		McpRefs:      raw.McpRefs,
 		IsActive:     raw.IsActive,

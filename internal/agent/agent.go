@@ -27,29 +27,29 @@ import (
 
 // HagoCenter 是 Agent 系统的中央调度器，聚合所有子模块。
 type HagoCenter struct {
-	Adapter   *adapter.Adapter
+	Adapter        *adapter.Adapter
 	WebhookAdapter *adapter.WebhookAdapter
-	Providers *provider.ProviderGroup
-	MCP       *mcp.MCPGroup
-	Memory    *memory.MemoryGroup
-	Prompt    *prompt.PromptManager
-	Session   *session.SessionManager
-	Tools     *tool.ToolRegistry
-	Skills    *skill.SkillEngine
-	ACL       *acl.ACL
-	DAO       *dao.Bundle
+	Providers      *provider.ProviderGroup
+	MCP            *mcp.MCPGroup
+	Memory         *memory.MemoryGroup
+	Prompt         *prompt.PromptManager
+	Session        *session.SessionManager
+	Tools          *tool.ToolRegistry
+	Skills         *skill.SkillEngine
+	ACL            *acl.ACL
+	DAO            *dao.Bundle
 
 	// T2I 和 Sandbox 运行时客户端（可通过 API 热更新）
 	SandboxClient *sandboxcaller.Client
 	T2IClient     *t2icaller.Client
 
-	BgTaskExecutor    *BackgroundTaskExecutor
-	Drainer           *DrainerAgent
-	OutputChan        chan DrainerOutput // BgTaskExecutor → Drainer
-	BgTaskResultChan  chan DrainerOutput // Drainer → 主 Agent 事件循环
-	CronJobManager    *cronjob.Manager
-	CronJobEvents     chan adapter.Event // CronJob → 主 Agent 事件循环
-	PluginEngine      *pluggin.PluginEngine
+	BgTaskExecutor   *BackgroundTaskExecutor
+	Drainer          *DrainerAgent
+	OutputChan       chan DrainerOutput // BgTaskExecutor → Drainer
+	BgTaskResultChan chan DrainerOutput // Drainer → 主 Agent 事件循环
+	CronJobManager   *cronjob.Manager
+	CronJobEvents    chan adapter.Event // CronJob → 主 Agent 事件循环
+	PluginEngine     *pluggin.PluginEngine
 
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
 	SelfQQ       int64
@@ -82,10 +82,10 @@ type Config struct {
 // NewHagoCenter 创建并初始化 HagoCenter。
 func NewHagoCenter() *HagoCenter {
 	return &HagoCenter{
-		Providers:       provider.NewProviderGroup(),
-		MCP:             mcp.NewMCPGroup(),
-		Tools:           tool.NewToolRegistry(),
-		Skills:          skill.NewSkillEngine(),
+		Providers:        provider.NewProviderGroup(),
+		MCP:              mcp.NewMCPGroup(),
+		Tools:            tool.NewToolRegistry(),
+		Skills:           skill.NewSkillEngine(),
 		OutputChan:       make(chan DrainerOutput, 128),
 		BgTaskResultChan: make(chan DrainerOutput, 128),
 		CronJobEvents:    make(chan adapter.Event, 64),
@@ -231,7 +231,7 @@ func (h *HagoCenter) loadSkills(ctx context.Context) error {
 			Description:  s.Description,
 			Keywords:     s.Keywords,
 			RegexPattern: s.RegexPattern,
-			PromptRef:    s.PromptRef,
+			PromptRefs:   s.PromptRefs,
 			ToolRefs:     s.ToolRefs,
 			McpRefs:      s.McpRefs,
 			IsActive:     s.IsActive,

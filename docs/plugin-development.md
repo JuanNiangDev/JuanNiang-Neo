@@ -518,13 +518,22 @@ function on_webhook(event) → (consumed, reply)
 
 Webhook 事件永远不走 LLM Agent，是给插件做外部集成（如 GitHub push 通知）。
 
+**两种路由模式：**
+- **定向模式** (`/webhook/{plugin_name}`)：请求按插件名称精确路由，只有同名插件收到事件
+- **广播模式** (`/webhook` 或 `/`)：无插件名时，广播给所有有 `webhook` 权限的插件
+
+**返回值：**
+- `consumed` (bool): 是否已消费事件。广播模式下返回 `true` 会停止遍历后续插件
+- `reply` (string, 可选): 定向模式下，reply 会作为 HTTP 响应的 `metadata` 返回给调用方
+
 ```lua
 function on_webhook(event)
     local p = event.webhook and event.webhook.payload or {}
     if p.action == "opened" then
         jn.onebot11.send_group_msg(987654321, "新 PR: " .. (p.title or "?"))
+        return true, "PR opened notification sent"
     end
-    return false
+    return false, "unhandled action"
 end
 ```
 
