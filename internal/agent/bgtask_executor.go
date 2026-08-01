@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"strings"
 	"sync"
 
@@ -68,12 +68,12 @@ func (b *BackgroundTaskExecutor) executeTool(ctx context.Context, toolName strin
 	// 优先检查 MCP 工具（避免与内置工具同名时路由错误）
 	if b.mcpGroup != nil {
 		if b.mcpGroup.HasTool(ctx, toolName) {
-			slog.Info("BgTask 执行 MCP 工具", "tool", toolName)
+			logging.Info("BgTask 执行 MCP 工具", "tool", toolName)
 			return b.mcpGroup.CallTool(ctx, toolName, args)
 		}
 	}
 	// 回退到内置工具
-	slog.Info("BgTask 执行内置工具", "tool", toolName)
+	logging.Info("BgTask 执行内置工具", "tool", toolName)
 	return b.tools.Execute(ctx, toolName, args)
 }
 
@@ -93,9 +93,9 @@ func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, msgTy
 	hasFailed := false
 	var mu sync.Mutex
 
-	slog.Info("后台任务执行开始", "task_id", task.ID, "steps", len(steps))
+	logging.Info("后台任务执行开始", "task_id", task.ID, "steps", len(steps))
 	for _, s := range steps {
-		slog.Info("后台任务步骤", "task_id", task.ID, "step_id", s.ID, "tool", s.ToolName)
+		logging.Info("后台任务步骤", "task_id", task.ID, "step_id", s.ID, "tool", s.ToolName)
 	}
 
 	for len(completed) < len(steps) {
@@ -119,18 +119,18 @@ func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, msgTy
 
 			step := s
 			g.Go(func() error {
-				slog.Info("后台任务步骤执行中", "task_id", task.ID, "step_id", step.ID, "tool", step.ToolName)
+				logging.Info("后台任务步骤执行中", "task_id", task.ID, "step_id", step.ID, "tool", step.ToolName)
 				result, err := b.executeTool(gCtx, step.ToolName, step.Args)
 				mu.Lock()
 				defer mu.Unlock()
 
 				if err != nil {
-					slog.Error("后台任务步骤执行失败", "task_id", task.ID, "step_id", step.ID, "tool", step.ToolName, "err", err)
+					logging.Error("后台任务步骤执行失败", "task_id", task.ID, "step_id", step.ID, "tool", step.ToolName, "err", err)
 					results[step.ID] = "error: " + err.Error()
 					stepErrors[step.ID] = err.Error()
 					hasFailed = true
 				} else {
-					slog.Info("后台任务步骤执行完成", "task_id", task.ID, "step_id", step.ID, "tool", step.ToolName, "result_len", len(result))
+					logging.Info("后台任务步骤执行完成", "task_id", task.ID, "step_id", step.ID, "tool", step.ToolName, "result_len", len(result))
 					results[step.ID] = result
 				}
 				completed[step.ID] = true
@@ -196,12 +196,12 @@ func (b *BackgroundTaskExecutor) executeAsync(task *models.BackgroundTask, msgTy
 		UserPrompt:  userPrompt,
 	}
 
-	slog.Info("后台任务执行完成", "task_id", task.ID, "status", finalStatus, "failed", hasFailed)
+	logging.Info("后台任务执行完成", "task_id", task.ID, "status", finalStatus, "failed", hasFailed)
 }
 
 // Run 启动后台任务执行器，并恢复 DB 中未完成的任务。
 func (b *BackgroundTaskExecutor) Run(ctx context.Context) {
-	slog.Info("BackgroundTaskExecutor 已启动")
+	logging.Info("BackgroundTaskExecutor 已启动")
 
 	// 恢复重启前未完成的任务
 	b.recoverTasks(ctx)
@@ -213,20 +213,20 @@ func (b *BackgroundTaskExecutor) Run(ctx context.Context) {
 func (b *BackgroundTaskExecutor) recoverTasks(ctx context.Context) {
 	tasks, err := b.dao.ListPending(ctx)
 	if err != nil {
-		slog.Error("恢复后台任务失败: 查询 DB 出错", "err", err)
+		logging.Error("恢复后台任务失败: 查询 DB 出错", "err", err)
 		return
 	}
 	if len(tasks) == 0 {
 		return
 	}
 
-	slog.Info("正在恢复未完成的后台任务", "count", len(tasks))
+	logging.Info("正在恢复未完成的后台任务", "count", len(tasks))
 	for _, t := range tasks {
 		// 解析 Steps JSON → []TaskStep
 		stepsJSON, _ := json.Marshal(t.Steps)
 		var steps []TaskStep
 		if err := json.Unmarshal(stepsJSON, &steps); err != nil {
-			slog.Error("恢复任务失败: 解析步骤出错", "task_id", t.ID, "err", err)
+			logging.Error("恢复任务失败: 解析步骤出错", "task_id", t.ID, "err", err)
 			b.dao.UpdateStatus(ctx, t.ID, models.TaskStatusFailed)
 			continue
 		}
@@ -234,11 +234,11 @@ func (b *BackgroundTaskExecutor) recoverTasks(ctx context.Context) {
 		// 将 running 状态视为需要重新执行（可能是上次崩溃导致）
 		// 跳过缺少发送目标信息的旧任务（target_id=0 表示升级前创建的任务）
 		if t.TargetID == 0 || t.MessageType == "" {
-			slog.Warn("跳过无法恢复的旧任务（缺少发送目标）", "task_id", t.ID)
+			logging.Warn("跳过无法恢复的旧任务（缺少发送目标）", "task_id", t.ID)
 			b.dao.UpdateStatus(ctx, t.ID, models.TaskStatusFailed)
 			continue
 		}
-		slog.Info("恢复执行后台任务", "task_id", t.ID, "status", t.Status)
+		logging.Info("恢复执行后台任务", "task_id", t.ID, "status", t.Status)
 		go b.executeAsync(&t, t.MessageType, t.TargetID, t.UserPrompt, steps)
 	}
 }

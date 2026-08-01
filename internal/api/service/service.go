@@ -1,6 +1,19 @@
 package service
 
 import (
+	"archive/zip"
+	"context"
+	"crypto/rand"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"time"
+
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
@@ -10,19 +23,6 @@ import (
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
-	"archive/zip"
-	"context"
-	"crypto/rand"
-	"encoding/json"
-	"fmt"
-	"io"
-	"log/slog"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
-	"time"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -436,7 +436,7 @@ func (s *Service) AddMCPServer(ctx context.Context, c *app.RequestContext) {
 		client := mcp.NewSSEMCPClient(buildMcpSSEConfig(&m))
 		if err := client.Connect(ctx); err != nil {
 			// 连接失败不影响 DB 写入结果，仅记录日志
-			slog.Error("MCP 连接失败", "name", m.Name, "err", err)
+			logging.Error("MCP 连接失败", "name", m.Name, "err", err)
 		} else {
 			s.MCPGroup.AddMCP(client)
 		}
@@ -478,7 +478,7 @@ func (s *Service) UpdateMCPServer(ctx context.Context, c *app.RequestContext) {
 		if data.IsActive {
 			client := mcp.NewSSEMCPClient(buildMcpSSEConfig(&m))
 			if err := client.Connect(ctx); err != nil {
-				slog.Error("MCP 重连失败", "name", m.Name, "err", err)
+				logging.Error("MCP 重连失败", "name", m.Name, "err", err)
 			} else {
 				s.MCPGroup.AddMCP(client)
 			}
@@ -521,7 +521,7 @@ func (s *Service) ToggleMCPServer(ctx context.Context, c *app.RequestContext) {
 			if err == nil {
 				client := mcp.NewSSEMCPClient(buildMcpSSEConfig(raw))
 				if err := client.Connect(ctx); err != nil {
-					slog.Error("MCP 连接失败", "id", id, "err", err)
+					logging.Error("MCP 连接失败", "id", id, "err", err)
 				} else {
 					s.MCPGroup.AddMCP(client)
 				}
@@ -1027,11 +1027,11 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 	if s.PluginEngine != nil {
 		if data.IsActive {
 			if err := s.PluginEngine.Load(name); err != nil {
-				slog.Error("插件加载失败", "name", name, "err", err)
+				logging.Error("插件加载失败", "name", name, "err", err)
 			}
 		} else {
 			if err := s.PluginEngine.Unload(name); err != nil {
-				slog.Error("插件卸载失败", "name", name, "err", err)
+				logging.Error("插件卸载失败", "name", name, "err", err)
 			}
 		}
 	}
@@ -1039,7 +1039,7 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 	// 持久化启用/停用状态到插件自身的 pluggin.yaml
 	if s.PluginEngine != nil {
 		if err := s.PluginEngine.SetEnabled(name, data.IsActive); err != nil {
-			slog.Warn("写入插件 enabled 状态失败", "name", name, "err", err)
+			logging.Warn("写入插件 enabled 状态失败", "name", name, "err", err)
 		}
 	}
 
@@ -1059,7 +1059,7 @@ func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	if s.PluginEngine != nil {
 		if err := s.PluginEngine.Unload(name); err != nil {
 			// 非系统插件的卸载错误仅记录，不阻断删除流程
-			slog.Warn("插件卸载失败（继续删除流程）", "name", name, "err", err)
+			logging.Warn("插件卸载失败（继续删除流程）", "name", name, "err", err)
 		}
 	}
 
@@ -1067,14 +1067,14 @@ func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	dbPlugin, err := s.DAO.Plugin.GetByName(ctx, name)
 	if err == nil {
 		if err := s.DAO.Plugin.Delete(ctx, dbPlugin.ID); err != nil {
-			slog.Warn("插件 DB 记录删除失败", "name", name, "err", err)
+			logging.Warn("插件 DB 记录删除失败", "name", name, "err", err)
 		}
 	}
 
 	// 删除插件目录
 	pluginDir := filepath.Join("data/pluggins", name)
 	if err := os.RemoveAll(pluginDir); err != nil {
-		slog.Warn("插件目录删除失败", "dir", pluginDir, "err", err)
+		logging.Warn("插件目录删除失败", "dir", pluginDir, "err", err)
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
@@ -1087,7 +1087,7 @@ func (s *Service) ReloadAllPlugins(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	if err := s.PluginEngine.ReloadAll(); err != nil {
-		slog.Error("重载所有插件失败", "err", err)
+		logging.Error("重载所有插件失败", "err", err)
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -1542,7 +1542,7 @@ func (s *Service) UpdateWebhookConfig(ctx context.Context, c *app.RequestContext
 			Admins: s.Adapter.Admins(),
 		}
 		if err := s.WebhookAdapter.SyncConfig(ctx, conf); err != nil {
-			slog.Error("webhook adapter 配置同步失败", "err", err)
+			logging.Error("webhook adapter 配置同步失败", "err", err)
 		}
 	}
 

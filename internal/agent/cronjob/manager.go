@@ -3,7 +3,7 @@ package cronjob
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"sync"
 	"time"
 
@@ -56,11 +56,11 @@ func (m *Manager) SetPluginTimer(dispatcher PluginTimerDispatcher, admins []stri
 func (m *Manager) Run(ctx context.Context) {
 	m.reloadAll()
 	m.cron.Start()
-	slog.Info("CronJob 调度器已启动")
+	logging.Info("CronJob 调度器已启动")
 
 	<-ctx.Done()
 	m.cron.Stop()
-	slog.Info("CronJob 调度器已停止")
+	logging.Info("CronJob 调度器已停止")
 }
 
 // Reload 重新从 DB 加载所有启用的任务，移除已停用/删除的，添加新启用的。
@@ -85,7 +85,7 @@ func (m *Manager) reloadAll() {
 
 	jobs, err := m.dao.ListActive(ctx)
 	if err != nil {
-		slog.Error("CronJob: 加载任务失败", "err", err)
+		logging.Error("CronJob: 加载任务失败", "err", err)
 		return
 	}
 
@@ -95,11 +95,11 @@ func (m *Manager) reloadAll() {
 		fn := m.makeJobFunc(&job)
 		eid, err := m.cron.AddFunc(job.CronExpr, fn)
 		if err != nil {
-			slog.Error("CronJob: 注册任务失败", "name", job.Name, "cron_expr", job.CronExpr, "err", err)
+			logging.Error("CronJob: 注册任务失败", "name", job.Name, "cron_expr", job.CronExpr, "err", err)
 			continue
 		}
 		m.entries[job.ID] = eid
-		slog.Info("CronJob 任务已注册", "name", job.Name, "cron_expr", job.CronExpr, "msg_type", job.MessageType, "target", job.TargetID)
+		logging.Info("CronJob 任务已注册", "name", job.Name, "cron_expr", job.CronExpr, "msg_type", job.MessageType, "target", job.TargetID)
 	}
 }
 
@@ -107,28 +107,28 @@ func (m *Manager) reloadAll() {
 // 同时可选地将事件分发给插件 on_timer_call。
 func (m *Manager) makeJobFunc(job *models.CronJob) func() {
 	return func() {
-		slog.Info("CronJob 触发", "name", job.Name, "msg_type", job.MessageType, "target", job.TargetID)
+		logging.Info("CronJob 触发", "name", job.Name, "msg_type", job.MessageType, "target", job.TargetID)
 
 		// 更新最后执行时间
 		if err := m.dao.UpdateLastRun(context.Background(), job.ID, time.Now(), ""); err != nil {
-			slog.Warn("CronJob: 更新 last_run_at 失败", "name", job.Name, "err", err)
+			logging.Warn("CronJob: 更新 last_run_at 失败", "name", job.Name, "err", err)
 		}
 
 		// 1. 如果有 PluginIDs，分发给插件 on_timer_call
 		if job.PluginIDs != "" && m.pluginDispatcher != nil {
 			var pluginIDs []string
 			if err := json.Unmarshal([]byte(job.PluginIDs), &pluginIDs); err != nil {
-				slog.Warn("CronJob: 解析 plugin_ids 失败", "name", job.Name, "plugin_ids", job.PluginIDs, "err", err)
+				logging.Warn("CronJob: 解析 plugin_ids 失败", "name", job.Name, "plugin_ids", job.PluginIDs, "err", err)
 			} else if len(pluginIDs) > 0 {
 				var payload map[string]any
 				if job.Payload != "" {
 					if err := json.Unmarshal([]byte(job.Payload), &payload); err != nil {
-						slog.Warn("CronJob: 解析 payload 失败，使用空 payload", "name", job.Name, "payload", job.Payload, "err", err)
+						logging.Warn("CronJob: 解析 payload 失败，使用空 payload", "name", job.Name, "payload", job.Payload, "err", err)
 						payload = make(map[string]any)
 					}
 				}
 				m.pluginDispatcher.OnTimerCall(pluginIDs, payload, m.admins)
-				slog.Info("CronJob 已分发给插件", "name", job.Name, "plugins", pluginIDs)
+				logging.Info("CronJob 已分发给插件", "name", job.Name, "plugins", pluginIDs)
 			}
 		}
 
@@ -159,9 +159,9 @@ func (m *Manager) makeJobFunc(job *models.CronJob) func() {
 		// 非阻塞发送到 Agent 事件循环
 		select {
 		case m.eventChan <- ev:
-			slog.Info("CronJob 事件已注入 Agent 事件循环", "name", job.Name)
+			logging.Info("CronJob 事件已注入 Agent 事件循环", "name", job.Name)
 		default:
-			slog.Warn("CronJob: 事件通道已满，丢弃事件", "name", job.Name)
+			logging.Warn("CronJob: 事件通道已满，丢弃事件", "name", job.Name)
 		}
 	}
 }

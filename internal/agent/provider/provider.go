@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -69,7 +69,7 @@ func (p *openAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 
 		if resp.StatusCode != 200 {
 			body, _ := io.ReadAll(resp.Body)
-			slog.Error("provider stream 非200", "status", resp.StatusCode, "body", string(body))
+			logging.Error("provider stream 非200", "status", resp.StatusCode, "body", string(body))
 			return
 		}
 
@@ -85,7 +85,7 @@ func (p *openAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 			}
 			var chunk rawStreamChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				slog.Error("provider stream 解析失败", "err", err)
+				logging.Error("provider stream 解析失败", "err", err)
 				continue
 			}
 			if len(chunk.Choices) == 0 {

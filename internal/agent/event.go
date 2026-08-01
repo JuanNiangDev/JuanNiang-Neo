@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"strconv"
 	"strings"
 	"time"
@@ -24,7 +24,7 @@ const SilenceToken = "__NO_REPLY__"
 // 当 adapter 的 events channel 关闭时（如重启），会尝试等待后重新获取新的 channel，
 // 而不是直接退出事件循环。
 func (h *HagoCenter) runEventLoop(ctx context.Context) {
-	slog.Info("事件循环已启动")
+	logging.Info("事件循环已启动")
 
 	adapterEvents := h.Adapter.Events()
 
@@ -36,20 +36,20 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("事件循环已停止")
+			logging.Info("事件循环已停止")
 			return
 		case ev, ok := <-adapterEvents:
 			if !ok {
-				slog.Warn("Adapter events channel 已关闭，尝试重新获取...")
+				logging.Warn("Adapter events channel 已关闭，尝试重新获取...")
 				// 等待 adapter 重启后重新获取新的 channel
 				select {
 				case <-ctx.Done():
-					slog.Info("事件循环已停止")
+					logging.Info("事件循环已停止")
 					return
 				case <-time.After(time.Second):
 				}
 				adapterEvents = h.Adapter.Events()
-				slog.Info("已重新获取 Adapter events channel")
+				logging.Info("已重新获取 Adapter events channel")
 				continue
 			}
 			// 透传 Admins 列表（来自 adapter 配置）
@@ -65,7 +65,7 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 			if !ok {
 				continue
 			}
-			slog.Info("收到后台任务结果，注入主 Agent", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID, "media", len(output.MediaPayloads))
+			logging.Info("收到后台任务结果，注入主 Agent", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID, "media", len(output.MediaPayloads))
 			// 先发送媒体负载（图片等 CQ 码）直接到 QQ
 			if len(output.MediaPayloads) > 0 {
 				// 构造临时 MessageEvent 用于 sendReply
@@ -78,7 +78,7 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 					tmpMsg.GroupID = output.TargetID
 				}
 				for _, media := range output.MediaPayloads {
-					slog.Info("BgTaskResult 直接发送媒体", "cq_len", len(media))
+					logging.Info("BgTaskResult 直接发送媒体", "cq_len", len(media))
 					h.sendReply(tmpMsg, media)
 				}
 			}
@@ -89,7 +89,7 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 			if !ok {
 				continue
 			}
-			slog.Info("收到 CronJob 事件，注入 Agent", "post_type", ev.PostType)
+			logging.Info("收到 CronJob 事件，注入 Agent", "post_type", ev.PostType)
 			ev.Admins = h.Adapter.Admins()
 			h.processEvent(ctx, ev)
 		}
@@ -217,12 +217,12 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	if msg.MessageType == "private" {
 		cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 		if err != nil {
-			slog.Warn("获取回复策略失败，跳过过滤", "err", err)
+			logging.Warn("获取回复策略失败，跳过过滤", "err", err)
 		} else {
 			h.StripMarkdown = cfg.StripMarkdown
 			h.DisableSplit = cfg.AgentLite
 			if cfg.Strategy == models.StrategyNeverReply {
-				slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
+				logging.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
 				return
 			}
 			if cfg.Strategy == models.StrategyPluginOnly {
@@ -262,19 +262,19 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 
 	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
-		slog.Warn("获取回复策略失败，跳过过滤", "err", err)
+		logging.Warn("获取回复策略失败，跳过过滤", "err", err)
 	} else {
 		h.StripMarkdown = cfg.StripMarkdown
 		h.DisableSplit = cfg.AgentLite
 		switch cfg.Strategy {
 		case models.StrategyNeverReply:
 			// 完全不处理
-			slog.Debug("回复策略: 完全不回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+			logging.Debug("回复策略: 完全不回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
 			return
 		case models.StrategyAtOnly:
 			// 仅@我时回复，未被@则跳过
 			if !h.isAtSelf(msg.RawMessage) {
-				slog.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+				logging.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
 				return
 			}
 		case models.StrategyPluginOnly:
@@ -295,12 +295,12 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 				recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
 				score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, cfg.BotName)
 				if score < cfg.RelevanceThreshold {
-					slog.Debug("回复策略: 相关性不足，跳过",
+					logging.Debug("回复策略: 相关性不足，跳过",
 						"score", score, "threshold", cfg.RelevanceThreshold, "reason", reason,
 						"group_id", msg.GroupID, "user_id", msg.UserID)
 					return
 				}
-				slog.Debug("回复策略: 相关性通过",
+				logging.Debug("回复策略: 相关性通过",
 					"score", score, "threshold", cfg.RelevanceThreshold, "reason", reason)
 			}
 		}
@@ -354,7 +354,7 @@ func (h *HagoCenter) runPluginOnly(ctx context.Context, ev adapter.Event) {
 		}
 		h.PluginEngine.OnMessage(pluginEvent)
 	}
-	slog.Debug("回复策略: 仅 Plugin，跳过 Agent", "group_id", ev.Message.GroupID, "user_id", ev.Message.UserID)
+	logging.Debug("回复策略: 仅 Plugin，跳过 Agent", "group_id", ev.Message.GroupID, "user_id", ev.Message.UserID)
 }
 
 func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
@@ -376,19 +376,19 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 
 	chatArea, err := h.DAO.ChatArea.GetOrCreate(ctx, chatAreaType, targetID)
 	if err != nil {
-		slog.Error("获取 ChatArea 失败", "err", err)
+		logging.Error("获取 ChatArea 失败", "err", err)
 		return
 	}
 
 	// ACL 检查：admin 自动绕过；后台任务/定时任务事件也跳过
 	if !ev.IsBgTaskResult && !ev.IsCronJob && !isAdmin(userID, ev.Admins) && !h.ACL.CheckChat(ctx, userID, chatArea.ID) {
-		slog.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID, "scope", "chat")
+		logging.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID, "scope", "chat")
 		return
 	}
 
 	sess, err := h.Session.GetOrCreate(ctx, chatArea.ID)
 	if err != nil {
-		slog.Error("获取 Session 失败", "err", err)
+		logging.Error("获取 Session 失败", "err", err)
 		return
 	}
 
@@ -398,7 +398,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 
 	llm := h.Providers.SelectModel(provider.ModelTypeText)
 	if llm == nil {
-		slog.Error("无可用 Text 模型")
+		logging.Error("无可用 Text 模型")
 		return
 	}
 
@@ -483,7 +483,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 
 	resp, err := llm.Chat(ctx, req)
 	if err != nil {
-		slog.Error("LLM 调用失败", "err", err)
+		logging.Error("LLM 调用失败", "err", err)
 		return
 	}
 
@@ -492,7 +492,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	if resp.Message.Content != "" {
 		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(resp.Message.Content)
 		if silenced {
-			slog.Info("群聊静默响应已丢弃", "content", resp.Message.Content, "group_id", msg.GroupID)
+			logging.Info("群聊静默响应已丢弃", "content", resp.Message.Content, "group_id", msg.GroupID)
 		} else {
 			h.sendReply(msg, resp.Message.Content)
 			h.recordChat(ctx, chatArea.ID, userID, "assistant", resp.Message.Content, resp.TokenUsage, marshalToolCalls(resp.Message.ToolCalls))
@@ -537,7 +537,7 @@ func (h *HagoCenter) handleToolCalls(
 		isMCPTool := h.MCP != nil && h.MCP.HasTool(ctx, toolName)
 		_, isRegistryTool := h.Tools.Get(toolName)
 
-		slog.Info("Tool 调用开始", "tool", toolName, "is_mcp", isMCPTool, "is_builtin", isRegistryTool,
+		logging.Info("Tool 调用开始", "tool", toolName, "is_mcp", isMCPTool, "is_builtin", isRegistryTool,
 			"chat_area_id", chatAreaID, "user_id", userID)
 
 		if isMCPTool {
@@ -552,7 +552,7 @@ func (h *HagoCenter) handleToolCalls(
 						Name:       toolName,
 					})
 					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0, nil)
-					slog.Info("ACL 拒绝 MCP 调用", "user_id", userID, "tool", toolName)
+					logging.Info("ACL 拒绝 MCP 调用", "user_id", userID, "tool", toolName)
 					continue
 				}
 			}
@@ -564,10 +564,10 @@ func (h *HagoCenter) handleToolCalls(
 				}
 				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), userMsg, steps)
 				if err != nil {
-					slog.Error("提交后台任务失败(MCP)", "tool", toolName, "err", err)
+					logging.Error("提交后台任务失败(MCP)", "tool", toolName, "err", err)
 					continue
 				}
-				slog.Info("MCP 长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
+				logging.Info("MCP 长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
 				h.sendReply(msg, fmt.Sprintf("MCP 任务 %s 已提交后台执行...", toolName))
 				history = append(history, provider.ChatMessage{
 					Role:       "tool",
@@ -578,13 +578,13 @@ func (h *HagoCenter) handleToolCalls(
 				continue
 			}
 
-			slog.Info("MCP Tool 执行中", "tool", toolName)
+			logging.Info("MCP Tool 执行中", "tool", toolName)
 			result, err := h.MCP.CallTool(ctx, toolName, args)
 			if err != nil {
 				result = fmt.Sprintf("MCP调用失败: %s", err.Error())
-				slog.Error("MCP调用失败", "tool", toolName, "err", err)
+				logging.Error("MCP调用失败", "tool", toolName, "err", err)
 			} else {
-				slog.Info("MCP Tool 执行完成", "tool", toolName, "result_len", len(result))
+				logging.Info("MCP Tool 执行完成", "tool", toolName, "result_len", len(result))
 			}
 
 			history = append(history, provider.ChatMessage{
@@ -606,7 +606,7 @@ func (h *HagoCenter) handleToolCalls(
 						Name:       toolName,
 					})
 					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0, nil)
-					slog.Info("ACL 拒绝工具调用", "user_id", userID, "tool", toolName)
+					logging.Info("ACL 拒绝工具调用", "user_id", userID, "tool", toolName)
 					continue
 				}
 			}
@@ -617,11 +617,11 @@ func (h *HagoCenter) handleToolCalls(
 				}
 				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), userMsg, steps)
 				if err != nil {
-					slog.Error("提交后台任务失败", "tool", toolName, "err", err)
+					logging.Error("提交后台任务失败", "tool", toolName, "err", err)
 					continue
 				}
 
-				slog.Info("内置长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
+				logging.Info("内置长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
 				h.sendReply(msg, fmt.Sprintf("任务 %s 已提交后台执行...", toolName))
 				history = append(history, provider.ChatMessage{
 					Role:       "tool",
@@ -632,13 +632,13 @@ func (h *HagoCenter) handleToolCalls(
 				continue
 			}
 
-			slog.Info("内置 Tool 执行中", "tool", toolName)
+			logging.Info("内置 Tool 执行中", "tool", toolName)
 			result, err := h.Tools.Execute(ctx, toolName, args)
 			if err != nil {
 				result = fmt.Sprintf("工具执行失败: %s", err.Error())
-				slog.Error("内置工具执行失败", "tool", toolName, "err", err)
+				logging.Error("内置工具执行失败", "tool", toolName, "err", err)
 			} else {
-				slog.Info("内置 Tool 执行完成", "tool", toolName, "result_len", len(result))
+				logging.Info("内置 Tool 执行完成", "tool", toolName, "result_len", len(result))
 			}
 
 			history = append(history, provider.ChatMessage{
@@ -651,7 +651,7 @@ func (h *HagoCenter) handleToolCalls(
 		} else {
 			// 未找到工具
 			errMsg := fmt.Sprintf("工具 %q 未找到 (非内置工具也非 MCP 工具)", toolName)
-			slog.Error("工具未找到", "tool", toolName)
+			logging.Error("工具未找到", "tool", toolName)
 			history = append(history, provider.ChatMessage{
 				Role:       "tool",
 				Content:    errMsg,
@@ -668,7 +668,7 @@ func (h *HagoCenter) handleToolCalls(
 		Temperature: 0.7,
 	})
 	if err != nil {
-		slog.Error("LLM followUp 调用失败", "err", err)
+		logging.Error("LLM followUp 调用失败", "err", err)
 		return
 	}
 
@@ -754,7 +754,7 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
 			_, err = h.Adapter.SendGroupMsg(msg.GroupID, part)
 		}
 		if err != nil {
-			slog.Error("发送消息失败", "err", err)
+			logging.Error("发送消息失败", "err", err)
 		}
 	}
 }
@@ -819,7 +819,7 @@ func getTargetID(msg *adapter.MessageEvent) int64 {
 
 func (h *HagoCenter) recordChat(ctx context.Context, chatAreaID string, userID int64, role, content string, tokens int, toolCalls models.JSONMap) {
 	if err := h.Session.AppendRecord(ctx, chatAreaID, userID, role, content, tokens, toolCalls); err != nil {
-		slog.Error("记录聊天失败", "err", err)
+		logging.Error("记录聊天失败", "err", err)
 	}
 }
 

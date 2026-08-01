@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/cache"
@@ -121,7 +121,7 @@ func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provid
 		},
 	})
 	if err != nil {
-		slog.Error("Compact LLM 调用失败", "err", err)
+		logging.Error("Compact LLM 调用失败", "err", err)
 		return err
 	}
 
@@ -130,7 +130,7 @@ func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provid
 		return fmt.Errorf("compact 写入长期记忆失败: %w", err)
 	}
 
-	slog.Info("短期记忆 Compact 完成", "area_id", areaID, "summary_len", len(summary))
+	logging.Info("短期记忆 Compact 完成", "area_id", areaID, "summary_len", len(summary))
 	return nil
 }
 

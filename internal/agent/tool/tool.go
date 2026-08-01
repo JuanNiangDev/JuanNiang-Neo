@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"sync"
 	"time"
 
@@ -99,15 +99,15 @@ func (tr *ToolRegistry) Execute(ctx context.Context, name string, args json.RawM
 	execCtx := ctx
 
 	start := time.Now()
-	slog.Info("Tool 执行开始", "tool", name, "args", string(args))
+	logging.Info("Tool 执行开始", "tool", name, "args", string(args))
 
 	result, err := t.Execute(execCtx, args)
 	elapsed := time.Since(start)
 	if err != nil {
-		slog.Error("Tool 执行失败", "tool", name, "elapsed", elapsed, "err", err)
+		logging.Error("Tool 执行失败", "tool", name, "elapsed", elapsed, "err", err)
 		return "", err
 	}
-	slog.Info("Tool 执行完成", "tool", name, "elapsed", elapsed, "result_len", len(result))
+	logging.Info("Tool 执行完成", "tool", name, "elapsed", elapsed, "result_len", len(result))
 	return result, nil
 }
 

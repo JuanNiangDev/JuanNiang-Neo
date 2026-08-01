@@ -3,7 +3,7 @@ package acl
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"strconv"
 
 	"JuanNiang-Neo/internal/core/dao"
@@ -30,7 +30,7 @@ func NewACL(dao *dao.ACLDAO) *ACL {
 func (a *ACL) Check(ctx context.Context, userID int64, chatAreaID string, scope models.ACLScope) bool {
 	rules, err := a.dao.GetByChatAreaAndScope(ctx, chatAreaID, scope)
 	if err != nil {
-		slog.Error("ACL 查询失败", "user_id", userID, "chat_area_id", chatAreaID, "scope", scope, "err", err)
+		logging.Error("ACL 查询失败", "user_id", userID, "chat_area_id", chatAreaID, "scope", scope, "err", err)
 		return true // 查询失败默认允许
 	}
 	if len(rules) == 0 {

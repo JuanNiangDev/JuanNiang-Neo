@@ -3,7 +3,7 @@ package prompt
 import (
 	"context"
 	"crypto/rand"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"strings"
 
 	"JuanNiang-Neo/internal/core/dao"
@@ -202,7 +202,7 @@ func (pm *PromptManager) BuildSystemPrompt(ctx context.Context) (string, error) 
 	// 1. 系统锁定提示词（最优先，确保始终生效）
 	locked, err := pm.dao.ListSystemLocked(ctx)
 	if err != nil {
-		slog.Warn("加载系统锁定提示词失败", "err", err)
+		logging.Warn("加载系统锁定提示词失败", "err", err)
 	} else {
 		for _, p := range locked {
 			parts = append(parts, p.Content)
@@ -297,13 +297,13 @@ func (pm *PromptManager) EnsureSystemPrompt(ctx context.Context) error {
 			if err := pm.dao.Update(ctx, existing); err != nil {
 				return err
 			}
-			slog.Info("系统锁定提示词已同步到最新版本", "id", existing.ID)
+			logging.Info("系统锁定提示词已同步到最新版本", "id", existing.ID)
 		}
 		return nil
 	}
 	if err != nil && !strings.Contains(err.Error(), "not found") && !strings.Contains(err.Error(), "no rows") {
 		// 其它错误才报警；record not found 走创建分支
-		slog.Warn("查询系统锁定提示词失败", "err", err)
+		logging.Warn("查询系统锁定提示词失败", "err", err)
 	}
 
 	p := &models.Prompt{
@@ -317,7 +317,7 @@ func (pm *PromptManager) EnsureSystemPrompt(ctx context.Context) error {
 	if err := pm.dao.Create(ctx, p); err != nil {
 		return err
 	}
-	slog.Info("系统锁定提示词已创建", "id", p.ID)
+	logging.Info("系统锁定提示词已创建", "id", p.ID)
 	return nil
 }
 

@@ -3,7 +3,7 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 )
 
 // ============================================================
@@ -335,7 +335,7 @@ func normalizeMessage(msg any) any {
 	case *MessageBuilder:
 		return v.Build()
 	default:
-		slog.Warn("未知消息类型", "type", fmt.Sprintf("%T", msg))
+		logging.Warn("未知消息类型", "type", fmt.Sprintf("%T", msg))
 		return fmt.Sprint(v)
 	}
 }

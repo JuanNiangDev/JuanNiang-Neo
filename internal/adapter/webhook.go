@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"net"
 	"net/http"
 	"strings"
@@ -86,11 +86,11 @@ func (w *WebhookAdapter) Start(ctx context.Context) error {
 
 	w.closed = false
 	go func() {
-		slog.Info("webhook adapter 已启动", "addr", addr)
+		logging.Info("webhook adapter 已启动", "addr", addr)
 		if err := w.server.Serve(listener); err != nil && !isServerClosed(err) {
-			slog.Error("webhook serve 异常", "err", err)
+			logging.Error("webhook serve 异常", "err", err)
 		}
-		slog.Info("webhook adapter 已停止", "addr", addr)
+		logging.Info("webhook adapter 已停止", "addr", addr)
 	}()
 
 	return nil
@@ -161,7 +161,7 @@ func writeJSON(rw http.ResponseWriter, status int, v any) {
 	rw.Header().Set("Content-Type", "application/json")
 	rw.WriteHeader(status)
 	if err := json.NewEncoder(rw).Encode(v); err != nil {
-		slog.Error("webhook 响应写入失败", "err", err)
+		logging.Error("webhook 响应写入失败", "err", err)
 	}
 }
 
@@ -242,7 +242,7 @@ func (w *WebhookAdapter) handleRequest(rw http.ResponseWriter, r *http.Request) 
 	case w.events <- ev:
 		writeJSON(rw, http.StatusOK, WebhookResponse{Code: 0, Message: "ok"})
 	default:
-		slog.Warn("webhook events channel 满，丢弃事件")
+		logging.Warn("webhook events channel 满，丢弃事件")
 		writeJSON(rw, http.StatusServiceUnavailable, WebhookResponse{Code: 503, Message: "events channel full"})
 	}
 }

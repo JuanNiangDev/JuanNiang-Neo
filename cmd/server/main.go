@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log/slog"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -30,6 +29,7 @@ import (
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
+	"JuanNiang-Neo/internal/metainfo"
 	"JuanNiang-Neo/internal/pluggin"
 	"JuanNiang-Neo/internal/web"
 
@@ -46,28 +46,28 @@ func main() {
 	flag.Parse()
 
 	// ---------- 日志 ----------
-	logLevel := slog.LevelInfo
+	logLevel := logging.INFO
 	if *debug {
-		logLevel = slog.LevelDebug
+		logLevel = logging.DEBUG
 	}
-	slog.SetDefault(slog.New(logging.NewHandler(os.Stdout, logging.Default, &slog.HandlerOptions{
-		Level: logLevel,
-	})))
+	logging.SetLevel(logLevel)
+	logging.SetOutput(os.Stdout)
+	logging.SetHub(logging.Default)
 
-	slog.Info("JuanNiang-Neo 启动中...")
+	logging.Info("JuanNiang-Neo 启动中...", "version", metainfo.Get().Version)
 
 	// ---------- Debug 模式 ----------
 	if *debug {
-		slog.Info("🐛 Debug 模式已启用",
+		logging.Info("🐛 Debug 模式已启用",
 			"pprof_addr", *pprofAddr,
 			"go_version", runtime.Version(),
 			"cpu_num", runtime.NumCPU(),
 			"goroot", runtime.GOROOT(),
 		)
 		go func() {
-			slog.Info("pprof HTTP 已启动", "addr", *pprofAddr)
+			logging.Info("pprof HTTP 已启动", "addr", *pprofAddr)
 			if err := http.ListenAndServe(*pprofAddr, nil); err != nil {
-				slog.Error("pprof 服务异常退出", "err", err)
+				logging.Error("pprof 服务异常退出", "err", err)
 			}
 		}()
 	}
@@ -81,10 +81,10 @@ func main() {
 		postgres.WithDefaultDB(env("DB_NAME", "juan")),
 	)
 	if err != nil {
-		slog.Error("Postgres 连接失败", "err", err)
+		logging.Error("Postgres 连接失败", "err", err)
 		os.Exit(1)
 	}
-	slog.Info("Postgres 已连接")
+	logging.Info("Postgres 已连接")
 
 	redisClient, err := redis.NewRedisSentinelClient(
 		redis.WithAddr(env("REDIS_ADDR", "localhost:6379")),
@@ -92,17 +92,17 @@ func main() {
 		redis.WithDB(mustAtoi(env("REDIS_DB", "0"))),
 	)
 	if err != nil {
-		slog.Error("Redis 连接失败", "err", err)
+		logging.Error("Redis 连接失败", "err", err)
 		os.Exit(1)
 	}
-	slog.Info("Redis 已连接")
+	logging.Info("Redis 已连接")
 
 	coreInst, err := core.Init(ctx, db, redisClient)
 	if err != nil {
-		slog.Error("Core 初始化失败", "err", err)
+		logging.Error("Core 初始化失败", "err", err)
 		os.Exit(1)
 	}
-	slog.Info("Core 已初始化")
+	logging.Info("Core 已初始化")
 
 	if s := os.Getenv("JWT_SECRET"); s != "" {
 		middleware.JWTSecret = []byte(s)
@@ -112,18 +112,18 @@ func main() {
 	adapterProv := adapter.New(adapterCfg)
 	if adapterCfg.Enable {
 		if err := adapterProv.Start(ctx); err != nil {
-			slog.Error("Adapter 启动失败", "err", err)
+			logging.Error("Adapter 启动失败", "err", err)
 			os.Exit(1)
 		}
 	} else {
-		slog.Info("Adapter 已禁用（DB 配置 Enable=false），跳过启动")
+		logging.Info("Adapter 已禁用（DB 配置 Enable=false），跳过启动")
 	}
 
 	// ---------- 4b. Webhook Adapter ----------
 	webhookEvents := make(chan adapter.Event, 128)
 	webhookCfg, err := loadWebhookConfig(ctx, coreInst.DAO)
 	if err != nil {
-		slog.Warn("Webhook 配置加载失败", "err", err)
+		logging.Warn("Webhook 配置加载失败", "err", err)
 	}
 	webhookAdapter := adapter.NewWebhookAdapter(adapter.WebhookConfig{
 		Addr:   webhookCfg.Addr,
@@ -134,7 +134,7 @@ func main() {
 	}, webhookEvents)
 	if webhookCfg.Enabled {
 		if err := webhookAdapter.Start(ctx); err != nil {
-			slog.Error("Webhook adapter 启动失败", "err", err)
+			logging.Error("Webhook adapter 启动失败", "err", err)
 			os.Exit(1)
 		}
 	}
@@ -153,12 +153,12 @@ func main() {
 		ACL:            coreInst.ACL,
 		Cache:          coreInst.Cache,
 	}); err != nil {
-		slog.Error("Agent 初始化失败", "err", err)
+		logging.Error("Agent 初始化失败", "err", err)
 		os.Exit(1)
 	}
 
 	if err := hago.Start(ctx); err != nil {
-		slog.Error("Agent 启动失败", "err", err)
+		logging.Error("Agent 启动失败", "err", err)
 		os.Exit(1)
 	}
 
@@ -175,13 +175,13 @@ func main() {
 		hago,
 	)
 	if err := pluginEngine.LoadAll(); err != nil {
-		slog.Error("插件加载失败", "err", err)
+		logging.Error("插件加载失败", "err", err)
 	}
 	if *debug {
 		plugins := pluginEngine.List()
-		slog.Debug("插件加载完毕", "count", len(plugins))
+		logging.Debug("插件加载完毕", "count", len(plugins))
 		for _, p := range plugins {
-			slog.Debug("  → 插件", "name", p.Name, "version", p.Version, "system", p.System, "permissions", p.Permissions)
+			logging.Debug("  → 插件", "name", p.Name, "version", p.Version, "system", p.System, "permissions", p.Permissions)
 		}
 	}
 	hago.PluginEngine = pluginEngine
@@ -216,7 +216,7 @@ func main() {
 	//   - 目录不存在或未构建时, 后端走引导提示页, 不影响 API 与 /health。
 	webDir := env("WEB_DIR", "web/dist")
 	if err := web.EnsureDir(webDir); err != nil {
-		slog.Warn("WEB_DIR 校验失败", "dir", webDir, "err", err)
+		logging.Warn("WEB_DIR 校验失败", "dir", webDir, "err", err)
 	}
 	webEngine := engine.New(env("API_ADDR", ":8090"), webDir, svc)
 
@@ -226,11 +226,11 @@ func main() {
 	// 这里我们只复用 Hertz 的 Run, 用主 ctx 显式控制生命周期。
 	webErrCh := make(chan error, 1)
 	go func() {
-		slog.Info("Web API 已启动", "addr", env("API_ADDR", ":8090"))
+		logging.Info("Web API 已启动", "addr", env("API_ADDR", ":8090"))
 		webErrCh <- webEngine.Run()
 	}()
 
-	slog.Info("JuanNiang-Neo 已就绪",
+	logging.Info("JuanNiang-Neo 已就绪",
 		"adapter_addr", adapterProv.Status().ListenAddr,
 		"api_addr", env("API_ADDR", ":8090"),
 		"plugins", len(pluginEngine.List()),
@@ -241,7 +241,7 @@ func main() {
 	// 主 ctx 在收到 Ctrl-C / SIGTERM 时被取消。我们以反向顺序停掉各组件,
 	// 全部用带 deadline 的 shutdownCtx, 避免任何子组件挂死拖垮整体退出。
 	<-ctx.Done()
-	slog.Info("收到退出信号，正在关闭...")
+	logging.Info("收到退出信号，正在关闭...")
 
 	// watchdog: 若 15s 内未完成优雅退出则强制结束, 避免任何 Stop 调用挂死。
 	shutdownBudget := 15 * time.Second
@@ -252,9 +252,9 @@ func main() {
 	}()
 	select {
 	case <-done:
-		slog.Info("已优雅退出")
+		logging.Info("已优雅退出")
 	case <-time.After(shutdownBudget):
-		slog.Error("优雅关闭超时, 强制退出", "budget", shutdownBudget)
+		logging.Error("优雅关闭超时, 强制退出", "budget", shutdownBudget)
 		os.Exit(1)
 	}
 }
@@ -268,21 +268,21 @@ func shutdown(adapterProv *adapter.Adapter, webhookAdapter *adapter.WebhookAdapt
 	// 8.2 停 Webhook adapter。
 	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := webhookAdapter.Stop(stopCtx); err != nil {
-		slog.Warn("Webhook adapter 关闭出错", "err", err)
+		logging.Warn("Webhook adapter 关闭出错", "err", err)
 	}
 	cancel()
 
 	// 8.3 停 OneBot11 反向 WS adapter。
 	stopCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	if err := adapterProv.Stop(stopCtx); err != nil {
-		slog.Warn("Adapter 关闭出错", "err", err)
+		logging.Warn("Adapter 关闭出错", "err", err)
 	}
 	cancel()
 
 	// 8.4 停 Web 引擎 (adapter 已停, 不再有请求竞争 adapter 锁)。
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := webEngine.Shutdown(shutdownCtx); err != nil {
-		slog.Warn("Web 引擎关闭出错", "err", err)
+		logging.Warn("Web 引擎关闭出错", "err", err)
 	}
 	cancel()
 
@@ -319,17 +319,17 @@ func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, 
 	if err != nil {
 		// 数据库无配置 → 初始化默认配置，保证前端读取不报错
 		if initErr := daos.T2I.InitConfig(ctx); initErr != nil {
-			slog.Warn("T2I 默认配置初始化失败", "err", initErr)
+			logging.Warn("T2I 默认配置初始化失败", "err", initErr)
 			return
 		}
 		cfg, err = daos.T2I.GetConfig(ctx)
 		if err != nil {
-			slog.Warn("T2I 配置加载失败，使用默认", "err", err)
+			logging.Warn("T2I 配置加载失败，使用默认", "err", err)
 			return
 		}
 	}
 	if !cfg.IsActive {
-		slog.Info("T2I 未启用")
+		logging.Info("T2I 未启用")
 		return
 	}
 	client, err := t2i.NewClient(
@@ -337,12 +337,12 @@ func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, 
 		t2i.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
 	)
 	if err != nil {
-		slog.Warn("T2I 客户端创建失败", "err", err)
+		logging.Warn("T2I 客户端创建失败", "err", err)
 		return
 	}
 	svc.T2IClient = client
 	hago.T2IClient = client
-	slog.Info("T2I 客户端已就绪", "base_url", cfg.BaseURL)
+	logging.Info("T2I 客户端已就绪", "base_url", cfg.BaseURL)
 }
 
 func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
@@ -350,17 +350,17 @@ func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bund
 	if err != nil {
 		// 数据库无配置 → 初始化默认配置，保证前端读取不报错
 		if initErr := daos.Sandbox.InitConfig(ctx); initErr != nil {
-			slog.Warn("Sandbox 默认配置初始化失败", "err", initErr)
+			logging.Warn("Sandbox 默认配置初始化失败", "err", initErr)
 			return
 		}
 		cfg, err = daos.Sandbox.GetConfig(ctx)
 		if err != nil {
-			slog.Warn("Sandbox 配置加载失败，使用默认", "err", err)
+			logging.Warn("Sandbox 配置加载失败，使用默认", "err", err)
 			return
 		}
 	}
 	if !cfg.IsActive {
-		slog.Info("Sandbox 未启用")
+		logging.Info("Sandbox 未启用")
 		return
 	}
 	client, err := sandbox.NewClient(
@@ -369,12 +369,12 @@ func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bund
 		sandbox.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
 	)
 	if err != nil {
-		slog.Warn("Sandbox 客户端创建失败", "err", err)
+		logging.Warn("Sandbox 客户端创建失败", "err", err)
 		return
 	}
 	svc.SandboxClient = client
 	hago.SandboxClient = client
-	slog.Info("Sandbox 客户端已就绪", "base_url", cfg.BaseURL)
+	logging.Info("Sandbox 客户端已就绪", "base_url", cfg.BaseURL)
 }
 
 // loadWebhookConfig 从 DB 加载 Webhook 配置；若不存在则使用默认值并初始化 DB。
@@ -410,12 +410,12 @@ func loadAdapterConfig(ctx context.Context, daos *dao.Bundle) adapter.Config {
 	if err != nil {
 		// DB 中无记录 → 初始化默认配置
 		if initErr := daos.Onebot11Adapter.InitAdapterConfig(ctx); initErr != nil {
-			slog.Warn("Adapter 配置初始化失败，使用 env 默认值", "err", initErr)
+			logging.Warn("Adapter 配置初始化失败，使用 env 默认值", "err", initErr)
 			return defaultCfg
 		}
 		cfg, err = daos.Onebot11Adapter.GetAdapterConfig(ctx)
 		if err != nil {
-			slog.Warn("Adapter 配置加载失败，使用 env 默认值", "err", err)
+			logging.Warn("Adapter 配置加载失败，使用 env 默认值", "err", err)
 			return defaultCfg
 		}
 	}

@@ -8,12 +8,14 @@ import (
 // MaxBuffer 是环形缓冲区容量，对应"最近 250 条日志"。
 const MaxBuffer = 250
 
-// Entry 表示一条日志记录。
+// Entry 表示一条日志记录（stdout + Web SSE 统一格式）。
 type Entry struct {
 	Time    time.Time      `json:"time"`
 	Level   string         `json:"level"`
+	Module  string         `json:"module"`
 	Message string         `json:"message"`
 	Attrs   map[string]any `json:"attrs,omitempty"`
+	Rich    map[string]any `json:"rich,omitempty"` // WARN/ERROR 额外诊断信息
 }
 
 // Hub 是日志中心：维护最近 MaxBuffer 条日志的环形缓冲，并把新日志广播给订阅者。
@@ -23,8 +25,8 @@ type Entry struct {
 type Hub struct {
 	mu          sync.RWMutex
 	buffer      []Entry
-	head        int           // 环形缓冲下一个写入位置
-	full        bool          // 缓冲是否已经写满
+	head        int  // 环形缓冲下一个写入位置
+	full        bool // 缓冲是否已经写满
 	subscribers map[chan Entry]struct{}
 }
 

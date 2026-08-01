@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -229,11 +229,11 @@ func (pe *PluginEngine) LoadAll() error {
 		// 读取 manifest 判断 enabled 状态（非系统插件且 enabled=false 则跳过）
 		manifest, _ := pe.readManifest(filepath.Join(pe.basePath, entry.Name()))
 		if manifest != nil && !manifest.Enabled && !manifest.System {
-			slog.Info("插件已禁用，跳过加载", "name", entry.Name())
+			logging.Info("插件已禁用，跳过加载", "name", entry.Name())
 			continue
 		}
 		if err := pe.Load(entry.Name()); err != nil {
-			slog.Error("插件加载失败", "name", entry.Name(), "err", err)
+			logging.Error("插件加载失败", "name", entry.Name(), "err", err)
 		}
 	}
 	return nil
@@ -257,9 +257,9 @@ func (pe *PluginEngine) Load(name string) error {
 	if manifest.PPID == "" {
 		manifest.PPID = newPluginUUID()
 		if werr := pe.writeManifest(pluginDir, manifest); werr != nil {
-			slog.Warn("写回插件 PPID 失败", "name", name, "err", werr)
+			logging.Warn("写回插件 PPID 失败", "name", name, "err", werr)
 		} else {
-			slog.Info("已为插件生成 PPID", "name", name, "ppid", manifest.PPID)
+			logging.Info("已为插件生成 PPID", "name", name, "ppid", manifest.PPID)
 		}
 	}
 
@@ -277,7 +277,7 @@ func (pe *PluginEngine) Load(name string) error {
 	}
 
 	pe.plugins[name] = &LoadedPlugin{Manifest: *manifest, State: L, Dir: pluginDir}
-	slog.Info("插件加载成功", "name", name, "version", manifest.Version, "system", manifest.System)
+	logging.Info("插件加载成功", "name", name, "version", manifest.Version, "system", manifest.System)
 	return nil
 }
 
@@ -297,7 +297,7 @@ func (pe *PluginEngine) Unload(name string) error {
 
 	p.State.Close()
 	delete(pe.plugins, name)
-	slog.Info("插件已卸载", "name", name)
+	logging.Info("插件已卸载", "name", name)
 	return nil
 }
 
@@ -427,7 +427,7 @@ func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 	if strings.HasPrefix(strings.TrimSpace(event.RawMessage), "/") {
 		c, reply, err := pe.commands.Dispatch(event.RawMessage, event)
 		if err != nil {
-			slog.Error("命令派发错误", "raw", event.RawMessage, "err", err)
+			logging.Error("命令派发错误", "raw", event.RawMessage, "err", err)
 		}
 		// 只要命令已消费或有回复内容，都视为已处理（避免消息流入 Agent）
 		if c || reply != "" {
@@ -451,7 +451,7 @@ func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 		p.State.Push(fn)
 		p.State.Push(table)
 		if err := p.State.PCall(1, 2, nil); err != nil {
-			slog.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
+			logging.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
 			continue
 		}
 		consumedRet := p.State.Get(-2)
@@ -498,7 +498,7 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 		p.State.Push(fn)
 		p.State.Push(table)
 		if err := p.State.PCall(1, 2, nil); err != nil {
-			slog.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
+			logging.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
 			continue
 		}
 		consumedRet := p.State.Get(-2)
@@ -568,7 +568,7 @@ func (pe *PluginEngine) OnNotice(event EventData) {
 		p.State.Push(fn)
 		p.State.Push(table)
 		if err := p.State.PCall(1, 0, nil); err != nil {
-			slog.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
+			logging.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
 		}
 	}
 }
@@ -586,7 +586,7 @@ func (pe *PluginEngine) OnRequest(event EventData) {
 		p.State.Push(fn)
 		p.State.Push(table)
 		if err := p.State.PCall(1, 0, nil); err != nil {
-			slog.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
+			logging.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
 		}
 	}
 }
@@ -608,19 +608,19 @@ func (pe *PluginEngine) OnTimerCall(pluginIDs []string, payload map[string]any, 
 	for _, name := range pluginIDs {
 		p, ok := pe.plugins[name]
 		if !ok {
-			slog.Warn("OnTimerCall: 插件未加载", "plugin", name)
+			logging.Warn("OnTimerCall: 插件未加载", "plugin", name)
 			continue
 		}
 		fn := p.State.GetGlobal("on_timer_call")
 		if fn.Type() != lua.LTFunction {
-			slog.Warn("OnTimerCall: 插件未定义 on_timer_call", "plugin", name)
+			logging.Warn("OnTimerCall: 插件未定义 on_timer_call", "plugin", name)
 			continue
 		}
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
 		if err := p.State.PCall(1, 0, nil); err != nil {
-			slog.Error("插件 on_timer_call 错误", "plugin", name, "err", err)
+			logging.Error("插件 on_timer_call 错误", "plugin", name, "err", err)
 		}
 	}
 }
@@ -676,15 +676,15 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 	logTable := L.NewTable()
 	L.SetFuncs(logTable, map[string]lua.LGFunction{
 		"info": func(L *lua.LState) int {
-			slog.Info("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
+			logging.Info("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
 			return 0
 		},
 		"warn": func(L *lua.LState) int {
-			slog.Warn("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
+			logging.Warn("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
 			return 0
 		},
 		"error": func(L *lua.LState) int {
-			slog.Error("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
+			logging.Error("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
 			return 0
 		},
 	})
@@ -738,7 +738,7 @@ func (pe *PluginEngine) injectSDK(L *lua.LState, pluginName string) {
 	pathScript := fmt.Sprintf(`package.path = "%s/?.lua;" .. (package.path or "")`,
 		strings.ReplaceAll(sdkDir, "\\", "/"))
 	if err := L.DoString(pathScript); err != nil {
-		slog.Warn("设置 package.path 失败", "plugin", pluginName, "err", err)
+		logging.Warn("设置 package.path 失败", "plugin", pluginName, "err", err)
 	}
 }
 
@@ -904,7 +904,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		data, err := os.ReadFile(fullPath)
 		readDur := time.Since(t0)
 		if err != nil {
-			slog.Warn("读取插件图片文件失败", "plugin", pluginName, "path", fullPath, "err", err)
+			logging.Warn("读取插件图片文件失败", "plugin", pluginName, "path", fullPath, "err", err)
 			return path
 		}
 		ext := strings.TrimPrefix(filepath.Ext(fullPath), ".")
@@ -914,7 +914,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		t1 := time.Now()
 		b64 := "base64://" + base64.StdEncoding.EncodeToString(data)
 		encDur := time.Since(t1)
-		slog.Debug("插件图片处理耗时", "plugin", pluginName, "file", path, "size_bytes", len(data),
+		logging.Debug("插件图片处理耗时", "plugin", pluginName, "file", path, "size_bytes", len(data),
 			"read_us", readDur.Microseconds(), "encode_us", encDur.Microseconds(), "total_us", time.Since(t0).Microseconds())
 		return b64
 	}
@@ -949,9 +949,9 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			go func() {
 				t0 := time.Now()
 				if _, err := sendAdp.SendPrivateMsg(userID, msg); err != nil {
-					slog.Warn("插件异步发送私聊消息失败", "plugin", pluginName, "user_id", userID, "err", err)
+					logging.Warn("插件异步发送私聊消息失败", "plugin", pluginName, "user_id", userID, "err", err)
 				} else {
-					slog.Debug("插件异步发送私聊消息完成", "plugin", pluginName, "user_id", userID, "dur_ms", time.Since(t0).Milliseconds())
+					logging.Debug("插件异步发送私聊消息完成", "plugin", pluginName, "user_id", userID, "dur_ms", time.Since(t0).Milliseconds())
 				}
 			}()
 			return pushOk(L)
@@ -971,9 +971,9 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			go func() {
 				t0 := time.Now()
 				if _, err := sendAdp.SendGroupMsg(groupID, msg); err != nil {
-					slog.Warn("插件异步发送群消息失败", "plugin", pluginName, "group_id", groupID, "err", err)
+					logging.Warn("插件异步发送群消息失败", "plugin", pluginName, "group_id", groupID, "err", err)
 				} else {
-					slog.Debug("插件异步发送群消息完成", "plugin", pluginName, "group_id", groupID, "dur_ms", time.Since(t0).Milliseconds())
+					logging.Debug("插件异步发送群消息完成", "plugin", pluginName, "group_id", groupID, "dur_ms", time.Since(t0).Milliseconds())
 				}
 			}()
 			return pushOk(L)
@@ -1892,34 +1892,34 @@ var systemPluginMain string
 func (pe *PluginEngine) ensureEmbeddedAssets() {
 	// 0. 确保 basePath 存在且可写
 	if err := os.MkdirAll(pe.basePath, 0o755); err != nil {
-		slog.Error("无法创建插件根目录，内嵌资源写入跳过", "basePath", pe.basePath, "err", err)
+		logging.Error("无法创建插件根目录，内嵌资源写入跳过", "basePath", pe.basePath, "err", err)
 		return
 	}
 
 	// 1. SDK 总是覆盖
 	sdkDir := filepath.Join(pe.basePath, "sdk")
 	if err := os.MkdirAll(sdkDir, 0o755); err != nil {
-		slog.Warn("创建 SDK 目录失败", "err", err)
+		logging.Warn("创建 SDK 目录失败", "err", err)
 	} else {
 		sdkFile := filepath.Join(sdkDir, "jn.lua")
 		if err := os.WriteFile(sdkFile, []byte(jnSDKSource), 0o644); err != nil {
-			slog.Warn("写入 SDK 文件失败", "path", sdkFile, "err", err)
+			logging.Warn("写入 SDK 文件失败", "path", sdkFile, "err", err)
 		} else {
-			slog.Info("SDK 已同步到磁盘", "path", sdkFile)
+			logging.Info("SDK 已同步到磁盘", "path", sdkFile)
 		}
 	}
 
 	// 2. system 插件始终覆盖（随二进制更新同步）
 	sysDir := filepath.Join(pe.basePath, "system")
 	if err := os.MkdirAll(sysDir, 0o755); err != nil {
-		slog.Warn("创建 system 插件目录失败", "err", err)
+		logging.Warn("创建 system 插件目录失败", "err", err)
 		return
 	}
 	if err := os.WriteFile(filepath.Join(sysDir, "pluggin.yaml"), []byte(systemPluginManifest), 0o644); err != nil {
-		slog.Warn("写入 system pluggin.yaml 失败", "err", err)
+		logging.Warn("写入 system pluggin.yaml 失败", "err", err)
 	}
 	if err := os.WriteFile(filepath.Join(sysDir, "main.lua"), []byte(systemPluginMain), 0o644); err != nil {
-		slog.Warn("写入 system main.lua 失败", "err", err)
+		logging.Warn("写入 system main.lua 失败", "err", err)
 	}
-	slog.Info("system 插件已同步到磁盘")
+	logging.Info("system 插件已同步到磁盘")
 }

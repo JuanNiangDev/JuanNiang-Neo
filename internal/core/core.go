@@ -2,7 +2,7 @@ package core
 
 import (
 	"context"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"os"
 	"sync"
 
@@ -50,7 +50,7 @@ func InitAdminUser(ctx context.Context, userDAO *dao.UserDAO) error {
 		return err
 	}
 	if exists {
-		slog.Info("管理员用户已存在，跳过初始化")
+		logging.Info("管理员用户已存在，跳过初始化")
 		return nil
 	}
 
@@ -67,7 +67,7 @@ func InitAdminUser(ctx context.Context, userDAO *dao.UserDAO) error {
 	if err := userDAO.Create(ctx, user); err != nil {
 		return err
 	}
-	slog.Warn("已创建默认管理员用户", "username", "admin", "password", "Admin123")
+	logging.Warn("已创建默认管理员用户", "username", "admin", "password", "Admin123")
 	return nil
 }
 

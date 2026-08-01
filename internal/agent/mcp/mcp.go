@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"JuanNiang-Neo/internal/logging"
 	"sync"
 	"time"
 
@@ -99,7 +99,7 @@ func (g *MCPGroup) ListTools(ctx context.Context) []ToolDefinition {
 		}
 		tools, err := m.ListTools(ctx)
 		if err != nil {
-			slog.Error("MCP ListTools 失败", "mcp", m.Name(), "err", err)
+			logging.Error("MCP ListTools 失败", "mcp", m.Name(), "err", err)
 			continue
 		}
 		all = append(all, tools...)
@@ -201,7 +201,7 @@ func (c *sdkMCPClient) Connect(ctx context.Context) error {
 	}
 
 	c.cli = cli
-	slog.Info("MCP 连接成功", "name", c.cfg.Name, "url", c.cfg.ServerURL)
+	logging.Info("MCP 连接成功", "name", c.cfg.Name, "url", c.cfg.ServerURL)
 	return nil
 }
 

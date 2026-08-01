@@ -10,7 +10,6 @@ package web
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
 	"JuanNiang-Neo/internal/api/dto"
+	"JuanNiang-Neo/internal/logging"
 )
 
 // DefaultWebDir 是 WEB_DIR 未设置时的默认前端目录。
@@ -32,8 +32,8 @@ var NotFoundEnvelope = dto.Response{Status: 40400, Info: "资源不存在"}
 // 行为:
 //   - 若请求路径以 /api/ 开头 -> 返回 JSON 404 信封 (不污染前端命名空间)
 //   - 否则计算 webDir + path 的安全文件路径:
-//       * 文件存在且不是目录 -> 直接 serve
-//       * 文件不存在或为目录 -> 回退到 index.html
+//   - 文件存在且不是目录 -> 直接 serve
+//   - 文件不存在或为目录 -> 回退到 index.html
 //   - 若 index.html 缺失 -> 返回 200 文本引导页 (前端未构建)
 func SPAHandler(webDir string) app.HandlerFunc {
 	indexHTML := filepath.Join(webDir, "index.html")
@@ -70,7 +70,7 @@ func SPAHandler(webDir string) app.HandlerFunc {
 		}
 
 		// 前端未构建。
-		slog.Warn("前端未构建, 请先执行 make web-build 或 npm run build",
+		logging.Warn("前端未构建, 请先执行 make web-build 或 npm run build",
 			"web_dir", webDir, "missing", indexHTML)
 		serveFrontendNotBuiltHint(c)
 	}
@@ -121,13 +121,13 @@ func EnsureDir(webDir string) error {
 	info, err := os.Stat(webDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			slog.Warn("WEB_DIR 目录不存在, 前端将走引导提示页", "dir", webDir)
+			logging.Warn("WEB_DIR 目录不存在, 前端将走引导提示页", "dir", webDir)
 			return nil
 		}
 		return err
 	}
 	if !info.IsDir() {
-		slog.Warn("WEB_DIR 不是目录", "dir", webDir)
+		logging.Warn("WEB_DIR 不是目录", "dir", webDir)
 	}
 	return nil
 }
