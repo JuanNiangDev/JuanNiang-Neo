@@ -259,8 +259,10 @@ type WebhookConfigResp struct {
 type LogEntryResp struct {
 	Time    time.Time      `json:"time"`
 	Level   string         `json:"level"`
+	Module  string         `json:"module"`
 	Message string         `json:"message"`
 	Attrs   map[string]any `json:"attrs,omitempty"`
+	Rich    map[string]any `json:"rich,omitempty"`
 }
 
 // ---------- Background Tasks ----------

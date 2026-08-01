@@ -47,10 +47,11 @@ local M = {}
 ---@field sender table? 发送者信息 {user_id, nickname, sex, age, card}
 ---
 --- 消息段格式 (用于 send_private_msg / send_group_msg 第二个参数):
---- 传入 Lua 数组，每项为 {type="text|image|face|...", data={...}}:
+--- 传入 Lua 数组，每项为 {type="text|image|face|at|...", data={...}}:
 ---   type="text"   → data={text="Hello"}
 ---   type="image"  → data={file="http://..."}  支持 URL / base64:// / 相对路径
 ---   type="face"   → data={id="1"}       CQ 表情 ID
+---   type="at"     → data={qq="123456"}  @某人（仅群聊有效）
 ---
 --- 图片 file 字段支持三种来源:
 ---   1. URL:     "http://..." 或 "https://..."
@@ -82,8 +83,10 @@ M.json = json
 -- ====================================================================
 
 ---@class jn.OneBot11
----@field send_private_msg fun(user_id: number, message: string): boolean, string?
----@field send_group_msg fun(group_id: number, message: string): boolean, string?
+---@field send_private_msg fun(user_id: number, message: string|table): boolean, string? 异步发送私聊消息，不阻塞
+---@field send_group_msg fun(group_id: number, message: string|table): boolean, string? 异步发送群消息，不阻塞
+---@field send_private_msg_sync fun(user_id: number, message: string|table): boolean, string? 同步发送私聊消息，等待结果
+---@field send_group_msg_sync fun(group_id: number, message: string|table): boolean, string? 同步发送群消息，等待结果
 ---@field delete_msg fun(message_id: number): boolean, string?
 ---@field get_msg fun(message_id: number): table, string? 根据消息 ID 获取消息完整内容
 ---@field get_group_info fun(group_id: number): table, string?

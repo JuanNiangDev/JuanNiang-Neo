@@ -1627,8 +1627,10 @@ func writeLogEvent(w *sse.Writer, entry logging.Entry) error {
 	data, err := json.Marshal(dto.LogEntryResp{
 		Time:    entry.Time,
 		Level:   entry.Level,
+		Module:  entry.Module,
 		Message: entry.Message,
 		Attrs:   entry.Attrs,
+		Rich:    entry.Rich,
 	})
 	if err != nil {
 		return err

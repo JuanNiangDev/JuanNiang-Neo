@@ -252,8 +252,10 @@ func RawLogEntry2Resp(raw logging.Entry) LogEntryResp {
 	return LogEntryResp{
 		Time:    raw.Time,
 		Level:   raw.Level,
+		Module:  raw.Module,
 		Message: raw.Message,
 		Attrs:   raw.Attrs,
+		Rich:    raw.Rich,
 	}
 }
 
