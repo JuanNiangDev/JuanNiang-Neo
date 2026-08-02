@@ -75,17 +75,21 @@ func (h *Handler) Handle(_ context.Context, r slog.Record) error {
 		return true
 	})
 
-	// 调用栈：Warn 及以上
+	// 调用栈 & 模块名自动检测
 	var stack string
+	module := h.module
 	if level >= LevelWarn {
-		// r.PC 是 slog 记录的调用点，skip=0 从 r.PC 开始
-		stack = captureStackFromPC(r.PC)
+		// Warn 及以上：捕获完整调用栈 + 自动检测模块名
+		stack, module = captureStackAndModule(r.PC, module)
+	} else if module == "" {
+		// 非 Warn 级别但模块名为空：仅从调用栈推导模块名（不生成完整栈）
+		module = detectModule(r.PC)
 	}
 
 	entry := Entry{
 		Time:    r.Time,
 		Level:   level.String(),
-		Module:  h.module,
+		Module:  module,
 		Message: r.Message,
 		Attrs:   attrs,
 		Stack:   stack,
@@ -160,23 +164,38 @@ func slogToLevel(l slog.Level) Level {
 	}
 }
 
-// captureStackFromPC 从 slog.Record 的 PC 值开始捕获调用栈。
-// captureStackFromPC 从 slog.Record 的 PC 值开始捕获调用栈。
-func captureStackFromPC(pc uintptr) string {
-	if pc == 0 {
-		return ""
+// ---------------------------------------------------------------------------
+// 调用栈捕获 & 模块名自动检测
+// ---------------------------------------------------------------------------
+
+// captureStackAndModule 从 slog.Record 的 PC 值出发，捕获完整调用栈并推导模块名。
+//
+// 原理：runtime.CallersFrames 对单个 PC 只能解析 1 帧（无法向上追溯调用链），
+// 所以改用 runtime.Callers(skip, pcs) 获取当前 goroutine 的完整 PC 列表，
+// 然后过滤掉 slog + logging 内部帧，保留用户代码帧。
+func captureStackAndModule(pc uintptr, existingModule string) (stack string, module string) {
+	module = existingModule
+
+	// 获取当前调用栈（skip=3: Callers 自身 + captureStackAndModule + Handle + slog 内部）
+	// 多取几帧确保覆盖到用户代码
+	var pcs [32]uintptr
+	n := runtime.Callers(3, pcs[:])
+	if n == 0 {
+		return "", module
 	}
 
-	frames := runtime.CallersFrames([]uintptr{pc})
+	frames := runtime.CallersFrames(pcs[:n])
 	var buf bytes.Buffer
 	buf.WriteString("Stack trace:\n")
 	count := 0
+	firstUserFrame := true
 
 	for {
 		frame, more := frames.Next()
 		if frame.Function == "" {
 			break
 		}
+
 		// 跳过 logging 包自身帧
 		if strings.Contains(frame.Function, "JuanNiang-Neo/internal/logging") {
 			if !more {
@@ -184,6 +203,20 @@ func captureStackFromPC(pc uintptr) string {
 			}
 			continue
 		}
+		// 跳过 log/slog 内部帧
+		if strings.Contains(frame.Function, "log/slog") {
+			if !more {
+				break
+			}
+			continue
+		}
+
+		// 从第一个用户帧推导模块名
+		if firstUserFrame && module == "" {
+			module = deriveModuleFromFunc(frame.Function)
+			firstUserFrame = false
+		}
+
 		fmt.Fprintf(&buf, "  %s\n    %s:%d\n", frame.Function, frame.File, frame.Line)
 		count++
 		if count >= 10 || !more {
@@ -192,7 +225,71 @@ func captureStackFromPC(pc uintptr) string {
 	}
 
 	if count == 0 {
+		return "", module
+	}
+	return buf.String(), module
+}
+
+// detectModule 仅从 PC 推导模块名（不生成完整调用栈），用于非 Warn 级别的 slog 桥接。
+func detectModule(pc uintptr) string {
+	if pc == 0 {
 		return ""
 	}
-	return buf.String()
+	frames := runtime.CallersFrames([]uintptr{pc})
+	for {
+		frame, more := frames.Next()
+		if frame.Function == "" {
+			break
+		}
+		if strings.Contains(frame.Function, "JuanNiang-Neo/internal/logging") ||
+			strings.Contains(frame.Function, "log/slog") {
+			if !more {
+				break
+			}
+			continue
+		}
+		return deriveModuleFromFunc(frame.Function)
+	}
+	return ""
+}
+
+// deriveModuleFromFunc 从完整函数名推导模块名。
+//
+// 例如:
+//
+//	"JuanNiang-Neo/internal/adapter.(*Adapter).Start" → "adapter"
+//	"JuanNiang-Neo/internal/agent.(*HagoCenter).handleMessage" → "agent"
+//	"JuanNiang-Neo/internal/pluggin.(*PluginEngine).Load" → "plugin"
+//	"JuanNiang-Neo/cmd/server.main" → "main"
+func deriveModuleFromFunc(funcName string) string {
+	// 只处理我们项目的函数
+	if !strings.HasPrefix(funcName, "JuanNiang-Neo/") {
+		return ""
+	}
+
+	// 去掉 "JuanNiang-Neo/" 前缀
+	rest := funcName[len("JuanNiang-Neo/"):]
+
+	// 取最后一段路径中的包名
+	// "internal/agent.(*HagoCenter).handleMessage" → 取 "internal/agent"
+	if idx := strings.Index(rest, "."); idx >= 0 {
+		rest = rest[:idx]
+	}
+
+	// "internal/agent" → "agent"
+	// "internal/agent/memory/shortterm" → "shortterm"
+	// "cmd/server" → "main"
+	if idx := strings.LastIndex(rest, "/"); idx >= 0 {
+		rest = rest[idx+1:]
+	}
+
+	// 特殊映射
+	if rest == "server" {
+		return "main"
+	}
+	if rest == "pluggin" {
+		return "plugin"
+	}
+
+	return rest
 }
