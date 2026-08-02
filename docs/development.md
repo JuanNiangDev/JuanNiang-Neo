@@ -26,8 +26,9 @@
 |--------|------|
 | 加一条 Web API | `internal/api/router/router.go`（68 路由在此注册）、`internal/api/service/service.go`（handler）、`internal/api/dto/` |
 | 加 Agent 内置工具 | `internal/agent/tool/builtin.go::RegisterBuiltinTools`；参考既有 `send_*_msg`/`browser_search` 等 |
-| 接新 LLM 协议 | `internal/agent/provider/provider.go`（现 OpenAI 兼容），实现 `Provider` 接口 |
-| 加 Agent 后台任务类型 | `internal/agent/bgtask_executor.go` + `drainer.go`（errgroup DAG + Drainer） |
+| 接新 LLM 协议 | `internal/agent/provider/provider.go`（现 OpenAI 兼容 + Eino ADK adapter），实现 `Provider` 接口 |
+| 调整 Agent 并发限制 | `internal/agent/concurrency.go`（默认 8/ChatArea） |
+| 修改分段回复算法 | `internal/agent/event.go::splitMessages`（Maibot 式自然断句） |
 | 加 ACL 维度 | `internal/core/acl/acl.go::Check` + `models.ACLRule` |
 | 写 Lua 插件 | 读 [pluggin/development.md](pluggin/development.md) |
 | 改前端页面 | `web/src/views/*.vue`（22 页）、`web/src/api/*`（typed endpoints）、`web/src/router/index.ts` |
@@ -43,18 +44,19 @@ internal/
   agent/        Agent 核心 (HagoCenter + 11 子包)
     provider/   OpenAI 兼容客户端 (Chat / Vision)
     mcp/        MCP 客户端 (mark3labs/mcp-go SSE)
-    memory/     三层记忆 (shortterm Redis / longterm PG+HotArea / bgtask)
+    memory/     三层记忆 (shortterm Redis / longterm PG+HotArea / skillmem 全局技能记忆)
     prompt/     系统锁定提示词 + 拼接
     session/    会话 + ChatRecord 持久化
     skill/      关键词/正则技能匹配
     tool/       ToolRegistry + 内置工具
     cronjob/    robfig/cron 调度器
-    bgtask_executor.go / drainer.go  长任务流水线
+    concurrency.go  每 ChatArea 并发令牌 (chan struct{})
+    eino_middleware.go  Eino ADK 中间件 (ACL + BeforeAgent 注入)
   api/          Hertz Web (engine + middleware + router + service)
   core/         Init / dao.Bundle / models (22 表) / acl / cache
   pluggin/      Lua 引擎 + 命令树 + 内嵌 SDK + 系统插件
   web/          SPAHandler (NoRoute 兜底)
-  logging/      slog.Handler 双写 stdout + Hub(SSE)
+  logging/      fatih/color 彩色 stdout + JSON 格式化 + 调用栈 + Hub(SSE)
 infrastructure/
   postgres/ redis/      基础客户端 (功能选项)
   sandbox/ t2i/         含 /handler (caller 子包, 真正 Client)
@@ -96,7 +98,8 @@ docs/                   本文档树
 - **导入顺序**：std → 第三方 → `JuanNiang-Neo/...` 三段。见 `internal/adapter/provider.go`。
 - **注释与标识符**：混合中英文，保持所在文件原有风格，**不要翻译**。
 - **OneBot11 API 复用**：新增 OneBot11 能力应包装 `internal/adapter.Provider` 方法，不要再实现一份。
-- **长任务**：耗时步骤走 BackgroundTaskExecutor + Drainer（errgroup 风格），不要在 EventLoop 同步阻塞。
+- **长任务**：所有 Tool 调用同步执行，Eino ADK ChatModelAgent 驱动 ReAct 循环，ConcurrencyManager 限制每 ChatArea 并行 Agent 数。
+- **开发配置**：开发时使用 `dev.yaml` 配置基础设施连接端点（`make run` 自动读取；`cp dev.yaml.example dev.yaml`）。
 - **Web 控制台**：JWT 鉴权，单管理员，初始化 `admin / Admin123`（首次启动务必改）。
 - **插件配置仍走磁盘**：`data/pluggins/<name>/pluggin.yaml`，不入 DB。
 - **错误码**：业务错误用 `dto.Response{...}`（如 `dto.AdapterNotInitialized`），通过 `dto.GenFinalResponse` 包装，HTTP 200。
