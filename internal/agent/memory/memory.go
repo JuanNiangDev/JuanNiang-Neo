@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"JuanNiang-Neo/internal/agent/memory/bgtask"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
@@ -42,8 +43,29 @@ func (m *MemoryGroup) GetShortTermMessages(ctx context.Context, areaID string) (
 }
 
 // AddShortTermMessage 向指定 ChatArea 的短期记忆追加一条消息。
+// 如果开启了 AutoCompact 且窗口已满，异步触发 Compact。
 func (m *MemoryGroup) AddShortTermMessage(ctx context.Context, areaID string, msg shortterm.ChatMessage) error {
-	return m.ShortTerm.Add(ctx, areaID, msg)
+	if err := m.ShortTerm.Add(ctx, areaID, msg); err != nil {
+		return err
+	}
+
+	// AutoCompact: 窗口已满时异步触发 Compact（不阻塞消息处理）
+	if m.ShortTerm.AutoCompact() && m.LLMProvider != nil {
+		msgs, err := m.ShortTerm.GetAll(ctx, areaID)
+		if err == nil && int64(len(msgs)) >= m.ShortTerm.WindowSize() {
+			go func() {
+				compactCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				if err := m.CompactShortTermMemory(compactCtx, areaID, m.LLMProvider); err != nil {
+					log.Error("AutoCompact 失败", "area_id", areaID, "err", err)
+				} else {
+					log.Info("AutoCompact 完成", "area_id", areaID)
+				}
+			}()
+		}
+	}
+
+	return nil
 }
 
 func (m *MemoryGroup) OverwriteShortTermMemory(ctx context.Context, areaID string, msgs []shortterm.ChatMessage) error {
