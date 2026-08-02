@@ -2,12 +2,19 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 
 	"JuanNiang-Neo/internal/agent/memory/bgtask"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
+	"JuanNiang-Neo/internal/agent/memory/skillmem"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/logging"
 )
+
+var log = logging.NewModule("memory")
 
 type ShortTermMemoryConfig = shortterm.Config
 type LongTermMemoryConfig = longterm.Config
@@ -16,13 +23,16 @@ type MemoryGroup struct {
 	ShortTerm            *shortterm.ShortTermMemory
 	LongTerm             *longterm.LongTermMemory
 	BackGroundTaskMemory *bgtask.BackGroundTaskMemory
+	SkillMemory          *skillmem.SkillMemory
+	LLMProvider          provider.Provider // 用于 Compact 中的技能记忆更新
 }
 
-func NewMemoryGroup(st *shortterm.ShortTermMemory, lt *longterm.LongTermMemory, bgt *bgtask.BackGroundTaskMemory) *MemoryGroup {
+func NewMemoryGroup(st *shortterm.ShortTermMemory, lt *longterm.LongTermMemory, bgt *bgtask.BackGroundTaskMemory, sm *skillmem.SkillMemory) *MemoryGroup {
 	return &MemoryGroup{
 		ShortTerm:            st,
 		LongTerm:             lt,
 		BackGroundTaskMemory: bgt,
+		SkillMemory:          sm,
 	}
 }
 
@@ -53,6 +63,19 @@ func (m *MemoryGroup) AddLongTermMemory(ctx context.Context, areaID, content str
 	return m.LongTerm.Add(ctx, areaID, content)
 }
 
+// GetExistingLongTermMemory 获取当前长期记忆内容（供 Compact 使用）。
+func (m *MemoryGroup) GetExistingLongTermMemory(ctx context.Context, areaID string) ([]string, error) {
+	items, err := m.LongTerm.Search(ctx, areaID, "", 3)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i] = item.Content
+	}
+	return out, nil
+}
+
 func (m *MemoryGroup) GetLongTermMemory(ctx context.Context, areaID, query string, limit int) ([]string, error) {
 	items, err := m.LongTerm.Search(ctx, areaID, query, limit)
 	if err != nil {
@@ -67,6 +90,69 @@ func (m *MemoryGroup) GetLongTermMemory(ctx context.Context, areaID, query strin
 
 func (m *MemoryGroup) UpdateLongTermConfig(conf LongTermMemoryConfig) {
 	m.LongTerm.UpdateConfig(conf)
+}
+
+// GetSkillMemory 返回全局技能记忆内容。
+func (m *MemoryGroup) GetSkillMemory() string {
+	if m.SkillMemory == nil {
+		return ""
+	}
+	return m.SkillMemory.Get()
+}
+
+// UpdateSkillMemory 使用 LLM 根据近期对话更新全局技能记忆。
+// 实现 shortterm.SkillMemoryUpdater 接口，在 Compact 时自动触发。
+func (m *MemoryGroup) UpdateSkillMemory(ctx context.Context, recentMsgs []shortterm.ChatMessage) error {
+	if m.SkillMemory == nil || m.LLMProvider == nil {
+		return nil
+	}
+
+	currentContent := m.SkillMemory.Get()
+
+	// 构建近期对话文本
+	var convText strings.Builder
+	for _, msg := range recentMsgs {
+		if msg.Role == "user" || msg.Role == "assistant" {
+			convText.WriteString(fmt.Sprintf("[%s]: %s\n", msg.Role, msg.Content))
+		}
+	}
+
+	prompt := fmt.Sprintf(`当前已有的技能记忆（黑话/热词/梗）：
+%s
+
+以下是最近的对话记录：
+%s
+
+请更新技能记忆：
+1. 加入对话中新出现的黑话、网络热词、梗、缩写、社区用语
+2. 如果某些已有的词在最近对话中完全没被使用，可以移除（不要强行保留）
+3. 如果没有新内容要加，保持原样不变
+4. 每个条目格式：词语 — 简短含义解释（10字以内）
+5. 每行一个条目，不要编号，不要其他格式
+
+直接输出更新后的完整技能记忆内容，不要加任何前缀或解释。`, currentContent, convText.String())
+
+	resp, err := m.LLMProvider.Chat(ctx, provider.ChatRequest{
+		Messages: []provider.ChatMessage{
+			{Role: "system", Content: "你是一个中文互联网文化专家，负责维护一份「黑话/热词/梗」的记忆清单。"},
+			{Role: "user", Content: prompt},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("技能记忆 LLM 调用失败: %w", err)
+	}
+
+	newContent := strings.TrimSpace(resp.Message.Content)
+	if newContent == "" {
+		return nil
+	}
+
+	if err := m.SkillMemory.Update(ctx, newContent); err != nil {
+		return fmt.Errorf("技能记忆写入失败: %w", err)
+	}
+
+	log.Info("技能记忆已更新", "content_len", len(newContent))
+	return nil
 }
 
 func (m *MemoryGroup) AddBackGroundTask(meta bgtask.BackGroundTaskMetaInfo) string {
@@ -84,3 +170,10 @@ func (m *MemoryGroup) GetBackGroundTask(taskID string) (bgtask.BackGroundTaskMet
 func (m *MemoryGroup) ListBackGroundTasks() map[string]bgtask.BackGroundTaskMetaInfo {
 	return m.BackGroundTaskMemory.List()
 }
+
+// Compile-time: ensure MemoryGroup implements shortterm.CompactStore and shortterm.SkillMemoryUpdater
+var _ shortterm.CompactStore = (*MemoryGroup)(nil)
+var _ shortterm.SkillMemoryUpdater = (*MemoryGroup)(nil)
+
+// Ensure json import is used (for potential future use)
+var _ = json.Marshal

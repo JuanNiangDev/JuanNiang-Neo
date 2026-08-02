@@ -38,6 +38,7 @@ type Bundle struct {
 	Webhook         *WebhookConfigDAO
 	CronJob         *CronJobDAO
 	ReplyStrategy   *ReplyStrategyDAO
+	SkillMemory     *SkillMemoryDAO
 }
 
 func NewBundle(db *gorm.DB) *Bundle {
@@ -63,5 +64,6 @@ func NewBundle(db *gorm.DB) *Bundle {
 		Webhook:         NewWebhookConfigDAO(db),
 		CronJob:         NewCronJobDAO(db),
 		ReplyStrategy:   NewReplyStrategyDAO(db),
+		SkillMemory:     NewSkillMemoryDAO(db),
 	}
 }

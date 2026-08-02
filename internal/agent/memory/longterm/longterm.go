@@ -3,16 +3,17 @@ package longterm
 import (
 	"context"
 	"sync"
-	"time"
 
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/logging"
 )
+
+var log = logging.NewModule("longterm")
 
 // Config 长期记忆配置。
 type Config struct {
-	HotAreaSize  int
-	HotMemoryTTL time.Duration
+	HotAreaSize int
 }
 
 // LongTermMemory 长期记忆，Postgres 存储 + 内存 HotArea (LRU)。
@@ -27,9 +28,6 @@ type LongTermMemory struct {
 func New(conf Config, itemDAO *dao.LongTermMemoryItemDAO) *LongTermMemory {
 	if conf.HotAreaSize <= 0 {
 		conf.HotAreaSize = 10
-	}
-	if conf.HotMemoryTTL <= 0 {
-		conf.HotMemoryTTL = 24 * time.Hour
 	}
 	return &LongTermMemory{
 		conf:    conf,
@@ -50,14 +48,25 @@ func (m *LongTermMemory) Add(ctx context.Context, areaID, content string) error 
 	return nil
 }
 
+// Search 查询长期记忆。优先从 HotArea 缓存读取，缓存不足时回退到 DB。
+// query 非空时使用关键词搜索（ILIKE），否则按时间倒序返回最近条目。
 func (m *LongTermMemory) Search(ctx context.Context, areaID, query string, limit int) ([]models.LongTermMemoryItem, error) {
-	if query == "" {
-		return m.dao.ListByChatArea(ctx, areaID, limit)
+	// 关键词搜索：直接查 DB（HotArea 不支持关键词过滤）
+	if query != "" {
+		return m.dao.SearchByContent(ctx, areaID, query, limit)
 	}
-	return m.dao.SearchByContent(ctx, areaID, query, limit)
+
+	// 无关键词：优先读 HotArea
+	hot := m.GetHot(areaID)
+	if len(hot) >= limit {
+		return hot[:limit], nil
+	}
+
+	// HotArea 不足，回退 DB 查询
+	return m.dao.ListByChatArea(ctx, areaID, limit)
 }
 
-// GetHot 返回指定 ChatArea 的热区记忆条目。
+// GetHot 返回指定 ChatArea 的热区记忆条目（最新在前）。
 func (m *LongTermMemory) GetHot(areaID string) []models.LongTermMemoryItem {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -92,6 +101,7 @@ func (m *LongTermMemory) Warmup(ctx context.Context, areaID string) error {
 	return nil
 }
 
+// addToHot 将新条目加入热区，LRU 策略：新的在前，超出容量直接丢弃最旧的。
 func (m *LongTermMemory) addToHot(areaID string, item *models.LongTermMemoryItem) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

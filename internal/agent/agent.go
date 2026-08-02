@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"time"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
@@ -14,6 +13,7 @@ import (
 	"JuanNiang-Neo/internal/agent/memory/bgtask"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
+	"JuanNiang-Neo/internal/agent/memory/skillmem"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/session"
@@ -124,11 +124,15 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 
 	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea) + 后台任务记忆
 	stConf := shortterm.Config{WindowSize: 20, AutoCompact: false}
-	ltConf := longterm.Config{HotAreaSize: 10, HotMemoryTTL: 24 * time.Hour}
+	ltConf := longterm.Config{HotAreaSize: 10}
 	st := shortterm.New(stConf, cfg.Cache)
 	lt := longterm.New(ltConf, cfg.DAO.LongTermMemItem)
 	bgt := bgtask.New()
-	h.Memory = memory.NewMemoryGroup(st, lt, bgt)
+	sm := skillmem.New(cfg.DAO.SkillMemory)
+	if err := sm.Warmup(ctx); err != nil {
+		log.Warn("技能记忆预热失败", "err", err)
+	}
+	h.Memory = memory.NewMemoryGroup(st, lt, bgt, sm)
 
 	h.Prompt = prompt.NewPromptManager(cfg.DAO.Prompt)
 	h.Skills = skill.NewSkillEngine()
