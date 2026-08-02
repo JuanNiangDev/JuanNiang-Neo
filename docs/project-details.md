@@ -214,29 +214,29 @@ cmd/server/main.go:41 main()
 ├─ core.Init(ctx,db,redis)                     main.go:122       ← internal/core/core.go
 │   ├─ AutoMigrate(db)                         core.go:23        ← 注册 23 张表
 │   ├─ cache.NewCache(redisClient, $REDIS_PREFIX) core.go:97     ← "juan:" 前缀
-│   ├─ dao.NewBundle(db)                        core.go:105      ← internal/core/dao/dao.go:43 (20 个 DAO)
-│   ├─ acl.NewACL(bundle.ACL)                  core.go:110      ← internal/core/acl/acl.go:18
-│   └─ InitAdminUser(ctx, UserDAO)             core.go:113      ← core.go:47 (无 admin 时建 admin/Admin123 bcrypt)
-├─ middleware.JWTSecret = []byte($JWT_SECRET)  main.go:77
-├─ loadAdapterConfig(ctx, DAO)                 main.go:81       ← main.go:355 (DB 加载，回退 env)
-├─ adapter.New(cfg) + Start(ctx)               main.go:82-87    ← internal/adapter/adapter.go:28/36
-├─ loadWebhookConfig / NewWebhookAdapter / Start main.go:94-110  ← internal/adapter/webhook.go:38/46
-├─ agent.NewHagoCenter() / Init / Start         main.go:114-133  ← internal/agent/agent.go:83/96/247
-├─ pluggin.NewPluginEngine("data/pluggins",...) main.go:137     ← internal/pluggin/pluggin.go:160
-│   └─ pluginEngine.LoadAll()                   main.go:147     ← pluggin.go:207 (ensureEmbeddedAssets + 逐目录 Load)
-├─ service.New(...); 注入 ProviderGroup/MCP/... main.go:154-161 ← internal/api/service/root.go:50
-├─ loadT2IFromDB / loadSandboxFromDB            main.go:164-165  ← main.go:273/304 (DB 配置 → t2i/sandbox.NewClient)
-├─ svc.OnUpdateT2I/OnUpdateSandbox 回调         main.go:166-167  ← 热注入 HagoCenter.T2IClient/SandboxClient
-├─ web.EnsureDir($WEB_DIR)                      main.go:175      ← internal/web/web.go:117
-├─ engine.New(addr, webDir, svc)               main.go:178      ← internal/api/engine/engine.go:16 (h.NoRoute=SPAHandler)
-└─ go webEngine.Run() / wait ctx                main.go:184-199
+│   ├─ dao.NewBundle(db)                        core.go:105      ← internal/core/dao/dao.go (20 个 DAO)
+│   ├─ acl.NewACL(bundle.ACL)                  core.go:110      ← internal/core/acl/acl.go
+│   └─ InitAdminUser(ctx, UserDAO)             core.go:113      ← core.go (无 admin 时建 admin/Admin123 bcrypt)
+├─ middleware.JWTSecret = []byte($JWT_SECRET)  main.go:129-131
+├─ loadAdapterConfig(ctx, DAO)                 main.go:133      ← (DB 加载，回退 env)
+├─ adapter.New(cfg) + Start(ctx)               main.go:134-142  ← internal/adapter/adapter.go
+├─ loadWebhookConfig / NewWebhookAdapter / Start main.go:146-162 ← internal/adapter/webhook.go
+├─ agent.NewHagoCenter() / Init / Start         main.go:166-185  ← internal/agent/agent.go (含 Eino ADK buildEinoAgent)
+├─ pluggin.NewPluginEngine("data/pluggins",...) main.go:189     ← internal/pluggin/pluggin.go
+│   └─ pluginEngine.LoadAll()                   main.go:199     ← (ensureEmbeddedAssets + 逐目录 Load)
+├─ service.New(...); 注入 ProviderGroup/MCP/... main.go:216-230 ← internal/api/service/root.go
+├─ loadT2IFromDB / loadSandboxFromDB            main.go:226-227  ← (DB 配置 → t2i/sandbox.NewClient)
+├─ svc.OnUpdateT2I/OnUpdateSandbox 回调         main.go:228-229  ← 热注入 HagoCenter.T2IClient/SandboxClient
+├─ web.EnsureDir($WEB_DIR)                      main.go:237      ← internal/web/web.go
+├─ engine.New(addr, webDir, svc)               main.go:241      ← internal/api/engine/engine.go (h.NoRoute=SPAHandler)
+└─ go webEngine.Run() / wait ctx                main.go:248-263
 ```
 
-## 优雅退出（`cmd/server/main.go:206 shutdown`）
+## 优雅退出（`cmd/server/main.go:284 shutdown`）
 
 ```
-shutdown(adapterProv, webhookAdapter, hago, webEngine, pluginEngine)
-├─ hago.Stop()                                    main.go:286   ← agent.go:328 (no-op 占位)
+shutdown(adapterProv, webhookAdapter, hago, webEngine, pluginEngine)  main.go:284
+├─ hago.Stop()                                    main.go:286   ← agent.go (停止事件循环)
 ├─ webhookAdapter.Stop(ctx 5s)                    main.go:290   ← webhook.go (3s graceful)
 ├─ adapterProv.Stop(ctx 5s)                      main.go:297   ← adapter.go (close events，置 nil 以便重启)
 ├─ webEngine.Shutdown(ctx 5s)                     main.go:304   ← 先停 adapter 避免锁竞争
