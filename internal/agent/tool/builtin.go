@@ -413,7 +413,7 @@ func RegisterBuiltinTools(
 
 	if getSandbox != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "browser_search", "在沙箱中执行浏览器搜索(长耗时)",
+			BaseTool: NewTool("", "browser_search", "在沙箱中执行浏览器搜索",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -421,7 +421,7 @@ func RegisterBuiltinTools(
 						"query":      map[string]any{"type": "string", "description": "搜索关键词"},
 					},
 					"required": []string{"sandbox_id", "query"},
-				}, true, true),
+				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				sandbox := getSandbox()
 				if sandbox == nil {
@@ -471,7 +471,7 @@ except Exception as e:
 		})
 
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "command_exec", "在沙箱中执行系统命令(长耗时)",
+			BaseTool: NewTool("", "command_exec", "在沙箱中执行系统命令",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -479,7 +479,7 @@ except Exception as e:
 						"command":    map[string]any{"type": "string", "description": "要执行的命令"},
 					},
 					"required": []string{"sandbox_id", "command"},
-				}, true, true),
+				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				sandbox := getSandbox()
 				if sandbox == nil {
@@ -502,7 +502,7 @@ except Exception as e:
 		})
 
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "code_exec", "在沙箱中执行 Python 代码(长耗时)",
+			BaseTool: NewTool("", "code_exec", "在沙箱中执行 Python 代码",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -510,7 +510,7 @@ except Exception as e:
 						"code":       map[string]any{"type": "string", "description": "Python 代码"},
 					},
 					"required": []string{"sandbox_id", "code"},
-				}, true, true),
+				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				sandbox := getSandbox()
 				if sandbox == nil {
