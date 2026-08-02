@@ -27,6 +27,9 @@ type Event struct {
 	// IsCronJob 标记此事件是定时任务触发的。
 	IsCronJob bool `json:"-"`
 
+	// SkipReplyCheck 标记跳过回复策略检查（由 Plugin skip_reply_check 设置）。
+	SkipReplyCheck bool `json:"-"`
+
 	// 消息事件
 	Message *MessageEvent `json:"message,omitempty"`
 	// 通知事件
