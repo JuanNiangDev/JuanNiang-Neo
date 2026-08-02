@@ -14,6 +14,9 @@ import (
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/pluggin"
+
+	"github.com/cloudwego/eino/adk"
+	einoschema "github.com/cloudwego/eino/schema"
 )
 
 // SilenceToken 是 LLM 在不回复时输出的固定标记。
@@ -393,43 +396,30 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	}
 
 	userMsg := strings.TrimSpace(msg.RawMessage)
-
 	matchedSkill, skillMatched := h.Skills.Match(userMsg)
 
-	llm := h.Providers.SelectModel(provider.ModelTypeText)
-	if llm == nil {
-		slog.Error("无可用 Text 模型")
-		return
-	}
-
+	// ---------- 构建系统提示词（工具描述 + 长期记忆 + 核心提示词） ----------
 	var longTermMems []string
 	if h.Memory != nil {
 		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, chatArea.ID, "", 5)
 	}
 	toolList := h.buildToolList(ctx)
-
 	toolDescs := ""
 	for _, t := range toolList {
 		toolDescs += fmt.Sprintf("- %s: %s\n", t.Function.Name, t.Function.Description)
 	}
 
-	// 构建会话上下文（透传发送者QQ/名字/权限 + 环境信息）
 	h.CurrentMsg = msg
 	h.CurrentSessionCtx = h.buildSessionContext(ctx, msg, ev.Admins)
-
 	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs)
 
-	messages := []provider.ChatMessage{
-		{Role: "system", Content: systemCtx},
+	// ---------- 构建 Eino 消息列表 ----------
+	einoMsgs := []*einoschema.Message{
+		{Role: einoschema.System, Content: systemCtx},
 	}
-
-	// 注入当前会话上下文（让 Agent 感知聊天环境：谁在说话、什么群、自己的身份等）
 	if h.CurrentSessionCtx != "" {
-		messages = append(messages, provider.ChatMessage{
-			Role: "system", Content: h.CurrentSessionCtx,
-		})
+		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.System, Content: h.CurrentSessionCtx})
 	}
-
 	if skillMatched {
 		for _, refID := range matchedSkill.PromptRefs {
 			if refID == "" {
@@ -437,82 +427,115 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 			}
 			skillPrompt, err := h.Prompt.GetByID(ctx, refID)
 			if err == nil {
-				messages = append(messages, provider.ChatMessage{
-					Role: "system", Content: "[Active Skill: " + matchedSkill.Name + "]\n" + skillPrompt.Content,
+				einoMsgs = append(einoMsgs, &einoschema.Message{
+					Role:    einoschema.System,
+					Content: "[Active Skill: " + matchedSkill.Name + "]\n" + skillPrompt.Content,
 				})
 			}
 		}
 	}
-
 	if h.Memory != nil {
 		stMsgs, err := h.Memory.GetShortTermMessages(ctx, chatArea.ID)
 		if err == nil {
 			for _, m := range stMsgs {
-				messages = append(messages, provider.ChatMessage{Role: m.Role, Content: m.Content, Name: m.Name})
+				einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.RoleType(m.Role), Content: m.Content, Name: m.Name})
 			}
 		}
 	}
+	einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: userMsg})
 
-	messages = append(messages, provider.ChatMessage{Role: "user", Content: userMsg})
-
+	// 写短期记忆 + 持久化聊天记录
 	if h.Memory != nil {
 		h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "user", Content: userMsg})
 	}
-	// 持久化原始聊天记录到 DB (与短期记忆解耦, 不受 Redis 重启或 Compact 影响)
 	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0, nil)
 
-	// 读取回复策略：always 模式跳过静默检测；AgentLite 模式不传工具、跳过工具循环
+	// ---------- 回复策略 & AgentLite ----------
 	replyCfg, _ := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 	skipSilenceCheck := replyCfg != nil && replyCfg.Strategy == models.StrategyAlways
 	agentLite := replyCfg != nil && replyCfg.AgentLite
 
-	req := provider.ChatRequest{
-		Messages:    messages,
-		Tools:       toolList,
-		Temperature: 0.7,
-	}
-	// AgentLite 模式：不向 LLM 暴露工具，并注入提示词
-	if agentLite {
-		req.Tools = nil
-		messages = append([]provider.ChatMessage{{
-			Role:    "system",
-			Content: "【AgentLite 精简模式】你无法使用任何工具、MCP 或外部能力。如果用户提出的任务需要工具或外部操作才能完成（如发送消息、查天气、生成图片、执行代码、搜索等），直接拒绝并说明当前处于精简模式无法执行该操作。回复中不要假装已经完成了需要工具的任务。",
-		}}, messages...)
-		req.Messages = messages
+	// ---------- 配置中间件 ----------
+	mw := &JuanNiangMiddleware{
+		h:          h,
+		msg:        msg,
+		userID:     userID,
+		chatAreaID: chatArea.ID,
+		isAdmin:    isAdmin(userID, ev.Admins),
+		admins:     ev.Admins,
 	}
 
-	resp, err := llm.Chat(ctx, req)
-	if err != nil {
-		slog.Error("LLM 调用失败", "err", err)
+	// 构建注入给 Eino Agent 的系统指令（Instruction）。
+	// AgentLite 模式：追加精简模式提示词，并禁止使用工具。
+	instruction := systemCtx
+	if h.CurrentSessionCtx != "" {
+		instruction += "\n\n" + h.CurrentSessionCtx
+	}
+	if skillMatched {
+		for _, refID := range matchedSkill.PromptRefs {
+			if refID == "" {
+				continue
+			}
+			skillPrompt, err := h.Prompt.GetByID(ctx, refID)
+			if err == nil {
+				instruction += "\n\n[Active Skill: " + matchedSkill.Name + "]\n" + skillPrompt.Content
+			}
+		}
+	}
+	if agentLite {
+		instruction = "【AgentLite 精简模式】你无法使用任何工具、MCP 或外部能力。" +
+			"如果用户提出的任务需要工具或外部操作才能完成（如发送消息、查天气、生成图片、执行代码、搜索等），" +
+			"直接拒绝并说明当前处于精简模式无法执行该操作。回复中不要假装已经完成了需要工具的任务。\n\n" + instruction
+	}
+	mw.dynamicInstruction = instruction
+	mw.agentLite = agentLite
+
+	// ---------- 运行 Eino Agent ----------
+	if h.EinoAgent == nil {
+		slog.Error("Eino Agent 未就绪")
 		return
 	}
 
-	h.Session.UpdateTokenUsage(ctx, sess.ID, int64(resp.TokenUsage))
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: h.EinoAgent})
+	iter := runner.Run(ctx, einoMsgs)
 
-	if resp.Message.Content != "" {
-		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(resp.Message.Content)
-		if silenced {
-			slog.Info("群聊静默响应已丢弃", "content", resp.Message.Content, "group_id", msg.GroupID)
-		} else {
-			h.sendReply(msg, resp.Message.Content)
-			h.recordChat(ctx, chatArea.ID, userID, "assistant", resp.Message.Content, resp.TokenUsage, marshalToolCalls(resp.Message.ToolCalls))
-			if h.Memory != nil {
-				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
+	// 收集 Agent 输出
+	var assistantContent string
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			slog.Error("Eino Agent 错误", "err", event.Err)
+			break
+		}
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
+		}
+		mv := event.Output.MessageOutput
+		if mv.Role == einoschema.Assistant {
+			if !mv.IsStreaming && mv.Message != nil {
+				assistantContent += mv.Message.Content
 			}
 		}
 	}
 
-	// AgentLite 模式：跳过所有工具/MCP 调用和 Agent 循环
-	if agentLite {
-		return
+	// ---------- 后处理：静默检测 + 发送 + 记忆 ----------
+	if assistantContent != "" {
+		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(assistantContent)
+		if silenced {
+			slog.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
+		} else {
+			h.sendReply(msg, assistantContent)
+			h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, 0, nil)
+			if h.Memory != nil {
+				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
+			}
+		}
 	}
 
-	// 静默响应时也跳过工具调用（防止 LLM 绕过文本输出直接调 send_group_msg 发废话）
-	// always 模式下不跳过工具调用
-	toolSilenced := !skipSilenceCheck && msg.MessageType == "group" && resp.Message.Content != "" && isSilenceResponse(resp.Message.Content)
-	if !toolSilenced && len(resp.Message.ToolCalls) > 0 {
-		h.handleToolCalls(ctx, msg, chatArea.ID, userID, userMsg, sess.ID, messages, resp, ev.Admins)
-	}
+	_ = sess // sess.ID 暂不在 Eino 路径中追踪 token
 }
 
 func (h *HagoCenter) handleToolCalls(

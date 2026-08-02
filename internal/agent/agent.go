@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -23,6 +24,10 @@ import (
 	"JuanNiang-Neo/internal/core/cache"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/pluggin"
+
+	"github.com/cloudwego/eino/adk"
+	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
 )
 
 // HagoCenter 是 Agent 系统的中央调度器，聚合所有子模块。
@@ -64,6 +69,9 @@ type HagoCenter struct {
 	CurrentSessionCtx string
 	// CurrentMsg 当前正在处理的消息（供工具获取发送目标）
 	CurrentMsg *adapter.MessageEvent
+
+	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
+	EinoAgent *adk.ChatModelAgent
 }
 
 // Config HagoCenter 初始化配置。
@@ -157,6 +165,11 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Drainer = NewDrainerAgent(h.OutputChan, h.BgTaskResultChan)
 	h.CronJobManager = cronjob.New(h.DAO.CronJob, h.CronJobEvents)
 
+	// 构建 Eino ChatModelAgent（替代手写的 ReAct 循环）
+	if err := h.buildEinoAgent(ctx); err != nil {
+		slog.Warn("Eino Agent 构建失败，将回退到旧模式", "err", err)
+	}
+
 	return nil
 }
 
@@ -240,6 +253,49 @@ func (h *HagoCenter) loadSkills(ctx context.Context) error {
 		})
 	}
 	slog.Info("Skill 加载完成", "count", len(list))
+	return nil
+}
+
+// buildEinoAgent 构建 Eino ChatModelAgent（替代手写的 ReAct 循环）。
+// 在 Init 末尾调用，要求 Providers 和 Tools 已就绪。
+func (h *HagoCenter) buildEinoAgent(ctx context.Context) error {
+	// 1. 选取文本模型并包装为 Eino 适配器
+	llm := h.Providers.SelectModel(provider.ModelTypeText)
+	if llm == nil {
+		return fmt.Errorf("无可用 Text 模型，无法构建 Eino Agent")
+	}
+	modelAdapter := provider.NewEinoModelAdapter(llm)
+
+	// 2. 将内置工具 + MCP 工具转换为 Eino InvokableTool
+	einoInvTools := tool.BuildEinoTools(h.Tools, h.MCP, h.MCP)
+
+	// 类型转换: []tool.InvokableTool → []tool.BaseTool (Eino 要求)
+	einoBaseTools := make([]einotool.BaseTool, len(einoInvTools))
+	for i, t := range einoInvTools {
+		einoBaseTools[i] = t
+	}
+
+	// 3. 创建 Agent（Instruction 为空，每条消息由 middleware.BeforeAgent 动态注入）
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        "juan-niang-neo",
+		Description: "QQ 群聊 AI 助手",
+		Model:       modelAdapter,
+		ToolsConfig: adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: einoBaseTools,
+			},
+		},
+		MaxIterations: 20,
+		Handlers: []adk.ChatModelAgentMiddleware{
+			&JuanNiangMiddleware{h: h},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("创建 Eino ChatModelAgent 失败: %w", err)
+	}
+
+	h.EinoAgent = agent
+	slog.Info("Eino ChatModelAgent 已就绪", "tools", len(einoBaseTools))
 	return nil
 }
 
