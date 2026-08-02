@@ -123,7 +123,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.Cache)
 
 	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea) + 后台任务记忆
-	stConf := shortterm.Config{WindowSize: 20, AutoCompact: false}
+	stConf := shortterm.Config{WindowSize: 100, AutoCompact: true}
 	ltConf := longterm.Config{HotAreaSize: 10}
 	st := shortterm.New(stConf, cfg.Cache)
 	lt := longterm.New(ltConf, cfg.DAO.LongTermMemItem)
