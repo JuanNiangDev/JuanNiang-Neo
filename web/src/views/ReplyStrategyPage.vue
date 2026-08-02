@@ -19,7 +19,6 @@
                 <v-radio label="完全不回复 — 不处理任何消息" value="never_reply" color="error" />
                 <v-radio label="仅@我时回复 — 只有被@时才交给 Plugin 和 Agent" value="at_only" color="warning" />
                 <v-radio label="完全回复 — 正常处理所有消息（默认）" value="always" color="success" />
-                <v-radio label="仅 Plugin — 只给 Plugin 处理，不给 Agent" value="plugin_only" color="info" />
                 <v-radio label="按相关性回复 — 由 Agent 判断消息是否相关后再回复" value="relevance" color="primary" />
               </v-radio-group>
 

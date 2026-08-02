@@ -200,9 +200,6 @@ func main() {
 	// 将 PluginEngine 注册为 Webhook 插件路由器
 	webhookAdapter.SetPluginRouter(pluginEngine)
 
-	// 将 PluginEngine 的 OnTimerCall 注入 CronJob 调度器
-	hago.CronJobManager.SetPluginTimer(pluginEngine, adapterCfg.Admins)
-
 	// ---------- 7. Web API ----------
 
 	svc := service.New(coreInst.DAO, adapterProv, webhookAdapter, pluginEngine)
@@ -273,7 +270,7 @@ func main() {
 // shutdown 按反向顺序停掉各组件, 每步独立带 deadline, 任一卡死不影响后续。
 // 注意: 先停 adapter 再停 web 引擎, 避免 web 请求持 adapter 锁导致 Stop 死锁。
 func shutdown(adapterProv *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, hago *agent.HagoCenter, webEngine *server.Hertz, pluginEngine *pluggin.PluginEngine) {
-	// 8.1 先停 Agent (关闭事件循环 / Drainer 输入, 避免后续 adapter 关闭时事件循环还在消费)。
+	// 8.1 先停 Agent (关闭事件循环, 避免后续 adapter 关闭时事件循环还在消费)。
 	hago.Stop()
 
 	// 8.2 停 Webhook adapter。

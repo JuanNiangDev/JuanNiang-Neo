@@ -2,12 +2,10 @@ package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"JuanNiang-Neo/internal/agent/memory/bgtask"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/memory/skillmem"
@@ -21,19 +19,17 @@ type ShortTermMemoryConfig = shortterm.Config
 type LongTermMemoryConfig = longterm.Config
 
 type MemoryGroup struct {
-	ShortTerm            *shortterm.ShortTermMemory
-	LongTerm             *longterm.LongTermMemory
-	BackGroundTaskMemory *bgtask.BackGroundTaskMemory
-	SkillMemory          *skillmem.SkillMemory
-	LLMProvider          provider.Provider // 用于 Compact 中的技能记忆更新
+	ShortTerm   *shortterm.ShortTermMemory
+	LongTerm    *longterm.LongTermMemory
+	SkillMemory *skillmem.SkillMemory
+	LLMProvider provider.Provider // 用于 Compact 中的技能记忆更新
 }
 
-func NewMemoryGroup(st *shortterm.ShortTermMemory, lt *longterm.LongTermMemory, bgt *bgtask.BackGroundTaskMemory, sm *skillmem.SkillMemory) *MemoryGroup {
+func NewMemoryGroup(st *shortterm.ShortTermMemory, lt *longterm.LongTermMemory, sm *skillmem.SkillMemory) *MemoryGroup {
 	return &MemoryGroup{
-		ShortTerm:            st,
-		LongTerm:             lt,
-		BackGroundTaskMemory: bgt,
-		SkillMemory:          sm,
+		ShortTerm:   st,
+		LongTerm:    lt,
+		SkillMemory: sm,
 	}
 }
 
@@ -177,25 +173,6 @@ func (m *MemoryGroup) UpdateSkillMemory(ctx context.Context, recentMsgs []shortt
 	return nil
 }
 
-func (m *MemoryGroup) AddBackGroundTask(meta bgtask.BackGroundTaskMetaInfo) string {
-	return m.BackGroundTaskMemory.Add(meta)
-}
-
-func (m *MemoryGroup) DelBackGroundTask(taskID string) {
-	m.BackGroundTaskMemory.Del(taskID)
-}
-
-func (m *MemoryGroup) GetBackGroundTask(taskID string) (bgtask.BackGroundTaskMetaInfo, bool) {
-	return m.BackGroundTaskMemory.Get(taskID)
-}
-
-func (m *MemoryGroup) ListBackGroundTasks() map[string]bgtask.BackGroundTaskMetaInfo {
-	return m.BackGroundTaskMemory.List()
-}
-
 // Compile-time: ensure MemoryGroup implements shortterm.CompactStore and shortterm.SkillMemoryUpdater
 var _ shortterm.CompactStore = (*MemoryGroup)(nil)
 var _ shortterm.SkillMemoryUpdater = (*MemoryGroup)(nil)
-
-// Ensure json import is used (for potential future use)
-var _ = json.Marshal

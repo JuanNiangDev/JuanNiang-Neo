@@ -1843,7 +1843,6 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		string(models.StrategyNeverReply): true,
 		string(models.StrategyAtOnly):     true,
 		string(models.StrategyAlways):     true,
-		string(models.StrategyPluginOnly): true,
 		string(models.StrategyRelevance):  true,
 	}
 	if !validStrategies[data.Strategy] {

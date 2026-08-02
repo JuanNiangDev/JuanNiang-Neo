@@ -884,40 +884,6 @@ func (pe *PluginEngine) luaTableToEvent(t *lua.LTable, original adapter.Event) a
 	return result
 }
 
-// OnTimerCall 定时任务触发插件 on_timer_call 回调。
-// pluginIDs 指定要调用的插件（目录名列表），payload 为 CronJob 配置的 JSON payload，
-// admins 为系统管理员 QQ 列表。
-// 实现 cronjob.PluginTimerDispatcher 接口。
-func (pe *PluginEngine) OnTimerCall(pluginIDs []string, payload map[string]any, admins []string) {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-
-	event := EventData{
-		PostType: "timer",
-		Admins:   admins,
-		Payload:  payload,
-	}
-
-	for _, name := range pluginIDs {
-		p, ok := pe.plugins[name]
-		if !ok {
-			log.Warn("OnTimerCall: 插件未加载", "plugin", name)
-			continue
-		}
-		fn := p.State.GetGlobal("on_timer_call")
-		if fn.Type() != lua.LTFunction {
-			log.Warn("OnTimerCall: 插件未定义 on_timer_call", "plugin", name)
-			continue
-		}
-		table := eventToLuaTable(p.State, event)
-		p.State.Push(fn)
-		p.State.Push(table)
-		if err := p.State.PCall(1, 0, nil); err != nil {
-			log.Error("插件 on_timer_call 错误", "plugin", name, "err", err)
-		}
-	}
-}
-
 // SupportsTimer 检查插件是否支持定时任务回调（定义了 on_timer_call 全局函数）。
 func (p *LoadedPlugin) SupportsTimer() bool {
 	fn := p.State.GetGlobal("on_timer_call")

@@ -21,9 +21,6 @@ type Event struct {
 	Raw      json.RawMessage `json:"-"` // 原始 JSON
 	Admins   []string        `json:"-"` // 透传给 plugin/agent 的管理员列表
 
-	// IsBgTaskResult 标记此事件是后台任务结果合成的，跳过 ACL 检查。
-	IsBgTaskResult bool `json:"-"`
-
 	// IsCronJob 标记此事件是定时任务触发的。
 	IsCronJob bool `json:"-"`
 

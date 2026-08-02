@@ -10,7 +10,6 @@ import (
 	"JuanNiang-Neo/internal/agent/cronjob"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
-	"JuanNiang-Neo/internal/agent/memory/bgtask"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/memory/skillmem"
@@ -117,17 +116,16 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径)
 	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.Cache)
 
-	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea) + 后台任务记忆
+	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea)
 	stConf := shortterm.Config{WindowSize: 100, AutoCompact: true}
 	ltConf := longterm.Config{HotAreaSize: 10}
 	st := shortterm.New(stConf, cfg.Cache)
 	lt := longterm.New(ltConf, cfg.DAO.LongTermMemItem)
-	bgt := bgtask.New()
 	sm := skillmem.New(cfg.DAO.SkillMemory)
 	if err := sm.Warmup(ctx); err != nil {
 		log.Warn("技能记忆预热失败", "err", err)
 	}
-	h.Memory = memory.NewMemoryGroup(st, lt, bgt, sm)
+	h.Memory = memory.NewMemoryGroup(st, lt, sm)
 	// 设置 LLM Provider 供 Compact 中的技能记忆更新使用
 	h.Memory.LLMProvider = h.Providers.SelectModel(provider.ModelTypeText)
 
@@ -298,7 +296,7 @@ func (h *HagoCenter) buildEinoAgent(ctx context.Context) error {
 	return nil
 }
 
-// Start 启动 Agent 系统 (后台任务执行器 + 排水 Agent + 事件循环 + CronJob 调度器)。
+// Start 启动 Agent 系统 (事件循环 + CronJob 调度器)。
 func (h *HagoCenter) Start(ctx context.Context) error {
 	go h.runEventLoop(ctx)
 	go h.CronJobManager.Run(ctx)
