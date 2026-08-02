@@ -416,7 +416,7 @@ CronJob 定时触发插件的 `on_cronjob` 回调，通过统一事件循环 →
 | `DELETE` | `/api/v1/cronjobs/:id` | 删除（自动 reload） |
 | `PUT` | `/api/v1/cronjobs/:id/toggle` | 启停（自动 reload） |
 
-`AddCronJobReq` body 字段：`name`、`cron_expr`、`message`（可选，空则不发给 Agent）、`message_type`（默认 `private`）、`target_id`、`is_active`、`plugin_ids`（`string[]`，可选）、`payload`（JSON 字符串，可选）。
+`AddCronJobReq` body 字段：`name`、`cron_expr`、`is_active`、`plugin_ids`（`string[]`，可选）、`payload`（JSON 字符串，可选）。
 
 ### 示例：每 10 秒触发插件发消息
 
@@ -432,48 +432,25 @@ curl -X POST http://localhost:8090/api/v1/cronjobs \
   }'
 ```
 
-到点后 Agent 会接到一条"群 987654321 发来消息 '今天有什么新闻？'"，按它能力回复。`message` 等同用户输入，会被 LLM 处理并可调工具（如 `browser_search`）。
-
 ### 运行时流（细节）
 
-**Agent 分发路径**（`message` 非空）：
 ```
 robfig/cron 到期 → CronJobManager.makeJobFunc(job)
   ├─ DAO.CronJob.UpdateLastRun(now, err)
-  ├─ 构造 MessageEvent{MessageType=job.MessageType,
-  │                   RawMessage=job.Message,
-  │                   GroupID or UserID=job.TargetID}
-  └─ 构造 Event{PostType:"cronjob", IsCronJob:true, Message, Time:now}
-     └─ 非阻塞 send → HagoCenter.CronJobEvents (满则丢)
-
-EventLoop 分支5 → processEvent (PostType=="cronjob") → handleMessage
-  跳过策略与 ACL，正常 SendMessage 给 LLM，LLM 可调工具再 sendReply
+  ├─ 解析 plugin_ids JSON → []string
+  ├─ 解析 payload JSON → map[string]any
+  └─ 构造 Event{PostType:"cronjob", ...}
+     └─ 注入统一事件循环 → Plugin.Dispatch
+        └─ PluginEngine.Dispatch → 遍历指定插件
+           └─ 调用 Lua on_cronjob(event)（event.payload = payload）
 ```
-
-**Plugin 分发路径**（`plugin_ids` 非空）：
-```
-robfig/cron 到期 → CronJobManager.makeJobFunc(job)
-  ├─ DAO.CronJob.UpdateLastRun(now, err)
-  ├─ 构造 Event{PostType:"cronjob", IsCronJob:true}
-  └─ 非阻塞 send → HagoCenter.EventChan
-
-EventLoop → processEvent (PostType=="cronjob")
-  └─ PluginEngine.Dispatch(event)
-     └─ 遍历所有已加载插件
-        └─ 调用定义了 on_cronjob(event) 的 Lua 回调（event.payload = payload）
-```
-
-两种路径**相互独立**：若同时配置则都会执行。
 
 `LastRunAt`/`LastError` 回写 DB，前端"定时任务"页可看历史。删改/toggle 后由 `Service.AddCronJob/...` 调 `CronJobManager.Reload()` 同步调度器，无需重启进程。
 
 ### 注意
 
-- **满则丢**：`CronJobEvents` cap=64，并发突发触发 queued 会被丢，不阻塞调度器
-- **AgentSkill 触发**：`message` 走 `Skills.Match`——可让"早安"skill 在 `message=早安` 时注入特定 prompt
-- **Token 计费**：CronJob 触发的消息也走 Session，按账记 `TokenUsage`
+- **满则丢**：事件队列满时会被丢弃，不阻塞调度器
 - **跨容器时区**：`TZ=Asia/Shanghai` 容器内是北京时间；裸机部署注意主机时区
-- **target 必须 ChatArea 已存在**：`GetOrCreate` 会自动按 (type, targetID) 创建新 ChatArea，所以首次触发 Session 是新建的（无短期历史）
 - **Plugin 调用的检测**：只有定义了 `on_cronjob` 全局函数且已加载的插件才会被调用；前端多选下拉框自动过滤
 - **Plugin Payload**：必须是合法 JSON 字符串，保存时前端 CodeMirror 编辑器会实时校验格式
 - **插件重载**：`POST /api/v1/plugins/reload` 可热重载全部非系统插件，新增/修改 `on_cronjob` 后需重载才生效
@@ -481,7 +458,7 @@ EventLoop → processEvent (PostType=="cronjob")
 ## 二者结合场景
 
 - **监控报警 → Webhook → 插件 → 立即推送 + 创建临时 CronJob 多波次提醒**
-  - 插件在 `on_webhook` 处理时调 `POST /api/v1/cronjobs` 建一个每隔 10 分钟触发的任务，告诉 Agent"提醒用户报警还在"
-  - 用 CronJob 的 `message` 把上一轮报警内容装进去让 Agent 轮询处理
+  - 插件在 `on_webhook` 处理时调 `POST /api/v1/cronjobs` 建一个每隔 10 分钟触发的任务
+  - CronJob 到点后通过 `on_cronjob` 回调触发插件，插件自行检查报警状态并推送提醒
 
-这利用了 Webhook 不走 LLM、CronJob 走 LLM 的差异，分工精确省 token。
+Webhook 和 CronJob 都不经过 Agent，全部由插件处理，省 token 且逻辑清晰。

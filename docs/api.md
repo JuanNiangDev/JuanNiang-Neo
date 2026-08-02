@@ -611,7 +611,7 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 
 **data** `CronJobResp`。
 
-`CronJobResp`: `id`、`name`、`cron_expr`、`message`、`message_type`、`target_id` int64、`is_active`、`last_run_at` *time、`last_error`、`created_at`、`updated_at`。
+`CronJobResp`: `id`、`name`、`cron_expr`、`plugin_ids` JSONSlice、`payload` JSONMap、`is_active`、`last_run_at` *time、`last_error`、`created_at`、`updated_at`。
 
 ### PUT /cronjobs/:id
 覆盖更新，自动 reload。**Body** `UpdateCronJobReq`（同 Add）。**data** `CronJobResp`。

@@ -63,9 +63,9 @@ end, { description = "打招呼", usage = "/hello" })
 -- 消息事件回调
 function on_message(event)
     if event.raw_message == "ping" then
-        return true, "pong"
+        return true, event, false  -- consumed, modified_event, skip_reply
     end
-    return false, nil
+    return false, event, false
 end
 
 -- webhook 事件回调（需在 permissions 申请 webhook）
@@ -486,7 +486,7 @@ end, { description = "多级命令", usage = "/myplugin subcmd1 subcmd2 [args...
 ## 回调: `on_message`
 
 ```lua
-function on_message(event) → (consumed, reply)
+function on_message(event) → (consumed, modified_event, skip_reply)
 ```
 
 | event 字段 | 类型 | 说明 |
@@ -500,7 +500,10 @@ function on_message(event) → (consumed, reply)
 | `sender` | table | 发送者信息 `{user_id, nickname, sex, age, card}` |
 | `admins` | []string | admin QQ 列表（透传 OB AdminQQNumbers） |
 
-`consumed=true` → 跳过 Agent 处理与后续插件。
+**返回值：**
+- `consumed` (bool): `true` → 跳过 Agent 处理与后续插件
+- `modified_event` (table): 可返回修改后的 event 表供后续处理，传 `nil` 或原 event 表示不修改
+- `skip_reply` (bool): `true` → 跳过回复策略评估，即使 Agent 处理也不自动回复
 
 > **命令优先**：`/` 开头的 RawMessage 会**先**进 `commands.Dispatch`，命中命令后直接 sendReply 并短路，`on_message` 不会被调用。插件应优先用 `jn.command.register` 注册命令式交互，将 `on_message` 用于纯事件监听。
 
@@ -537,27 +540,28 @@ function on_webhook(event)
 end
 ```
 
-## 回调: `on_timer_call`
+## 回调: `on_cronjob`
 
-定时任务回调，由 CronJob 的 Plugin 分发模式触发。
+定时任务回调，由 CronJob 通过统一事件循环 → `Plugin.Dispatch` 分发触发。
 
 ```lua
-function on_timer_call(event)  -- 无返回值
+function on_cronjob(event)  -- 无返回值
 ```
 
 | event 字段 | 类型 | 说明 |
 |----------|------|------|
-| `post_type` | string | `"timer"` |
+| `post_type` | string | `"cronjob"` |
 | `payload` | table | CronJob 配置的 Payload JSON 对象 |
 | `admins` | []string | admin QQ 列表 |
 
-- 只有定义了 `on_timer_call` 全局函数且已加载的插件才会被 CronJob 调用
-- 前端多选下拉框自动过滤 `supports_timer=true` 的已启用插件
-- 新增/修改 `on_timer_call` 后需通过前端"重载全部"或 `POST /api/v1/plugins/reload` 热重载
+- CronJob 事件**不**经过 Agent，仅通过 `Plugin.Dispatch` 分发到插件
+- 只有定义了 `on_cronjob` 全局函数且已加载的插件才会被 CronJob 调用
+- 前端多选下拉框自动过滤 `supports_cronjob=true` 的已启用插件
+- 新增/修改 `on_cronjob` 后需通过前端"重载全部"或 `POST /api/v1/plugins/reload` 热重载
 
 ```lua
 -- 示例：向 Payload 指定的 QQ 发定时消息
-function on_timer_call(event)
+function on_cronjob(event)
     local p = event.payload or {}
     if p.target_qq and p.message then
         jn.onebot11.send_private_msg(p.target_qq, p.message)
@@ -641,7 +645,7 @@ end
 | `sandbox` | `sandbox.*` |
 | `agent` | `agent.*` |
 | (webhook 调用层过滤) | `on_webhook` 会被调用 |
-| (timer 调用层过滤) | `on_timer_call` 会被调用 |
+| (cronjob 调用层过滤) | `on_cronjob` 会被调用 |
 
 ---
 
@@ -766,7 +770,7 @@ Dispatch(raw, event):
 
 ### 8. 事件回调的 PCall 安全
 
-`OnMessage`/`OnWebhook` 用 `L.PCall` 保护调用，handler 抛错只 `slog.Error` 不影响后续插件或 Agent。
+`OnMessage`/`OnWebhook`/`OnCronjob` 用 `L.PCall` 保护调用，handler 抛错只记录日志不影响后续插件或 Agent。
 
 ---
 
@@ -780,5 +784,5 @@ Dispatch(raw, event):
 6. **系统插件目录 `system/` 每次启动被二进制覆盖** — 不要用它存自定义命令，自建插件目录
 7. **`database` 权限声称有命名空间隔离，但 `prefixSQL` 是桩未生效** — 任意 SQL，请重度谨慎
 8. **改 Lua 文件不 reload 看不到效果**：`PUT /plugins/:id/toggle` 先停再启才会重新 `DoFile`
-9. **handler 返回值约定** `(consumedBool, replyString)`：consumed=true 短路（不调 Agent）；reply 非 nil 自动回复
-10. **Webhook 不走 LLM**：仅喂插件，是外部集成的钩子。若要让 Agent 处理外部输入，应该用 CronJob 或插件内 `onebot11.send_*_msg` 自己转发
+9. **handler 返回值约定** `(consumed, modified_event, skip_reply)`：consumed=true 短路（不调 Agent）；skip_reply=true 跳过回复策略
+10. **Webhook 与 CronJob 都不走 LLM**：仅喂插件，是外部集成与定时任务的钩子。若要让 Agent 处理外部输入，插件内 `onebot11.send_*_msg` 自己转发
