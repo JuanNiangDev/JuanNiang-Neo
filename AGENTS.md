@@ -48,6 +48,7 @@ Top-level:
     `GET /health` lives on the root.
   - `core/` — `acl`, `cache`, `dao`, `handler`, `models`.
   - `pluggin/` — Lua plugin engine.
+  - `logging/` — fatih/color 彩色输出 + JSON 格式化 + 调用栈 + Hub(SSE).
   - `web/` — **NEW**. Frontend SPA serving helper (`SPAHandler`). Runtime reads
     `WEB_DIR` (default `web/dist`); `engine.New(addr, webDir, svc)` registers a
     `h.NoRoute` fallback: `/api/*` → standard 404 JSON envelope, anything else →
