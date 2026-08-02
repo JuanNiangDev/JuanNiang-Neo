@@ -60,7 +60,7 @@ type Provider interface {
 - 单个 MCP server 描述：`server_url`（SSE 端点）、`headers`、`timeout`、`retry_count`、`tool_filter`（工具白名单，空=全量）、`auto_reconnect`
 - 客户端 `sdkMCPClient`（`internal/agent/mcp/mcp.go:154`）`NewSSEMCPClient` → `Connect`（Start + Initialize，协议 LATEST 版本，clientInfo `{Name:"JuanNiang-Neo", Version:"1.0.0"}`）→ `ListTools`/`CallTool`
 - `MCPGroup` 聚合所有 MCP，提供 `ListTools()`（仅已连接）和 `CallTool(name, args)`（按名分发）
-- **MCP 优先**：当工具名在 builtin 与 MCP 中都存在，`MCPGroup.HasTool(name)` 命中则走 MCP（`bgtask_executor.go::executeTool`、`event.go::handleToolCalls`）；这允许 MCP 覆盖 builtin 同名工具
+- **MCP 优先**：当工具名在 builtin 与 MCP 中都存在，`MCPGroup.HasTool(name)` 命中则走 MCP（`event.go::handleToolCalls`）；这允许 MCP 覆盖 builtin 同名工具
 
 ### 接入指南
 
@@ -100,7 +100,7 @@ builtin 工具名（如 `send_group_msg`）可能被 MCP 同名工具覆盖。�
 - **KV**：`Get/Set(ttl)/Del/Exists/SetNX`
 - **List**：`LPush/RPush/LRange/LTrim/LLen` — 短期记忆滑动窗口用（key `shortterm:msgs:<areaID>`，`LTrim` 维持窗口）
 - **Hash**：`HGet/HSet/HGetAll/HDel`
-- **PubSub**：`Publish/Subscribe` — 后台任务结果通知
+- **PubSub**：`Publish/Subscribe`
 
 `Cache.Client()` 暴露原始 `*redis.Client`，仅给需要 PubSub 的模块用。
 

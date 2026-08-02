@@ -6,16 +6,19 @@
 
 ***JuanNiang-Neo 是一个以 Go 1.25 构建的 QQ 机器人项目，红岩网校的吉祥物卷娘。***
 
-核心由 LLM 驱动的对话 Agent（`HagoCenter` 聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成，长任务以 errgroup 风格在后台执行，再由独立 Drainer Agent 排空缓冲并发送 QQ 消息。项目同时包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
+核心由 LLM 驱动的对话 Agent（`HagoCenter` 聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成，基于 [Eino ADK](https://github.com/cloudwego/eino) 框架构建 `ChatModelAgent`，工具调用在 ReAct 循环内同步执行，每个聊天区域最多 8 个 Agent goroutine 并发处理（由 `ConcurrencyManager` 控制）。事件流经三阶段管线：Plugin 拦截 → 回复策略检查 → 异步派发 Agent。项目同时包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
 
 ## 主要特性
 
-- **Agent 系统**：基于 LLM（OpenAI 兼容）的对话 Agent，支持 Provider / MCP / Tool / Skill / Prompt / Plugin 多模块组合
+- **Agent 系统**：基于 Eino ADK 的 `ChatModelAgent`（OpenAI 兼容），支持 Provider / MCP / Tool / Skill / Prompt / Plugin 多模块组合，工具调用在 ReAct 循环内同步完成
+- **异步并发处理**：`ConcurrencyManager` 控制每 ChatArea 最多 8 个 Agent goroutine 并发，事件经三阶段管线（Plugin 拦截 → 回复策略 → Agent 派发）高效分流
+- **四层记忆体系**：短期记忆（Redis 滑动窗口，默认 100 条，自动 Compact）/ 长期记忆（Postgres + 内存 LRU）/ 技能记忆（SkillMemory，Compact 时自动提取）/ 会话记录（Postgres 审计）
 - **OneBot11 反向 WebSocket 适配器**：与 QQ 机器人框架对接，OneBot11 API 作为 Agent 工具注册
 - **Lua 插件系统**：gopher-lua 驱动，支持多级命令、Lua SDK（带 LuaCATS 注解）、系统插件保护
 - **Web 管理后台**：Vue 3 + Vuetify 3，JWT 鉴权（可选 OIDC SSO），管理全部配置与运行时状态
 - **基础设施**：Postgres 持久化 + Redis 缓存 + Sandbox 代码沙箱 + T2I 文生图，未配置时自动返回未启用提示
-- **系统锁定提示词**：每次对话强制拼接，引导 LLM 使用 T2I 富文本、分消息段回复、权限层级等
+- **彩色日志系统**：基于 `fatih/color` 的自定义日志，彩色输出、JSON 自动格式化、WARN+ 调用栈、模块日志器、GORM SQL 日志集成
+- **开发配置**：`dev.yaml` 本地开发配置文件（数据库、Redis、OneBot11 等），`make run` 自动读取
 
 ## 效果图
 
@@ -36,7 +39,8 @@
 | 分类 | 文档 | 说明 |
 |------|------|------|
 | Web API | [api.md](docs/api.md) | Web API 全路由文档（响应信封、错误码、各资源 CRUD、SSE 日志流、SPA 静态服务） |
-| 项目细节 | [project-details.md](docs/project-details.md) | 四合一：分层架构 / 数据模型 / HagoCenter 运行时拓扑（mermaid）；关键调用栈（ASCII）；EventLoop 5 分支、processEvent 决策树、长任务与 CronJob/Webhook 注入时序图（mermaid）；Lua 插件系统架构生命周期与命令树（mermaid） |
+| 项目细节 | [project-details.md](docs/project-details.md) | Eino ADK Agent 架构 / 三阶段事件循环 / 数据模型 / HagoCenter 运行时拓扑（mermaid）；关键调用栈（ASCII）；processEvent 决策树、CronJob/Webhook 注入时序图（mermaid）；Lua 插件系统架构生命周期与命令树（mermaid） |
+| 日志系统 | `internal/logging/` | fatih/color 彩色终端输出 / JSON 结构化格式化 / 完整调用栈追踪 / Hub SSE 实时推送至前端 |
 | 插件开发 | [plugin-development.md](docs/plugin-development.md) | 快速开始 + 完整 Lua API 参考（log/json/onebot11/http/database/cache/t2i/sandbox/agent/command）+ 引擎实现细节 + 常见坑 |
 | 部署 | [deployment.md](docs/deployment.md) | 部署模式、环境变量、构建流程、健康检查、日志排查、反向代理、systemd、FAQ |
 | 二次开发 | [development.md](docs/development.md) | 该读什么 / 该改什么 / 不该动什么、当前实现状态、约定、写 Agent 工具与 Web API 的最小范式 |
@@ -134,6 +138,16 @@ docker compose up -d
 ```
 
 更多部署细节（裸机、反代、systemd、故障排查）见 [deployment.md](docs/deployment.md)。
+
+## 开发
+
+```bash
+cp dev.yaml.example dev.yaml   # 复制并按需修改数据库等配置
+make dev                        # Vite (:3000) + Go (:8090) 并行
+make run-debug                  # 仅后端 debug 模式 (pprof :6060)
+```
+
+dev.yaml 优先级：环境变量 > dev.yaml > 内置默认值。详见 [development.md](docs/development.md)。
 
 ## 许可证
 

@@ -6,7 +6,7 @@
 
 ## 概述
 
-JuanNiang-Neo 是基于 OneBot11 协议的 LLM QQ 聊天 Agent 系统（红岩网校吉祥物"卷娘"）。核心由 LLM 驱动的对话 Agent（`HagoCenter`，聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成。长任务以 errgroup 风格在后台执行，由独立 Drainer Agent 排空缓冲并发送 QQ 消息。项目还包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
+JuanNiang-Neo 是基于 OneBot11 协议的 LLM QQ 聊天 Agent 系统（红岩网校吉祥物"卷娘"）。核心由 LLM 驱动的对话 Agent（`HagoCenter`，聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成，基于 Eino ADK 框架构建 `ChatModelAgent`，工具调用在 ReAct 循环内同步执行。事件流经三阶段管线：Plugin 拦截 → 回复策略检查 → 异步派发 Agent，每个聊天区域由 `ConcurrencyManager` 控制最多 8 个 Agent goroutine 并发。项目还包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
 
 ## 分层架构
 
@@ -21,8 +21,8 @@ flowchart TB
   subgraph Core["核心层"]
     API["api/: Hertz Web 引擎 + JWT + 路由 + Service(68 handler)"]
     Plugin["pluggin/: gopher-lua 引擎<br/>生命周期 / API 暴露 / 命令树 / 事件拦截"]
-    Agent["agent/: HagoCenter<br/>Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL"]
-    CoreLib["core/: models(22表) / dao.Bundle / cache / acl"]
+    Agent["agent/: HagoCenter + Eino ADK ChatModelAgent<br/>Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL<br/>ConcurrencyManager (每 ChatArea 8 goroutine)"]
+    CoreLib["core/: models(23表) / dao.Bundle / cache / acl"]
   end
   subgraph Infra["基础设施层"]
     PG["postgres"]
@@ -35,7 +35,7 @@ flowchart TB
     FE["web/: Vue 3 + Vuetify 3 仪表板 (22 views)"]
   end
   subgraph Logging["日志"]
-    LogHub["logging: slog.Handler 双写 stdout + Hub(SSE)"]
+    LogHub["logging: fatih/color 彩色输出 + JSON 格式化<br/>WARN+ 调用栈 + 模块日志器 + Hub(SSE)"]
   end
 
   Main --> OB
@@ -59,19 +59,19 @@ flowchart TB
 |------|--------|------|
 | **入口** | `cmd/server/main.go` | 组装所有模块、启动服务、反向优雅退出（带 15s watchdog） |
 | **适配器** | `internal/adapter/` | OneBot11 反向 WS 服务端 + Webhook HTTP 服务端：事件解析、API 封装、消息段构造 |
-| **Agent** | `internal/agent/` | Agent 核心：`HagoCenter` 聚合 Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL，事件循环、后台任务、Drainer、CronJob、回复策略 |
+| **Agent** | `internal/agent/` | Agent 核心：`HagoCenter` 聚合 Eino ADK ChatModelAgent / Provider / MCP / Memory / Prompt / Session / Skill / Tool / ACL / ConcurrencyManager / CronJob / 回复策略 |
 | **核心库** | `internal/core/` | 数据模型 (GORM)、DAO Bundle、Redis 缓存、ACL |
 | **Web API** | `internal/api/` | Hertz Web 引擎、JWT 中间件、路由、Service（68 个管理 handler） |
 | **插件** | `internal/pluggin/` | gopher-lua 引擎：生命周期、Lua API 暴露、命令树、事件拦截 |
 | **基础设施** | `infrastructure/` | postgres、redis、sandbox、t2i 客户端（每个含 `handler` 子包，功能选项风格） |
 | **前端服务** | `internal/web/` | `SPAHandler` 通过 Hertz `NoRoute` 兜底服务 `web/dist` |
-| **日志** | `internal/logging/` | slog Handler 双写 stdout + Hub（环形 250 条 + SSE 订阅） |
+| **日志** | `internal/logging/` | 自定义彩色日志：fatih/color 输出 + JSON 格式化 + WARN+ 调用栈 + 模块日志器 + Hub（环形 250 条 + SSE） + GORM SQL 集成 |
 
 > **术语陷阱**：`internal/adapter.Provider`=OneBot11 反向 WS 适配器；`internal/agent/provider.ProviderGroup`=LLM Provider 组。`pluggin` 是有意拼写（Lua 插件系统），不要改成 `plugin`。`docs/guidance.md` 拼成 `inferstructure` 是错的，真实路径是 `infrastructure/`。
 
 ## 数据模型
 
-共 22 个 GORM 表（见 `internal/core/core.go::AutoMigrate`）。
+共 23 个 GORM 表（见 `internal/core/core.go::AutoMigrate`）。
 
 ```mermaid
 classDiagram
@@ -96,6 +96,7 @@ classDiagram
   class CronJob { string ID; string CronExpr; string Message; string MessageType; int64 TargetID; bool IsActive; time Time LastRunAt }
   class ReplyStrategyConfig { string ID; ReplyStrategy Strategy; float64 RelevanceThreshold; string BotName; bool StripMarkdown; bool AgentLite }
   class Plugin { string ID; string Name; string Version; string Path; JSONMap Config; bool IsActive }
+  class SkillMemory { string ID; string Content }
 
   ChatArea "1" --|> "1" Session
   ChatArea "1" --|> "1" ShortTermMemory
@@ -108,17 +109,18 @@ classDiagram
 
 ### 关键模型语义
 
-- **`ChatArea`**：私聊/群聊最小隔离单元，是 Session / Memory / BackgroundTask / ChatRecord / ACLRule 的父级。由首条消息自动 `GetOrCreate` 创建，无手动创建接口。
+- **`ChatArea`**：私聊/群聊最小隔离单元，是 Session / Memory / ChatRecord / ACLRule 的父级。由首条消息自动 `GetOrCreate` 创建，无手动创建接口。
 - **`ChatRecord`**：`id` 为自增 int64（其他模型多为 UUID）。`Session.AppendRecord` 写 Postgres 与短期记忆 Redis 写入**解耦**——前者为审计/检索，后者为 Agent 上下文窗口。
 - **单行配置**：`Onebot11Adapter`/`WebhookConfig`/`T2IConfig`/`SandboxConfig` 固定 `id=1`，首次访问 DB 不存在时 `InitConfig` 用 `OnConflict DoNothing` 创建默认行。
 - **`ReplyStrategyConfig`**：无 `DeletedAt` 的单例，默认 `strategy=always, relevance_threshold=0.5`。
 - **Prompt `IsSystem`**：启动时 `EnsureSystemPrompt` 幂等播种 `__system_locked__`，强制拼接（顺序 SystemLocked → system → personality → custom）。
 - **Plugin `Manifest.System`**：系统插件三层守卫（Manifest.System + `PluginEngine.IsSystem()` + Service 层 Toggle/Delete）禁删/禁停。
 - **`CronJob`**：不与 ChatArea 建外键；触发时由 `cronjob.Manager` 构造合成 `adapter.Event{PostType:"cronjob", IsCronJob:true}` 经 `CronJobEvents` channel 注入事件循环。
+- **`SkillMemory`**：全局技能记忆单例（`id="global"`），存储从对话中提取的技能/知识/黑话。Compact 时由 LLM 自动更新，写回 Postgres。
 
 ## 状态管理
 
-- **持久化状态** → Postgres（22 张表）
+- **持久化状态** → Postgres（23 张表）
 - **缓存状态** → Redis（短期记忆滑动窗口 `shortterm:msgs:<areaID>`、PubSub 任务结果通知、插件/Agent 任意 KV/Hash）
 - **插件数据隔离** → Cache 键以 `pluggin:<name>:` 前缀命名空间隔离（注意：`database.query` 当前未真正应用前缀，是 `prefixSQL` 桩）
 - **例外** → Lua 插件配置由 `data/pluggins/<name>/pluggin.yaml` 管理（非 DB，便于 bind-mount 跨镜像保留）

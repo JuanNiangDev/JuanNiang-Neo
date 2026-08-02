@@ -27,6 +27,8 @@
 | 加一条 Web API | `internal/api/router/router.go`（68 路由在此注册）、`internal/api/service/service.go`（handler）、`internal/api/dto/` |
 | 加 Agent 内置工具 | `internal/agent/tool/builtin.go::RegisterBuiltinTools`；参考既有 `send_*_msg`/`browser_search` 等 |
 | 接新 LLM 协议 | `internal/agent/provider/provider.go`（现 OpenAI 兼容 + Eino ADK adapter），实现 `Provider` 接口 |
+| 加记忆类型 | `internal/agent/memory/` 子包：`shortterm/`（Redis 滑窗，默认 100 条 + AutoCompact）、`longterm/`（PG + HotArea）、`skillmem/`（技能记忆） |
+| 加日志模块 | `internal/logging/`（`github.com/fatih/color` 彩色 stdout + JSON + WARN+ 调用栈 + Hub/SSE + GORM SQL + Web UI） |
 | 调整 Agent 并发限制 | `internal/agent/concurrency.go`（默认 8/ChatArea） |
 | 修改分段回复算法 | `internal/agent/event.go::splitMessages`（Maibot 式自然断句） |
 | 加 ACL 维度 | `internal/core/acl/acl.go::Check` + `models.ACLRule` |
@@ -41,17 +43,21 @@
 cmd/server/main.go            入口 (组装/启动/退出)
 internal/
   adapter/      OneBot11 反向 WS + Webhook (Adapter / WebhookAdapter / Event / Segment)
-  agent/        Agent 核心 (HagoCenter + 11 子包)
-    provider/   OpenAI 兼容客户端 (Chat / Vision)
+  agent/        Agent 核心 — Eino ADK (adk.ChatModelAgent + adk.Runner + ConcurrencyManager)
+    provider/   OpenAI 兼容客户端 (Chat / Vision + Eino model adapter)
     mcp/        MCP 客户端 (mark3labs/mcp-go SSE)
-    memory/     三层记忆 (shortterm Redis / longterm PG+HotArea / skillmem 全局技能记忆)
+    memory/     记忆子系统: shortterm(Redis 滑窗 100 条 + AutoCompact) / longterm(PG+HotArea) / skillmem(技能记忆)
     prompt/     系统锁定提示词 + 拼接
     session/    会话 + ChatRecord 持久化
     skill/      关键词/正则技能匹配
-    tool/       ToolRegistry + 内置工具
-    cronjob/    robfig/cron 调度器
-    concurrency.go  每 ChatArea 并发令牌 (chan struct{})
-    eino_middleware.go  Eino ADK 中间件 (ACL + BeforeAgent 注入)
+    tool/       ToolRegistry + 内置工具 + Eino InvokableTool 适配 (BuildEinoTools)
+    cronjob/    robfig/cron 调度器 (on_cronjob 事件注入)
+    agent.go            HagoCenter 聚合 (Init/Stop/buildEinoAgent)
+    agent_operator.go   handleMessage / handleToolCalls
+    concurrency.go      每 ChatArea 并发控制 (默认 8 goroutine)
+    eino_middleware.go  Eino ADK 中间件 (BeforeAgent 注入 / WrapInvokableToolCall ACL)
+    event.go            三阶段事件循环 (Plugin.Dispatch → ReplyStrategy → dispatchToAgent)
+    reply_strategy.go   回复策略 (NeverReply/AtOnly/Always/Relevance)
   api/          Hertz Web (engine + middleware + router + service)
   core/         Init / dao.Bundle / models (22 表) / acl / cache
   pluggin/      Lua 引擎 + 命令树 + 内嵌 SDK + 系统插件
@@ -71,12 +77,12 @@ docs/                   本文档树
 | 项 | 状态 |
 |----|------|
 | Adapter 反向 WS / Webhook / API | ✅ 完整实现 |
-| EventLoop / processEvent / handleMessage / handleToolCalls | ✅ |
-| BgTaskExecutor (errgroup DAG) / DrainerAgent | ✅ |
-| CronJobManager (robfig/cron) | ✅ |
+| EventLoop / processEvent 三阶段 (Plugin.Dispatch → ReplyStrategy → dispatchToAgent) | ✅ |
+| Eino ADK Agent (adk.ChatModelAgent + adk.Runner + ConcurrencyManager) | ✅ |
+| CronJobManager (robfig/cron + on_cronjob 回调) | ✅ |
 | Provider (OpenAI 兼容 + 流式 + Vision) | ✅ |
 | MCP (SSE) | ✅ |
-| Memory 三层 (shortterm/longterm+HotArea/bgtask) | ✅ |
+| Memory (shortterm Redis 100 条滑窗 + AutoCompact / longterm PG+HotArea / skillmem) | ✅ |
 | Prompt (SystemLocked + BuildFullContext) | ✅ |
 | ToolRegistry + 内置工具 | ✅（除 `vision` builtin 只返回提示，真 Vision 走 reply_strategy.go）|
 | Lua 插件引擎 + 命令树 + 系统 SDK + 系统插件 | ✅ |
@@ -85,7 +91,7 @@ docs/                   本文档树
 | AgentLite 模式 / StripMarkdown / 分消息段 | ✅ |
 | `internal/agent/memory/root.go::Memory` 接口 | ⚠ 空 stub (无方法) |
 | `internal/agent/skill/root.go`、`prompt/root.go` | ⚠ 占位 (实现在 .go) |
-| `HagoCenter.Stop()` | ⚠ 仅关两路 channel，不显式停 BG/Drainer/EventLoop/CronJob ctx (赖外层 ctx) |
+| `HagoCenter.Stop()` | ⚠ 仅关两路 channel，不显式停 EventLoop/CronJob ctx (赖外层 ctx) |
 | `HagoCenter.SetToolActive` | ⚠ 停用只能 Unregister，无法重新注册已 Unregister 的 builtin |
 | `internal/core/handler/` | ⚠ 空目录占位 |
 | `database` 插件权限的 `prefixSQL` | ⚠ 桩，未生效，任意 SQL |
@@ -94,11 +100,11 @@ docs/                   本文档树
 ## 约定（必须遵守）
 
 - **持久化**：所有有状态模块（Agent/Session/Skill/Memory/Provider/MCP/Plugin 元数据等）的状态必须同步回 Postgres；**不引入纯内存状态**。Redis 仅作 Session 消息历史、短期记忆窗口、PubSub 与插件/Agent 缓存。
-- **日志**：`log/slog` 结构化，匹配既有 `slog.Info("...", "key", val)` 风格；**不引入** `fmt.Println` 或第三方 logger。
+- **日志**：使用 `internal/logging` 自定义日志包（底层 `github.com/fatih/color`），通过 `logging.NewModule("name")` 创建模块 logger；**不引入** `fmt.Println` 或 `log/slog`。
 - **导入顺序**：std → 第三方 → `JuanNiang-Neo/...` 三段。见 `internal/adapter/provider.go`。
 - **注释与标识符**：混合中英文，保持所在文件原有风格，**不要翻译**。
 - **OneBot11 API 复用**：新增 OneBot11 能力应包装 `internal/adapter.Provider` 方法，不要再实现一份。
-- **长任务**：所有 Tool 调用同步执行，Eino ADK ChatModelAgent 驱动 ReAct 循环，ConcurrencyManager 限制每 ChatArea 并行 Agent 数。
+- **Agent 并发**：`dispatchToAgent` 通过 goroutine + `ConcurrencyManager.Acquire/Release` 异步执行，每 ChatArea 默认并发上限 8。所有工具调用在 Eino ReAct 循环内同步完成，无独立后台任务管道。
 - **开发配置**：开发时使用 `dev.yaml` 配置基础设施连接端点（`make run` 自动读取；`cp dev.yaml.example dev.yaml`）。
 - **Web 控制台**：JWT 鉴权，单管理员，初始化 `admin / Admin123`（首次启动务必改）。
 - **插件配置仍走磁盘**：`data/pluggins/<name>/pluggin.yaml`，不入 DB。
@@ -138,7 +144,7 @@ tool := NewTool("my_tool", "用途描述",
         // 调 adapter / MCP / DB
         return "结果文本（喂给 LLM 的 tool-role msg）", nil
     })
-// 是否长任务？设置 BaseTool.longRunning=true 让 handleToolCalls 走 BgTaskExecutor
+// 工具通过 tool.BuildEinoTools() 自动适配为 Eino InvokableTool，在 ReAct 循环内同步调用
 ```
 
 参数帮助函数：`StringParam/Int64Param/MessageParam/GroupIDUserIDParams/TimeParams`（`tool/root.go`）。
