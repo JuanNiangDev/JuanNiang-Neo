@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
-
 	"net"
 	"net/http"
 	"strings"
@@ -64,11 +62,11 @@ func newWSServer(ctx context.Context, addr, token string, events chan Event) (*w
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		slog.Info("ws server 启动", "addr", addr)
+		log.Info("ws server 启动", "addr", addr)
 		if err := http.Serve(s.listener, mux); err != nil && !isServerClosed(err) {
-			slog.Error("http serve 异常", "err", err)
+			log.Error("http serve 异常", "err", err)
 		}
-		slog.Info("ws server 已停止", "addr", addr)
+		log.Info("ws server 已停止", "addr", addr)
 	}()
 
 	s.wg.Add(1)
@@ -190,7 +188,7 @@ func (s *wsServer) callAPI(action string, params map[string]any) (*APIResponse, 
 
 func (s *wsServer) handleWS(w http.ResponseWriter, r *http.Request, token string) {
 	if token != "" && !checkAuth(r, token) {
-		slog.Warn("token 不匹配", "remote_addr", r.RemoteAddr)
+		log.Warn("token 不匹配", "remote_addr", r.RemoteAddr)
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -201,7 +199,7 @@ func (s *wsServer) handleWS(w http.ResponseWriter, r *http.Request, token string
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		slog.Warn("ws upgrade 失败", "remote_addr", r.RemoteAddr, "err", err)
+		log.Warn("ws upgrade 失败", "remote_addr", r.RemoteAddr, "err", err)
 		return
 	}
 
@@ -209,7 +207,7 @@ func (s *wsServer) handleWS(w http.ResponseWriter, r *http.Request, token string
 		SelfID int64 `json:"self_id"`
 	}
 	if err := conn.ReadJSON(&handshake); err != nil {
-		slog.Warn("握手失败", "remote_addr", r.RemoteAddr, "err", err)
+		log.Warn("握手失败", "remote_addr", r.RemoteAddr, "err", err)
 		conn.Close()
 		return
 	}
@@ -228,7 +226,7 @@ func (s *wsServer) handleWS(w http.ResponseWriter, r *http.Request, token string
 	s.conns[handshake.SelfID] = wsc
 	s.mu.Unlock()
 
-	slog.Info("客户端连接", "self_id", handshake.SelfID, "remote_addr", r.RemoteAddr)
+	log.Info("客户端连接", "self_id", handshake.SelfID, "remote_addr", r.RemoteAddr)
 	s.readLoop(wsc)
 }
 
@@ -238,14 +236,14 @@ func (s *wsServer) readLoop(wsc *wsConn) {
 		delete(s.conns, wsc.selfID)
 		s.mu.Unlock()
 		wsc.close()
-		slog.Info("客户端断开", "self_id", wsc.selfID)
+		log.Info("客户端断开", "self_id", wsc.selfID)
 	}()
 
 	for {
 		_, payload, err := wsc.conn.ReadMessage()
 		if err != nil {
 			if !isConnClosed(err) {
-				slog.Warn("读取消息失败", "self_id", wsc.selfID, "err", err)
+				log.Warn("读取消息失败", "self_id", wsc.selfID, "err", err)
 			}
 			return
 		}
@@ -279,7 +277,7 @@ func (s *wsServer) readLoop(wsc *wsConn) {
 			select {
 			case s.events <- ev:
 			default:
-				slog.Warn("events channel 满, 丢弃事件")
+				log.Warn("events channel 满, 丢弃事件")
 			}
 		}
 	}
@@ -294,22 +292,22 @@ func parseEvent(raw []byte) Event {
 		var msg MessageEvent
 		json.Unmarshal(raw, &msg)
 		ev.Message = &msg
-		slog.Info("收到消息", "type", msg.MessageType, "user_id", msg.UserID, "content", msg.RawMessage)
+		log.Info("收到消息", "type", msg.MessageType, "user_id", msg.UserID, "content", msg.RawMessage)
 	case "notice":
 		var n NoticeEvent
 		json.Unmarshal(raw, &n)
 		ev.Notice = &n
-		slog.Info("收到通知", "type", n.NoticeType, "user_id", n.UserID)
+		log.Info("收到通知", "type", n.NoticeType, "user_id", n.UserID)
 	case "request":
 		var r RequestEvent
 		json.Unmarshal(raw, &r)
 		ev.Request = &r
-		slog.Info("收到请求", "type", r.RequestType, "user_id", r.UserID)
+		log.Info("收到请求", "type", r.RequestType, "user_id", r.UserID)
 	case "meta_event":
 		var m MetaEvent
 		json.Unmarshal(raw, &m)
 		ev.Meta = &m
-		slog.Info("元事件", "type", m.MetaEventType)
+		log.Info("元事件", "type", m.MetaEventType)
 	}
 
 	return ev
