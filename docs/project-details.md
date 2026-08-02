@@ -66,7 +66,6 @@ flowchart TB
 | **基础设施** | `infrastructure/` | postgres、redis、sandbox、t2i 客户端（每个含 `handler` 子包，功能选项风格） |
 | **前端服务** | `internal/web/` | `SPAHandler` 通过 Hertz `NoRoute` 兜底服务 `web/dist` |
 | **日志** | `internal/logging/` | fatih/color 彩色输出 + JSON 格式化 + 调用栈 + Hub(SSE) |
-| **日志** | `internal/logging/` | 自定义彩色日志：fatih/color 输出 + JSON 格式化 + WARN+ 调用栈 + 模块日志器 + Hub（环形 250 条 + SSE） + GORM SQL 集成 |
 
 > **术语陷阱**：`internal/adapter.Provider`=OneBot11 反向 WS 适配器；`internal/agent/provider.ProviderGroup`=LLM Provider 组。`pluggin` 是有意拼写（Lua 插件系统），不要改成 `plugin`。`docs/guidance.md` 拼成 `inferstructure` 是错的，真实路径是 `infrastructure/`。
 
@@ -91,7 +90,6 @@ classDiagram
   class ShortTermMemory { string ID; int WindowSize; bool AutoCompact }
   class LongTermMemory { string ID; int HotAreaSize; int HotMemoryTTL }
   class LongTermMemoryItem { string ID; string Content; []byte Embedding; JSONMap Metadata }
-  class BackgroundTask { string ID; TaskStatus Status; string MessageType; int64 TargetID; string UserPrompt; JSONMap Steps; JSONMap Results }
   class ChatRecord { int64 ID; int64 UserID; string Role; string Content; int TokenCount; JSONMap ToolCalls }
   class ACLRule { int64 ID; ACLScope Scope; ACLPermission Permission; ACLTargetType TargetType; JSONSlice UserIDs }
   class CronJob { string ID; string CronExpr; string Message; string MessageType; int64 TargetID; bool IsActive; time Time LastRunAt }
@@ -104,7 +102,6 @@ classDiagram
   ChatArea "1" --|> "1" LongTermMemory
   LongTermMemory "1" --|> "N" LongTermMemoryItem
   ChatArea "1" --|> "N" ChatRecord
-  ChatArea "1" --|> "N" BackgroundTask
   ChatArea "1" --|> "N" ACLRule : "按 scope 分组"
 ```
 
@@ -208,12 +205,14 @@ flowchart LR
 ## 启动流程
 
 ```
-cmd/server/main.go:35 main()
-├─ logging.NewHandler / slog.SetDefault        main.go:40
-├─ postgres.NewPostgresClient(WithHost...)     main.go:46       ← infrastructure/postgres/client.go:58
-├─ redis.NewRedisSentinelClient(WithAddr...)   main.go:59       ← infrastructure/redis/client.go:36 (实为单节点)
-├─ core.Init(ctx,db,redis)                     main.go:70       ← internal/core/core.go:89
-│   ├─ AutoMigrate(db)                         core.go:20       ← 注册 22 张表
+cmd/server/main.go:41 main()
+├─ flag.Parse + loadDevConfig(dev.yaml)       main.go:49-52     ← 开发配置加载
+├─ logging.Init(Config{Debug,Output,Hub})     main.go:63        ← 自定义彩色日志初始化
+├─ slog.SetDefault(slog.New(Handler))         main.go:75        ← slog 桥接（旧调用自动走新系统）
+├─ postgres.NewPostgresClient(WithHost...)     main.go:98        ← infrastructure/postgres/client.go
+├─ redis.NewRedisSentinelClient(WithAddr...)   main.go:111       ← infrastructure/redis/client.go (实为单节点)
+├─ core.Init(ctx,db,redis)                     main.go:122       ← internal/core/core.go
+│   ├─ AutoMigrate(db)                         core.go:23        ← 注册 23 张表
 │   ├─ cache.NewCache(redisClient, $REDIS_PREFIX) core.go:97     ← "juan:" 前缀
 │   ├─ dao.NewBundle(db)                        core.go:105      ← internal/core/dao/dao.go:43 (20 个 DAO)
 │   ├─ acl.NewACL(bundle.ACL)                  core.go:110      ← internal/core/acl/acl.go:18
@@ -237,12 +236,12 @@ cmd/server/main.go:35 main()
 
 ```
 shutdown(adapterProv, webhookAdapter, hago, webEngine, pluginEngine)
-├─ hago.Stop()                                    main.go:222   ← agent.go:275 (关 OutputChan/BgTaskResultChan)
-├─ webhookAdapter.Stop(ctx 5s)                    main.go:225   ← webhook.go:87 (3s graceful)
-├─ adapterProv.Stop(ctx 5s)                      main.go:231   ← adapter.go:87 (close events，置 nil 以便重启)
-├─ webEngine.Shutdown(ctx 5s)                     main.go:239   ← 先停 adapter 避免锁竞争
-└─ (pluginEngine: 占位)
-外层 watchdog：15s 超时强退                       main.go:209-214
+├─ hago.Stop()                                    main.go:286   ← agent.go:328 (no-op 占位)
+├─ webhookAdapter.Stop(ctx 5s)                    main.go:290   ← webhook.go (3s graceful)
+├─ adapterProv.Stop(ctx 5s)                      main.go:297   ← adapter.go (close events，置 nil 以便重启)
+├─ webEngine.Shutdown(ctx 5s)                     main.go:304   ← 先停 adapter 避免锁竞争
+└─ (pluginEngine: 占位)                           main.go:310
+外层 watchdog：15s 超时强退                       main.go:267-279
 ```
 
 ## OneBot11 反向 WS 事件接收到解析
@@ -429,7 +428,7 @@ GET /api/v1/logs/stream → svc.StreamLogs          service.go:1567
 
 ## 事件来源
 
-JuanNiang-Neo 有三类外部事件源，最终都汇入 `HagoCenter.runEventLoop`（`internal/agent/event.go:26`）：
+JuanNiang-Neo 有三类外部事件源，最终都汇入 `HagoCenter.runEventLoop`（`internal/agent/event.go:38`）：
 
 | 来源 | 通道 | PostType | 备注 |
 |------|------|----------|------|
@@ -509,12 +508,10 @@ sequenceDiagram
   participant OB as OneBot11 实现
   participant AD as Adapter (反向 WS)
   participant EL as runEventLoop
-  participant PE as processEvent
+  participant PE as processEvent (三阶段)
+  participant CM as ConcurrencyManager
   participant HM as handleMessage
-  participant LLM as Providers.SelectModel
-  participant TC as handleToolCalls
-  participant BG as BgTaskExecutor
-  participant DR as DrainerAgent
+  participant EA as Eino ADK Agent
   participant QQ as Adapter.SendMsg
 
   U->>OB: 消息到达
@@ -522,83 +519,24 @@ sequenceDiagram
   AD->>AD: readLoop/parseEvent → events
   AD->>EL: Adapter.Events()
   EL->>PE: processEvent
-  PE->>PE: 策略 + 插件拦截
-  PE->>HM: 通过 → handleMessage
+  PE->>PE: Phase 1: Plugin.Dispatch
+  PE->>PE: Phase 2: 消息过滤
+  PE->>PE: Phase 3: 回复策略检查
+  PE->>CM: dispatchToAgent (goroutine)
+  CM->>CM: Acquire(chatAreaID)
+  CM->>HM: handleMessage
   HM->>HM: GetOrCreate ChatArea/Session
   HM->>HM: ACL.CheckChat (admin 跳过)
-  HM->>HM: Skills.Match (命中则注入 SkillPrompt)
-  HM->>HM: Memory.GetLongTermMemory + buildToolList
-  HM->>HM: Prompt.BuildFullContext<br/>(SystemLocked→system→personality→custom)
-  HM->>HM: messages = [systemPrompt, sessionCtx, [Skill:], 短期记忆..., user]
-  HM->>HM: AddShortTermMessage(Redis) + AppendRecord(Postgres)<br/>(解耦)
-  HM->>LLM: Chat(req)
-  LLM-->>HM: resp
+  HM->>HM: Skills.Match + Memory + SkillMemory
+  HM->>HM: Prompt.BuildFullContext<br/>(SystemLocked + skillMemory + tools)
+  HM->>HM: AddShortTermMessage(Redis) + AppendRecord(Postgres)
+  HM->>EA: EinoAgent.Run (ReAct 循环, MaxIterations=20)
+  EA->>EA: LLM.Chat → 工具调用(同步) → 循环
+  EA-->>HM: agentResult (文本回复)
   HM->>HM: isSilenceResponse?(NO_REPLY 等) → drop
   HM->>QQ: sendReply → QQ
-  HM->>TC: HasToolCalls?
-  TC->>TC: 选源(MCP 优先)/ACL
-  alt IsLongRunning
-    TC->>BG: Submit(DAG errgroup)
-    BG->>QQ: sendReply("已提交后台执行…")
-    BG->>DR: partial DrainerOutput (OutputChan)
-    DR->>EL: finalized (BgTaskResultChan)
-    EL->>QQ: 直发媒体 CQ
-    EL->>PE: 文本合成 IsBgTaskResult 事件 → handleMessage → LLM 总结
-  else 同步
-    TC->>TC: MCP.CallTool / Tools.Execute
-    TC->>LLM: Chat(history, tools)
-    LLM-->>TC: 二次回复
-    TC->>QQ: sendReply
-  end
+  CM->>CM: Release(chatAreaID)
   QQ-->>U: QQ 消息回执
-```
-
-### 工具调用与长任务分流
-
-```mermaid
-flowchart TD
-  TC["handleToolCalls(history, resp)"]
-  TC --> Loop["对每个 ToolCall"]
-  Loop --> Pick["选源: MCP.HasTool 优先 → MCP.CallTool<br/>否则 → Tools.Execute"]
-  Pick --> ACL["ACL(admin 跳过): CheckMCP/CheckTool<br/>否定 → 回写 tool-role msg"]
-  ACL --> LR{"IsLongRunning(name)?"}
-  LR -->|是| Sub["BgTaskExecutor.Submit(...)<br/>立即 sendReply('已提交后台执行…')<br/>注入占位 tool 结果(勿生造)"]
-  LR -->|否| Sync["同步 execute → history append"]
-  Sub --> Chat["llm.Chat(history, tools) → 二次回复 → sendReply"]
-  Sync --> Chat
-  Chat --> Recurse{"仍 HasToolCalls?"}
-  Recurse -->|是| TC
-  Recurse -->|否| Done["结束"]
-```
-
-## 长任务回环（BgTaskExecutor → Drainer → EventLoop）
-
-这是 JuanNiang-Neo 区别于简单"调一次工具"的关键设计：长任务后台执行，独立 Drainer 排空缓冲并发送最终 QQ 消息（errgroup 风格并发）。
-
-```mermaid
-sequenceDiagram
-  participant HM as handleMessage
-  participant Exec as BgTaskExecutor
-  participant DB as Postgres
-  participant DR as DrainerAgent
-  participant EL as runEventLoop
-  participant QQ as QQ
-
-  HM->>Exec: Submit(ctx, areaID, msgType, targetID, userMsg, [Step])
-  Exec->>DB: Create(BackgroundTask{status:pending})
-  Exec->>Exec: go executeAsync (errgroup DAG)
-  loop 每步
-    Exec->>Exec: executeTool: MCP 优先 → Tools.Execute
-    Exec->>DR: partial DrainerOutput (OutputChan)
-  end
-  Exec->>DB: Update(done/failed)
-  Exec->>DR: 终结 DrainerOutput (StepID="")
-  DR->>DR: finalize: 萃取 CQ 媒体 → allMedia<br/>文本占位替换为 "[媒体内容]" → 合并
-  DR->>EL: BgTaskResultChan <- merged(含 MediaPayloads)
-  EL->>QQ: 直发 allMedia 媒体 (不等 LLM)
-  EL->>EL: bgTaskOutputToEvent → processEvent(IsBgTaskResult)
-  EL->>HM: handleMessage → LLM 总结
-  HM->>QQ: 发送文本回复
 ```
 
 ## CronJob 注入流
@@ -617,7 +555,7 @@ sequenceDiagram
   Mgr->>DB: UpdateLastRun(now)
   Mgr->>Mgr: 构造 MessageEvent + 合成 Event<br/>(PostType="cronjob", IsCronJob=true)
   Mgr->>EL: send → CronJobEvents (满则丢)
-  EL->>EL: 分支5 → processEvent (PostType=="cronjob" 跳策略/ACL)
+  EL->>EL: 分支4 → processEvent (PostType=="cronjob" 跳策略/ACL)
   EL->>HM: handleMessage (用户视角处理 job.Message)
   HM->>LLM: Chat (可调 browser_search 等工具)
   HM->>QQ: sendReply
@@ -649,11 +587,13 @@ sequenceDiagram
 
 ## 关键不变量
 
-- **Adapter 重启不会击穿事件循环**：`Adapter.Stop` 会 `close(events)` 并置 nil，`Start` 时若 `events==nil` 重建（`adapter.go:36-62`）；EventLoop 分支2 检测关闭后 sleep 1s 重新取句柄（`event.go:41-54`）。
+- **Adapter 重启不会击穿事件循环**：`Adapter.Stop` 会 `close(events)` 并置 nil，`Start` 时若 `events==nil` 重建（`adapter.go:36-62`）；EventLoop 分支2 检测关闭后 sleep 1s 重新取句柄（`event.go:52`）。
 - **Redis 与 Postgres 解耦**：短期记忆写 Redis 是为了 LLM 上下文窗口，`Session.AppendRecord` 写 Postgres 是为了审计检索；任一失败不影响另一路。
 - **Admins 绕过 ACL**：Admins 列表（来自 `Onebot11Adapter.AdminQQNumbers`）从 adapter 透传到每条 `Event`，`handleMessage`/`CheckMCP`/`CheckTool` 对 admin 一律放行。
 - **`__NO_REPLY__` 静默**：LLM 可主动输出 `__NO_REPLY__` 让系统不发任何 QQ 消息（避免群聊噪音）。
 - **SystemLocked 强制拼接**：每次对话系统提示词必含 `__system_locked__` 内容，前端不能停用，保证 LLM 知道能用 T2I 富文本、分消息段、权限层级等行为约束。
+- **工具调用全同步**：所有工具调用（包括长时间运行的操作）均在 Eino ADK ReAct 循环内同步完成，无后台任务分流。BgTaskExecutor 和 DrainerAgent 已完全移除。
+- **每 ChatArea 并发控制**：`ConcurrencyManager` 通过 buffered channel 信号量控制每个 ChatArea 最多 8 个 Agent goroutine 并发（默认值可配置），超限消息排队等待。
 
 ---
 
