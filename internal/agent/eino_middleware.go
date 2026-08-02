@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"JuanNiang-Neo/internal/adapter"
@@ -12,7 +11,7 @@ import (
 )
 
 // JuanNiangMiddleware 是 Eino ChatModelAgent 的自定义中间件，
-// 实现 ACL 权限检查、长耗时工具的后台任务提交、以及工具调用日志。
+// 实现 ACL 权限检查和工具调用日志。
 type JuanNiangMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 
@@ -70,8 +69,7 @@ func GetSessionCtx(ctx context.Context) *JuanNiangSessionCtx {
 // WrapInvokableToolCall 包装每个工具的同步调用：
 //   - Admin 用户绕过 ACL
 //   - 非 Admin 进行 ACL 检查（内置工具走 CheckTool，MCP 工具走 CheckMCP）
-//   - 长耗时工具提交后台任务（BgTaskExecutor），不直接执行
-//   - 其余工具正常执行并记录日志
+//   - 所有工具前台同步执行并记录日志
 func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 	ctx context.Context,
 	endpoint adk.InvokableToolCallEndpoint,
@@ -98,24 +96,7 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 			}
 		}
 
-		// --- 长耗时工具 → 提交后台任务 ---
-		if m.h.Tools.IsLongRunning(toolName) {
-			steps := []TaskStep{
-				{ID: tCtx.CallID, ToolName: toolName, Args: json.RawMessage(argsJSON)},
-			}
-			taskID, err := m.h.BgTaskExecutor.Submit(
-				ctx, m.chatAreaID, m.msg.MessageType,
-				getTargetID(m.msg), "", steps,
-			)
-			if err != nil {
-				log.Error("提交后台任务失败", "tool", toolName, "err", err)
-				return fmt.Sprintf("提交后台任务失败: %s", err.Error()), nil
-			}
-			log.Info("长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
-			return fmt.Sprintf("[系统] 任务 %s 已提交后台执行 (task_id: %s)。你不需要做任何后续处理——禁止编造或猜测执行结果。只需告知用户任务已提交。", toolName, taskID), nil
-		}
-
-		// --- 正常执行 ---
+		// --- 直接执行（所有工具前台同步执行）---
 		result, err := endpoint(ctx, argsJSON, opts...)
 		if err != nil {
 			log.Error("工具执行失败", "tool", toolName, "err", err)

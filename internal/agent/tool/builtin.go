@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"JuanNiang-Neo/internal/adapter"
-	"JuanNiang-Neo/internal/agent/provider"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
+	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/provider"
 
 	"github.com/openai/openai-go/v3"
 )
@@ -52,7 +52,7 @@ type SessionInfo struct {
 	SenderRole  string `json:"sender_role"` // owner / admin / member (群聊); 私聊为空
 	SelfQQ      int64  `json:"self_qq"`
 	SelfName    string `json:"self_name"` // 机器人昵称
-	Admins      string `json:"admins"`   // 管理员 QQ 列表
+	Admins      string `json:"admins"`    // 管理员 QQ 列表
 }
 
 // RegisterBuiltinTools 注册所有内置工具到注册表。
@@ -136,7 +136,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "delete_msg", "撤回消息",
 			Int64Param("message_id", "消息 ID", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ MessageID int64 `json:"message_id"` }
+			var p struct {
+				MessageID int64 `json:"message_id"`
+			}
 			json.Unmarshal(args, &p)
 			if err := adapter.DeleteMsg(p.MessageID); err != nil {
 				return "", err
@@ -149,7 +151,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "get_msg", "根据消息 ID 获取消息的完整内容（包括被引用的消息）",
 			Int64Param("message_id", "消息 ID", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ MessageID int64 `json:"message_id"` }
+			var p struct {
+				MessageID int64 `json:"message_id"`
+			}
 			json.Unmarshal(args, &p)
 			msg, err := adapter.GetMsg(p.MessageID)
 			if err != nil {
@@ -166,7 +170,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "get_group_info", "获取群信息",
 			Int64Param("group_id", "群号", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ GroupID int64 `json:"group_id"` }
+			var p struct {
+				GroupID int64 `json:"group_id"`
+			}
 			json.Unmarshal(args, &p)
 			info, err := adapter.GetGroupInfo(p.GroupID)
 			if err != nil {
@@ -181,7 +187,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "get_group_member_list", "获取群成员列表",
 			Int64Param("group_id", "群号", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ GroupID int64 `json:"group_id"` }
+			var p struct {
+				GroupID int64 `json:"group_id"`
+			}
 			json.Unmarshal(args, &p)
 			list, err := adapter.GetGroupMemberList(p.GroupID)
 			if err != nil {
@@ -387,7 +395,9 @@ func RegisterBuiltinTools(
 				if sandbox == nil {
 					return "", fmt.Errorf("沙箱服务未启用")
 				}
-				var p struct{ Status string `json:"status"` }
+				var p struct {
+					Status string `json:"status"`
+				}
 				json.Unmarshal(args, &p)
 				list, err := sandbox.ListSandboxes(ctx, 20, "", p.Status)
 				if err != nil {
@@ -523,24 +533,26 @@ except Exception as e:
 		})
 	}
 
-	// --- 文生图 (长耗时) ---
+	// --- 文生图 ---
 
 	if getT2I != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片(长耗时)，系统自动发送。你只需告知用户图片已生成，无需手动发送。",
+			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片。返回图片 URL，你需要用 [CQ:image,file=URL] 发送给用户。",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
 						"html": map[string]any{"type": "string", "description": "HTML 内容"},
 					},
 					"required": []string{"html"},
-				}, true, true),
+				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				t2i := getT2I()
 				if t2i == nil {
 					return "", fmt.Errorf("T2I 服务未启用")
 				}
-				var p struct{ HTML string `json:"html"` }
+				var p struct {
+					HTML string `json:"html"`
+				}
 				json.Unmarshal(args, &p)
 				imgBytes, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
 					HTML: p.HTML,
@@ -552,8 +564,11 @@ except Exception as e:
 				if err != nil {
 					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
+				// 将 base64 编码的图片通过 T2I 服务的 URL 方式返回
 				b64 := base64.StdEncoding.EncodeToString(imgBytes)
-				return fmt.Sprintf("图片已生成并发送 (%d bytes)\n[CQ:image,file=base64://%s]", len(imgBytes), b64), nil
+				imageURL := fmt.Sprintf("base64://%s", b64)
+				log.Info("T2I 图片已生成", "size_bytes", len(imgBytes), "image_url", imageURL[:min(80, len(imageURL))]+"...")
+				return fmt.Sprintf("图片已生成。URL: %s\n请使用 [CQ:image,file=%s] 发送给用户。", imageURL, imageURL), nil
 			},
 		})
 	}
@@ -608,12 +623,12 @@ except Exception as e:
 
 	if getCurrentMsg != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "send_face", "发送 QQ 超级表情到当前会话。⚠️ 必须先调用 list_super_faces 查询表情 ID 和 sub_type，再传入正确的 face_id 和 sub_type！不要自己编造参数。注意：这是 QQ 内置表情系统，非图片。",
+			BaseTool: NewTool("", "send_face", "发送 QQ 表情到当前会话。经典小黄脸 face_id 参考: 0=惊讶, 1=撇嘴, 2=色, 3=发呆, 4=得意, 5=流泪, 6=害羞, 7=闭嘴, 10=发怒, 14=微笑, 18=可爱, 21=疑问, 22=无语, 28=再见, 37=呲牙, 39=偷笑, 55=流汗, 63=委屈, 66=坏笑, 74=可怜, 76=酷, 89=尴尬, 97=大笑, 111=爱心, 142=抱拳, 182=耶, 188=狗头, 201=点赞, 211=笑哭, 277=鲜花。超级表情(sub_type=3): 5=流泪, 53=蛋糕, 114=篮球, 181=戳一戳, 311=打call, 317=菜汪, 318=崇拜, 319=比心, 320=庆祝, 325=惊吓, 360=亲亲, 375=超级鼓掌, 383=企鹅爱心, 384=晚安, 386=呜呜呜。手势(sub_type=5): 2=比心, 4=比心_心碎",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
-						"face_id":  map[string]any{"type": "integer", "description": "QQ 表情 ID。必须先调用 list_super_faces 查询！常见经典小黄脸参考: 0=惊讶, 1=撇嘴, 2=色, 3=发呆, 4=得意, 5=流泪, 6=害羞, 7=闭嘴, 10=发怒, 14=微笑, 18=可爱, 21=疑问, 22=无语, 28=再见, 37=呲牙, 39=偷笑, 55=流汗, 63=委屈, 66=坏笑, 74=可怜, 76=酷, 89=尴尬, 97=大笑, 111=爱心, 142=抱拳, 182=耶, 188=狗头, 201=点赞, 211=笑哭, 277=鲜花"},
-						"sub_type": map[string]any{"type": "integer", "description": "表情 sub_type，超级表情为 3 或 5，经典小黄脸不填"},
+						"face_id":  map[string]any{"type": "integer", "description": "QQ 表情 ID，参考工具描述中的列表"},
+						"sub_type": map[string]any{"type": "integer", "description": "表情 sub_type: 经典小黄脸不填, 超级表情填 3, 手势填 5"},
 					},
 					"required": []string{"face_id"},
 				}, true, false),
@@ -651,14 +666,14 @@ except Exception as e:
 		tools = append(tools, &onebotTool{
 			BaseTool: NewTool("", "list_super_faces", "查询所有可用的 QQ 超级表情（sub_type=3 动态表情 + sub_type=5 手势表情）。返回 ID 和名称列表。⚠️ 使用 send_face 前必须先调用此工具查询正确的 face_id！",
 				openai.FunctionParameters{
-					"type": "object",
+					"type":       "object",
 					"properties": map[string]any{},
 				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				type faceEntry struct {
-					ID     int    `json:"id"`
-					Name   string `json:"name"`
-					SubType int   `json:"sub_type"`
+					ID      int    `json:"id"`
+					Name    string `json:"name"`
+					SubType int    `json:"sub_type"`
 				}
 				// sub_type=3 (动态超级表情): 98条
 				sub3 := []faceEntry{

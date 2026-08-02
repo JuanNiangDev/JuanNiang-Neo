@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/cache"
@@ -29,8 +30,9 @@ type Config struct {
 // ShortTermMemory 基于 Redis 的短期记忆，使用 List 实现滑动窗口。
 // 所有方法按 areaID 隔离，实例本身无状态，可跨 ChatArea 共享。
 type ShortTermMemory struct {
-	conf  Config
-	cache *cache.Cache
+	conf       Config
+	cache      *cache.Cache
+	compacting sync.Map // areaID → *sync.Mutex (per-area compact lock)
 }
 
 func New(conf Config, c *cache.Cache) *ShortTermMemory {
@@ -38,6 +40,12 @@ func New(conf Config, c *cache.Cache) *ShortTermMemory {
 		conf.WindowSize = 100
 	}
 	return &ShortTermMemory{conf: conf, cache: c}
+}
+
+// compactLock 返回指定 areaID 的 Compact 互斥锁（不存在则创建）。
+func (m *ShortTermMemory) compactLock(areaID string) *sync.Mutex {
+	v, _ := m.compacting.LoadOrStore(areaID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 func (m *ShortTermMemory) WindowSize() int64     { return m.conf.WindowSize }
@@ -106,6 +114,12 @@ func (m *ShortTermMemory) Clear(ctx context.Context, areaID string) error {
 
 // Compact 压缩短期记忆: 调用 LLM 摘要后写入长期记忆。
 func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provider.Provider, store CompactStore) error {
+	mu := m.compactLock(areaID)
+	if !mu.TryLock() {
+		return fmt.Errorf("compact already in progress for area %s", areaID)
+	}
+	defer mu.Unlock()
+
 	msgs, err := m.GetAll(ctx, areaID)
 	if err != nil {
 		return err
