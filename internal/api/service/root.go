@@ -48,7 +48,7 @@ type Service struct {
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {
-	return &Service{DAO: dao, Adapter: adapter, WebhookAdapter: webhookAdapter, PluginEngine: pluginEngine, LogHub: logging.Default}
+	return &Service{DAO: dao, Adapter: adapter, WebhookAdapter: webhookAdapter, PluginEngine: pluginEngine, LogHub: logging.DefaultHub}
 }
 
 // t2iClientFactory 根据配置创建 T2I 客户端。

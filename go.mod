@@ -37,6 +37,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/eino-contrib/jsonschema v1.0.3 // indirect
 	github.com/evanphx/json-patch v0.5.2 // indirect
+	github.com/fatih/color v1.19.0 // indirect
 	github.com/fsnotify/fsnotify v1.5.4 // indirect
 	github.com/fumiama/orbyte v0.0.0-20251002065953-3bb358367eb5 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
@@ -51,6 +52,8 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/meguminnnnnnnnn/go-openai v0.1.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -73,7 +76,7 @@ require (
 	golang.org/x/arch v0.11.0 // indirect
 	golang.org/x/exp v0.0.0-20230713183714-613f0c0eb8a1 // indirect
 	golang.org/x/net v0.34.0 // indirect
-	golang.org/x/sys v0.30.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 	google.golang.org/protobuf v1.34.1 // indirect
 )

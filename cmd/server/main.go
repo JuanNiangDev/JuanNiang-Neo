@@ -46,11 +46,20 @@ func main() {
 	flag.Parse()
 
 	// ---------- 日志 ----------
-	logLevel := slog.LevelInfo
+	// 初始化新日志系统（彩色输出 + JSON 格式化 + 调用栈 + Hub 推送）
+	logging.Init(logging.Config{
+		Debug:       *debug,
+		Output:      os.Stdout,
+		Hub:         logging.DefaultHub,
+		LLMMaxChars: 300,
+	})
+
+	// 保留 slog 桥接：现有 slog.Info/Warn/Error 调用自动走新系统
+	var logLevel slog.Leveler = slog.LevelInfo
 	if *debug {
 		logLevel = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(logging.NewHandler(os.Stdout, logging.Default, &slog.HandlerOptions{
+	slog.SetDefault(slog.New(logging.NewHandler(os.Stdout, logging.DefaultHub, &slog.HandlerOptions{
 		Level: logLevel,
 	})))
 
