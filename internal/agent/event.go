@@ -22,6 +22,16 @@ import (
 // prompt 会告知 LLM："判定不回复时输出 __NO_REPLY__，系统检测到后自动丢弃"。
 const SilenceToken = "__NO_REPLY__"
 
+// ReplySettings 包含从回复策略配置中提取的 per-message 设置。
+// 通过函数参数传递（而非 HagoCenter 共享字段），避免数据竞争。
+type ReplySettings struct {
+	Strategy           models.ReplyStrategy
+	StripMarkdown      bool
+	AgentLite          bool
+	BotName            string
+	RelevanceThreshold float64
+}
+
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
 // 当 adapter 的 events channel 关闭时（如重启），会尝试等待后重新获取新的 channel，
 // 而不是直接退出事件循环。
@@ -80,12 +90,13 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 			return
 		}
 		// Phase 3: 回复策略检查 (skip_reply 标记时跳过)
+		rs := h.getReplySettings(ctx)
 		if !result.SkipReply && !ev.SkipReplyCheck {
-			if !h.checkReplyStrategy(ctx, ev) {
+			if !h.checkReplyStrategy(ctx, ev, rs) {
 				return
 			}
 		}
-		h.dispatchToAgent(ctx, ev)
+		h.dispatchToAgent(ctx, ev, rs)
 		return
 	}
 
@@ -93,24 +104,34 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	if ev.PostType != "message" || ev.Message == nil {
 		return
 	}
-	if !h.checkReplyStrategy(ctx, ev) {
+	rs := h.getReplySettings(ctx)
+	if !h.checkReplyStrategy(ctx, ev, rs) {
 		return
 	}
-	h.dispatchToAgent(ctx, ev)
+	h.dispatchToAgent(ctx, ev, rs)
+}
+
+// getReplySettings 从 DB 读取回复策略配置，返回 per-message 设置。
+// 不写入 HagoCenter 共享字段，避免数据竞争。
+func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
+	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+	if err != nil {
+		log.Warn("获取回复策略失败，使用默认值", "err", err)
+		return ReplySettings{Strategy: models.StrategyAlways}
+	}
+	return ReplySettings{
+		Strategy:           cfg.Strategy,
+		StripMarkdown:      cfg.StripMarkdown,
+		AgentLite:          cfg.AgentLite,
+		BotName:            cfg.BotName,
+		RelevanceThreshold: cfg.RelevanceThreshold,
+	}
 }
 
 // checkReplyStrategy 根据回复策略配置决定是否继续处理消息。
-func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event) bool {
-	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
-	if err != nil {
-		log.Warn("获取回复策略失败，放行", "err", err)
-		return true
-	}
-	h.StripMarkdown = cfg.StripMarkdown
-	h.DisableSplit = cfg.AgentLite
-
+func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event, rs ReplySettings) bool {
 	msg := ev.Message
-	switch cfg.Strategy {
+	switch rs.Strategy {
 	case models.StrategyNeverReply:
 		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
 		return false
@@ -134,9 +155,9 @@ func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event) b
 			chatAreaID = area.ID
 		}
 		recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
-		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, cfg.BotName)
-		if score < cfg.RelevanceThreshold {
-			log.Debug("回复策略: 相关性不足", "score", score, "threshold", cfg.RelevanceThreshold, "reason", reason)
+		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs.BotName)
+		if score < rs.RelevanceThreshold {
+			log.Debug("回复策略: 相关性不足", "score", score, "threshold", rs.RelevanceThreshold, "reason", reason)
 			return false
 		}
 		log.Debug("回复策略: 相关性通过", "score", score, "reason", reason)
@@ -147,65 +168,62 @@ func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event) b
 }
 
 // dispatchToAgent 根据消息类型获取 ChatArea，并通过并发控制派发给 Agent。
-func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event) {
+func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs ReplySettings) {
 	msg := ev.Message
-	var chatAreaID string
-	switch msg.MessageType {
-	case "private":
-		area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypePrivate, msg.UserID)
-		if err == nil {
-			chatAreaID = area.ID
-		}
-	case "group":
-		area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, msg.GroupID)
-		if err == nil {
-			chatAreaID = area.ID
-		}
-	default:
-		return
-	}
-
-	if chatAreaID == "" {
-		h.handleMessage(ctx, ev)
+	chatArea := h.getChatArea(ctx, msg)
+	if chatArea == nil {
+		// 无法获取 ChatArea 时仍尝试处理（不限制并发）
+		h.handleMessage(ctx, ev, nil, rs)
 		return
 	}
 
 	// 异步执行：goroutine + 并发控制
 	if h.Concurrency != nil {
 		go func() {
-			if err := h.Concurrency.Acquire(ctx, chatAreaID); err != nil {
-				log.Warn("Agent 并发获取失败", "err", err, "area", chatAreaID)
+			if err := h.Concurrency.Acquire(ctx, chatArea.ID); err != nil {
+				log.Warn("Agent 并发获取失败", "err", err, "area", chatArea.ID)
 				return
 			}
-			defer h.Concurrency.Release(chatAreaID)
-			h.handleMessage(ctx, ev)
+			defer h.Concurrency.Release(chatArea.ID)
+			h.handleMessage(ctx, ev, chatArea, rs)
 		}()
 	} else {
-		h.handleMessage(ctx, ev)
+		h.handleMessage(ctx, ev, chatArea, rs)
 	}
 }
 
-func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
-	msg := ev.Message
-	userID := msg.UserID
+// getChatArea 根据消息类型获取或创建 ChatArea，失败返回 nil。
+func (h *HagoCenter) getChatArea(ctx context.Context, msg *adapter.MessageEvent) *models.ChatArea {
 	var chatAreaType models.AreaType
 	var targetID int64
-
 	switch msg.MessageType {
 	case "private":
 		chatAreaType = models.AreaTypePrivate
-		targetID = userID
+		targetID = msg.UserID
 	case "group":
 		chatAreaType = models.AreaTypeGroup
 		targetID = msg.GroupID
 	default:
-		return
+		return nil
 	}
-
-	chatArea, err := h.DAO.ChatArea.GetOrCreate(ctx, chatAreaType, targetID)
+	area, err := h.DAO.ChatArea.GetOrCreate(ctx, chatAreaType, targetID)
 	if err != nil {
 		log.Error("获取 ChatArea 失败", "err", err)
-		return
+		return nil
+	}
+	return area
+}
+
+func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+	msg := ev.Message
+	userID := msg.UserID
+
+	// 如果没有传入 chatArea，尝试获取（fallback 路径）
+	if chatArea == nil {
+		chatArea = h.getChatArea(ctx, msg)
+		if chatArea == nil {
+			return
+		}
 	}
 
 	// ACL 检查
@@ -214,8 +232,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		return
 	}
 
-	sess, err := h.Session.GetOrCreate(ctx, chatArea.ID)
-	if err != nil {
+	// 确保 Session 存在（供 ChatRecord 持久化使用）
+	if _, err := h.Session.GetOrCreate(ctx, chatArea.ID); err != nil {
 		log.Error("获取 Session 失败", "err", err)
 		return
 	}
@@ -234,34 +252,36 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		toolDescs += fmt.Sprintf("- %s: %s\n", t.Function.Name, t.Function.Description)
 	}
 
-	h.CurrentMsg = msg
-	h.CurrentSessionCtx = h.buildSessionContext(ctx, msg, ev.Admins)
+	sessionCtxStr := h.buildSessionContext(ctx, msg, ev.Admins)
 	skillMem := ""
 	if h.Memory != nil {
 		skillMem = h.Memory.GetSkillMemory()
 	}
 	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs, skillMem)
 
-	// ---------- 构建 Eino 消息列表 ----------
-	einoMsgs := []*einoschema.Message{
-		{Role: einoschema.System, Content: systemCtx},
-	}
-	if h.CurrentSessionCtx != "" {
-		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.System, Content: h.CurrentSessionCtx})
-	}
+	// 缓存 Skill prompt（避免重复查询 DB）
+	var skillPromptContents []string
 	if skillMatched {
 		for _, refID := range matchedSkill.PromptRefs {
 			if refID == "" {
 				continue
 			}
-			skillPrompt, err := h.Prompt.GetByID(ctx, refID)
+			sp, err := h.Prompt.GetByID(ctx, refID)
 			if err == nil {
-				einoMsgs = append(einoMsgs, &einoschema.Message{
-					Role:    einoschema.System,
-					Content: "[Active Skill: " + matchedSkill.Name + "]\n" + skillPrompt.Content,
-				})
+				skillPromptContents = append(skillPromptContents, "[Active Skill: "+matchedSkill.Name+"]\n"+sp.Content)
 			}
 		}
+	}
+
+	// ---------- 构建 Eino 消息列表 ----------
+	einoMsgs := []*einoschema.Message{
+		{Role: einoschema.System, Content: systemCtx},
+	}
+	if sessionCtxStr != "" {
+		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.System, Content: sessionCtxStr})
+	}
+	for _, spc := range skillPromptContents {
+		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.System, Content: spc})
 	}
 	if h.Memory != nil {
 		stMsgs, err := h.Memory.GetShortTermMessages(ctx, chatArea.ID)
@@ -280,44 +300,34 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0, nil)
 
 	// ---------- 回复策略 & AgentLite ----------
-	replyCfg, _ := h.DAO.ReplyStrategy.GetOrCreate(ctx)
-	skipSilenceCheck := replyCfg != nil && replyCfg.Strategy == models.StrategyAlways
-	agentLite := replyCfg != nil && replyCfg.AgentLite
+	skipSilenceCheck := rs.Strategy == models.StrategyAlways
+	agentLite := rs.AgentLite
 
-	// ---------- 配置中间件 ----------
-	mw := &JuanNiangMiddleware{
-		h:          h,
-		msg:        msg,
-		userID:     userID,
-		chatAreaID: chatArea.ID,
-		isAdmin:    isAdmin(userID, ev.Admins),
-		admins:     ev.Admins,
-	}
-
-	// 构建注入给 Eino Agent 的系统指令（Instruction）。
-	// AgentLite 模式：追加精简模式提示词，并禁止使用工具。
+	// 构建注入给 Eino Agent 的系统指令（Instruction）
 	instruction := systemCtx
-	if h.CurrentSessionCtx != "" {
-		instruction += "\n\n" + h.CurrentSessionCtx
+	if sessionCtxStr != "" {
+		instruction += "\n\n" + sessionCtxStr
 	}
-	if skillMatched {
-		for _, refID := range matchedSkill.PromptRefs {
-			if refID == "" {
-				continue
-			}
-			skillPrompt, err := h.Prompt.GetByID(ctx, refID)
-			if err == nil {
-				instruction += "\n\n[Active Skill: " + matchedSkill.Name + "]\n" + skillPrompt.Content
-			}
-		}
+	for _, spc := range skillPromptContents {
+		instruction += "\n\n" + spc
 	}
 	if agentLite {
 		instruction = "【AgentLite 精简模式】你无法使用任何工具、MCP 或外部能力。" +
 			"如果用户提出的任务需要工具或外部操作才能完成（如发送消息、查天气、生成图片、执行代码、搜索等），" +
 			"直接拒绝并说明当前处于精简模式无法执行该操作。回复中不要假装已经完成了需要工具的任务。\n\n" + instruction
 	}
-	mw.dynamicInstruction = instruction
-	mw.agentLite = agentLite
+
+	// 将 per-message 状态注入 context（避免 HagoCenter 共享字段数据竞争）
+	msgCtx := &MsgSessionCtx{
+		Msg:                msg,
+		SessionCtxStr:      sessionCtxStr,
+		RecentMsgsFn:       h.getRecentMessagesByMsgType,
+		DynamicInstruction: instruction,
+		AgentLite:          agentLite,
+		StripMarkdown:      rs.StripMarkdown,
+		DisableSplit:       rs.AgentLite,
+	}
+	ctx = WithMsgSessionCtx(ctx, msgCtx)
 
 	// ---------- 运行 Eino Agent ----------
 	if h.EinoAgent == nil {
@@ -356,30 +366,32 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 		if silenced {
 			log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
 		} else {
-			h.sendReply(msg, assistantContent)
+			h.sendReply(msg, assistantContent, rs)
 			h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, 0, nil)
 			if h.Memory != nil {
 				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
 			}
 		}
 	}
-
-	_ = sess // sess.ID 暂不在 Eino 路径中追踪 token
 }
 
 // cqCodeRegexp 匹配 CQ 码: [CQ:type,key=value,...]
 var cqCodeRegexp = regexp.MustCompile(`\[CQ:[a-zA-Z_]+(?:,[^\]]+)?\]`)
 
+// urlRegexp 匹配 URL，提取为包级变量避免每次调用 splitMessages 时重新编译。
+var urlRegexp = regexp.MustCompile(`https?://\S+`)
+
 // sendReply 解析 CQ 码并组装消息段发送。
-func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
+// rs 从调用链传入，避免读取 HagoCenter 共享字段导致数据竞争。
+func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs ReplySettings) {
 	var parts []string
-	if h.DisableSplit {
+	if rs.AgentLite {
 		parts = []string{content}
 	} else {
 		parts = splitMessages(content)
 	}
 	for _, part := range parts {
-		if h.StripMarkdown {
+		if rs.StripMarkdown {
 			part = stripMarkdown(part)
 		}
 		// 解析 CQ 码并组装消息段
@@ -451,11 +463,11 @@ func parseCQCode(s string) adapter.Segment {
 
 // splitMessages 将 Agent 输出拆分为最多 3 段消息。
 // 算法参考 Maibot：在自然断句处（。！？；\n）拆分，每段有效文字 ≤60 字。
-// CQ 码和 URL 不计入有效字数。
+// CQ 码和 URL 不计入有效字数。保留原始分隔符。
 func splitMessages(content string) []string {
 	effectiveLen := func(s string) int {
 		s = cqCodeRegexp.ReplaceAllString(s, "")
-		s = regexp.MustCompile(`https?://\S+`).ReplaceAllString(s, "")
+		s = urlRegexp.ReplaceAllString(s, "")
 		return len([]rune(strings.TrimSpace(s)))
 	}
 
@@ -464,18 +476,34 @@ func splitMessages(content string) []string {
 		return []string{content}
 	}
 
-	// 按自然断句拆分
-	splitRe := regexp.MustCompile(`([。！？；\n])`)
-	rawParts := splitRe.Split(content, -1)
+	// 按自然断句拆分，保留分隔符附着在前一段尾部
+	splitRe := regexp.MustCompile(`[。！？；\n]`)
+	matches := splitRe.FindAllStringIndex(content, -1)
+	if len(matches) == 0 {
+		return []string{content}
+	}
 	var parts []string
-	for _, p := range rawParts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			parts = append(parts, p)
+	start := 0
+	for _, loc := range matches {
+		// 包含分隔符在当前段尾部
+		parts = append(parts, content[start:loc[1]])
+		start = loc[1]
+	}
+	if start < len(content) {
+		tail := strings.TrimSpace(content[start:])
+		if tail != "" {
+			parts = append(parts, tail)
 		}
 	}
-
-	if len(parts) <= 1 {
+	// 过滤空段
+	var nonEmpty []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			nonEmpty = append(nonEmpty, p)
+		}
+	}
+	if len(nonEmpty) <= 1 {
 		return []string{content}
 	}
 
@@ -486,31 +514,25 @@ func splitMessages(content string) []string {
 	}
 	var segments []string
 	var buf string
-	for _, p := range parts {
-		candidate := buf
-		if candidate != "" {
-			candidate += "。" + p
-		} else {
-			candidate = p
-		}
+	for _, p := range nonEmpty {
+		candidate := buf + p
 		if effectiveLen(candidate) > 60 && buf != "" {
-			segments = append(segments, buf)
+			segments = append(segments, strings.TrimSpace(buf))
 			buf = p
 		} else {
 			buf = candidate
 		}
 	}
 	if buf != "" {
-		segments = append(segments, buf)
+		segments = append(segments, strings.TrimSpace(buf))
 	}
 
-	// 硬限制 3 段
+	// 硬限制 3 段：合并尾部多余的段
 	for len(segments) > maxSegs {
-		// 合并最后两段
 		last := segments[len(segments)-1]
 		prev := segments[len(segments)-2]
 		segments = segments[:len(segments)-2]
-		segments = append(segments, prev+"。"+last)
+		segments = append(segments, prev+last)
 	}
 
 	if len(segments) <= 1 {

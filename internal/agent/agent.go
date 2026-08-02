@@ -55,16 +55,6 @@ type HagoCenter struct {
 	SelfQQ       int64
 	SelfNickname string
 
-	// StripMarkdown 缓存回复策略中的去 Markdown 开关（每次 processEvent 刷新）
-	StripMarkdown bool
-	// DisableSplit 缓存 AgentLite 模式开关，为 true 时 sendReply 不拆分多段消息
-	DisableSplit bool
-
-	// CurrentSessionCtx 当前会话上下文（供 get_session_info 工具使用）
-	CurrentSessionCtx string
-	// CurrentMsg 当前正在处理的消息（供工具获取发送目标）
-	CurrentMsg *adapter.MessageEvent
-
 	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
 	EinoAgent *adk.ChatModelAgent
 }
@@ -138,12 +128,24 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	}
 
 	// 使用函数 getter 注册工具，支持运行时客户端热更新
+	// 注意：getSessionCtx / getCurrentMsg / getRecentMsgs 从 context 中读取 per-message 状态，
+	// 避免 HagoCenter 共享字段导致的数据竞争。
 	tool.RegisterBuiltinTools(h.Tools, cfg.Adapter,
 		func() *sandboxcaller.Client { return h.SandboxClient },
 		func() *t2icaller.Client { return h.T2IClient },
 		h.Providers.SelectModel(provider.ModelTypeImage),
-		func() string { return h.CurrentSessionCtx },
-		func() *adapter.MessageEvent { return h.CurrentMsg },
+		func(ctx context.Context) string {
+			if sc := GetMsgSessionCtx(ctx); sc != nil {
+				return sc.SessionCtxStr
+			}
+			return ""
+		},
+		func(ctx context.Context) *adapter.MessageEvent {
+			if sc := GetMsgSessionCtx(ctx); sc != nil {
+				return sc.Msg
+			}
+			return nil
+		},
 		func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error) {
 			return h.getRecentMessagesByMsgType(ctx, msgType, targetID, limit)
 		},

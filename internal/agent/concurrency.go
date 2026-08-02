@@ -74,6 +74,8 @@ func (cm *ConcurrencyManager) Release(chatAreaID string) {
 }
 
 // SetLimit 设置某个 ChatArea 的并发上限。如果当前有更大的信号量，会重建。
+// 注意：重建信号量时，正在旧信号量上阻塞等待的 goroutine 不会被唤醒，
+// 只能通过 ctx 取消退出。建议在低峰期调整并发限制。
 func (cm *ConcurrencyManager) SetLimit(chatAreaID string, limit int) {
 	if limit <= 0 {
 		limit = cm.default_

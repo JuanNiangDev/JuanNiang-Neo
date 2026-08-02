@@ -12,6 +12,8 @@ import (
 
 // JuanNiangMiddleware 是 Eino ChatModelAgent 的自定义中间件，
 // 实现 ACL 权限检查和工具调用日志。
+// DynamicInstruction 和 AgentLite 通过 context (MsgSessionCtx) 传递，
+// 在 BeforeAgent 钩子中读取。
 type JuanNiangMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 
@@ -21,48 +23,48 @@ type JuanNiangMiddleware struct {
 	chatAreaID string
 	isAdmin    bool
 	admins     []string
-
-	// dynamicInstruction 每条消息动态注入的系统指令（由 handleMessage 在 Run 前设置）。
-	dynamicInstruction string
-	// agentLite 为 true 时清空工具列表，禁止 Agent 使用任何工具。
-	agentLite bool
 }
 
 // BeforeAgent 在 Agent 运行前注入动态 Instruction 和按需清空工具列表（AgentLite）。
+// DynamicInstruction 和 AgentLite 从 context 中读取（由 handleMessage 注入）。
 func (m *JuanNiangMiddleware) BeforeAgent(
 	ctx context.Context,
 	runCtx *adk.ChatModelAgentContext,
 ) (context.Context, *adk.ChatModelAgentContext, error) {
-	if m.dynamicInstruction != "" {
-		runCtx.Instruction = m.dynamicInstruction
-	}
-	if m.agentLite {
-		runCtx.Tools = nil
+	// 从 context 读取 per-message 指令（由 handleMessage 通过 WithMsgSessionCtx 注入）
+	if sc := GetMsgSessionCtx(ctx); sc != nil {
+		if sc.DynamicInstruction != "" {
+			runCtx.Instruction = sc.DynamicInstruction
+		}
+		if sc.AgentLite {
+			runCtx.Tools = nil
+		}
 	}
 	return ctx, runCtx, nil
 }
 
-// JuanNiangSessionCtx 用于在 context 中传递请求级状态。
-type JuanNiangSessionCtx struct {
-	Msg        *adapter.MessageEvent
-	UserID     int64
-	ChatAreaID string
-	IsAdmin    bool
-	Admins     []string
-	SessionID  string
-	UserMsg    string
+// MsgSessionCtx 携带单条消息的 per-goroutine 状态。
+// 通过 context 传递，避免 HagoCenter 共享字段导致的数据竞争。
+type MsgSessionCtx struct {
+	Msg                *adapter.MessageEvent
+	SessionCtxStr      string // buildSessionContext 的输出
+	RecentMsgsFn       func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error)
+	DynamicInstruction string // 注入给 Eino Agent 的系统指令
+	AgentLite          bool   // 精简模式：禁用所有工具
+	StripMarkdown      bool   // 去除 Markdown 格式
+	DisableSplit       bool   // 禁用分段回复
 }
 
-type sessionCtxKey struct{}
+type msgSessionKey struct{}
 
-// WithSessionCtx 将请求级状态注入 context。
-func WithSessionCtx(ctx context.Context, s *JuanNiangSessionCtx) context.Context {
-	return context.WithValue(ctx, sessionCtxKey{}, s)
+// WithMsgSessionCtx 将消息级状态注入 context。
+func WithMsgSessionCtx(ctx context.Context, s *MsgSessionCtx) context.Context {
+	return context.WithValue(ctx, msgSessionKey{}, s)
 }
 
-// GetSessionCtx 从 context 中读取请求级状态。
-func GetSessionCtx(ctx context.Context) *JuanNiangSessionCtx {
-	v, _ := ctx.Value(sessionCtxKey{}).(*JuanNiangSessionCtx)
+// GetMsgSessionCtx 从 context 中读取消息级状态。
+func GetMsgSessionCtx(ctx context.Context) *MsgSessionCtx {
+	v, _ := ctx.Value(msgSessionKey{}).(*MsgSessionCtx)
 	return v
 }
 

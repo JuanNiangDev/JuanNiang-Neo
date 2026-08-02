@@ -62,8 +62,8 @@ func RegisterBuiltinTools(
 	getSandbox func() *sandboxcaller.Client,
 	getT2I func() *t2icaller.Client,
 	imageModel provider.Provider,
-	getSessionCtx func() string,
-	getCurrentMsg func() *adapter.MessageEvent,
+	getSessionCtx func(ctx context.Context) string,
+	getCurrentMsg func(ctx context.Context) *adapter.MessageEvent,
 	getRecentMsgs func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error),
 ) {
 	tools := []Tool{}
@@ -613,7 +613,7 @@ except Exception as e:
 			BaseTool: NewTool("", "get_session_info", "获取当前聊天会话信息（私聊/群聊、对方QQ/群号、发送者信息、机器人身份等）",
 				TimeParams(), true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-				return getSessionCtx(), nil
+				return getSessionCtx(ctx), nil
 			},
 		})
 	}
@@ -637,7 +637,7 @@ except Exception as e:
 					SubType int `json:"sub_type"`
 				}
 				json.Unmarshal(args, &p)
-				msg := getCurrentMsg()
+				msg := getCurrentMsg(ctx)
 				if msg == nil {
 					return "未获取到当前会话信息", nil
 				}
@@ -684,7 +684,7 @@ except Exception as e:
 			if p.Limit > 50 {
 				p.Limit = 50
 			}
-			msg := getCurrentMsg()
+			msg := getCurrentMsg(ctx)
 			if msg == nil {
 				return "未获取到当前会话信息", nil
 			}
