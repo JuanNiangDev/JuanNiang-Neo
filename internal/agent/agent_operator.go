@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	sandbox "JuanNiang-Neo/infrastructure/sandbox"
@@ -74,7 +73,7 @@ func (h *HagoCenter) SwitchProvider(ctx context.Context, id string) error {
 		Model:       p.Model,
 		Temperature: p.Temperature,
 	}))
-	slog.Info("Provider 切换完成", "id", id, "type", p.Type)
+	log.Info("Provider 切换完成", "id", id, "type", p.Type)
 	return nil
 }
 
@@ -112,7 +111,7 @@ func (h *HagoCenter) SetMCPActive(ctx context.Context, id string, active bool) e
 				AutoReconnect: srv.AutoReconnect,
 			})
 			if err := client.Connect(ctx); err != nil {
-				slog.Error("MCP 连接失败", "name", srv.Name, "err", err)
+				log.Error("MCP 连接失败", "name", srv.Name, "err", err)
 				return err
 			}
 			h.MCP.AddMCP(client)
@@ -134,14 +133,14 @@ func (h *HagoCenter) SetToolActive(ctx context.Context, name string, active bool
 
 	if !active {
 		h.Tools.Unregister(name)
-		slog.Info("Tool 已停用", "name", name)
+		log.Info("Tool 已停用", "name", name)
 	} else {
 		// 启用：若运行时不存在则需重新注册（仅对已注册过的工具支持）
 		if _, ok := h.Tools.Get(name); !ok {
 			// 重新注册需要原始 Tool 实例，此处仅记录；内置工具在启动时注册，
 			// 运行时停用后重新启用需要从 DB 配置重建——但题目要求不支持增删，
 			// 仅支持启停，因此停用=注销，启用=重新注册（若 ToolConfig 有记录则标记）
-			slog.Warn("Tool 重新启用需重启或重新注册", "name", name)
+			log.Warn("Tool 重新启用需重启或重新注册", "name", name)
 		}
 	}
 	return nil
@@ -218,15 +217,15 @@ func (h *HagoCenter) SetT2IActive(ctx context.Context, active bool) error {
 			t2i.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
 		)
 		if err != nil {
-			slog.Warn("T2I 客户端创建失败", "err", err)
+			log.Warn("T2I 客户端创建失败", "err", err)
 			h.T2IClient = nil
 			return fmt.Errorf("T2I 客户端创建失败: %w", err)
 		}
 		h.T2IClient = client
-		slog.Info("T2I 服务已启用", "base_url", cfg.BaseURL)
+		log.Info("T2I 服务已启用", "base_url", cfg.BaseURL)
 	} else {
 		h.T2IClient = nil
-		slog.Info("T2I 服务已停用")
+		log.Info("T2I 服务已停用")
 	}
 	return nil
 }
@@ -250,15 +249,15 @@ func (h *HagoCenter) SetSandboxActive(ctx context.Context, active bool) error {
 			sandbox.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
 		)
 		if err != nil {
-			slog.Warn("Sandbox 客户端创建失败", "err", err)
+			log.Warn("Sandbox 客户端创建失败", "err", err)
 			h.SandboxClient = nil
 			return fmt.Errorf("Sandbox 客户端创建失败: %w", err)
 		}
 		h.SandboxClient = client
-		slog.Info("Sandbox 服务已启用", "base_url", cfg.BaseURL)
+		log.Info("Sandbox 服务已启用", "base_url", cfg.BaseURL)
 	} else {
 		h.SandboxClient = nil
-		slog.Info("Sandbox 服务已停用")
+		log.Info("Sandbox 服务已停用")
 	}
 	return nil
 }

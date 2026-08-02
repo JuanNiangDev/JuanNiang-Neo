@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	"JuanNiang-Neo/internal/adapter"
 
@@ -81,7 +80,7 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 	toolName := tCtx.Name
 
 	wrapped := func(ctx context.Context, argsJSON string, opts ...einotool.Option) (string, error) {
-		slog.Info("Eino tool call", "tool", toolName, "call_id", tCtx.CallID, "args_len", len(argsJSON))
+		log.Info("Eino tool call", "tool", toolName, "call_id", tCtx.CallID, "args_len", len(argsJSON))
 
 		// --- ACL 检查 ---
 		if !m.isAdmin {
@@ -94,7 +93,7 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 				allowed, denial = m.h.ACL.CheckTool(ctx, m.userID, m.chatAreaID, toolName)
 			}
 			if !allowed {
-				slog.Info("ACL 拒绝工具调用", "user_id", m.userID, "tool", toolName, "reason", denial)
+				log.Info("ACL 拒绝工具调用", "user_id", m.userID, "tool", toolName, "reason", denial)
 				return denial, nil
 			}
 		}
@@ -109,21 +108,21 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 				getTargetID(m.msg), "", steps,
 			)
 			if err != nil {
-				slog.Error("提交后台任务失败", "tool", toolName, "err", err)
+				log.Error("提交后台任务失败", "tool", toolName, "err", err)
 				return fmt.Sprintf("提交后台任务失败: %s", err.Error()), nil
 			}
-			slog.Info("长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
+			log.Info("长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
 			return fmt.Sprintf("[系统] 任务 %s 已提交后台执行 (task_id: %s)。你不需要做任何后续处理——禁止编造或猜测执行结果。只需告知用户任务已提交。", toolName, taskID), nil
 		}
 
 		// --- 正常执行 ---
 		result, err := endpoint(ctx, argsJSON, opts...)
 		if err != nil {
-			slog.Error("工具执行失败", "tool", toolName, "err", err)
+			log.Error("工具执行失败", "tool", toolName, "err", err)
 			return fmt.Sprintf("工具执行失败: %s", err.Error()), nil
 		}
 
-		slog.Info("工具执行完成", "tool", toolName, "result_len", len(result))
+		log.Info("工具执行完成", "tool", toolName, "result_len", len(result))
 		return result, nil
 	}
 

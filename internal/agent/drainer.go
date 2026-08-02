@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 )
@@ -48,7 +47,7 @@ func NewDrainerAgent(
 }
 
 func (d *DrainerAgent) Run(ctx context.Context) {
-	slog.Info("DrainerAgent 已启动 (result → bgTaskResultChan)")
+	log.Info("DrainerAgent 已启动 (result → bgTaskResultChan)")
 	for {
 		select {
 		case <-ctx.Done():
@@ -126,7 +125,7 @@ func (d *DrainerAgent) finalize(ctx context.Context, chatAreaID string) {
 		finalStatus = "failed"
 	}
 
-	slog.Info("Drainer 汇总完成，发送给主 Agent", "chat_area_id", chatAreaID,
+	log.Info("Drainer 汇总完成，发送给主 Agent", "chat_area_id", chatAreaID,
 		"status", finalStatus, "failed", len(failedSteps), "success", len(stepOutputs), "media", len(allMedia))
 
 	// 发送汇总结果给主 Agent

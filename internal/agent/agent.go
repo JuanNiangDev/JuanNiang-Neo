@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
@@ -114,7 +113,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	if info, err := h.Adapter.GetLoginInfo(); err == nil && info != nil {
 		h.SelfNickname = info.Nickname
 	}
-	slog.Info("机器人身份信息", "self_qq", h.SelfQQ, "self_nickname", h.SelfNickname)
+	log.Info("机器人身份信息", "self_qq", h.SelfQQ, "self_nickname", h.SelfNickname)
 
 	// 存储 T2I/Sandbox 运行时客户端
 	h.SandboxClient = cfg.Sandbox
@@ -136,7 +135,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 
 	// 启动时种子系统锁定提示词（幂等：已存在则同步内容）
 	if err := h.Prompt.EnsureSystemPrompt(ctx); err != nil {
-		slog.Warn("系统锁定提示词种子失败", "err", err)
+		log.Warn("系统锁定提示词种子失败", "err", err)
 	}
 
 	// 使用函数 getter 注册工具，支持运行时客户端热更新
@@ -167,7 +166,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 
 	// 构建 Eino ChatModelAgent（替代手写的 ReAct 循环）
 	if err := h.buildEinoAgent(ctx); err != nil {
-		slog.Warn("Eino Agent 构建失败，将回退到旧模式", "err", err)
+		log.Warn("Eino Agent 构建失败，将回退到旧模式", "err", err)
 	}
 
 	return nil
@@ -193,7 +192,7 @@ func (h *HagoCenter) loadProviders(ctx context.Context) error {
 		})
 		h.Providers.AddProvider(pr)
 	}
-	slog.Info("Provider 加载完成", "count", len(list))
+	log.Info("Provider 加载完成", "count", len(list))
 	return nil
 }
 
@@ -223,12 +222,12 @@ func (h *HagoCenter) loadMCPs(ctx context.Context) error {
 			AutoReconnect: srv.AutoReconnect,
 		})
 		if err := client.Connect(ctx); err != nil {
-			slog.Error("MCP 连接失败", "name", srv.Name, "err", err)
+			log.Error("MCP 连接失败", "name", srv.Name, "err", err)
 			continue
 		}
 		h.MCP.AddMCP(client)
 	}
-	slog.Info("MCP 加载完成", "count", len(list))
+	log.Info("MCP 加载完成", "count", len(list))
 	return nil
 }
 
@@ -252,7 +251,7 @@ func (h *HagoCenter) loadSkills(ctx context.Context) error {
 			Priority:     s.Priority,
 		})
 	}
-	slog.Info("Skill 加载完成", "count", len(list))
+	log.Info("Skill 加载完成", "count", len(list))
 	return nil
 }
 
@@ -295,7 +294,7 @@ func (h *HagoCenter) buildEinoAgent(ctx context.Context) error {
 	}
 
 	h.EinoAgent = agent
-	slog.Info("Eino ChatModelAgent 已就绪", "tools", len(einoBaseTools))
+	log.Info("Eino ChatModelAgent 已就绪", "tools", len(einoBaseTools))
 	return nil
 }
 
@@ -305,7 +304,7 @@ func (h *HagoCenter) Start(ctx context.Context) error {
 	go h.Drainer.Run(ctx)
 	go h.runEventLoop(ctx)
 	go h.CronJobManager.Run(ctx)
-	slog.Info("HagoCenter 已启动")
+	log.Info("HagoCenter 已启动")
 	return nil
 }
 
@@ -331,5 +330,5 @@ func (h *HagoCenter) buildToolList(ctx context.Context) []provider.ToolDef {
 func (h *HagoCenter) Stop() {
 	close(h.OutputChan)
 	close(h.BgTaskResultChan)
-	slog.Info("HagoCenter 已停止")
+	log.Info("HagoCenter 已停止")
 }
