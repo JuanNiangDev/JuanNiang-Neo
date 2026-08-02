@@ -251,8 +251,8 @@ func (pm *PromptManager) BuildSystemPrompt(ctx context.Context) (string, error) 
 	return strings.Join(parts, "\n\n"), nil
 }
 
-// BuildFullContext 构建完整上下文 (system prompts + 长期记忆 + 工具/技能描述)。
-func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories []string, toolDescriptions string) (string, error) {
+// BuildFullContext 构建完整上下文 (system prompts + 长期记忆 + 技能记忆 + 工具/技能描述)。
+func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories []string, toolDescriptions string, skillMemory string) (string, error) {
 	systemPrompt, err := pm.BuildSystemPrompt(ctx)
 	if err != nil {
 		return "", err
@@ -268,6 +268,11 @@ func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories 
 		for _, mem := range longTermMemories {
 			parts = append(parts, mem)
 		}
+	}
+
+	if skillMemory != "" {
+		parts = append(parts, "以下是你掌握的技能记忆（黑话/热词/梗），请在对话中自然地使用它们：")
+		parts = append(parts, skillMemory)
 	}
 
 	if toolDescriptions != "" {

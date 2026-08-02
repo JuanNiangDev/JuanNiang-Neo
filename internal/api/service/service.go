@@ -1361,8 +1361,7 @@ func (s *Service) UpdateLongTermMemoryConfig(ctx context.Context, c *app.Request
 	// 运行时同步
 	if s.MemoryGroup != nil {
 		s.MemoryGroup.UpdateLongTermConfig(memory.LongTermMemoryConfig{
-			HotAreaSize:  data.HotAreaSize,
-			HotMemoryTTL: time.Duration(data.HotMemoryTTL) * time.Second,
+			HotAreaSize: data.HotAreaSize,
 		})
 	}
 

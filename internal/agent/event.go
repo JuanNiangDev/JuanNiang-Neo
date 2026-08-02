@@ -410,7 +410,11 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
 
 	h.CurrentMsg = msg
 	h.CurrentSessionCtx = h.buildSessionContext(ctx, msg, ev.Admins)
-	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs)
+	skillMem := ""
+	if h.Memory != nil {
+		skillMem = h.Memory.GetSkillMemory()
+	}
+	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs, skillMem)
 
 	// ---------- 构建 Eino 消息列表 ----------
 	einoMsgs := []*einoschema.Message{
