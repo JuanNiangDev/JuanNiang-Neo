@@ -1,0 +1,46 @@
+# JuanNiang-Neo 开发配置文件
+#
+# 用法:
+#   cp dev.yaml.example dev.yaml   # 复制并按需修改
+#   make run                        # 自动读取 dev.yaml
+#   make run-debug                  # 自动读取 dev.yaml + debug 模式
+#
+# 优先级: 环境变量 > dev.yaml > 内置默认值
+# 如果 dev.yaml 不存在，程序正常启动（使用环境变量或内置默认值）。
+
+# ---------- 数据库 ----------
+database:
+  host: localhost
+  port: 5432
+  user: postgres
+  password: postgres
+  name: juan
+
+# ---------- Redis ----------
+redis:
+  addr: "localhost:6379"
+  password: root
+  db: 0
+
+# ---------- OneBot11 反向 WebSocket ----------
+onebot11:
+  port: 8081
+  token: ""                        # 空 = 不鉴权
+  admins: []                       # 管理员 QQ 号列表, 如 ["123456", "789012"]
+
+# ---------- Web API ----------
+api:
+  addr: ":8090"
+
+# ---------- 前端 ----------
+web:
+  dir: web/dist                    # 前端构建产物目录; 开发模式下设为空字符串跳过
+
+# ---------- 安全 ----------
+jwt:
+  secret: dev-secret-change-me     # 开发用 JWT 密钥（生产环境请务必更换）
+
+# ---------- 调试 ----------
+debug:
+  enabled: false                   # make run-debug 会强制开启
+  pprof_addr: ":6060"

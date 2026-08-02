@@ -45,7 +45,18 @@ func main() {
 	// ---------- 命令行参数 ----------
 	debug := flag.Bool("debug", false, "启用 debug 模式：pprof + 详细日志")
 	pprofAddr := flag.String("pprof-addr", ":6060", "pprof HTTP 监听地址（仅 debug 模式有效）")
+	devConfigPath := flag.String("dev-config", "dev.yaml", "开发配置文件路径（不存在则静默跳过）")
 	flag.Parse()
+
+	// ---------- 加载 dev.yaml ----------
+	devCfg := loadDevConfig(*devConfigPath)
+
+	// 预处理 OneBot11 配置（loadAdapterConfig 通过 env() 读取）
+	setEnvIfUnset("OB_PORT", devCfg.OneBot11.Port)
+	setEnvIfUnset("OB_TOKEN", devCfg.OneBot11.Token)
+	if len(devCfg.OneBot11.Admins) > 0 && os.Getenv("OB_ADMINS") == "" {
+		os.Setenv("OB_ADMINS", strings.Join(devCfg.OneBot11.Admins, ","))
+	}
 
 	// ---------- 日志 ----------
 	// 初始化新日志系统（彩色输出 + JSON 格式化 + 调用栈 + Hub 推送）
@@ -85,11 +96,11 @@ func main() {
 
 	// ---------- 1. 基础设施 ----------
 	db, err := postgres.NewPostgresClient(
-		postgres.WithHost(env("DB_HOST", "localhost")),
-		postgres.WithPort(env("DB_PORT", "5432")),
-		postgres.WithUser(env("DB_USER", "postgres")),
-		postgres.WithPassword(env("DB_PASSWORD", "postgres")),
-		postgres.WithDefaultDB(env("DB_NAME", "juan")),
+		postgres.WithHost(devEnv("DB_HOST", devCfg.Database.Host, "localhost")),
+		postgres.WithPort(devEnv("DB_PORT", devCfg.Database.Port, "5432")),
+		postgres.WithUser(devEnv("DB_USER", devCfg.Database.User, "postgres")),
+		postgres.WithPassword(devEnv("DB_PASSWORD", devCfg.Database.Password, "postgres")),
+		postgres.WithDefaultDB(devEnv("DB_NAME", devCfg.Database.Name, "juan")),
 	)
 	if err != nil {
 		log.Error("Postgres 连接失败", "err", err)
@@ -98,9 +109,9 @@ func main() {
 	log.Info("Postgres 已连接")
 
 	redisClient, err := redis.NewRedisSentinelClient(
-		redis.WithAddr(env("REDIS_ADDR", "localhost:6379")),
-		redis.WithPassword(env("REDIS_PASSWORD", "root")),
-		redis.WithDB(mustAtoi(env("REDIS_DB", "0"))),
+		redis.WithAddr(devEnv("REDIS_ADDR", devCfg.Redis.Addr, "localhost:6379")),
+		redis.WithPassword(devEnv("REDIS_PASSWORD", devCfg.Redis.Password, "root")),
+		redis.WithDB(mustAtoi(devEnv("REDIS_DB", devCfg.Redis.DB, "0"))),
 	)
 	if err != nil {
 		log.Error("Redis 连接失败", "err", err)
@@ -115,7 +126,7 @@ func main() {
 	}
 	log.Info("Core 已初始化")
 
-	if s := os.Getenv("JWT_SECRET"); s != "" {
+	if s := devEnv("JWT_SECRET", devCfg.JWT.Secret, ""); s != "" {
 		middleware.JWTSecret = []byte(s)
 	}
 
@@ -222,11 +233,12 @@ func main() {
 	//   - 开发模式: 前端走 Vite (:3000) 代理 /api 到 :8090, 后端无需服务前端。
 	//   - 生产/裸跑: make web-build 后, 后端直接 serve web/dist 作为 SPA。
 	//   - 目录不存在或未构建时, 后端走引导提示页, 不影响 API 与 /health。
-	webDir := env("WEB_DIR", "web/dist")
+	webDir := devEnv("WEB_DIR", devCfg.Web.Dir, "web/dist")
 	if err := web.EnsureDir(webDir); err != nil {
 		log.Warn("WEB_DIR 校验失败", "dir", webDir, "err", err)
 	}
-	webEngine := engine.New(env("API_ADDR", ":8090"), webDir, svc)
+	apiAddr := devEnv("API_ADDR", devCfg.API.Addr, ":8090")
+	webEngine := engine.New(apiAddr, webDir, svc)
 
 	// 用 Run 而非 Spin: Spin 会自注册 SIGINT/SIGTERM handler 并在我们已注册
 	// signal.NotifyContext 的同时另起一套, 导致 Ctrl-C 时 Spin 内部的
@@ -234,13 +246,13 @@ func main() {
 	// 这里我们只复用 Hertz 的 Run, 用主 ctx 显式控制生命周期。
 	webErrCh := make(chan error, 1)
 	go func() {
-		log.Info("Web API 已启动", "addr", env("API_ADDR", ":8090"))
+		log.Info("Web API 已启动", "addr", apiAddr)
 		webErrCh <- webEngine.Run()
 	}()
 
 	log.Info("JuanNiang-Neo 已就绪",
 		"adapter_addr", adapterProv.Status().ListenAddr,
-		"api_addr", env("API_ADDR", ":8090"),
+		"api_addr", apiAddr,
 		"plugins", len(pluginEngine.List()),
 		"goroutines", runtime.NumGoroutine(),
 	)
@@ -303,6 +315,13 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// setEnvIfUnset 当环境变量未设置且 val 非空时，设置环境变量。
+func setEnvIfUnset(key, val string) {
+	if val != "" && os.Getenv(key) == "" {
+		os.Setenv(key, val)
+	}
 }
 
 func mustAtoi(s string) int {
