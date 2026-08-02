@@ -47,13 +47,10 @@ type HagoCenter struct {
 	SandboxClient *sandboxcaller.Client
 	T2IClient     *t2icaller.Client
 
-	BgTaskExecutor   *BackgroundTaskExecutor
-	Drainer          *DrainerAgent
-	OutputChan       chan DrainerOutput // BgTaskExecutor → Drainer
-	BgTaskResultChan chan DrainerOutput // Drainer → 主 Agent 事件循环
-	CronJobManager   *cronjob.Manager
-	CronJobEvents    chan adapter.Event // CronJob → 主 Agent 事件循环
-	PluginEngine     *pluggin.PluginEngine
+	Concurrency    *ConcurrencyManager
+	CronJobManager *cronjob.Manager
+	CronJobEvents  chan adapter.Event // CronJob → 主 Agent 事件循环
+	PluginEngine   *pluggin.PluginEngine
 
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
 	SelfQQ       int64
@@ -89,13 +86,11 @@ type Config struct {
 // NewHagoCenter 创建并初始化 HagoCenter。
 func NewHagoCenter() *HagoCenter {
 	return &HagoCenter{
-		Providers:        provider.NewProviderGroup(),
-		MCP:              mcp.NewMCPGroup(),
-		Tools:            tool.NewToolRegistry(),
-		Skills:           skill.NewSkillEngine(),
-		OutputChan:       make(chan DrainerOutput, 128),
-		BgTaskResultChan: make(chan DrainerOutput, 128),
-		CronJobEvents:    make(chan adapter.Event, 64),
+		Providers:     provider.NewProviderGroup(),
+		MCP:           mcp.NewMCPGroup(),
+		Tools:         tool.NewToolRegistry(),
+		Skills:        skill.NewSkillEngine(),
+		CronJobEvents: make(chan adapter.Event, 64),
 	}
 }
 
@@ -166,8 +161,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	h.BgTaskExecutor = NewBackgroundTaskExecutor(h.Tools, h.MCP, h.DAO.BackgroundTask, h.OutputChan)
-	h.Drainer = NewDrainerAgent(h.OutputChan, h.BgTaskResultChan)
+	h.Concurrency = NewConcurrencyManager(8)
 	h.CronJobManager = cronjob.New(h.DAO.CronJob, h.CronJobEvents)
 
 	// 构建 Eino ChatModelAgent（替代手写的 ReAct 循环）
@@ -306,8 +300,6 @@ func (h *HagoCenter) buildEinoAgent(ctx context.Context) error {
 
 // Start 启动 Agent 系统 (后台任务执行器 + 排水 Agent + 事件循环 + CronJob 调度器)。
 func (h *HagoCenter) Start(ctx context.Context) error {
-	go h.BgTaskExecutor.Run(ctx)
-	go h.Drainer.Run(ctx)
 	go h.runEventLoop(ctx)
 	go h.CronJobManager.Run(ctx)
 	log.Info("HagoCenter 已启动")
@@ -334,7 +326,5 @@ func (h *HagoCenter) buildToolList(ctx context.Context) []provider.ToolDef {
 
 // Stop 停止 Agent 系统。
 func (h *HagoCenter) Stop() {
-	close(h.OutputChan)
-	close(h.BgTaskResultChan)
 	log.Info("HagoCenter 已停止")
 }
