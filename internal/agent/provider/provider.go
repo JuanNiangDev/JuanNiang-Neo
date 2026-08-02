@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"JuanNiang-Neo/internal/logging"
 	"bufio"
 	"bytes"
 	"context"
@@ -8,11 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 )
+
+var log = logging.NewModule("provider")
 
 // openAIProvider 实现 OpenAI-compatible API 客户端。
 type openAIProvider struct {
@@ -31,10 +33,10 @@ func NewProviderFromDB(cfg ProviderConfig) Provider {
 	return NewProvider(cfg)
 }
 
-func (p *openAIProvider) ID() string           { return p.cfg.ID }
-func (p *openAIProvider) Name() string         { return p.cfg.Name }
-func (p *openAIProvider) Type() ModelType      { return p.cfg.Type }
-func (p *openAIProvider) Model() string        { return p.cfg.Model }
+func (p *openAIProvider) ID() string      { return p.cfg.ID }
+func (p *openAIProvider) Name() string    { return p.cfg.Name }
+func (p *openAIProvider) Type() ModelType { return p.cfg.Type }
+func (p *openAIProvider) Model() string   { return p.cfg.Model }
 
 // ---------- Chat ----------
 
@@ -69,7 +71,7 @@ func (p *openAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 
 		if resp.StatusCode != 200 {
 			body, _ := io.ReadAll(resp.Body)
-			slog.Error("provider stream 非200", "status", resp.StatusCode, "body", string(body))
+			log.Error("provider stream 非200", "status", resp.StatusCode, "body", string(body))
 			return
 		}
 
@@ -85,7 +87,7 @@ func (p *openAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-cha
 			}
 			var chunk rawStreamChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				slog.Error("provider stream 解析失败", "err", err)
+				log.Error("provider stream 解析失败", "err", err)
 				continue
 			}
 			if len(chunk.Choices) == 0 {
@@ -261,8 +263,8 @@ func (p *openAIProvider) parseChatResponse(body []byte) (*ChatResponse, error) {
 
 	choice := raw.Choices[0]
 	msg := ChatMessage{
-		Role:      choice.Message.Role,
-		Content:   choice.Message.Content,
+		Role:       choice.Message.Role,
+		Content:    choice.Message.Content,
 		ToolCallID: choice.Message.ToolCallID,
 	}
 
@@ -289,10 +291,10 @@ func (p *openAIProvider) parseChatResponse(body []byte) (*ChatResponse, error) {
 type rawChatResponse struct {
 	Choices []struct {
 		Message struct {
-			Role       string          `json:"role"`
-			Content    string          `json:"content"`
-			ToolCallID string          `json:"tool_call_id"`
-			ToolCalls  []rawToolCall   `json:"tool_calls"`
+			Role       string        `json:"role"`
+			Content    string        `json:"content"`
+			ToolCallID string        `json:"tool_call_id"`
+			ToolCalls  []rawToolCall `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -313,8 +315,8 @@ type rawToolCall struct {
 type rawStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content    string        `json:"content"`
-			ToolCalls  []rawToolCall `json:"tool_calls"`
+			Content   string        `json:"content"`
+			ToolCalls []rawToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`

@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
+	"JuanNiang-Neo/internal/logging"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
+
+var log = logging.NewModule("mcp")
 
 // ---------- 配置 ----------
 
@@ -99,7 +101,7 @@ func (g *MCPGroup) ListTools(ctx context.Context) []ToolDefinition {
 		}
 		tools, err := m.ListTools(ctx)
 		if err != nil {
-			slog.Error("MCP ListTools 失败", "mcp", m.Name(), "err", err)
+			log.Error("MCP ListTools 失败", "mcp", m.Name(), "err", err)
 			continue
 		}
 		all = append(all, tools...)
@@ -201,7 +203,7 @@ func (c *sdkMCPClient) Connect(ctx context.Context) error {
 	}
 
 	c.cli = cli
-	slog.Info("MCP 连接成功", "name", c.cfg.Name, "url", c.cfg.ServerURL)
+	log.Info("MCP 连接成功", "name", c.cfg.Name, "url", c.cfg.ServerURL)
 	return nil
 }
 
