@@ -369,8 +369,19 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 	// ---------- 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发） ----------
 	deferredSends.Flush(ctx, h.Adapter)
 
+	// 若任务期间已通过发送类工具（send_*_msg）向当前会话投递了消息，
+	// 该消息即回答本体，最终回复通常只是复述/操作过程描述，直接丢弃。
+	currentTargetID := int64(0)
+	switch msg.MessageType {
+	case "private":
+		currentTargetID = msg.UserID
+	case "group":
+		currentTargetID = msg.GroupID
+	}
+	deliveredToCurrent := deferredSends.DeliveredTo(msg.MessageType, currentTargetID)
+
 	// ---------- 后处理：静默检测 + 发送 + 记忆 ----------
-	if assistantContent != "" {
+	if assistantContent != "" && !deliveredToCurrent {
 		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(assistantContent)
 		if silenced {
 			log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
@@ -381,6 +392,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
 			}
 		}
+	} else if assistantContent != "" {
+		log.Info("已通过工具向当前会话发送消息，跳过最终回复", "content", assistantContent, "message_type", msg.MessageType, "target", currentTargetID)
 	}
 }
 

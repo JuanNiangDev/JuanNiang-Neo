@@ -99,7 +99,7 @@ func RegisterBuiltinTools(
 			}
 			// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
 			if q := GetDeferredSendQueue(ctx); q != nil {
-				q.Add(DeferredSend{MessageType: "private", TargetID: p.UserID, Message: msg})
+				q.Add(DeferredSend{MessageType: "private", TargetID: p.UserID, Message: msg, Delivery: true})
 				return "私聊消息已加入发送队列，将在任务执行完成后统一发送", nil
 			}
 			id, err := adapter.SendPrivateMsg(p.UserID, msg)
@@ -129,7 +129,7 @@ func RegisterBuiltinTools(
 			msg, _ := BuildMessageFromJSON(p.Message)
 			// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
 			if q := GetDeferredSendQueue(ctx); q != nil {
-				q.Add(DeferredSend{MessageType: "group", TargetID: p.GroupID, Message: msg})
+				q.Add(DeferredSend{MessageType: "group", TargetID: p.GroupID, Message: msg, Delivery: true})
 				return "群消息已加入发送队列，将在任务执行完成后统一发送", nil
 			}
 			id, err := adapter.SendGroupMsg(p.GroupID, msg)

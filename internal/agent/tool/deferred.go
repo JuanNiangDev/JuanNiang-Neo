@@ -11,6 +11,7 @@ type DeferredSend struct {
 	MessageType string // "private" / "group"
 	TargetID    int64  // 私聊: user_id; 群聊: group_id
 	Message     any
+	Delivery    bool // 主要交付消息（send_*_msg）：投递到当前会话后应抑制最终回复，避免复述
 }
 
 // DeferredSendQueue 收集 Agent 任务执行期间工具发起的发送请求，
@@ -42,6 +43,22 @@ func (q *DeferredSendQueue) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.sends)
+}
+
+// DeliveredTo 判断是否已向指定会话投递过主要交付消息（Delivery=true）。
+// 若已投递，最终回复通常只是复述/操作过程描述，应跳过发送。
+func (q *DeferredSendQueue) DeliveredTo(messageType string, targetID int64) bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for _, s := range q.sends {
+		if s.Delivery && s.MessageType == messageType && s.TargetID == targetID {
+			return true
+		}
+	}
+	return false
 }
 
 // Flush 按入队顺序发送所有排队消息，发送后清空队列。

@@ -42,7 +42,9 @@ const SystemLockedPromptContent = `# JuanNiang-Neo 全局行为约束
 
 ### 4. 发送成功 = 已成功
 - 调用 send_private_msg、send_group_msg、send_face、text_to_image 等工具后，返回成功即表示已完成。
-- 不要重复发送或确认结果。
+- 向当前会话发送消息（send_group_msg / send_private_msg）：发送的内容就是你的回答。最终回复只输出 __NO_REPLY__，不要复述或追加说明；需要补充的内容直接写进工具消息里。
+- 向其他会话发送消息：最终回复只需一句话确认（如"已发送给 xxx"），不要描述操作过程。
+- 永远不要在回复中复述你的思考/操作过程（如"我先看下""找到了""搞定咯""发出去啦"等），直接给出结果；没有新内容就输出 __NO_REPLY__。
 
 ## 能力清单
 
