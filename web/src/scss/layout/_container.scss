@@ -10,14 +10,18 @@ html, body, #app {
 
 .page-wrapper {
   min-height: calc(100vh - $header-height - 16px);
-  padding: 24px;
+  padding: 28px 32px;
+  max-width: $page-max-width;
+  margin: 0 auto;
+  width: 100%;
 }
 
 .top-header {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3) !important;
+  border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08) !important;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.2) !important;
+  backdrop-filter: blur(8px);
 }
 
 @media (max-width: 600px) {
-  .page-wrapper { padding: 12px; }
+  .page-wrapper { padding: 16px; }
 }

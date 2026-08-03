@@ -8,9 +8,12 @@
     color="sidebar-bg"
     :temporary="$vuetify.display.mobile"
   >
-    <div class="d-flex align-center ps-4 pe-3 py-3" style="min-height: 64px; gap: 8px; flex-shrink: 0">
+    <div class="d-flex align-center ps-4 pe-3 py-3" style="min-height: 64px; gap: 10px; flex-shrink: 0">
       <img v-if="logoExists" src="/site_logo.png" alt="Logo" style="height: 30px; width: 30px; border-radius: 8px; flex-shrink: 0" @error="logoExists = false" />
-      <span class="text-h6 font-weight-bold" style="color: rgba(255,255,255,0.9); font-size: 16px; white-space: nowrap">JuanNiang-Neo</span>
+      <div class="d-flex flex-column" style="line-height: 1.1">
+        <span class="font-weight-bold" style="color: rgba(255,255,255,0.92); font-size: 15px; white-space: nowrap">JuanNiang-Neo</span>
+        <span class="text-caption" style="color: rgba(255,255,255,0.35); font-size: 11px">智能管理控制台</span>
+      </div>
     </div>
 
     <v-divider class="mx-3" style="border-color: rgba(255,255,255,0.06); flex-shrink: 0" />
@@ -44,7 +47,7 @@
 
     <div class="px-3 py-2 flex-shrink-0">
       <v-divider style="border-color: rgba(255,255,255,0.06)" class="mb-2" />
-      <div class="text-caption px-3 py-2" style="color: rgba(255,255,255,0.25); font-size: 11px">
+      <div class="text-caption px-3 py-2" style="color: rgba(255,255,255,0.28); font-size: 11px">
         JuanNiang-Neo v1.0.0
       </div>
     </div>

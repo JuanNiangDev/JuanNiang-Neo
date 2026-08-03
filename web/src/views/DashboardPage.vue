@@ -70,30 +70,16 @@
       <v-row class="mt-3">
         <v-col cols="12" md="6" class="d-flex">
           <v-card rounded="lg" elevation="1" color="surface" class="flex-grow-1">
-            <v-card-item><template #title><span class="text-h6 font-weight-bold">系统资源</span></template></v-card-item>
+            <v-card-item>
+              <template #title>
+                <div class="d-flex align-center justify-space-between">
+                  <span class="text-h6 font-weight-bold">系统资源</span>
+                  <span class="text-caption text-medium-emphasis">{{ overview?.go_version ?? '-' }}</span>
+                </div>
+              </template>
+            </v-card-item>
             <v-card-text>
-              <v-list density="compact" color="surface">
-                <v-list-item>
-                  <template #prepend><v-icon color="blue" class="me-3">mdi-cpu-64-bit</v-icon></template>
-                  <v-list-item-title>CPU / Goroutines</v-list-item-title>
-                  <v-list-item-subtitle>{{ overview?.cpu_count ?? '-' }} 核 · {{ overview?.goroutine_num ?? 0 }} goroutines</v-list-item-subtitle>
-                </v-list-item>
-                <v-list-item>
-                  <template #prepend><v-icon color="green" class="me-3">mdi-memory</v-icon></template>
-                  <v-list-item-title>Heap Inuse / Alloc</v-list-item-title>
-                  <v-list-item-subtitle>{{ formatBytes(overview?.mem_heap_inuse_bytes ?? 0) }} / {{ formatBytes(overview?.mem_alloc_bytes ?? 0) }}</v-list-item-subtitle>
-                </v-list-item>
-                <v-list-item>
-                  <template #prepend><v-icon color="orange" class="me-3">mdi-harddisk</v-icon></template>
-                  <v-list-item-title>系统内存</v-list-item-title>
-                  <v-list-item-subtitle>{{ formatBytes(overview?.mem_sys_bytes ?? 0) }}</v-list-item-subtitle>
-                </v-list-item>
-                <v-list-item>
-                  <template #prepend><v-icon color="purple" class="me-3">mdi-language-go</v-icon></template>
-                  <v-list-item-title>Go 版本</v-list-item-title>
-                  <v-list-item-subtitle>{{ overview?.go_version ?? '-' }}</v-list-item-subtitle>
-                </v-list-item>
-              </v-list>
+              <div ref="gaugeEl" class="gauge-chart" />
             </v-card-text>
           </v-card>
         </v-col>
@@ -180,13 +166,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { init, use, type EChartsType } from 'echarts/core'
-import { LineChart } from 'echarts/charts'
+import { LineChart, GaugeChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { overviewApi, adapterApi, type OverviewResp, type AdapterStatus, type DailyTokenUsageResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
-use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
+use([LineChart, GaugeChart, GridComponent, TooltipComponent, CanvasRenderer])
 
 const toastStore = useToastStore()
 const loading = ref(true)
@@ -198,6 +184,10 @@ const adapterStatus = ref<AdapterStatus>({ running: false, listen_addr: '', self
 const tokenDays = ref('7')
 const chartEl = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
+
+// 系统资源仪表盘
+const gaugeEl = ref<HTMLDivElement | null>(null)
+let gaugeChart: EChartsType | null = null
 
 async function fetchTokenUsage() {
   try {
@@ -231,9 +221,9 @@ function renderTokenChart(list: DailyTokenUsageResp[]) {
       smooth: true,
       symbolSize: 6,
       data: list.map(i => i.token_count),
-      lineStyle: { width: 2, color: '#ff6b9d' },
-      itemStyle: { color: '#ff6b9d' },
-      areaStyle: { color: 'rgba(255,107,157,0.18)' },
+      lineStyle: { width: 2, color: '#6366f1' },
+      itemStyle: { color: '#6366f1' },
+      areaStyle: { color: 'rgba(99,102,241,0.18)' },
     }],
   })
 }
@@ -264,7 +254,68 @@ async function fetchAll() {
       adapterStatus.value = ad.data.data
       adapterRunning.value = ad.data.data.running
     }
+    renderGauges()
   } catch { toastStore.error('获取数据失败') } finally { loading.value = false }
+}
+
+// 系统资源仪表盘（2x2 环形仪表）
+function renderGauges() {
+  if (!gaugeEl.value) return
+  if (!gaugeChart) gaugeChart = init(gaugeEl.value)
+
+  const o = overview.value
+  const sys = o?.mem_sys_bytes ?? 0
+  const heap = o?.mem_heap_inuse_bytes ?? 0
+  const alloc = o?.mem_alloc_bytes ?? 0
+  const goroutines = o?.goroutine_num ?? 0
+  const cpu = o?.cpu_count ?? 0
+
+  const memPct = sys > 0 ? Math.min(100, Math.round((heap / sys) * 100)) : 0
+  const allocMB = Math.round(alloc / 1048576)
+  const heapMB = Math.round(heap / 1048576)
+  const maxAllocMB = Math.max(10, Math.ceil(Math.max(allocMB, heapMB) / 10) * 10)
+  const maxGoroutines = Math.max(10, Math.ceil(goroutines / 10) * 10)
+  const maxCpu = Math.max(8, Math.ceil(cpu / 8) * 8)
+
+  const gauges = [
+    { name: '内存使用率', value: memPct, max: 100, unit: '%', color: '#818cf8' },
+    { name: '内存分配', value: allocMB, max: maxAllocMB, unit: 'MB', color: '#34d399' },
+    { name: 'Goroutines', value: goroutines, max: maxGoroutines, unit: '', color: '#fbbf24' },
+    { name: 'CPU 核数', value: cpu, max: maxCpu, unit: '核', color: '#60a5fa' },
+  ]
+
+  const centers = [
+    ['22%', '30%'], ['78%', '30%'],
+    ['22%', '78%'], ['78%', '78%'],
+  ]
+
+  gaugeChart.setOption({
+    series: gauges.map((g, i) => ({
+      type: 'gauge',
+      center: centers[i],
+      radius: '56%',
+      startAngle: 210,
+      endAngle: -30,
+      min: 0,
+      max: g.max,
+      axisLine: { lineStyle: { width: 8, color: [[1, 'rgba(255,255,255,0.08)']] } },
+      progress: { show: true, width: 8, itemStyle: { color: g.color } },
+      pointer: { show: false },
+      axisTick: { show: false },
+      splitLine: { show: false },
+      axisLabel: { show: false },
+      title: { offsetCenter: [0, '72%'], fontSize: 12, color: 'rgba(255,255,255,0.55)' },
+      detail: {
+        valueAnimation: true,
+        offsetCenter: [0, '0%'],
+        fontSize: 18,
+        fontWeight: 700,
+        color: '#e8ecf4',
+        formatter: (v: number) => `${v}${g.unit ? ' ' + g.unit : ''}`,
+      },
+      data: [{ value: g.value, name: g.name }],
+    })),
+  })
 }
 
 async function onGlobalRefresh() {
@@ -273,7 +324,6 @@ async function onGlobalRefresh() {
 }
 
 function formatNumber(n: number) { return n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1_000 ? (n / 1_000).toFixed(1) + 'K' : String(n) }
-function formatBytes(bytes: number) { return bytes >= 1_073_741_824 ? (bytes / 1_073_741_824).toFixed(2) + ' GB' : bytes >= 1_048_576 ? (bytes / 1_048_576).toFixed(1) + ' MB' : bytes >= 1_024 ? (bytes / 1_024).toFixed(0) + ' KB' : bytes + ' B' }
 
 onMounted(async () => {
   await onGlobalRefresh()
@@ -281,18 +331,24 @@ onMounted(async () => {
   window.addEventListener('resize', onResize)
 })
 
-function onResize() { chart?.resize() }
+function onResize() { chart?.resize(); gaugeChart?.resize() }
 
 onBeforeUnmount(() => {
   window.removeEventListener('global-refresh', onGlobalRefresh)
   window.removeEventListener('resize', onResize)
   chart?.dispose()
   chart = null
+  gaugeChart?.dispose()
+  gaugeChart = null
 })
 </script>
 
 <style scoped>
 .token-chart {
+  width: 100%;
+  height: 300px;
+}
+.gauge-chart {
   width: 100%;
   height: 300px;
 }

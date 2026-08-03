@@ -1,31 +1,46 @@
 @use '../variables' as *;
 
-// Data table customization
+// ===== 数据表格 =====
 .v-data-table {
-  border-radius: 12px !important;
+  border-radius: $radius-card !important;
   overflow: hidden;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
 
   .v-data-table__th {
     font-weight: 600 !important;
-    font-size: 12px !important;
+    font-size: 11.5px !important;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    color: rgba(var(--v-theme-on-surface), 0.55) !important;
+    background: rgba(var(--v-theme-on-surface), 0.035) !important;
+  }
+
+  .v-data-table__tr:hover {
+    background: rgba(var(--v-theme-primary), 0.04) !important;
   }
 }
 
-// Dialog customization
+// ===== 弹窗 =====
 .v-dialog .v-card {
   border-radius: 16px !important;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.08);
 }
 
-// Tabs
+// ===== Tabs =====
 .v-tabs .v-tab {
   text-transform: none !important;
   font-weight: 500;
   letter-spacing: 0;
 }
 
-// Form card
+// ===== 表单卡片 =====
 .form-card {
-  border-radius: 16px !important;
+  border-radius: $radius-card !important;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+}
+
+// ===== 通用卡片边框（border-based 现代感） =====
+.v-card:not(.v-card--flat) {
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.07);
+  box-shadow: $card-shadow !important;
 }

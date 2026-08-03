@@ -19,7 +19,7 @@
           />
         </v-col>
         <v-col cols="6" md="2">
-          <v-select v-model="roleFilter" :items="[{title:'全部',value:''},{title:'User',value:'user'},{title:'Assistant',value:'assistant'},{title:'Tool',value:'tool'}]" label="Role 过滤" density="compact" hide-details @update:model-value="fetch" />
+          <v-select v-model="roleFilter" :items="[{title:'全部',value:''},{title:'User',value:'user'},{title:'Assistant',value:'assistant'},{title:'Tool',value:'tool'}]" label="Role 过滤" density="compact" hide-details />
         </v-col>
         <v-col cols="6" md="2">
           <v-text-field v-model.number="limit" label="每页数量" type="number" density="compact" hide-details />
@@ -30,7 +30,7 @@
       </v-row>
     </v-card>
 
-    <v-data-table v-if="chatAreaId" :headers="headers" :items="records" :loading="loading" :items-per-page="limit">
+    <v-data-table v-if="chatAreaId" :headers="headers" :items="records" :loading="loading" :items-per-page="-1" hide-default-footer>
       <template #item.role="{ item }">
         <v-chip size="small" variant="tonal" :color="item.role==='user'?'primary':item.role==='assistant'?'success':'warning'">{{ item.role }}</v-chip>
       </template>
@@ -45,7 +45,9 @@
     <div v-else class="empty-state"><v-icon class="empty-icon" color="secondary">mdi-message-text</v-icon><div class="empty-text">请先输入 Chat Area ID 进行查询</div></div>
 
     <!-- Pagination -->
-    <v-pagination v-if="total > limit" v-model="page" :length="Math.ceil(total/limit)" class="mt-4" @update:model-value="fetch" />
+    <div v-if="total > perPage" class="d-flex align-center justify-center mt-4">
+      <v-pagination v-model="page" :length="pageCount" :total-visible="7" @update:model-value="fetch" />
+    </div>
 
     <v-dialog v-model="toolCallsDialog" max-width="500">
       <v-card rounded="lg"><v-card-title>Tool Calls 详情</v-card-title><v-card-text><pre class="code-block">{{ JSON.stringify(toolCallsTarget?.tool_calls, null, 2) }}</pre></v-card-text><v-card-actions><v-spacer /><v-btn variant="text" @click="toolCallsDialog = false">关闭</v-btn></v-card-actions></v-card>
@@ -54,7 +56,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { chatRecordApi, chatAreaApi, type ChatRecordResp, type ChatAreaResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
@@ -70,16 +72,30 @@ const headers = [
   { title: '时间', key: 'created_at' },
 ]
 
+// 每页条数（防 0 / 空值）
+const perPage = computed(() => Math.max(1, Number(limit.value) || 20))
+// 总页数（防除零）
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / perPage.value)))
+
 async function fetchChatAreas() { try { const list = (await chatAreaApi.list()).data.data || []; chatAreaItems.value = list.map((c: ChatAreaResp) => ({ label: `${c.area_type==='private'?'私聊':'群聊'} ${c.target_id} (${c.id.slice(0,8)})`, value: c.id })) } catch { toastStore.error('获取 ChatArea 列表失败') } }
 async function fetch() {
   if (!chatAreaId.value) return
   loading.value = true
-  const offset = (page.value - 1) * limit.value
+  const offset = (page.value - 1) * perPage.value
   try {
-    const res = await chatRecordApi.list(chatAreaId.value, { limit: limit.value, offset, role: roleFilter.value || undefined })
+    const res = await chatRecordApi.list(chatAreaId.value, { limit: perPage.value, offset, role: roleFilter.value || undefined })
     records.value = res.data.data.list; total.value = res.data.data.total
   } catch { toastStore.error('查询失败') } finally { loading.value = false }
 }
+
+// 切片越界时回退到最后一页
+watch(page, (p) => { if (p > pageCount.value) page.value = Math.max(1, pageCount.value) })
+
+// 筛选条件变化时重置到第一页并重新查询
+watch(chatAreaId, () => { page.value = 1; fetch() })
+watch(roleFilter, () => { page.value = 1; fetch() })
+// 每页数量变化仅重置页码（由「查询」按钮触发请求）
+watch(limit, () => { page.value = 1 })
 
 function showToolCalls(item: ChatRecordResp) { toolCallsTarget.value = item; toolCallsDialog.value = true }
 onMounted(fetchChatAreas)
