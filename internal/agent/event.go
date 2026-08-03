@@ -12,6 +12,7 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
 
 	"github.com/cloudwego/eino/adk"
@@ -329,6 +330,11 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 	}
 	ctx = WithMsgSessionCtx(ctx, msgCtx)
 
+	// 任务执行期间的发送请求（send_* / text_to_image 等）统一入队，
+	// 执行完成后由下方 Flush 统一发送，保证“中途不发、执行完再发”。
+	deferredSends := tool.NewDeferredSendQueue()
+	ctx = tool.WithDeferredSendQueue(ctx, deferredSends)
+
 	// ---------- 运行 Eino Agent ----------
 	if h.EinoAgent == nil {
 		log.Error("Eino Agent 未就绪")
@@ -359,6 +365,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 			}
 		}
 	}
+
+	// ---------- 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发） ----------
+	deferredSends.Flush(ctx, h.Adapter)
 
 	// ---------- 后处理：静默检测 + 发送 + 记忆 ----------
 	if assistantContent != "" {

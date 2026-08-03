@@ -97,6 +97,11 @@ func RegisterBuiltinTools(
 			if err != nil {
 				return "", fmt.Errorf("消息格式错误: %w", err)
 			}
+			// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
+			if q := GetDeferredSendQueue(ctx); q != nil {
+				q.Add(DeferredSend{MessageType: "private", TargetID: p.UserID, Message: msg})
+				return "私聊消息已加入发送队列，将在任务执行完成后统一发送", nil
+			}
 			id, err := adapter.SendPrivateMsg(p.UserID, msg)
 			if err != nil {
 				return "", err
@@ -122,6 +127,11 @@ func RegisterBuiltinTools(
 			}
 			json.Unmarshal(args, &p)
 			msg, _ := BuildMessageFromJSON(p.Message)
+			// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
+			if q := GetDeferredSendQueue(ctx); q != nil {
+				q.Add(DeferredSend{MessageType: "group", TargetID: p.GroupID, Message: msg})
+				return "群消息已加入发送队列，将在任务执行完成后统一发送", nil
+			}
 			id, err := adapter.SendGroupMsg(p.GroupID, msg)
 			if err != nil {
 				return "", err
@@ -577,6 +587,17 @@ except Exception as e:
 				msg := getCurrentMsg(ctx)
 				if msg != nil {
 					cqCode := fmt.Sprintf("[CQ:image,file=%s]", imageURL)
+					// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
+					if q := GetDeferredSendQueue(ctx); q != nil {
+						targetID := int64(0)
+						if msg.MessageType == "private" {
+							targetID = msg.UserID
+						} else {
+							targetID = msg.GroupID
+						}
+						q.Add(DeferredSend{MessageType: msg.MessageType, TargetID: targetID, Message: cqCode})
+						return fmt.Sprintf("图片已生成并加入发送队列，将在任务执行完成后统一发送。URL: %s", imageURL), nil
+					}
 					switch msg.MessageType {
 					case "private":
 						if _, err := adapter.SendPrivateMsg(msg.UserID, cqCode); err != nil {
@@ -668,6 +689,17 @@ except Exception as e:
 					cqCode = fmt.Sprintf("[CQ:face,id=%d,sub_type=%d]", p.FaceID, p.SubType)
 				} else {
 					cqCode = fmt.Sprintf("[CQ:face,id=%d]", p.FaceID)
+				}
+				// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
+				if q := GetDeferredSendQueue(ctx); q != nil {
+					targetID := int64(0)
+					if msg.MessageType == "private" {
+						targetID = msg.UserID
+					} else {
+						targetID = msg.GroupID
+					}
+					q.Add(DeferredSend{MessageType: msg.MessageType, TargetID: targetID, Message: cqCode})
+					return fmt.Sprintf("QQ 表情 (face_id=%d) 已加入发送队列，将在任务执行完成后统一发送", p.FaceID), nil
 				}
 				switch msg.MessageType {
 				case "private":
