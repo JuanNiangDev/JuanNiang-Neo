@@ -64,26 +64,17 @@
                     placeholder="（默认 Text 模型）"
                     density="comfortable" variant="outlined" clearable hide-details
                   />
-
-                  <v-divider class="my-3" />
-
-                  <div class="text-subtitle-2 font-weight-bold mb-2">自定义判断提示词</div>
-                  <v-textarea
-                    v-model="form.relevance_prompt"
-                    label="留空使用默认规则；填写后替换默认的「回复规则」"
-                    rows="5"
-                    density="comfortable" variant="outlined" hide-details
-                    placeholder="例如：\n- 只有直接@机器人或请求机器人办事的消息才算相关\n- 群友闲聊一律不回复（相关度 < 0.1）"
-                  />
-                  <div class="text-caption text-medium-emphasis mt-2">
-                    自定义提示词将替换相关性判断的「回复规则」部分，消息上下文仍会自动附加。
-                  </div>
                 </v-card>
               </v-expand-transition>
 
-              <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!form.strategy">
-                <v-icon class="me-1">mdi-content-save</v-icon> 保存
-              </v-btn>
+              <div class="d-flex align-center" style="gap: 12px">
+                <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!form.strategy">
+                  <v-icon class="me-1">mdi-content-save</v-icon> 保存
+                </v-btn>
+                <v-btn v-if="form.strategy === 'relevance'" variant="tonal" color="info" @click="openPromptDialog">
+                  <v-icon class="me-1">mdi-text-box-edit-outline</v-icon> 自定义判断提示词
+                </v-btn>
+              </div>
             </v-form>
           </v-card-text>
         </v-card>
@@ -131,6 +122,34 @@
         </v-card>
       </v-col>
     </v-row>
+    <!-- 自定义判断提示词弹窗 -->
+    <v-dialog v-model="promptDialog" max-width="720">
+      <v-card rounded="lg">
+        <v-card-title class="d-flex align-center justify-space-between pa-4">
+          <span>自定义判断提示词</span>
+          <v-btn icon="mdi-close" size="small" variant="text" @click="promptDialog = false" />
+        </v-card-title>
+        <v-divider />
+        <v-card-text class="pa-4">
+          <v-textarea
+            v-model="promptDraft"
+            label="留空使用默认规则；填写后替换默认的「回复规则」"
+            rows="8"
+            density="comfortable" variant="outlined"
+            placeholder="例如：&#10;- 只有直接@机器人或请求机器人办事的消息才算相关&#10;- 群友闲聊一律不回复（相关度 < 0.1）"
+          />
+          <div class="text-caption text-medium-emphasis">
+            自定义提示词将替换相关性判断的「回复规则」部分，消息上下文仍会自动附加。
+          </div>
+        </v-card-text>
+        <v-divider />
+        <v-card-actions class="pa-4">
+          <v-spacer />
+          <v-btn variant="text" @click="promptDialog = false">取消</v-btn>
+          <v-btn color="primary" variant="tonal" @click="savePrompt">保存</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -141,6 +160,8 @@ import { replyStrategyApi, providerApi, type ProviderResp } from '@/api'
 
 const toastStore = useToastStore()
 const saving = ref(false)
+const promptDialog = ref(false)
+const promptDraft = ref('')
 
 const form = ref({
   strategy: 'always',
@@ -178,6 +199,17 @@ async function load() {
       form.value.relevance_model = d.relevance_model || ''
     }
   } catch (_e: any) {}
+}
+
+function openPromptDialog() {
+  promptDraft.value = form.value.relevance_prompt
+  promptDialog.value = true
+}
+
+function savePrompt() {
+  form.value.relevance_prompt = promptDraft.value
+  promptDialog.value = false
+  toastStore.success('提示词已更新，点击「保存」生效')
 }
 
 async function handleSave() {

@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="page-header">
-      <div class="page-title">ACL 黑名单管理</div>
+      <div class="page-title">黑名单管理</div>
       <div class="page-subtitle">禁止指定 QQ / 全部 QQ 使用 Agent 循环，命中黑名单的消息直接丢弃</div>
     </div>
     <div class="d-flex justify-end mb-4"><v-btn color="primary" prepend-icon="mdi-plus" @click="openAdd">新增黑名单</v-btn></div>
