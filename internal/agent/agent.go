@@ -321,6 +321,15 @@ func (h *HagoCenter) buildEinoAgent(ctx context.Context) error {
 	return nil
 }
 
+// RebuildEinoAgent 重建 Eino Agent（MCP 热添加/移除后调用，同步工具列表）。
+func (h *HagoCenter) RebuildEinoAgent(ctx context.Context) {
+	if err := h.buildEinoAgent(ctx); err != nil {
+		log.Error("重建 Eino Agent 失败", "err", err)
+	} else {
+		log.Info("Eino Agent 已重建（工具列表已同步）")
+	}
+}
+
 // Start 启动 Agent 系统 (事件循环 + CronJob 调度器)。
 func (h *HagoCenter) Start(ctx context.Context) error {
 	go h.runEventLoop(ctx)

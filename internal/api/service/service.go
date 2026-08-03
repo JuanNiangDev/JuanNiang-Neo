@@ -443,6 +443,8 @@ func (s *Service) AddMCPServer(ctx context.Context, c *app.RequestContext) {
 		}
 	}
 
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawMCPServer2Resp(&m)))
 }
 
@@ -486,6 +488,8 @@ func (s *Service) UpdateMCPServer(ctx context.Context, c *app.RequestContext) {
 		}
 	}
 
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawMCPServer2Resp(&m)))
 }
 
@@ -504,6 +508,9 @@ func (s *Service) DeleteMCPServer(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
@@ -539,6 +546,9 @@ func (s *Service) ToggleMCPServer(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
@@ -1954,6 +1964,13 @@ func buildMcpSSEConfig(m *models.MCPServer) mcp.McpSSEConfig {
 		RetryCount:    m.RetryCount,
 		ToolFilter:    m.ToolFilter,
 		AutoReconnect: m.AutoReconnect,
+	}
+}
+
+// notifyRebuild 通知 HagoCenter 重建 Eino Agent（MCP 变更后同步工具列表）。
+func (s *Service) notifyRebuild() {
+	if s.OnRebuildAgent != nil {
+		s.OnRebuildAgent()
 	}
 }
 

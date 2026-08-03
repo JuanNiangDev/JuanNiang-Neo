@@ -47,6 +47,8 @@ type Service struct {
 	OnUpdateSandbox func(client *sandboxcaller.Client)
 	// CronJobManager 在 CronJob 变更时调用 Reload 同步调度器。
 	CronJobManager *cronjobmgr.Manager
+	// OnRebuildAgent MCP/Provider/Tool 热变更后重建 Eino Agent 工具列表。
+	OnRebuildAgent func()
 	// LoopTracker 当前活跃的 Agent ReAct 循环（监控展示）。
 	LoopTracker *agent.LoopTracker
 	// PromptMgr 提示词管理器（缓存失效用）。
