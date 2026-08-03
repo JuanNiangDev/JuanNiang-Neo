@@ -11,22 +11,21 @@ import (
 )
 
 // JuanNiangMiddleware 是 Eino ChatModelAgent 的自定义中间件，
-// 实现 ACL 权限检查和工具调用日志。
+// 实现动态指令注入、AgentLite 工具过滤和工具调用日志。
 // DynamicInstruction 和 AgentLite 通过 context (MsgSessionCtx) 传递，
 // 在 BeforeAgent 钩子中读取。
+// 注：ACL 现仅管理聊天黑名单（在 handleMessage 阶段过滤消息），
+// 不再对工具调用做 ACL 检查。
 type JuanNiangMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 
-	h          *HagoCenter
-	msg        *adapter.MessageEvent
-	userID     int64
-	chatAreaID string
-	isAdmin    bool
-	admins     []string
+	h   *HagoCenter
+	msg *adapter.MessageEvent
 }
 
-// BeforeAgent 在 Agent 运行前注入动态 Instruction 和按需清空工具列表（AgentLite）。
+// BeforeAgent 在 Agent 运行前注入动态 Instruction 和按需过滤工具列表（AgentLite）。
 // DynamicInstruction 和 AgentLite 从 context 中读取（由 handleMessage 注入）。
+// AgentLite 与正常模式一致（保留 ReAct 循环），仅过滤掉 MCP、沙箱与文生图工具。
 func (m *JuanNiangMiddleware) BeforeAgent(
 	ctx context.Context,
 	runCtx *adk.ChatModelAgentContext,
@@ -37,10 +36,42 @@ func (m *JuanNiangMiddleware) BeforeAgent(
 			runCtx.Instruction = sc.DynamicInstruction
 		}
 		if sc.AgentLite {
-			runCtx.Tools = nil
+			runCtx.Tools = filterAgentLiteTools(ctx, m.h, runCtx.Tools)
 		}
 	}
 	return ctx, runCtx, nil
+}
+
+// agentLiteDisabledToolNames 是 AgentLite 模式下禁用的内置工具名
+// （沙箱相关 + 文生图）。MCP 工具通过 HagoCenter.MCP.HasTool 判定，全部禁用。
+var agentLiteDisabledToolNames = map[string]bool{
+	"create_sandbox": true,
+	"list_sandboxes": true,
+	"browser_search": true,
+	"command_exec":   true,
+	"code_exec":      true,
+	"text_to_image":  true,
+}
+
+// filterAgentLiteTools 过滤 AgentLite 模式下不允许使用的工具：
+// 保留 ReAct 循环与其余工具，仅禁用所有 MCP 工具、沙箱工具与文生图工具。
+func filterAgentLiteTools(ctx context.Context, h *HagoCenter, tools []einotool.BaseTool) []einotool.BaseTool {
+	kept := make([]einotool.BaseTool, 0, len(tools))
+	for _, t := range tools {
+		info, err := t.Info(ctx)
+		if err != nil || info == nil {
+			kept = append(kept, t) // 无法获取元数据时保守保留
+			continue
+		}
+		if agentLiteDisabledToolNames[info.Name] {
+			continue
+		}
+		if h.MCP != nil && h.MCP.HasTool(ctx, info.Name) {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept
 }
 
 // MsgSessionCtx 携带单条消息的 per-goroutine 状态。
@@ -70,9 +101,9 @@ func GetMsgSessionCtx(ctx context.Context) *MsgSessionCtx {
 }
 
 // WrapInvokableToolCall 包装每个工具的同步调用：
-//   - Admin 用户绕过 ACL
-//   - 非 Admin 进行 ACL 检查（内置工具走 CheckTool，MCP 工具走 CheckMCP）
+//   - 更新活跃循环的当前工具（供 Web 监控页展示）
 //   - 所有工具前台同步执行并记录日志
+// 注：ACL 只管理聊天黑名单，工具调用不再受 ACL 限制。
 func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 	ctx context.Context,
 	endpoint adk.InvokableToolCallEndpoint,
@@ -86,22 +117,6 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 		// 更新活跃循环的当前工具（供 Web 监控页展示）
 		if sc := GetMsgSessionCtx(ctx); sc != nil && m.h.Loops != nil {
 			m.h.Loops.UpdateTool(sc.LoopID, toolName)
-		}
-
-		// --- ACL 检查 ---
-		if !m.isAdmin {
-			isMCP := m.h.MCP != nil && m.h.MCP.HasTool(ctx, toolName)
-			var allowed bool
-			var denial string
-			if isMCP {
-				allowed, denial = m.h.ACL.CheckMCP(ctx, m.userID, m.chatAreaID, toolName)
-			} else {
-				allowed, denial = m.h.ACL.CheckTool(ctx, m.userID, m.chatAreaID, toolName)
-			}
-			if !allowed {
-				log.Info("ACL 拒绝工具调用", "user_id", m.userID, "tool", toolName, "reason", denial)
-				return denial, nil
-			}
 		}
 
 		// --- 直接执行（所有工具前台同步执行）---

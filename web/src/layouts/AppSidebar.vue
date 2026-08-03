@@ -81,6 +81,7 @@ const navGroups = [
       { title: 'LLM Providers', icon: 'mdi-brain', to: '/providers' },
       { title: 'MCP 服务器', icon: 'mdi-server-network', to: '/mcp' },
       { title: 'Webhook', icon: 'mdi-webhook', to: '/webhook' },
+      { title: 'CronJob', icon: 'mdi-timer-cog-outline', to: '/cronjobs' },
     ],
   },
   {
@@ -91,7 +92,6 @@ const navGroups = [
       { title: 'Skills', icon: 'mdi-lightning-bolt', to: '/skills' },
       { title: 'Tools', icon: 'mdi-tools', to: '/tools' },
       { title: 'Plugins', icon: 'mdi-puzzle', to: '/plugins' },
-      { title: 'CronJob', icon: 'mdi-timer-cog-outline', to: '/cronjobs' },
       { title: 'Sessions', icon: 'mdi-chat-processing-outline', to: '/sessions' },
       { title: 'Memory', icon: 'mdi-memory', to: '/memory' },
     ],
@@ -102,7 +102,7 @@ const navGroups = [
     items: [
       { title: 'Chat Areas', icon: 'mdi-forum-outline', to: '/chat-areas' },
       { title: 'Chat Records', icon: 'mdi-message-text-outline', to: '/chat-records' },
-      { title: 'ACL 规则', icon: 'mdi-shield-account-outline', to: '/acl' },
+      { title: '黑名单', icon: 'mdi-shield-account-outline', to: '/acl' },
       { title: 'Agent 循环', icon: 'mdi-brain', to: '/agent-loops' },
     ],
   },

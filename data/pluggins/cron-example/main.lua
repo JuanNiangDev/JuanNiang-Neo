@@ -22,7 +22,7 @@ local jn = require("jn")
 
 -- 定时任务回调
 ---@param event jn.Event
-function on_timer_call(event)
+function on_cronjob(event)
     local payload = event.payload or {}
     local target_qq = payload.target_qq
     local message = payload.message

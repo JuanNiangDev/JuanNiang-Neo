@@ -51,12 +51,30 @@
                     placeholder="例如：小卷"
                     density="comfortable" variant="outlined" hide-details clearable
                   />
+
+                  <v-divider class="my-3" />
+
+                  <div class="text-subtitle-2 font-weight-bold mb-2">相关性检测模型</div>
+                  <v-select
+                    v-model="form.relevance_model"
+                    :items="textModelOptions"
+                    item-title="label"
+                    item-value="value"
+                    label="选择相关性判断使用的 Text 模型"
+                    placeholder="（默认 Text 模型）"
+                    density="comfortable" variant="outlined" clearable hide-details
+                  />
                 </v-card>
               </v-expand-transition>
 
-              <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!form.strategy">
-                <v-icon class="me-1">mdi-content-save</v-icon> 保存
-              </v-btn>
+              <div class="d-flex align-center" style="gap: 12px">
+                <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!form.strategy">
+                  <v-icon class="me-1">mdi-content-save</v-icon> 保存
+                </v-btn>
+                <v-btn v-if="form.strategy === 'relevance'" variant="tonal" color="info" @click="openPromptDialog">
+                  <v-icon class="me-1">mdi-text-box-edit-outline</v-icon> 自定义判断提示词
+                </v-btn>
+              </div>
             </v-form>
           </v-card-text>
         </v-card>
@@ -76,7 +94,7 @@
                 <div class="flex-grow-1 me-3">
                   <div class="text-subtitle-2 font-weight-bold">AgentLite 模式</div>
                   <div class="text-caption text-medium-emphasis mt-1">
-                    关闭工具/MCP 调用和 Agent 循环。消息直接发给 LLM，回复后即结束。<br />
+                    与正常模式一致，保留 ReAct 循环；仅禁用 MCP、沙箱和文生图工具。<br />
                     记忆、提示词、Skill 行为不受影响。
                   </div>
                 </div>
@@ -104,16 +122,46 @@
         </v-card>
       </v-col>
     </v-row>
+    <!-- 自定义判断提示词弹窗 -->
+    <v-dialog v-model="promptDialog" max-width="720">
+      <v-card rounded="lg">
+        <v-card-title class="d-flex align-center justify-space-between pa-4">
+          <span>自定义判断提示词</span>
+          <v-btn icon="mdi-close" size="small" variant="text" @click="promptDialog = false" />
+        </v-card-title>
+        <v-divider />
+        <v-card-text class="pa-4">
+          <v-textarea
+            v-model="promptDraft"
+            label="留空使用默认规则；填写后替换默认的「回复规则」"
+            rows="8"
+            density="comfortable" variant="outlined"
+            placeholder="例如：&#10;- 只有直接@机器人或请求机器人办事的消息才算相关&#10;- 群友闲聊一律不回复（相关度 < 0.1）"
+          />
+          <div class="text-caption text-medium-emphasis">
+            自定义提示词将替换相关性判断的「回复规则」部分，消息上下文仍会自动附加。
+          </div>
+        </v-card-text>
+        <v-divider />
+        <v-card-actions class="pa-4">
+          <v-spacer />
+          <v-btn variant="text" @click="promptDialog = false">取消</v-btn>
+          <v-btn color="primary" variant="tonal" @click="savePrompt">保存</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useToastStore } from '@/stores/toast'
-import { replyStrategyApi } from '@/api'
+import { replyStrategyApi, providerApi, type ProviderResp } from '@/api'
 
 const toastStore = useToastStore()
 const saving = ref(false)
+const promptDialog = ref(false)
+const promptDraft = ref('')
 
 const form = ref({
   strategy: 'always',
@@ -121,7 +169,21 @@ const form = ref({
   bot_name: '',
   strip_markdown: false,
   agent_lite: false,
+  relevance_prompt: '',
+  relevance_model: '',
 })
+
+// 相关性检测可选的 Text 模型列表（仅 text_model 类型）
+const textModelOptions = ref<{ label: string; value: string }[]>([])
+
+async function loadModels() {
+  try {
+    const list = (await providerApi.list()).data.data || []
+    textModelOptions.value = list
+      .filter((p: ProviderResp) => p.type === 'text_model')
+      .map((p: ProviderResp) => ({ label: `${p.name} · ${p.model}`, value: p.id }))
+  } catch { /* ignore */ }
+}
 
 async function load() {
   try {
@@ -133,8 +195,21 @@ async function load() {
       form.value.bot_name = d.bot_name || ''
       form.value.strip_markdown = d.strip_markdown || false
       form.value.agent_lite = d.agent_lite || false
+      form.value.relevance_prompt = d.relevance_prompt || ''
+      form.value.relevance_model = d.relevance_model || ''
     }
   } catch (_e: any) {}
+}
+
+function openPromptDialog() {
+  promptDraft.value = form.value.relevance_prompt
+  promptDialog.value = true
+}
+
+function savePrompt() {
+  form.value.relevance_prompt = promptDraft.value
+  promptDialog.value = false
+  toastStore.success('提示词已更新，点击「保存」生效')
 }
 
 async function handleSave() {
@@ -146,6 +221,8 @@ async function handleSave() {
       bot_name: form.value.bot_name,
       strip_markdown: form.value.strip_markdown,
       agent_lite: form.value.agent_lite,
+      relevance_prompt: form.value.relevance_prompt,
+      relevance_model: form.value.relevance_model,
     })
     toastStore.success('回复设置已保存')
   } catch (e: any) {
@@ -153,5 +230,5 @@ async function handleSave() {
   } finally { saving.value = false }
 }
 
-onMounted(() => { load() })
+onMounted(() => { load(); loadModels() })
 </script>

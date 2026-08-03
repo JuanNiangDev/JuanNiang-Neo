@@ -20,8 +20,10 @@ type RelevanceCheckResult struct {
 }
 
 // relevanceAgentEvaluate 调用 LLM 评估消息相关性。
+// 支持自定义提示词（rs.RelevancePrompt）与指定 Text 模型（rs.RelevanceModel）。
 // 返回 0-1 之间的相关性分数，以及原因。
-func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.MessageEvent, recentMessages []string, botName string) (float64, string) {
+func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.MessageEvent, recentMessages []string, rs ReplySettings) (float64, string) {
+	botName := rs.BotName
 	// 获取机器人 QQ，优先 Adapter 实时值（防止缓存为 0）
 	selfQQ := h.SelfQQ
 	if h.Adapter != nil {
@@ -84,8 +86,13 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 		return 0, "无法获取图片内容"
 	}
 
-	// 文本消息，调用文本模型
+	// 文本消息，调用文本模型（支持指定相关性检测专用模型）
 	llm := h.Providers.SelectModel(provider.ModelTypeText)
+	if rs.RelevanceModel != "" {
+		if p, ok := h.Providers.GetProvider(rs.RelevanceModel); ok && p.Type() == provider.ModelTypeText {
+			llm = p
+		}
+	}
 	if llm == nil {
 		return 0, "无可用 Text 模型"
 	}
@@ -97,6 +104,17 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 	}
 	contextStr += fmt.Sprintf("\n当前消息 (发送者: %s, QQ: %d):\n%s",
 		msg.Sender.Nickname, msg.UserID, msg.RawMessage)
+
+	// 回复规则：用户自定义提示词优先，否则使用默认规则
+	rules := rs.RelevancePrompt
+	if rules == "" {
+		rules = fmt.Sprintf(`- 如果消息明确指向你（@你、叫你的名字"%s"或"%s"、称呼"机器人"/"bot"、询问你的能力、请求你操作），相关度应该高（>0.7）
+- 如果消息是群友之间的闲聊、互怼、讨论与你无关的话题，相关度应该低（<0.3）
+- 如果消息是群管理相关需求（踢人、禁言等），即使没有@你，相关度也应该高
+- 如果消息是群友之间互相求助且没有@你，相关度应该低
+- 如果消息是纯表情、无意义内容，相关度应该低
+- 如果群聊处于热聊状态（多人连续发言讨论同一话题），可以适当提高相关度（0.3-0.5）`, h.SelfNickname, botName)
+	}
 
 	prompt := fmt.Sprintf(`你是一个群聊相关度判断助手。请根据以下群聊上下文判断当前消息是否与你（机器人）相关，是否需要你回复。
 
@@ -111,18 +129,13 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 - 发送者QQ: %d
 
 回复规则:
-- 如果消息明确指向你（@你、叫你的名字"%s"或"%s"、称呼"机器人"/"bot"、询问你的能力、请求你操作），相关度应该高（>0.7）
-- 如果消息是群友之间的闲聊、互怼、讨论与你无关的话题，相关度应该低（<0.3）
-- 如果消息是群管理相关需求（踢人、禁言等），即使没有@你，相关度也应该高
-- 如果消息是群友之间互相求助且没有@你，相关度应该低
-- 如果消息是纯表情、无意义内容，相关度应该低
-- 如果群聊处于热聊状态（多人连续发言讨论同一话题），可以适当提高相关度（0.3-0.5）
+%s
 
 请以 JSON 格式回复，只包含 JSON 对象，不要有其他内容:
 {"relevance": 0.0-1.0, "reason": "简短原因"}
 
 上下文:
-%s`, botName, h.SelfNickname, selfQQ, selfQQ, msg.Sender.Nickname, msg.UserID, h.SelfNickname, botName, contextStr)
+%s`, botName, h.SelfNickname, selfQQ, selfQQ, msg.Sender.Nickname, msg.UserID, rules, contextStr)
 
 	messages := []provider.ChatMessage{
 		{Role: "system", Content: "你是一个群聊相关性判断助手。请以 JSON 格式回复。"},

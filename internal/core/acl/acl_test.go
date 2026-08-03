@@ -73,24 +73,25 @@ func TestACL_DenyList(t *testing.T) {
 	}
 }
 
-func TestACL_AllowList(t *testing.T) {
+func TestACL_AllowRuleIgnored(t *testing.T) {
+	// 黑名单语义：allow（白名单）规则不再生效，仅 deny 规则会禁止用户。
 	acl := testACL(t)
 	ctx := context.Background()
 
 	rule := &models.ACLRule{
 		ChatAreaID: "area-2",
-		Scope:      models.ACLScopeTool,
+		Scope:      models.ACLScopeChat,
 		Permission: models.ACLPermissionAllow,
 		TargetType: models.ACLTargetList,
 		UserIDs:    models.JSONSlice{"123"},
 	}
 	acl.AddRule(ctx, rule)
 
-	if !acl.Check(ctx, 123, "area-2", models.ACLScopeTool) {
-		t.Error("user 123 should be allowed")
+	if !acl.Check(ctx, 123, "area-2", models.ACLScopeChat) {
+		t.Error("user 123 should be allowed (allow rule ignored)")
 	}
-	if acl.Check(ctx, 456, "area-2", models.ACLScopeTool) {
-		t.Error("user 456 should be denied (whitelist)")
+	if !acl.Check(ctx, 456, "area-2", models.ACLScopeChat) {
+		t.Error("user 456 should be allowed (no deny rule)")
 	}
 }
 

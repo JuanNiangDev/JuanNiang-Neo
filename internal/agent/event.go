@@ -29,6 +29,8 @@ type ReplySettings struct {
 	AgentLite          bool
 	BotName            string
 	RelevanceThreshold float64
+	RelevancePrompt    string // 相关性检测自定义提示词（空则用默认）
+	RelevanceModel     string // 相关性检测使用的 Text Provider ID（空则用默认）
 }
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
@@ -151,6 +153,8 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		AgentLite:          cfg.AgentLite,
 		BotName:            cfg.BotName,
 		RelevanceThreshold: cfg.RelevanceThreshold,
+		RelevancePrompt:    cfg.RelevancePrompt,
+		RelevanceModel:     cfg.RelevanceModel,
 	}
 }
 
@@ -181,7 +185,7 @@ func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event, r
 			chatAreaID = area.ID
 		}
 		recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
-		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs.BotName)
+		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs)
 		if score < rs.RelevanceThreshold {
 			log.Debug("回复策略: 相关性不足", "score", score, "threshold", rs.RelevanceThreshold, "reason", reason)
 			return false
@@ -319,14 +323,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		}
 	}
 
-	// 逐条 ACL 检查（无权限的消息从批次中剔除）
+	// 聊天黑名单检查：命中黑名单的消息直接丢弃（不进入 Agent 循环）
 	kept := events[:0]
 	for _, ev := range events {
 		m := ev.Message
 		if isAdmin(m.UserID, ev.Admins) || h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
 			kept = append(kept, ev)
 		} else {
-			log.Info("ACL 拒绝", "user_id", m.UserID, "chat_area_id", chatArea.ID)
+			log.Info("聊天黑名单丢弃消息", "user_id", m.UserID, "chat_area_id", chatArea.ID)
 		}
 	}
 	if len(kept) == 0 {
@@ -455,9 +459,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		instruction += "\n\n" + spc
 	}
 	if agentLite {
-		instruction = "【AgentLite 精简模式】你无法使用任何工具、MCP 或外部能力。" +
-			"如果用户提出的任务需要工具或外部操作才能完成（如发送消息、查天气、生成图片、执行代码、搜索等），" +
-			"直接拒绝并说明当前处于精简模式无法执行该操作。回复中不要假装已经完成了需要工具的任务。\n\n" + instruction
+		instruction = "【AgentLite 精简模式】当前仅禁用了 MCP 服务器、沙箱（代码/命令执行、浏览器搜索）和文生图工具，" +
+			"其余能力与正常模式一致，仍保留 ReAct 循环并可调用消息发送等其他工具。" +
+			"若用户请求涉及这些已禁用的能力，请如实说明当前不可用，不要假装已经执行。\n\n" + instruction
 	}
 
 	// 将 per-message 状态注入 context（避免 HagoCenter 共享字段数据竞争）
@@ -468,7 +472,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		DynamicInstruction: instruction,
 		AgentLite:          agentLite,
 		StripMarkdown:      rs.StripMarkdown,
-		DisableSplit:       rs.AgentLite,
+		DisableSplit:       false,
 		LoopID:             loopID,
 	}
 	ctx = WithMsgSessionCtx(ctx, msgCtx)
@@ -589,12 +593,8 @@ var urlRegexp = regexp.MustCompile(`https?://\S+`)
 // sendReply 解析 CQ 码并组装消息段发送。
 // rs 从调用链传入，避免读取 HagoCenter 共享字段导致数据竞争。
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs ReplySettings) {
-	var parts []string
-	if rs.AgentLite {
-		parts = []string{content}
-	} else {
-		parts = splitMessages(content)
-	}
+	// AgentLite 与正常模式一致，同样支持分段回复
+	parts := splitMessages(content)
 	for _, part := range parts {
 		if rs.StripMarkdown {
 			part = stripMarkdown(part)

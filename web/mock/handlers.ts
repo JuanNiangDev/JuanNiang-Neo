@@ -57,17 +57,20 @@ const tools = [
 
 // --- Plugins ---
 let plugins = [
-  { id: 'weather-plugin', name: 'weather-plugin', version: '1.2.0', path: 'data/pluggins/weather-plugin/', config: { api_key: '***', default_city: 'Beijing' }, is_active: true, created_at: now() },
-  { id: 'translate-plugin', name: 'translate-plugin', version: '0.5.0', path: 'data/pluggins/translate-plugin/', config: {}, is_active: false, created_at: now() },
-  { id: 'scheduler-plugin', name: 'scheduler-plugin', version: '1.0.1', path: 'data/pluggins/scheduler-plugin/', config: { timezone: 'Asia/Shanghai' }, is_active: true, created_at: now() },
+  { id: 'weather-plugin', name: 'weather-plugin', version: '1.2.0', path: 'data/pluggins/weather-plugin/', config: { api_key: '***', default_city: 'Beijing' }, is_active: true, supports_cronjob: true, created_at: now() },
+  { id: 'translate-plugin', name: 'translate-plugin', version: '0.5.0', path: 'data/pluggins/translate-plugin/', config: {}, is_active: false, supports_cronjob: false, created_at: now() },
+  { id: 'scheduler-plugin', name: 'scheduler-plugin', version: '1.0.1', path: 'data/pluggins/scheduler-plugin/', config: { timezone: 'Asia/Shanghai' }, is_active: true, supports_cronjob: true, created_at: now() },
 ]
 
 // --- ACL Rules ---
 let aclRules = [
-  { id: 1, chat_area_id: UUID(), scope: 'chat', permission: 'allow', target_type: 'all', user_ids: [], created_at: now() },
-  { id: 2, chat_area_id: UUID(), scope: 'tool', permission: 'deny', target_type: 'list', user_ids: ['123456', '789012'], created_at: now() },
-  { id: 3, chat_area_id: UUID(), scope: 'mcp', permission: 'allow', target_type: 'list', user_ids: ['111111'], created_at: now() },
+  { id: 1, chat_area_id: UUID(), scope: 'chat', permission: 'deny', target_type: 'all', user_ids: [], created_at: now() },
+  { id: 2, chat_area_id: UUID(), scope: 'chat', permission: 'deny', target_type: 'list', user_ids: ['123456', '789012'], created_at: now() },
 ]
+
+// --- CronJobs ---
+let cronJobs: any[] = []
+let cronJobIdCounter = 1
 let aclIdCounter = 4
 
 // --- Chat Areas ---
@@ -483,6 +486,45 @@ export const mockHandlers: MockHandler[] = [
     }
   },
 
+  // ============ CronJobs ============
+  {
+    method: 'GET', path: '/cronjobs',
+    handler() { return ok(cronJobs) }
+  },
+  {
+    method: 'POST', path: '/cronjobs',
+    handler({ body }: any) {
+      const job = { id: `cron-${cronJobIdCounter++}`, created_at: now(), updated_at: now(), last_run_at: null, last_error: '', ...body }
+      cronJobs.unshift(job)
+      return ok(job)
+    }
+  },
+  {
+    method: 'PUT', path: '/cronjobs/:id',
+    handler({ params, body }: any) {
+      const idx = cronJobs.findIndex((j) => j.id === params.id)
+      if (idx === -1) return ok(null)
+      cronJobs[idx] = { ...cronJobs[idx], ...body, id: params.id, updated_at: now() }
+      return ok(cronJobs[idx])
+    }
+  },
+  {
+    method: 'DELETE', path: '/cronjobs/:id',
+    handler({ params }: any) {
+      cronJobs = cronJobs.filter((j) => j.id !== params.id)
+      return ok(null)
+    }
+  },
+  {
+    method: 'PUT', path: '/cronjobs/:id/toggle',
+    handler({ params, body }: any) {
+      const idx = cronJobs.findIndex((j) => j.id === params.id)
+      if (idx === -1) return ok(null)
+      cronJobs[idx].is_active = body.is_active
+      return ok(cronJobs[idx])
+    }
+  },
+
   // ============ Chat Areas ============
   {
     method: 'GET', path: '/chat-areas',
@@ -583,6 +625,26 @@ export const mockHandlers: MockHandler[] = [
       webhookConfig = { ...webhookConfig, ...body, running: body.enabled }
       return ok({ ...webhookConfig })
     }
+  },
+
+  // ============ Reply Strategy ============
+  {
+    method: 'GET', path: '/reply-strategy',
+    handler() {
+      return ok({
+        strategy: 'always',
+        relevance_threshold: 0.5,
+        bot_name: '小卷',
+        strip_markdown: false,
+        agent_lite: false,
+        relevance_prompt: '',
+        relevance_model: '',
+      })
+    }
+  },
+  {
+    method: 'PUT', path: '/reply-strategy',
+    handler({ body }) { return ok(body) }
   },
 
   // ============ Logs ============
