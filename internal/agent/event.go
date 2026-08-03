@@ -29,6 +29,8 @@ type ReplySettings struct {
 	AgentLite          bool
 	BotName            string
 	RelevanceThreshold float64
+	RelevancePrompt    string // 相关性检测自定义提示词（空则用默认）
+	RelevanceModel     string // 相关性检测使用的 Text Provider ID（空则用默认）
 }
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
@@ -151,6 +153,8 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		AgentLite:          cfg.AgentLite,
 		BotName:            cfg.BotName,
 		RelevanceThreshold: cfg.RelevanceThreshold,
+		RelevancePrompt:    cfg.RelevancePrompt,
+		RelevanceModel:     cfg.RelevanceModel,
 	}
 }
 
@@ -181,7 +185,7 @@ func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event, r
 			chatAreaID = area.ID
 		}
 		recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
-		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs.BotName)
+		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs)
 		if score < rs.RelevanceThreshold {
 			log.Debug("回复策略: 相关性不足", "score", score, "threshold", rs.RelevanceThreshold, "reason", reason)
 			return false

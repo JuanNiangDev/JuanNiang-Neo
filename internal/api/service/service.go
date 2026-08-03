@@ -1844,6 +1844,8 @@ func (s *Service) GetReplyStrategy(ctx context.Context, c *app.RequestContext) {
 		BotName:            cfg.BotName,
 		StripMarkdown:      cfg.StripMarkdown,
 		AgentLite:          cfg.AgentLite,
+		RelevancePrompt:    cfg.RelevancePrompt,
+		RelevanceModel:     cfg.RelevanceModel,
 	}))
 }
 
@@ -1888,6 +1890,8 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 	cfg.BotName = data.BotName
 	cfg.StripMarkdown = data.StripMarkdown
 	cfg.AgentLite = data.AgentLite
+	cfg.RelevancePrompt = data.RelevancePrompt
+	cfg.RelevanceModel = data.RelevanceModel
 
 	if err := s.DAO.ReplyStrategy.Update(ctx, cfg); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -1900,6 +1904,8 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		BotName:            cfg.BotName,
 		StripMarkdown:      cfg.StripMarkdown,
 		AgentLite:          cfg.AgentLite,
+		RelevancePrompt:    cfg.RelevancePrompt,
+		RelevanceModel:     cfg.RelevanceModel,
 	}))
 }
 
