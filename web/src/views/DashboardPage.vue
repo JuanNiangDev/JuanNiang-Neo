@@ -79,7 +79,38 @@
               </template>
             </v-card-item>
             <v-card-text>
-              <div ref="gaugeEl" class="gauge-chart" />
+              <div class="d-flex align-center" style="gap: 28px">
+                <!-- 左：Goroutine 仪表盘 -->
+                <div class="goroutine-box">
+                  <div ref="goroutineGaugeEl" class="goroutine-gauge-chart" />
+                  <div class="goroutine-label">Goroutines</div>
+                </div>
+
+                <!-- 右：进度条 -->
+                <div class="flex-grow-1">
+                  <div class="progress-item">
+                    <div class="progress-head">
+                      <span>内存使用</span>
+                      <span class="progress-val">{{ heapMB }} MB</span>
+                    </div>
+                    <v-progress-linear :model-value="heapPct" height="8" rounded color="#818cf8" bg-color="rgba(255,255,255,0.08)" />
+                  </div>
+                  <div class="progress-item">
+                    <div class="progress-head">
+                      <span>内存分配</span>
+                      <span class="progress-val">{{ allocMB }} MB</span>
+                    </div>
+                    <v-progress-linear :model-value="allocPct" height="8" rounded color="#34d399" bg-color="rgba(255,255,255,0.08)" />
+                  </div>
+                  <div class="progress-item">
+                    <div class="progress-head">
+                      <span>CPU 核数</span>
+                      <span class="progress-val">{{ cpuCount }} 核</span>
+                    </div>
+                    <v-progress-linear :model-value="cpuPct" height="8" rounded color="#60a5fa" bg-color="rgba(255,255,255,0.08)" />
+                  </div>
+                </div>
+              </div>
             </v-card-text>
           </v-card>
         </v-col>
@@ -164,7 +195,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { init, use, type EChartsType } from 'echarts/core'
 import { LineChart, GaugeChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
@@ -185,9 +216,23 @@ const tokenDays = ref('7')
 const chartEl = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
 
-// 系统资源仪表盘
-const gaugeEl = ref<HTMLDivElement | null>(null)
-let gaugeChart: EChartsType | null = null
+// 系统资源：Goroutine 仪表盘
+const goroutineGaugeEl = ref<HTMLDivElement | null>(null)
+let goroutineGaugeChart: EChartsType | null = null
+
+// 系统资源进度条数据（内存使用显示数值，非百分比）
+const heapMB = computed(() => Math.round((overview.value?.mem_heap_inuse_bytes ?? 0) / 1048576))
+const allocMB = computed(() => Math.round((overview.value?.mem_alloc_bytes ?? 0) / 1048576))
+const cpuCount = computed(() => overview.value?.cpu_count ?? 0)
+const goroutines = computed(() => overview.value?.goroutine_num ?? 0)
+
+const maxMemMB = computed(() => Math.max(10, Math.ceil(Math.max(heapMB.value, allocMB.value) / 10) * 10))
+const maxCpu = computed(() => Math.max(4, Math.ceil(cpuCount.value / 4) * 4))
+const maxGoroutines = computed(() => Math.max(10, Math.ceil(goroutines.value / 10) * 10))
+
+const heapPct = computed(() => Math.min(100, Math.round((heapMB.value / maxMemMB.value) * 100)))
+const allocPct = computed(() => Math.min(100, Math.round((allocMB.value / maxMemMB.value) * 100)))
+const cpuPct = computed(() => Math.min(100, Math.round((cpuCount.value / maxCpu.value) * 100)))
 
 async function fetchTokenUsage() {
   try {
@@ -254,72 +299,49 @@ async function fetchAll() {
       adapterStatus.value = ad.data.data
       adapterRunning.value = ad.data.data.running
     }
-    renderGauges()
   } catch { toastStore.error('获取数据失败') } finally { loading.value = false }
 }
 
-// 系统资源仪表盘（2x2 环形仪表）
+// Goroutine 环形仪表盘
 function renderGauges() {
-  if (!gaugeEl.value) return
-  if (!gaugeChart) gaugeChart = init(gaugeEl.value)
+  if (!goroutineGaugeEl.value) return
+  if (!goroutineGaugeChart) goroutineGaugeChart = init(goroutineGaugeEl.value)
 
-  const o = overview.value
-  const sys = o?.mem_sys_bytes ?? 0
-  const heap = o?.mem_heap_inuse_bytes ?? 0
-  const alloc = o?.mem_alloc_bytes ?? 0
-  const goroutines = o?.goroutine_num ?? 0
-  const cpu = o?.cpu_count ?? 0
+  const value = goroutines.value
+  const max = maxGoroutines.value
 
-  const memPct = sys > 0 ? Math.min(100, Math.round((heap / sys) * 100)) : 0
-  const allocMB = Math.round(alloc / 1048576)
-  const heapMB = Math.round(heap / 1048576)
-  const maxAllocMB = Math.max(10, Math.ceil(Math.max(allocMB, heapMB) / 10) * 10)
-  const maxGoroutines = Math.max(10, Math.ceil(goroutines / 10) * 10)
-  const maxCpu = Math.max(8, Math.ceil(cpu / 8) * 8)
-
-  const gauges = [
-    { name: '内存使用率', value: memPct, max: 100, unit: '%', color: '#818cf8' },
-    { name: '内存分配', value: allocMB, max: maxAllocMB, unit: 'MB', color: '#34d399' },
-    { name: 'Goroutines', value: goroutines, max: maxGoroutines, unit: '', color: '#fbbf24' },
-    { name: 'CPU 核数', value: cpu, max: maxCpu, unit: '核', color: '#60a5fa' },
-  ]
-
-  const centers = [
-    ['22%', '30%'], ['78%', '30%'],
-    ['22%', '78%'], ['78%', '78%'],
-  ]
-
-  gaugeChart.setOption({
-    series: gauges.map((g, i) => ({
+  goroutineGaugeChart.setOption({
+    series: [{
       type: 'gauge',
-      center: centers[i],
-      radius: '56%',
+      center: ['50%', '50%'],
+      radius: '100%',
       startAngle: 210,
       endAngle: -30,
       min: 0,
-      max: g.max,
-      axisLine: { lineStyle: { width: 8, color: [[1, 'rgba(255,255,255,0.08)']] } },
-      progress: { show: true, width: 8, itemStyle: { color: g.color } },
+      max,
+      axisLine: { lineStyle: { width: 10, color: [[1, 'rgba(255,255,255,0.08)']] } },
+      progress: { show: true, width: 10, itemStyle: { color: '#fbbf24' } },
       pointer: { show: false },
       axisTick: { show: false },
       splitLine: { show: false },
       axisLabel: { show: false },
-      title: { offsetCenter: [0, '72%'], fontSize: 12, color: 'rgba(255,255,255,0.55)' },
       detail: {
         valueAnimation: true,
         offsetCenter: [0, '0%'],
-        fontSize: 18,
+        fontSize: 20,
         fontWeight: 700,
         color: '#e8ecf4',
-        formatter: (v: number) => `${v}${g.unit ? ' ' + g.unit : ''}`,
       },
-      data: [{ value: g.value, name: g.name }],
-    })),
+      data: [{ value }],
+    }],
   })
 }
 
 async function onGlobalRefresh() {
   await fetchAll()
+  // 需在 loading 置 false（DOM 已渲染出仪表盘容器）后再绘制
+  await nextTick()
+  renderGauges()
   await fetchTokenUsage()
 }
 
@@ -331,15 +353,15 @@ onMounted(async () => {
   window.addEventListener('resize', onResize)
 })
 
-function onResize() { chart?.resize(); gaugeChart?.resize() }
+function onResize() { chart?.resize(); goroutineGaugeChart?.resize() }
 
 onBeforeUnmount(() => {
   window.removeEventListener('global-refresh', onGlobalRefresh)
   window.removeEventListener('resize', onResize)
   chart?.dispose()
   chart = null
-  gaugeChart?.dispose()
-  gaugeChart = null
+  goroutineGaugeChart?.dispose()
+  goroutineGaugeChart = null
 })
 </script>
 
@@ -348,8 +370,37 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 300px;
 }
-.gauge-chart {
-  width: 100%;
-  height: 300px;
+.goroutine-box {
+  width: 150px;
+  flex-shrink: 0;
+  text-align: center;
+}
+.goroutine-gauge-chart {
+  width: 150px;
+  height: 150px;
+}
+.goroutine-label {
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+}
+.progress-item {
+  margin-bottom: 22px;
+}
+.progress-item:last-child {
+  margin-bottom: 0;
+}
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 8px;
+}
+.progress-val {
+  font-family: 'Space Mono', 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: #e8ecf4;
 }
 </style>
