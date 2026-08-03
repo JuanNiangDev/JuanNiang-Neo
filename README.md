@@ -32,7 +32,7 @@
 
 - **Chat**
 
-<img src="docs/img/chat.jpg" alt="login-ui" style="zoom: 25%;" />
+<img src="docs/img/chat.png" alt="login-ui" style="zoom: 100%;" />
 
 ## 文档导航
 
