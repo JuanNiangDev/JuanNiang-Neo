@@ -51,6 +51,33 @@
                     placeholder="例如：小卷"
                     density="comfortable" variant="outlined" hide-details clearable
                   />
+
+                  <v-divider class="my-3" />
+
+                  <div class="text-subtitle-2 font-weight-bold mb-2">相关性检测模型</div>
+                  <v-select
+                    v-model="form.relevance_model"
+                    :items="textModelOptions"
+                    item-title="label"
+                    item-value="value"
+                    label="选择相关性判断使用的 Text 模型"
+                    placeholder="（默认 Text 模型）"
+                    density="comfortable" variant="outlined" clearable hide-details
+                  />
+
+                  <v-divider class="my-3" />
+
+                  <div class="text-subtitle-2 font-weight-bold mb-2">自定义判断提示词</div>
+                  <v-textarea
+                    v-model="form.relevance_prompt"
+                    label="留空使用默认规则；填写后替换默认的「回复规则」"
+                    rows="5"
+                    density="comfortable" variant="outlined" hide-details
+                    placeholder="例如：\n- 只有直接@机器人或请求机器人办事的消息才算相关\n- 群友闲聊一律不回复（相关度 < 0.1）"
+                  />
+                  <div class="text-caption text-medium-emphasis mt-2">
+                    自定义提示词将替换相关性判断的「回复规则」部分，消息上下文仍会自动附加。
+                  </div>
                 </v-card>
               </v-expand-transition>
 
@@ -110,7 +137,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useToastStore } from '@/stores/toast'
-import { replyStrategyApi } from '@/api'
+import { replyStrategyApi, providerApi, type ProviderResp } from '@/api'
 
 const toastStore = useToastStore()
 const saving = ref(false)
@@ -121,7 +148,21 @@ const form = ref({
   bot_name: '',
   strip_markdown: false,
   agent_lite: false,
+  relevance_prompt: '',
+  relevance_model: '',
 })
+
+// 相关性检测可选的 Text 模型列表（仅 text_model 类型）
+const textModelOptions = ref<{ label: string; value: string }[]>([])
+
+async function loadModels() {
+  try {
+    const list = (await providerApi.list()).data.data || []
+    textModelOptions.value = list
+      .filter((p: ProviderResp) => p.type === 'text_model')
+      .map((p: ProviderResp) => ({ label: `${p.name} · ${p.model}`, value: p.id }))
+  } catch { /* ignore */ }
+}
 
 async function load() {
   try {
@@ -133,6 +174,8 @@ async function load() {
       form.value.bot_name = d.bot_name || ''
       form.value.strip_markdown = d.strip_markdown || false
       form.value.agent_lite = d.agent_lite || false
+      form.value.relevance_prompt = d.relevance_prompt || ''
+      form.value.relevance_model = d.relevance_model || ''
     }
   } catch (_e: any) {}
 }
@@ -146,6 +189,8 @@ async function handleSave() {
       bot_name: form.value.bot_name,
       strip_markdown: form.value.strip_markdown,
       agent_lite: form.value.agent_lite,
+      relevance_prompt: form.value.relevance_prompt,
+      relevance_model: form.value.relevance_model,
     })
     toastStore.success('回复设置已保存')
   } catch (e: any) {
@@ -153,5 +198,5 @@ async function handleSave() {
   } finally { saving.value = false }
 }
 
-onMounted(() => { load() })
+onMounted(() => { load(); loadModels() })
 </script>
