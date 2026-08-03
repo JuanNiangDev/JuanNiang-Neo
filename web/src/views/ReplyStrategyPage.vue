@@ -76,7 +76,7 @@
                 <div class="flex-grow-1 me-3">
                   <div class="text-subtitle-2 font-weight-bold">AgentLite 模式</div>
                   <div class="text-caption text-medium-emphasis mt-1">
-                    关闭工具/MCP 调用和 Agent 循环。消息直接发给 LLM，回复后即结束。<br />
+                    与正常模式一致，保留 ReAct 循环；仅禁用 MCP、沙箱和文生图工具。<br />
                     记忆、提示词、Skill 行为不受影响。
                   </div>
                 </div>

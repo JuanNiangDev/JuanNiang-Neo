@@ -64,9 +64,8 @@ let plugins = [
 
 // --- ACL Rules ---
 let aclRules = [
-  { id: 1, chat_area_id: UUID(), scope: 'chat', permission: 'allow', target_type: 'all', user_ids: [], created_at: now() },
-  { id: 2, chat_area_id: UUID(), scope: 'tool', permission: 'deny', target_type: 'list', user_ids: ['123456', '789012'], created_at: now() },
-  { id: 3, chat_area_id: UUID(), scope: 'mcp', permission: 'allow', target_type: 'list', user_ids: ['111111'], created_at: now() },
+  { id: 1, chat_area_id: UUID(), scope: 'chat', permission: 'deny', target_type: 'all', user_ids: [], created_at: now() },
+  { id: 2, chat_area_id: UUID(), scope: 'chat', permission: 'deny', target_type: 'list', user_ids: ['123456', '789012'], created_at: now() },
 ]
 let aclIdCounter = 4
 
