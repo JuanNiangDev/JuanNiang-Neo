@@ -24,6 +24,11 @@ type Event struct {
 	// IsCronJob 标记此事件是定时任务触发的。
 	IsCronJob bool `json:"-"`
 
+	// CronJobPayload 定时任务携带的 JSON payload（透传给插件 on_cronjob）。
+	CronJobPayload string `json:"-"`
+	// CronJobPluginIDs 定时任务指定要通知的插件目录名（空 = 通知所有插件）。
+	CronJobPluginIDs []string `json:"-"`
+
 	// SkipReplyCheck 标记跳过回复策略检查（由 Plugin skip_reply_check 设置）。
 	SkipReplyCheck bool `json:"-"`
 

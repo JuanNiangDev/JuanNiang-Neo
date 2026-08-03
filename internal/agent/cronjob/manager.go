@@ -2,6 +2,8 @@ package cronjob
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
@@ -104,9 +106,11 @@ func (m *Manager) makeJobFunc(job *models.CronJob) func() {
 
 		// 构造 cronjob 事件，发送给 Agent 事件循环（经 PluginEngine.Dispatch 分发给插件）
 		ev := adapter.Event{
-			PostType:  "cronjob",
-			IsCronJob: true,
-			Time:      time.Now().Unix(),
+			PostType:         "cronjob",
+			IsCronJob:        true,
+			Time:             time.Now().Unix(),
+			CronJobPayload:   job.Payload,
+			CronJobPluginIDs: parsePluginIDs(job.PluginIDs),
 		}
 
 		if job.Message != "" {
@@ -130,4 +134,16 @@ func (m *Manager) makeJobFunc(job *models.CronJob) func() {
 			log.Warn("CronJob: 事件通道已满，丢弃事件", "name", job.Name)
 		}
 	}
+}
+
+// parsePluginIDs 将 JSON 数组字符串解析为插件目录名列表（空/非法返回 nil）。
+func parsePluginIDs(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(s), &ids); err != nil {
+		return nil
+	}
+	return ids
 }

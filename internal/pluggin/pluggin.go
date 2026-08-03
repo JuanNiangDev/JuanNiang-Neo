@@ -338,8 +338,8 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 			"description":    m.Description,
 			"permissions":    m.Permissions,
 			"is_system":      m.System,
-			"is_active":      true, // 已加载即视为 active
-			"supports_timer": p.SupportsTimer(),
+			"is_active":         true, // 已加载即视为 active
+			"supports_cronjob": p.SupportsCronJob(),
 		}
 		// 使用 Load 时的 name（目录名）查找命令，而非 manifest.Name
 		// 因为命令注册使用的 plugin 参数是 Load 的 name 参数
@@ -370,10 +370,10 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 				"author":         manifest.Author,
 				"description":    manifest.Description,
 				"permissions":    manifest.Permissions,
-				"is_system":      manifest.System,
-				"is_active":      manifest.Enabled, // 从 YAML enabled 字段读取，兼容旧版默认 true
-				"supports_timer": false,            // 未加载的插件无法检测，默认 false
-				"commands":       []map[string]any{},
+				"is_system":         manifest.System,
+				"is_active":         manifest.Enabled, // 从 YAML enabled 字段读取，兼容旧版默认 true
+				"supports_cronjob": false,             // 未加载的插件无法检测，默认 false
+				"commands":          []map[string]any{},
 			})
 		}
 	}
@@ -695,7 +695,16 @@ func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 			pluginEvent.UserID = ev.Message.UserID
 			pluginEvent.GroupID = ev.Message.GroupID
 		}
-		consumed := pe.onCronJobLocked(pluginEvent)
+		// 解析 CronJob 配置的 Payload（JSON 字符串 → map，透传给 on_cronjob）
+		if ev.CronJobPayload != "" {
+			var p map[string]any
+			if err := json.Unmarshal([]byte(ev.CronJobPayload), &p); err == nil {
+				pluginEvent.Payload = p
+			} else {
+				log.Warn("CronJob: payload 解析失败", "payload", ev.CronJobPayload, "err", err)
+			}
+		}
+		consumed := pe.onCronJobLocked(pluginEvent, ev.CronJobPluginIDs)
 		return DispatchResult{Consumed: consumed, Event: ev}
 	case "message":
 		if ev.Message != nil {
@@ -791,8 +800,13 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 }
 
 // onCronJobLocked 派发 cronjob 事件给插件（需在持有读锁时调用）。
-func (pe *PluginEngine) onCronJobLocked(event EventData) bool {
-	for _, p := range pe.plugins {
+// pluginIDs 指定要通知的插件目录名列表；为空则通知所有插件。
+func (pe *PluginEngine) onCronJobLocked(event EventData, pluginIDs []string) bool {
+	for pluginName, p := range pe.plugins {
+		// 按 CronJob 配置的插件列表过滤
+		if len(pluginIDs) > 0 && !containsString(pluginIDs, pluginName) {
+			continue
+		}
 		fn := p.State.GetGlobal("on_cronjob")
 		if fn.Type() != lua.LTFunction {
 			continue
@@ -807,6 +821,16 @@ func (pe *PluginEngine) onCronJobLocked(event EventData) bool {
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
 		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsString 检查字符串切片中是否包含目标值。
+func containsString(list []string, target string) bool {
+	for _, v := range list {
+		if v == target {
 			return true
 		}
 	}
@@ -908,9 +932,10 @@ func (pe *PluginEngine) luaTableToEvent(t *lua.LTable, original adapter.Event) a
 	return result
 }
 
-// SupportsTimer 检查插件是否支持定时任务回调（定义了 on_timer_call 全局函数）。
-func (p *LoadedPlugin) SupportsTimer() bool {
-	fn := p.State.GetGlobal("on_timer_call")
+// SupportsCronJob 检查插件是否支持定时任务回调（定义了 on_cronjob 全局函数）。
+// 注意：CronJob 实际调用的回调是 on_cronjob，而非 on_timer_call。
+func (p *LoadedPlugin) SupportsCronJob() bool {
+	fn := p.State.GetGlobal("on_cronjob")
 	return fn.Type() == lua.LTFunction
 }
 
