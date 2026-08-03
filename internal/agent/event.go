@@ -667,8 +667,9 @@ func parseCQCode(s string) adapter.Segment {
 }
 
 // splitMessages 将 Agent 输出拆分为最多 3 段消息。
-// 算法参考 Maibot：在自然断句处（。！？；\n）拆分，每段有效文字 ≤60 字。
-// CQ 码和 URL 不计入有效字数。保留原始分隔符。
+// 算法参考 Maibot：在自然断句处（。！？；）拆分，每段有效文字 ≤60 字。
+// CQ 码和 URL 不计入有效字数。换行不是拆分点：多行内容保留在同一条消息内，
+// 内部换行原样保留（不再被 TrimSpace 吞掉）。
 func splitMessages(content string) []string {
 	effectiveLen := func(s string) int {
 		s = cqCodeRegexp.ReplaceAllString(s, "")
@@ -682,7 +683,7 @@ func splitMessages(content string) []string {
 	}
 
 	// 按自然断句拆分，保留分隔符附着在前一段尾部
-	splitRe := regexp.MustCompile(`[。！？；\n]`)
+	splitRe := regexp.MustCompile(`[。！？；]`)
 	matches := splitRe.FindAllStringIndex(content, -1)
 	if len(matches) == 0 {
 		return []string{content}
@@ -695,16 +696,15 @@ func splitMessages(content string) []string {
 		start = loc[1]
 	}
 	if start < len(content) {
-		tail := strings.TrimSpace(content[start:])
-		if tail != "" {
+		tail := content[start:]
+		if strings.TrimSpace(tail) != "" {
 			parts = append(parts, tail)
 		}
 	}
-	// 过滤空段
+	// 过滤纯空白段（含内容的段保留其内部换行）
 	var nonEmpty []string
 	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
+		if strings.TrimSpace(p) != "" {
 			nonEmpty = append(nonEmpty, p)
 		}
 	}
@@ -722,7 +722,7 @@ func splitMessages(content string) []string {
 	for _, p := range nonEmpty {
 		candidate := buf + p
 		if effectiveLen(candidate) > 60 && buf != "" {
-			segments = append(segments, strings.TrimSpace(buf))
+			segments = append(segments, strings.TrimLeft(buf, " \t\n"))
 			buf = p
 		} else {
 			buf = candidate

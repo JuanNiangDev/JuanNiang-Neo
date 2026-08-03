@@ -111,3 +111,12 @@
 - **修复**：`dispatchToAgent` 改为按 ChatArea 批处理——1 秒窗口内的消息合并为一批，只跑一次 Agent；批内逐条做 ACL/技能匹配/记忆/聊天记录，上下文包含全部用户消息（带发言人标识），回复一次
 - 同窗消息合并处理，不同 ChatArea 仍可并行（并发限制不变）；relevance 策略过滤也移到批次 goroutine 内
 - 代价：单条消息增加约 1s 批处理窗口延迟；相隔超过窗口的消息仍各自处理（残余的并发交叉风险存在，但同秒突发场景已根治）
+
+## 回复格式优化
+
+### 保留 Agent 回复中的换行
+- **问题**：`splitMessages` 按 `。！？；\n` 拆分后用 `TrimSpace` 清洗各段再拼接，段尾换行被吞（`"AAA。\nBBB"` → `"AAA。BBB"`）；`stripMarkdown` 开启时会删除空行
+- **修复**：
+  - `splitMessages` 不再把 `\n` 作为拆分点（多行内容保留在同一条消息内），段不做 TrimSpace（只过滤纯空白段），内部换行原样保留
+  - `stripMarkdown` 保留空行与换行结构（仅清理每行首尾空白）；修复 `mdUnordered`/`mdOrdered` 正则 `\s*` 吞掉列表项前空行的问题（改为 `[ \t]*`）
+- 新增 `TestSplitMessagesPreservesNewlines` / `TestStripMarkdownPreservesNewlines` 单元测试

@@ -6,21 +6,21 @@ import (
 )
 
 var (
-	mdCodeBlock   = regexp.MustCompile("(?s)```[^`]*```")
-	mdInlineCode  = regexp.MustCompile("`([^`]+)`")
-	mdImage       = regexp.MustCompile(`!\[.*?\]\(.*?\)`)
-	mdLink        = regexp.MustCompile(`\[([^\]]*)\]\(.*?\)`)
-	mdBoldItalic  = regexp.MustCompile(`\*{3}(.+?)\*{3}`)
-	mdBold        = regexp.MustCompile(`\*{2}(.+?)\*{2}`)
-	mdItalic      = regexp.MustCompile(`\*([^*\n]+)\*`)
-	mdStrike      = regexp.MustCompile(`~~(.+?)~~`)
-	mdUnder       = regexp.MustCompile(`__([^_\n]+)__`)
-	mdHeading     = regexp.MustCompile(`(?m)^#{1,6}\s+`)
-	mdQuote       = regexp.MustCompile(`(?m)^>\s?`)
-	mdUnordered   = regexp.MustCompile(`(?m)^\s*[-*+]\s+`)
-	mdOrdered     = regexp.MustCompile(`(?m)^\s*\d+\.\s+`)
-	mdHR          = regexp.MustCompile(`(?m)^[-*_]{3,}\s*$`)
-	mdTableSep    = regexp.MustCompile(`(?m)^\|?[-:| ]+\|[-:| ]+\|?$`)
+	mdCodeBlock  = regexp.MustCompile("(?s)```[^`]*```")
+	mdInlineCode = regexp.MustCompile("`([^`]+)`")
+	mdImage      = regexp.MustCompile(`!\[.*?\]\(.*?\)`)
+	mdLink       = regexp.MustCompile(`\[([^\]]*)\]\(.*?\)`)
+	mdBoldItalic = regexp.MustCompile(`\*{3}(.+?)\*{3}`)
+	mdBold       = regexp.MustCompile(`\*{2}(.+?)\*{2}`)
+	mdItalic     = regexp.MustCompile(`\*([^*\n]+)\*`)
+	mdStrike     = regexp.MustCompile(`~~(.+?)~~`)
+	mdUnder      = regexp.MustCompile(`__([^_\n]+)__`)
+	mdHeading    = regexp.MustCompile(`(?m)^#{1,6}\s+`)
+	mdQuote      = regexp.MustCompile(`(?m)^>\s?`)
+	mdUnordered  = regexp.MustCompile(`(?m)^[ \t]*[-*+]\s+`)
+	mdOrdered    = regexp.MustCompile(`(?m)^[ \t]*\d+\.\s+`)
+	mdHR         = regexp.MustCompile(`(?m)^[-*_]{3,}\s*$`)
+	mdTableSep   = regexp.MustCompile(`(?m)^\|?[-:| ]+\|[-:| ]+\|?$`)
 )
 
 // stripMarkdown 去除 markdown 格式，保留纯文本。
@@ -72,14 +72,10 @@ func stripMarkdown(s string) string {
 	// 水平线：移除
 	s = mdHR.ReplaceAllString(s, "")
 
-	// 清理多余空白
+	// 清理每行首尾空白，但保留空行与换行结构（不压缩换行）
 	lines := strings.Split(s, "\n")
-	var clean []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			clean = append(clean, line)
-		}
+	for i, line := range lines {
+		lines[i] = strings.TrimSpace(line)
 	}
-	return strings.TrimSpace(strings.Join(clean, "\n"))
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
