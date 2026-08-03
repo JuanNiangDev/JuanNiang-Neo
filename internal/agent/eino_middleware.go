@@ -25,8 +25,9 @@ type JuanNiangMiddleware struct {
 	admins     []string
 }
 
-// BeforeAgent 在 Agent 运行前注入动态 Instruction 和按需清空工具列表（AgentLite）。
+// BeforeAgent 在 Agent 运行前注入动态 Instruction 和按需过滤工具列表（AgentLite）。
 // DynamicInstruction 和 AgentLite 从 context 中读取（由 handleMessage 注入）。
+// AgentLite 与正常模式一致（保留 ReAct 循环），仅过滤掉 MCP、沙箱与文生图工具。
 func (m *JuanNiangMiddleware) BeforeAgent(
 	ctx context.Context,
 	runCtx *adk.ChatModelAgentContext,
@@ -37,10 +38,42 @@ func (m *JuanNiangMiddleware) BeforeAgent(
 			runCtx.Instruction = sc.DynamicInstruction
 		}
 		if sc.AgentLite {
-			runCtx.Tools = nil
+			runCtx.Tools = filterAgentLiteTools(ctx, m.h, runCtx.Tools)
 		}
 	}
 	return ctx, runCtx, nil
+}
+
+// agentLiteDisabledToolNames 是 AgentLite 模式下禁用的内置工具名
+// （沙箱相关 + 文生图）。MCP 工具通过 HagoCenter.MCP.HasTool 判定，全部禁用。
+var agentLiteDisabledToolNames = map[string]bool{
+	"create_sandbox": true,
+	"list_sandboxes": true,
+	"browser_search": true,
+	"command_exec":   true,
+	"code_exec":      true,
+	"text_to_image":  true,
+}
+
+// filterAgentLiteTools 过滤 AgentLite 模式下不允许使用的工具：
+// 保留 ReAct 循环与其余工具，仅禁用所有 MCP 工具、沙箱工具与文生图工具。
+func filterAgentLiteTools(ctx context.Context, h *HagoCenter, tools []einotool.BaseTool) []einotool.BaseTool {
+	kept := make([]einotool.BaseTool, 0, len(tools))
+	for _, t := range tools {
+		info, err := t.Info(ctx)
+		if err != nil || info == nil {
+			kept = append(kept, t) // 无法获取元数据时保守保留
+			continue
+		}
+		if agentLiteDisabledToolNames[info.Name] {
+			continue
+		}
+		if h.MCP != nil && h.MCP.HasTool(ctx, info.Name) {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept
 }
 
 // MsgSessionCtx 携带单条消息的 per-goroutine 状态。

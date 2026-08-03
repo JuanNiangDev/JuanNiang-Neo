@@ -455,9 +455,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		instruction += "\n\n" + spc
 	}
 	if agentLite {
-		instruction = "【AgentLite 精简模式】你无法使用任何工具、MCP 或外部能力。" +
-			"如果用户提出的任务需要工具或外部操作才能完成（如发送消息、查天气、生成图片、执行代码、搜索等），" +
-			"直接拒绝并说明当前处于精简模式无法执行该操作。回复中不要假装已经完成了需要工具的任务。\n\n" + instruction
+		instruction = "【AgentLite 精简模式】当前仅禁用了 MCP 服务器、沙箱（代码/命令执行、浏览器搜索）和文生图工具，" +
+			"其余能力与正常模式一致，仍保留 ReAct 循环并可调用消息发送等其他工具。" +
+			"若用户请求涉及这些已禁用的能力，请如实说明当前不可用，不要假装已经执行。\n\n" + instruction
 	}
 
 	// 将 per-message 状态注入 context（避免 HagoCenter 共享字段数据竞争）
@@ -468,7 +468,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		DynamicInstruction: instruction,
 		AgentLite:          agentLite,
 		StripMarkdown:      rs.StripMarkdown,
-		DisableSplit:       rs.AgentLite,
+		DisableSplit:       false,
 		LoopID:             loopID,
 	}
 	ctx = WithMsgSessionCtx(ctx, msgCtx)
@@ -589,12 +589,8 @@ var urlRegexp = regexp.MustCompile(`https?://\S+`)
 // sendReply 解析 CQ 码并组装消息段发送。
 // rs 从调用链传入，避免读取 HagoCenter 共享字段导致数据竞争。
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs ReplySettings) {
-	var parts []string
-	if rs.AgentLite {
-		parts = []string{content}
-	} else {
-		parts = splitMessages(content)
-	}
+	// AgentLite 与正常模式一致，同样支持分段回复
+	parts := splitMessages(content)
 	for _, part := range parts {
 		if rs.StripMarkdown {
 			part = stripMarkdown(part)
