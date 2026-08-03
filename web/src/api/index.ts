@@ -209,9 +209,10 @@ export interface CronJobResp {
   created_at: string; updated_at: string
 }
 export interface AddCronJobReq {
-  name: string; cron_expr: string; message: string; message_type: string
-  target_id: number; is_active: boolean
+  name: string; cron_expr: string; is_active: boolean
   plugin_ids: string[]; payload: string
+  // CronJob 仅进入 Plugin 链路，以下 Agent 相关字段已废弃
+  message?: string; message_type?: string; target_id?: number
 }
 
 export const cronJobApi = {

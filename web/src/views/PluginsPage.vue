@@ -20,8 +20,8 @@
           <span v-if="!item.permissions || item.permissions.length === 0" class="text-caption text-medium-emphasis">(无)</span>
         </div>
       </template>
-      <template #item.supports_timer="{ item }">
-        <v-chip v-if="item.supports_timer" size="small" color="success" variant="tonal">支持</v-chip>
+      <template #item.supports_cronjob="{ item }">
+        <v-chip v-if="item.supports_cronjob" size="small" color="success" variant="tonal">支持</v-chip>
         <v-chip v-else size="small" color="grey" variant="tonal">不支持</v-chip>
       </template>
       <template #item.is_active="{ item }">
@@ -124,7 +124,7 @@ interface PluginItem {
   permissions?: string[]
   is_system?: boolean
   is_active?: boolean
-  supports_timer?: boolean
+  supports_cronjob?: boolean
   commands?: Array<{ path: string[]; description: string; usage: string; is_leaf: boolean }>
 }
 
@@ -143,7 +143,7 @@ const headers = [
   { title: '名称', key: 'name' },
   { title: '版本', key: 'version' },
   { title: '权限', key: 'permissions' },
-  { title: '定时支持', key: 'supports_timer', align: 'center' as const },
+  { title: 'Cron 支持', key: 'supports_cronjob', align: 'center' as const },
   { title: '类型', key: 'is_system' },
   { title: 'Active', key: 'is_active', align: 'center' as const },
   { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
