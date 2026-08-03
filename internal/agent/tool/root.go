@@ -3,6 +3,8 @@ package tool
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"JuanNiang-Neo/internal/adapter"
 
@@ -48,6 +50,21 @@ func NewTool(id, name, desc string, params openai.FunctionParameters, builtin bo
 		builtin:     builtin,
 		longRunning: longRunning,
 	}
+}
+
+// FlexInt64 兼容 JSON number 与 string 形式的 int64 字段。
+// LLM 经常把数字字段（QQ 号、群号等）输出为字符串，使用该类型可避免整个参数解析失败。
+type FlexInt64 int64
+
+// UnmarshalJSON 同时接受 JSON number 与字符串形式的数字。
+func (f *FlexInt64) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return err
+	}
+	*f = FlexInt64(v)
+	return nil
 }
 
 // StringParam 便捷的字符串参数定义。
@@ -178,4 +195,21 @@ func BuildMessageFromJSON(raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("消息段数组为空")
 	}
 	return segments, nil
+}
+
+// BuildMessageLoose 解析消息内容：标准 JSON（字符串/消息段数组）解析失败时回退为原始文本。
+// 用于容错 LLM 把消息内容直接当作工具参数传入（如 "[CQ:image,file=...] 文字"）的情况。
+func BuildMessageLoose(raw json.RawMessage) (any, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("消息内容为空")
+	}
+	msg, err := BuildMessageFromJSON(raw)
+	if err != nil {
+		// 非标准 JSON（如裸 CQ 码文本）：直接作为消息内容
+		msg = string(raw)
+	}
+	if s, ok := msg.(string); ok && strings.TrimSpace(s) == "" {
+		return nil, fmt.Errorf("消息内容为空")
+	}
+	return msg, nil
 }

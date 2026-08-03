@@ -77,6 +77,10 @@ func (q *DeferredSendQueue) Flush(ctx context.Context, a AdapterProvider) {
 	log.Info("任务执行完成，统一发送排队消息", "count", len(sends))
 
 	for _, s := range sends {
+		if s.TargetID <= 0 {
+			log.Warn("延迟发送跳过无效目标", "type", s.MessageType, "target", s.TargetID)
+			continue
+		}
 		switch s.MessageType {
 		case "private":
 			if _, err := a.SendPrivateMsg(s.TargetID, s.Message); err != nil {

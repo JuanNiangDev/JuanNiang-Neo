@@ -87,22 +87,37 @@ func RegisterBuiltinTools(
 			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				UserID  int64           `json:"user_id"`
+				UserID  FlexInt64       `json:"user_id"`
 				Message json.RawMessage `json:"message"`
 			}
+			// 容错：LLM 偶尔把消息内容直接当作参数传入（如 "[CQ:image,file=...] 文字"），
+			// 此时将原始参数整体视为 message，目标回退到当前会话。
 			if err := json.Unmarshal(args, &p); err != nil {
-				return "", err
+				log.Warn("send_private_msg 参数非标准 JSON，按消息内容容错解析", "err", err, "args_len", len(args))
+				p.Message = args
 			}
-			msg, err := BuildMessageFromJSON(p.Message)
+
+			msg, err := BuildMessageLoose(p.Message)
 			if err != nil {
-				return "", fmt.Errorf("消息格式错误: %w", err)
+				return "", fmt.Errorf("消息内容无效: %w", err)
+			}
+
+			// LLM 常省略 user_id（意图为当前会话）：从当前消息上下文兜底
+			userID := int64(p.UserID)
+			if userID == 0 {
+				if cur := getCurrentMsg(ctx); cur != nil && cur.MessageType == "private" {
+					userID = cur.UserID
+				}
+			}
+			if userID == 0 {
+				return "", fmt.Errorf("缺少 user_id 参数，且无法从当前会话推断目标用户")
 			}
 			// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
 			if q := GetDeferredSendQueue(ctx); q != nil {
-				q.Add(DeferredSend{MessageType: "private", TargetID: p.UserID, Message: msg, Delivery: true})
+				q.Add(DeferredSend{MessageType: "private", TargetID: userID, Message: msg, Delivery: true})
 				return "私聊消息已加入发送队列，将在任务执行完成后统一发送", nil
 			}
-			id, err := adapter.SendPrivateMsg(p.UserID, msg)
+			id, err := adapter.SendPrivateMsg(userID, msg)
 			if err != nil {
 				return "", err
 			}
@@ -122,17 +137,37 @@ func RegisterBuiltinTools(
 			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				GroupID int64           `json:"group_id"`
+				GroupID FlexInt64       `json:"group_id"`
 				Message json.RawMessage `json:"message"`
 			}
-			json.Unmarshal(args, &p)
-			msg, _ := BuildMessageFromJSON(p.Message)
+			// 容错：LLM 偶尔把消息内容直接当作参数传入（如 "[CQ:image,file=...] 文字"），
+			// 此时将原始参数整体视为 message，目标回退到当前会话。
+			if err := json.Unmarshal(args, &p); err != nil {
+				log.Warn("send_group_msg 参数非标准 JSON，按消息内容容错解析", "err", err, "args_len", len(args))
+				p.Message = args
+			}
+
+			msg, err := BuildMessageLoose(p.Message)
+			if err != nil {
+				return "", fmt.Errorf("消息内容无效: %w", err)
+			}
+
+			// LLM 常省略 group_id（意图为当前会话）：从当前消息上下文兜底
+			groupID := int64(p.GroupID)
+			if groupID == 0 {
+				if cur := getCurrentMsg(ctx); cur != nil && cur.MessageType == "group" {
+					groupID = cur.GroupID
+				}
+			}
+			if groupID == 0 {
+				return "", fmt.Errorf("缺少 group_id 参数，且无法从当前会话推断目标群")
+			}
 			// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
 			if q := GetDeferredSendQueue(ctx); q != nil {
-				q.Add(DeferredSend{MessageType: "group", TargetID: p.GroupID, Message: msg, Delivery: true})
+				q.Add(DeferredSend{MessageType: "group", TargetID: groupID, Message: msg, Delivery: true})
 				return "群消息已加入发送队列，将在任务执行完成后统一发送", nil
 			}
-			id, err := adapter.SendGroupMsg(p.GroupID, msg)
+			id, err := adapter.SendGroupMsg(groupID, msg)
 			if err != nil {
 				return "", err
 			}
@@ -545,7 +580,7 @@ except Exception as e:
 
 	if getT2I != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片并直接发送给用户。你只需简短告知用户图片已生成即可，不要手动发送图片或构造 CQ 码。",
+			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片，返回图片 URL。图片不会自动发送，请你在要发送的消息中用 [CQ:image,file=URL] 拼接图片，可与文字组成一条富文本消息。",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -561,7 +596,9 @@ except Exception as e:
 				var p struct {
 					HTML string `json:"html"`
 				}
-				json.Unmarshal(args, &p)
+				if err := json.Unmarshal(args, &p); err != nil {
+					return "", fmt.Errorf("参数解析失败: %w", err)
+				}
 
 				// 使用 Generate 获取图片 ID（而非 GenerateImage 返回的原始字节）
 				genResp, err := t2i.Generate(ctx, t2icaller.GenerateRequest{
@@ -583,34 +620,8 @@ except Exception as e:
 
 				log.Info("T2I 图片已生成", "id", imageID, "image_url", imageURL)
 
-				// 直接通过 adapter 发送图片，不依赖 LLM 构造 CQ 码
-				msg := getCurrentMsg(ctx)
-				if msg != nil {
-					cqCode := fmt.Sprintf("[CQ:image,file=%s]", imageURL)
-					// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
-					if q := GetDeferredSendQueue(ctx); q != nil {
-						targetID := int64(0)
-						if msg.MessageType == "private" {
-							targetID = msg.UserID
-						} else {
-							targetID = msg.GroupID
-						}
-						q.Add(DeferredSend{MessageType: msg.MessageType, TargetID: targetID, Message: cqCode})
-						return fmt.Sprintf("图片已生成并加入发送队列，将在任务执行完成后统一发送。URL: %s", imageURL), nil
-					}
-					switch msg.MessageType {
-					case "private":
-						if _, err := adapter.SendPrivateMsg(msg.UserID, cqCode); err != nil {
-							log.Error("发送 T2I 图片失败(私聊)", "err", err)
-						}
-					case "group":
-						if _, err := adapter.SendGroupMsg(msg.GroupID, cqCode); err != nil {
-							log.Error("发送 T2I 图片失败(群聊)", "err", err)
-						}
-					}
-				}
-
-				return fmt.Sprintf("图片已生成并发送给用户。URL: %s", imageURL), nil
+				// 不自动发送：由 LLM 在消息中用 [CQ:image,file=URL] 拼接富文本发送
+				return fmt.Sprintf("图片已生成。URL: %s，请在发送的消息中使用 [CQ:image,file=%s] 拼接图片（可与文字组成富文本消息）。", imageURL, imageURL), nil
 			},
 		})
 	}

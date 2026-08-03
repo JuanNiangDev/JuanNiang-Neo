@@ -366,11 +366,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 		}
 	}
 
-	// ---------- 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发） ----------
-	deferredSends.Flush(ctx, h.Adapter)
-
 	// 若任务期间已通过发送类工具（send_*_msg）向当前会话投递了消息，
 	// 该消息即回答本体，最终回复通常只是复述/操作过程描述，直接丢弃。
+	// 注意：必须在 Flush 之前判断（Flush 会清空队列）。
 	currentTargetID := int64(0)
 	switch msg.MessageType {
 	case "private":
@@ -379,6 +377,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 		currentTargetID = msg.GroupID
 	}
 	deliveredToCurrent := deferredSends.DeliveredTo(msg.MessageType, currentTargetID)
+
+	// ---------- 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发） ----------
+	deferredSends.Flush(ctx, h.Adapter)
 
 	// ---------- 后处理：静默检测 + 发送 + 记忆 ----------
 	if assistantContent != "" && !deliveredToCurrent {
