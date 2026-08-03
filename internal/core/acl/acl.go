@@ -2,7 +2,6 @@ package acl
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 
 	"JuanNiang-Neo/internal/core/dao"
@@ -21,14 +20,12 @@ func NewACL(dao *dao.ACLDAO) *ACL {
 	return &ACL{dao: dao}
 }
 
-// Check 检查 userID 在 chatAreaID 中是否可执行 scope 对应的操作。
-// 逻辑:
+// Check 检查 userID 在 chatAreaID 中是否被聊天黑名单禁止使用 Agent 循环。
+// 黑名单语义:
 //   - 无规则 = 允许所有（默认）
-//   - deny all  = 拒绝所有用户
-//   - deny list = 拒绝指定用户
-//   - allow all = 允许所有用户
-//   - allow list = 仅允许指定用户（白名单）
-//   - 优先级: deny > allow，有 allow 规则时未命中则拒绝。
+//   - deny all  = 禁止所有用户
+//   - deny list = 禁止指定用户列表
+// 命中黑名单返回 false（禁止），否则 true（允许）。allow/白名单不再生效。
 func (a *ACL) Check(ctx context.Context, userID int64, chatAreaID string, scope models.ACLScope) bool {
 	rules, err := a.dao.GetByChatAreaAndScope(ctx, chatAreaID, scope)
 	if err != nil {
@@ -40,52 +37,24 @@ func (a *ACL) Check(ctx context.Context, userID int64, chatAreaID string, scope 
 	}
 
 	uidStr := strconv.FormatInt(userID, 10)
-	hasAllowRules := false
-	allowHit := false
-
 	for _, rule := range rules {
-		switch rule.Permission {
-		case models.ACLPermissionDeny:
-			if rule.TargetType == models.ACLTargetAll {
-				return false
-			}
-			if rule.TargetType == models.ACLTargetList && containsUserID(rule.UserIDs, uidStr) {
-				return false
-			}
-		case models.ACLPermissionAllow:
-			hasAllowRules = true
-			if rule.TargetType == models.ACLTargetAll {
-				allowHit = true
-			}
-			if rule.TargetType == models.ACLTargetList && containsUserID(rule.UserIDs, uidStr) {
-				allowHit = true
-			}
+		// 仅 deny（黑名单）规则生效
+		if rule.Permission != models.ACLPermissionDeny {
+			continue
+		}
+		if rule.TargetType == models.ACLTargetAll {
+			return false
+		}
+		if rule.TargetType == models.ACLTargetList && containsUserID(rule.UserIDs, uidStr) {
+			return false
 		}
 	}
-
-	// 有 allow 规则时，未命中则拒绝；无 allow 规则则允许
-	return !hasAllowRules || allowHit
+	return true
 }
 
-// CheckChat 检查聊天权限。
+// CheckChat 检查聊天黑名单权限（ACL 现仅管理 Chat 行为）。
 func (a *ACL) CheckChat(ctx context.Context, userID int64, chatAreaID string) bool {
 	return a.Check(ctx, userID, chatAreaID, models.ACLScopeChat)
-}
-
-// CheckTool 检查工具调用权限。返回 (allowed, denialMessage)。
-func (a *ACL) CheckTool(ctx context.Context, userID int64, chatAreaID, toolName string) (bool, string) {
-	if a.Check(ctx, userID, chatAreaID, models.ACLScopeTool) {
-		return true, ""
-	}
-	return false, fmt.Sprintf("用户：%d的工具调用(%s)被禁止", userID, toolName)
-}
-
-// CheckMCP 检查 MCP 调用权限。返回 (allowed, denialMessage)。
-func (a *ACL) CheckMCP(ctx context.Context, userID int64, chatAreaID, toolName string) (bool, string) {
-	if a.Check(ctx, userID, chatAreaID, models.ACLScopeMCP) {
-		return true, ""
-	}
-	return false, fmt.Sprintf("用户：%d的MCP调用(%s)被禁止", userID, toolName)
 }
 
 // AddRule 添加 ACL 规则。

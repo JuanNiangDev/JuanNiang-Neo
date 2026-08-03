@@ -11,18 +11,16 @@ import (
 )
 
 // JuanNiangMiddleware 是 Eino ChatModelAgent 的自定义中间件，
-// 实现 ACL 权限检查和工具调用日志。
+// 实现动态指令注入、AgentLite 工具过滤和工具调用日志。
 // DynamicInstruction 和 AgentLite 通过 context (MsgSessionCtx) 传递，
 // 在 BeforeAgent 钩子中读取。
+// 注：ACL 现仅管理聊天黑名单（在 handleMessage 阶段过滤消息），
+// 不再对工具调用做 ACL 检查。
 type JuanNiangMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 
-	h          *HagoCenter
-	msg        *adapter.MessageEvent
-	userID     int64
-	chatAreaID string
-	isAdmin    bool
-	admins     []string
+	h   *HagoCenter
+	msg *adapter.MessageEvent
 }
 
 // BeforeAgent 在 Agent 运行前注入动态 Instruction 和按需过滤工具列表（AgentLite）。
@@ -103,9 +101,9 @@ func GetMsgSessionCtx(ctx context.Context) *MsgSessionCtx {
 }
 
 // WrapInvokableToolCall 包装每个工具的同步调用：
-//   - Admin 用户绕过 ACL
-//   - 非 Admin 进行 ACL 检查（内置工具走 CheckTool，MCP 工具走 CheckMCP）
+//   - 更新活跃循环的当前工具（供 Web 监控页展示）
 //   - 所有工具前台同步执行并记录日志
+// 注：ACL 只管理聊天黑名单，工具调用不再受 ACL 限制。
 func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 	ctx context.Context,
 	endpoint adk.InvokableToolCallEndpoint,
@@ -119,22 +117,6 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 		// 更新活跃循环的当前工具（供 Web 监控页展示）
 		if sc := GetMsgSessionCtx(ctx); sc != nil && m.h.Loops != nil {
 			m.h.Loops.UpdateTool(sc.LoopID, toolName)
-		}
-
-		// --- ACL 检查 ---
-		if !m.isAdmin {
-			isMCP := m.h.MCP != nil && m.h.MCP.HasTool(ctx, toolName)
-			var allowed bool
-			var denial string
-			if isMCP {
-				allowed, denial = m.h.ACL.CheckMCP(ctx, m.userID, m.chatAreaID, toolName)
-			} else {
-				allowed, denial = m.h.ACL.CheckTool(ctx, m.userID, m.chatAreaID, toolName)
-			}
-			if !allowed {
-				log.Info("ACL 拒绝工具调用", "user_id", m.userID, "tool", toolName, "reason", denial)
-				return denial, nil
-			}
 		}
 
 		// --- 直接执行（所有工具前台同步执行）---

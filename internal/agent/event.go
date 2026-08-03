@@ -319,14 +319,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		}
 	}
 
-	// 逐条 ACL 检查（无权限的消息从批次中剔除）
+	// 聊天黑名单检查：命中黑名单的消息直接丢弃（不进入 Agent 循环）
 	kept := events[:0]
 	for _, ev := range events {
 		m := ev.Message
 		if isAdmin(m.UserID, ev.Admins) || h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
 			kept = append(kept, ev)
 		} else {
-			log.Info("ACL 拒绝", "user_id", m.UserID, "chat_area_id", chatArea.ID)
+			log.Info("聊天黑名单丢弃消息", "user_id", m.UserID, "chat_area_id", chatArea.ID)
 		}
 	}
 	if len(kept) == 0 {
