@@ -23,8 +23,9 @@ func NewEinoModelAdapter(p Provider) *EinoModelAdapter {
 }
 
 // Generate calls the underlying provider's Chat method and returns an Eino message.
+// Tools are extracted from model.Option (Eino ADK passes them via model.WithTools).
 func (a *EinoModelAdapter) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
-	req := a.buildRequest(input)
+	req := a.buildRequest(input, opts...)
 
 	resp, err := a.provider.Chat(ctx, req)
 	if err != nil {
@@ -37,7 +38,7 @@ func (a *EinoModelAdapter) Generate(ctx context.Context, input []*schema.Message
 // Stream calls the underlying provider's ChatStream method and bridges the
 // provider's channel-based stream to an Eino StreamReader via schema.Pipe.
 func (a *EinoModelAdapter) Stream(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	req := a.buildRequest(input)
+	req := a.buildRequest(input, opts...)
 
 	providerCh, err := a.provider.ChatStream(ctx, req)
 	if err != nil {
@@ -68,8 +69,9 @@ func (a *EinoModelAdapter) WithTools(tools []*schema.ToolInfo) (model.ToolCallin
 	}, nil
 }
 
-// buildRequest constructs a ChatRequest from Eino messages and attached tools.
-func (a *EinoModelAdapter) buildRequest(input []*schema.Message) ChatRequest {
+// buildRequest constructs a ChatRequest from Eino messages, attached tools (via WithTools),
+// and model options (temperature, etc.).
+func (a *EinoModelAdapter) buildRequest(input []*schema.Message, opts ...model.Option) ChatRequest {
 	providerMsgs := make([]ChatMessage, 0, len(input))
 	for _, m := range input {
 		providerMsgs = append(providerMsgs, einoMsgToProvider(m))
@@ -77,13 +79,27 @@ func (a *EinoModelAdapter) buildRequest(input []*schema.Message) ChatRequest {
 
 	req := ChatRequest{Messages: providerMsgs}
 
-	if len(a.tools) > 0 {
-		req.Tools = make([]ToolDef, 0, len(a.tools))
-		for _, t := range a.tools {
+	// Extract tools and other options from model options
+	commonOpts := model.GetCommonOptions(&model.Options{}, opts...)
+
+	// Tools from options take priority over stored tools
+	tools := a.tools
+	if commonOpts.Tools != nil && len(commonOpts.Tools) > 0 {
+		tools = commonOpts.Tools
+	}
+
+	if len(tools) > 0 {
+		req.Tools = make([]ToolDef, 0, len(tools))
+		for _, t := range tools {
 			if td := einoToolInfoToProviderToolDef(t); td != nil {
 				req.Tools = append(req.Tools, *td)
 			}
 		}
+	}
+
+	// Apply temperature from options if set
+	if commonOpts.Temperature != nil {
+		req.Temperature = *commonOpts.Temperature
 	}
 
 	return req
