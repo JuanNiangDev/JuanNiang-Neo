@@ -62,6 +62,10 @@ type HagoCenter struct {
 	memberInfoMu    sync.RWMutex
 	memberInfoCache map[string]memberInfoEntry
 
+	// 消息批处理：同一 ChatArea 在短窗口内的消息合并为一次 Agent 处理
+	batchMu sync.Mutex
+	batches map[string]*pendingBatch
+
 	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
 	EinoAgent *adk.ChatModelAgent
 }
@@ -98,6 +102,7 @@ func NewHagoCenter() *HagoCenter {
 		CronJobEvents:   make(chan adapter.Event, 64),
 		Loops:           NewLoopTracker(),
 		memberInfoCache: make(map[string]memberInfoEntry),
+		batches:         make(map[string]*pendingBatch),
 	}
 }
 

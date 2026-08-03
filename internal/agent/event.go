@@ -193,21 +193,60 @@ func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event, r
 	}
 }
 
-// dispatchToAgent 根据消息类型获取 ChatArea，并通过并发控制派发给 Agent。
+// batchWindow 同一 ChatArea 消息的批处理窗口：窗口内的消息合并为一次 Agent 处理，
+// 避免多条消息同时到达时各自触发完整 ReAct 循环（重复执行任务 + 回复串味）。
+const batchWindow = time.Second
+
+// pendingBatch 同一 ChatArea 在批处理窗口内收集的消息。
+type pendingBatch struct {
+	events []adapter.Event
+	rs     ReplySettings
+	timer  *time.Timer
+}
+
+// dispatchToAgent 根据消息类型获取 ChatArea，通过批处理窗口合并后派发给 Agent。
 func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs ReplySettings) {
 	msg := ev.Message
 	chatArea := h.getChatArea(ctx, msg)
 	if chatArea == nil {
-		// 无法获取 ChatArea 时仍尝试处理（不限制并发）
-		h.handleMessage(ctx, ev, nil, rs)
+		// 无法获取 ChatArea 时直接处理（不限制并发、不批处理）
+		h.handleMessage(ctx, []adapter.Event{ev}, nil, rs)
 		return
 	}
+	h.enqueueBatch(ctx, ev, chatArea, rs)
+}
 
-	// 异步执行：goroutine + 并发控制
+// enqueueBatch 将消息加入对应 ChatArea 的待处理批次；窗口结束后统一派发。
+// 若窗口内又来新消息，直接追加到同一批次，保证同一时间每个 ChatArea 只有一个待处理批次。
+func (h *HagoCenter) enqueueBatch(ctx context.Context, ev adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+	h.batchMu.Lock()
+	if b, ok := h.batches[chatArea.ID]; ok {
+		b.events = append(b.events, ev)
+		h.batchMu.Unlock()
+		return
+	}
+	b := &pendingBatch{events: []adapter.Event{ev}, rs: rs}
+	h.batches[chatArea.ID] = b
+	h.batchMu.Unlock()
+
+	// 窗口结束后派发整个批次（复制事件，避免与后续追加竞争）
+	b.timer = time.AfterFunc(batchWindow, func() {
+		h.batchMu.Lock()
+		delete(h.batches, chatArea.ID)
+		events := append([]adapter.Event(nil), b.events...)
+		h.batchMu.Unlock()
+		if len(events) == 0 {
+			return
+		}
+		h.spawnBatch(ctx, events, b.rs, chatArea)
+	})
+}
+
+// spawnBatch 启动一个批次的 Agent 处理（relevance 检查与并发控制都在 goroutine 内，不阻塞事件循环）。
+func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs ReplySettings, chatArea *models.ChatArea) {
 	if h.Concurrency != nil {
 		go func() {
-			// relevance 策略的 LLM 判断放在 goroutine 内执行，避免阻塞事件循环
-			if rs.Strategy == models.StrategyRelevance && !ev.SkipReplyCheck && !h.checkReplyStrategy(ctx, ev, rs) {
+			if events = h.filterRelevant(ctx, events, rs); len(events) == 0 {
 				return
 			}
 			if err := h.Concurrency.Acquire(ctx, chatArea.ID); err != nil {
@@ -215,14 +254,29 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 				return
 			}
 			defer h.Concurrency.Release(chatArea.ID)
-			h.handleMessage(ctx, ev, chatArea, rs)
+			h.handleMessage(ctx, events, chatArea, rs)
 		}()
-	} else {
-		if rs.Strategy == models.StrategyRelevance && !ev.SkipReplyCheck && !h.checkReplyStrategy(ctx, ev, rs) {
-			return
-		}
-		h.handleMessage(ctx, ev, chatArea, rs)
+		return
 	}
+
+	if events = h.filterRelevant(ctx, events, rs); len(events) == 0 {
+		return
+	}
+	h.handleMessage(ctx, events, chatArea, rs)
+}
+
+// filterRelevant 对批次内消息做相关性策略过滤（relevance 策略需要 LLM 判断，在此统一执行）。
+func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event, rs ReplySettings) []adapter.Event {
+	if rs.Strategy != models.StrategyRelevance {
+		return events
+	}
+	out := make([]adapter.Event, 0, len(events))
+	for _, ev := range events {
+		if ev.SkipReplyCheck || h.checkReplyStrategy(ctx, ev, rs) {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // getChatArea 根据消息类型获取或创建 ChatArea，失败返回 nil。
@@ -247,8 +301,14 @@ func (h *HagoCenter) getChatArea(ctx context.Context, msg *adapter.MessageEvent)
 	return area
 }
 
-func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
-	msg := ev.Message
+// handleMessage 处理一批消息（同一 ChatArea 在批处理窗口内合并的消息）。
+// 批内消息合并为一次 ReAct 循环：逐条做 ACL 检查/技能匹配/记忆/聊天记录，
+// 上下文包含全部用户消息（带发言人标识），最终回复一次（发给最后一条消息的目标会话）。
+func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+	if len(events) == 0 {
+		return
+	}
+	msg := events[len(events)-1].Message
 	userID := msg.UserID
 
 	// 如果没有传入 chatArea，尝试获取（fallback 路径）
@@ -259,11 +319,22 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 		}
 	}
 
-	// ACL 检查
-	if !isAdmin(userID, ev.Admins) && !h.ACL.CheckChat(ctx, userID, chatArea.ID) {
-		log.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID)
+	// 逐条 ACL 检查（无权限的消息从批次中剔除）
+	kept := events[:0]
+	for _, ev := range events {
+		m := ev.Message
+		if isAdmin(m.UserID, ev.Admins) || h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
+			kept = append(kept, ev)
+		} else {
+			log.Info("ACL 拒绝", "user_id", m.UserID, "chat_area_id", chatArea.ID)
+		}
+	}
+	if len(kept) == 0 {
 		return
 	}
+	events = kept
+	msg = events[len(events)-1].Message
+	userID = msg.UserID
 
 	// 确保 Session 存在（供 ChatRecord 持久化 + Token 用量累加使用）
 	sess, err := h.Session.GetOrCreate(ctx, chatArea.ID)
@@ -272,15 +343,41 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 		return
 	}
 
-	userMsg := strings.TrimSpace(msg.RawMessage)
-	matchedSkill, skillMatched := h.Skills.Match(userMsg)
+	// 收集批次内各条用户消息（带发言人标识）+ 技能匹配
+	var userMsgs []string
+	var memMsgs []shortterm.ChatMessage
+	var skillPromptContents []string
+	for _, ev := range events {
+		m := ev.Message
+		uMsg := strings.TrimSpace(m.RawMessage)
+		if uMsg == "" {
+			continue
+		}
+		// 记忆中的用户消息带发言人标识（昵称+QQ+群号），
+		// 避免多人同时发言时 LLM 混淆消息归属
+		memMsg := uMsg
+		if speaker := buildMemorySpeaker(m); speaker != "" {
+			memMsg = speaker + uMsg
+		}
+		userMsgs = append(userMsgs, memMsg)
+		memMsgs = append(memMsgs, shortterm.ChatMessage{Role: "user", Content: memMsg})
 
-	// 记忆中的用户消息带发言人标识（昵称+QQ+群号），
-	// 避免多人同时发言时 LLM 混淆消息归属（如 A 问天气、B 打招呼被混在一起）
-	memUserMsg := userMsg
-	if speaker := buildMemorySpeaker(msg); speaker != "" {
-		memUserMsg = speaker + userMsg
+		// 技能匹配（批内多条消息时合并收集提示词）
+		if s, ok := h.Skills.Match(uMsg); ok {
+			for _, refID := range s.PromptRefs {
+				if refID == "" {
+					continue
+				}
+				if sp, err := h.Prompt.GetByID(ctx, refID); err == nil {
+					skillPromptContents = append(skillPromptContents, "[Active Skill: "+s.Name+"]\n"+sp.Content)
+				}
+			}
+		}
 	}
+	if len(userMsgs) == 0 {
+		return
+	}
+	combinedUserMsg := strings.Join(userMsgs, "\n")
 
 	// 注册活跃 Agent 循环（供 Web 监控页展示当前正在执行的 ReAct 循环）
 	loopID := ""
@@ -290,7 +387,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 			MessageType: msg.MessageType,
 			TargetID:    getTargetID(msg),
 			UserID:      userID,
-			UserMsg:     userMsg,
+			UserMsg:     combinedUserMsg,
 		})
 		defer h.Loops.Unregister(loopID)
 	}
@@ -306,26 +403,12 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 		toolDescs += fmt.Sprintf("- %s: %s\n", t.Function.Name, t.Function.Description)
 	}
 
-	sessionCtxStr := h.buildSessionContext(ctx, msg, ev.Admins)
+	sessionCtxStr := h.buildSessionContext(ctx, msg, events[len(events)-1].Admins)
 	skillMem := ""
 	if h.Memory != nil {
 		skillMem = h.Memory.GetSkillMemory()
 	}
 	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs, skillMem)
-
-	// 缓存 Skill prompt（避免重复查询 DB）
-	var skillPromptContents []string
-	if skillMatched {
-		for _, refID := range matchedSkill.PromptRefs {
-			if refID == "" {
-				continue
-			}
-			sp, err := h.Prompt.GetByID(ctx, refID)
-			if err == nil {
-				skillPromptContents = append(skillPromptContents, "[Active Skill: "+matchedSkill.Name+"]\n"+sp.Content)
-			}
-		}
-	}
 
 	// ---------- 构建 Eino 消息列表 ----------
 	einoMsgs := []*einoschema.Message{
@@ -345,13 +428,19 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 			}
 		}
 	}
-	einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: memUserMsg})
-
-	// 写短期记忆 + 持久化聊天记录
-	if h.Memory != nil {
-		h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "user", Content: memUserMsg})
+	for _, mu := range userMsgs {
+		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: mu})
 	}
-	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0, nil)
+
+	// 写短期记忆 + 持久化聊天记录（批次内每条）
+	if h.Memory != nil {
+		for _, mm := range memMsgs {
+			h.Memory.AddShortTermMessage(ctx, chatArea.ID, mm)
+		}
+	}
+	for _, ev := range events {
+		h.Session.AppendRecord(ctx, chatArea.ID, ev.Message.UserID, "user", strings.TrimSpace(ev.Message.RawMessage), 0, nil)
+	}
 
 	// ---------- 回复策略 & AgentLite ----------
 	skipSilenceCheck := rs.Strategy == models.StrategyAlways
