@@ -2,7 +2,6 @@ package tool
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -536,7 +535,7 @@ except Exception as e:
 
 	if getT2I != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片。返回图片 URL，你需要用 [CQ:image,file=URL] 发送给用户。",
+			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片并直接发送给用户。你只需简短告知用户图片已生成即可，不要手动发送图片或构造 CQ 码。",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -553,7 +552,9 @@ except Exception as e:
 					HTML string `json:"html"`
 				}
 				json.Unmarshal(args, &p)
-				imgBytes, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
+
+				// 使用 Generate 获取图片 ID（而非 GenerateImage 返回的原始字节）
+				genResp, err := t2i.Generate(ctx, t2icaller.GenerateRequest{
 					HTML: p.HTML,
 					Options: &t2icaller.GenerateOptions{
 						Type:    t2icaller.ImageTypeJPEG,
@@ -563,11 +564,30 @@ except Exception as e:
 				if err != nil {
 					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
-				// 将 base64 编码的图片通过 T2I 服务的 URL 方式返回
-				b64 := base64.StdEncoding.EncodeToString(imgBytes)
-				imageURL := fmt.Sprintf("base64://%s", b64)
-				log.Info("T2I 图片已生成", "size_bytes", len(imgBytes), "image_url", imageURL[:min(80, len(imageURL))]+"...")
-				return fmt.Sprintf("图片已生成。URL: %s\n请使用 [CQ:image,file=%s] 发送给用户。", imageURL, imageURL), nil
+
+				// 构造图片 URL（处理 ID 可能已包含 "data/" 前缀的情况）
+				imageID := genResp.Data.ID
+				imageURL := t2i.Config.BaseURL + "/text2img/data/" + imageID
+
+				log.Info("T2I 图片已生成", "id", imageID, "image_url", imageURL)
+
+				// 直接通过 adapter 发送图片，不依赖 LLM 构造 CQ 码
+				msg := getCurrentMsg(ctx)
+				if msg != nil {
+					cqCode := fmt.Sprintf("[CQ:image,file=%s]", imageURL)
+					switch msg.MessageType {
+					case "private":
+						if _, err := adapter.SendPrivateMsg(msg.UserID, cqCode); err != nil {
+							log.Error("发送 T2I 图片失败(私聊)", "err", err)
+						}
+					case "group":
+						if _, err := adapter.SendGroupMsg(msg.GroupID, cqCode); err != nil {
+							log.Error("发送 T2I 图片失败(群聊)", "err", err)
+						}
+					}
+				}
+
+				return fmt.Sprintf("图片已生成并发送给用户。URL: %s", imageURL), nil
 			},
 		})
 	}
