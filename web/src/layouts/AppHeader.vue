@@ -9,7 +9,7 @@
     </v-btn>
 
     <div class="header-brand-box ms-3">
-      <img v-if="logoExists" src="/banner_2.png" alt="Logo" style="height: 22px; width: auto; border-radius: 4px" @error="logoExists = false" />
+      <img v-if="logoExists" src="/banner_2.png" alt="Logo" style="height: 20px; width: auto; border-radius: 4px" @error="logoExists = false" />
       <span class="brand-text">JuanNiang-Neo</span>
     </div>
 
@@ -22,17 +22,18 @@
 
     <v-menu offset="12" location="bottom end">
       <template #activator="{ props }">
-        <v-btn v-bind="props" variant="text" class="me-3" style="min-width: 0; padding: 0 6px; height: 44px">
-          <v-avatar size="34" class="me-2">
-            <v-img src="/avatar.jpg" cover />
+        <v-btn v-bind="props" variant="text" class="me-3" style="min-width: 0; padding: 0 6px; height: 46px">
+          <v-avatar size="34" class="me-2" color="primary" variant="tonal">
+            <v-img v-if="avatarExists" src="/avatar.jpg" cover @error="avatarExists = false" />
+            <v-icon v-else size="20">mdi-account</v-icon>
           </v-avatar>
           <span class="text-body-2 font-weight-medium hidden-xs">{{ username || 'Admin' }}</span>
           <v-icon size="16" class="ms-1">mdi-chevron-down</v-icon>
         </v-btn>
       </template>
-      <v-card rounded="lg" min-width="160" elevation="8">
+      <v-card rounded="lg" min-width="180" elevation="8">
         <v-list density="compact" class="pa-1">
-          <v-list-item prepend-icon="mdi-account-circle-outline" title="Admin" subtitle="管理员" />
+          <v-list-item prepend-icon="mdi-account-circle-outline" :title="username || 'Admin'" subtitle="管理员" />
           <v-divider class="my-1" />
           <v-list-item prepend-icon="mdi-key-change" title="修改密码" to="/settings" />
           <v-divider class="my-1" />
@@ -55,6 +56,7 @@ const authStore = useAuthStore()
 
 const username = ref(localStorage.getItem('username') || 'Admin')
 const logoExists = ref(true)
+const avatarExists = ref(true)
 const refreshing = ref(false)
 
 async function handleRefresh() {

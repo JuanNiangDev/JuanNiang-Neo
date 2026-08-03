@@ -70,30 +70,47 @@
       <v-row class="mt-3">
         <v-col cols="12" md="6" class="d-flex">
           <v-card rounded="lg" elevation="1" color="surface" class="flex-grow-1">
-            <v-card-item><template #title><span class="text-h6 font-weight-bold">系统资源</span></template></v-card-item>
+            <v-card-item>
+              <template #title>
+                <div class="d-flex align-center justify-space-between">
+                  <span class="text-h6 font-weight-bold">系统资源</span>
+                  <span class="text-caption text-medium-emphasis">{{ overview?.go_version ?? '-' }}</span>
+                </div>
+              </template>
+            </v-card-item>
             <v-card-text>
-              <v-list density="compact" color="surface">
-                <v-list-item>
-                  <template #prepend><v-icon color="blue" class="me-3">mdi-cpu-64-bit</v-icon></template>
-                  <v-list-item-title>CPU / Goroutines</v-list-item-title>
-                  <v-list-item-subtitle>{{ overview?.cpu_count ?? '-' }} 核 · {{ overview?.goroutine_num ?? 0 }} goroutines</v-list-item-subtitle>
-                </v-list-item>
-                <v-list-item>
-                  <template #prepend><v-icon color="green" class="me-3">mdi-memory</v-icon></template>
-                  <v-list-item-title>Heap Inuse / Alloc</v-list-item-title>
-                  <v-list-item-subtitle>{{ formatBytes(overview?.mem_heap_inuse_bytes ?? 0) }} / {{ formatBytes(overview?.mem_alloc_bytes ?? 0) }}</v-list-item-subtitle>
-                </v-list-item>
-                <v-list-item>
-                  <template #prepend><v-icon color="orange" class="me-3">mdi-harddisk</v-icon></template>
-                  <v-list-item-title>系统内存</v-list-item-title>
-                  <v-list-item-subtitle>{{ formatBytes(overview?.mem_sys_bytes ?? 0) }}</v-list-item-subtitle>
-                </v-list-item>
-                <v-list-item>
-                  <template #prepend><v-icon color="purple" class="me-3">mdi-language-go</v-icon></template>
-                  <v-list-item-title>Go 版本</v-list-item-title>
-                  <v-list-item-subtitle>{{ overview?.go_version ?? '-' }}</v-list-item-subtitle>
-                </v-list-item>
-              </v-list>
+              <div class="d-flex align-center" style="gap: 28px">
+                <!-- 左：Goroutine 仪表盘 -->
+                <div class="goroutine-box">
+                  <div ref="goroutineGaugeEl" class="goroutine-gauge-chart" />
+                  <div class="goroutine-label">Goroutines</div>
+                </div>
+
+                <!-- 右：进度条 -->
+                <div class="flex-grow-1">
+                  <div class="progress-item">
+                    <div class="progress-head">
+                      <span>内存使用</span>
+                      <span class="progress-val">{{ heapMB }} MB</span>
+                    </div>
+                    <v-progress-linear :model-value="heapPct" height="8" rounded color="#818cf8" bg-color="rgba(255,255,255,0.08)" />
+                  </div>
+                  <div class="progress-item">
+                    <div class="progress-head">
+                      <span>内存分配</span>
+                      <span class="progress-val">{{ allocMB }} MB</span>
+                    </div>
+                    <v-progress-linear :model-value="allocPct" height="8" rounded color="#34d399" bg-color="rgba(255,255,255,0.08)" />
+                  </div>
+                  <div class="progress-item">
+                    <div class="progress-head">
+                      <span>CPU 核数</span>
+                      <span class="progress-val">{{ cpuCount }} 核</span>
+                    </div>
+                    <v-progress-linear :model-value="cpuPct" height="8" rounded color="#60a5fa" bg-color="rgba(255,255,255,0.08)" />
+                  </div>
+                </div>
+              </div>
             </v-card-text>
           </v-card>
         </v-col>
@@ -178,15 +195,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { init, use, type EChartsType } from 'echarts/core'
-import { LineChart } from 'echarts/charts'
+import { LineChart, GaugeChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 import { overviewApi, adapterApi, type OverviewResp, type AdapterStatus, type DailyTokenUsageResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
-use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
+use([LineChart, GaugeChart, GridComponent, TooltipComponent, CanvasRenderer])
 
 const toastStore = useToastStore()
 const loading = ref(true)
@@ -198,6 +215,24 @@ const adapterStatus = ref<AdapterStatus>({ running: false, listen_addr: '', self
 const tokenDays = ref('7')
 const chartEl = ref<HTMLDivElement | null>(null)
 let chart: EChartsType | null = null
+
+// 系统资源：Goroutine 仪表盘
+const goroutineGaugeEl = ref<HTMLDivElement | null>(null)
+let goroutineGaugeChart: EChartsType | null = null
+
+// 系统资源进度条数据（内存使用显示数值，非百分比）
+const heapMB = computed(() => Math.round((overview.value?.mem_heap_inuse_bytes ?? 0) / 1048576))
+const allocMB = computed(() => Math.round((overview.value?.mem_alloc_bytes ?? 0) / 1048576))
+const cpuCount = computed(() => overview.value?.cpu_count ?? 0)
+const goroutines = computed(() => overview.value?.goroutine_num ?? 0)
+
+const maxMemMB = computed(() => Math.max(10, Math.ceil(Math.max(heapMB.value, allocMB.value) / 10) * 10))
+const maxCpu = computed(() => Math.max(4, Math.ceil(cpuCount.value / 4) * 4))
+const maxGoroutines = computed(() => Math.max(10, Math.ceil(goroutines.value / 10) * 10))
+
+const heapPct = computed(() => Math.min(100, Math.round((heapMB.value / maxMemMB.value) * 100)))
+const allocPct = computed(() => Math.min(100, Math.round((allocMB.value / maxMemMB.value) * 100)))
+const cpuPct = computed(() => Math.min(100, Math.round((cpuCount.value / maxCpu.value) * 100)))
 
 async function fetchTokenUsage() {
   try {
@@ -231,9 +266,9 @@ function renderTokenChart(list: DailyTokenUsageResp[]) {
       smooth: true,
       symbolSize: 6,
       data: list.map(i => i.token_count),
-      lineStyle: { width: 2, color: '#ff6b9d' },
-      itemStyle: { color: '#ff6b9d' },
-      areaStyle: { color: 'rgba(255,107,157,0.18)' },
+      lineStyle: { width: 2, color: '#6366f1' },
+      itemStyle: { color: '#6366f1' },
+      areaStyle: { color: 'rgba(99,102,241,0.18)' },
     }],
   })
 }
@@ -267,13 +302,50 @@ async function fetchAll() {
   } catch { toastStore.error('获取数据失败') } finally { loading.value = false }
 }
 
+// Goroutine 环形仪表盘
+function renderGauges() {
+  if (!goroutineGaugeEl.value) return
+  if (!goroutineGaugeChart) goroutineGaugeChart = init(goroutineGaugeEl.value)
+
+  const value = goroutines.value
+  const max = maxGoroutines.value
+
+  goroutineGaugeChart.setOption({
+    series: [{
+      type: 'gauge',
+      center: ['50%', '50%'],
+      radius: '100%',
+      startAngle: 210,
+      endAngle: -30,
+      min: 0,
+      max,
+      axisLine: { lineStyle: { width: 10, color: [[1, 'rgba(255,255,255,0.08)']] } },
+      progress: { show: true, width: 10, itemStyle: { color: '#fbbf24' } },
+      pointer: { show: false },
+      axisTick: { show: false },
+      splitLine: { show: false },
+      axisLabel: { show: false },
+      detail: {
+        valueAnimation: true,
+        offsetCenter: [0, '0%'],
+        fontSize: 20,
+        fontWeight: 700,
+        color: '#e8ecf4',
+      },
+      data: [{ value }],
+    }],
+  })
+}
+
 async function onGlobalRefresh() {
   await fetchAll()
+  // 需在 loading 置 false（DOM 已渲染出仪表盘容器）后再绘制
+  await nextTick()
+  renderGauges()
   await fetchTokenUsage()
 }
 
 function formatNumber(n: number) { return n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1_000 ? (n / 1_000).toFixed(1) + 'K' : String(n) }
-function formatBytes(bytes: number) { return bytes >= 1_073_741_824 ? (bytes / 1_073_741_824).toFixed(2) + ' GB' : bytes >= 1_048_576 ? (bytes / 1_048_576).toFixed(1) + ' MB' : bytes >= 1_024 ? (bytes / 1_024).toFixed(0) + ' KB' : bytes + ' B' }
 
 onMounted(async () => {
   await onGlobalRefresh()
@@ -281,13 +353,15 @@ onMounted(async () => {
   window.addEventListener('resize', onResize)
 })
 
-function onResize() { chart?.resize() }
+function onResize() { chart?.resize(); goroutineGaugeChart?.resize() }
 
 onBeforeUnmount(() => {
   window.removeEventListener('global-refresh', onGlobalRefresh)
   window.removeEventListener('resize', onResize)
   chart?.dispose()
   chart = null
+  goroutineGaugeChart?.dispose()
+  goroutineGaugeChart = null
 })
 </script>
 
@@ -295,5 +369,38 @@ onBeforeUnmount(() => {
 .token-chart {
   width: 100%;
   height: 300px;
+}
+.goroutine-box {
+  width: 150px;
+  flex-shrink: 0;
+  text-align: center;
+}
+.goroutine-gauge-chart {
+  width: 150px;
+  height: 150px;
+}
+.goroutine-label {
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.55);
+}
+.progress-item {
+  margin-bottom: 22px;
+}
+.progress-item:last-child {
+  margin-bottom: 0;
+}
+.progress-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.7);
+  margin-bottom: 8px;
+}
+.progress-val {
+  font-family: 'Space Mono', 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: #e8ecf4;
 }
 </style>
