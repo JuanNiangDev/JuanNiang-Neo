@@ -40,6 +40,8 @@ export interface ChatRecordListResp { total: number; list: ChatRecordResp[] }
 
 export interface OverviewResp { chat_area_count: number; mcp_count: number; adapter_count: number; plugin_count: number; provider_count: number; skill_count: number; session_count: number; total_token_usage: number; cpu_count: number; goroutine_num: number; mem_alloc_bytes: number; mem_sys_bytes: number; mem_heap_inuse_bytes: number; go_version: string; t2i_active: boolean; t2i_healthy: boolean; sandbox_active: boolean; sandbox_healthy: boolean }
 
+export interface DailyTokenUsageResp { date: string; token_count: number }
+
 export interface T2IConfigResp { base_url: string; timeout: number; is_active: boolean; healthy: boolean }
 export interface UpdateT2IConfigReq { base_url: string; timeout?: number; is_active: boolean }
 
@@ -154,6 +156,7 @@ export const chatRecordApi = {
 // ======== Overview ========
 export const overviewApi = {
   get: () => client.get('/overview'),
+  dailyTokenUsage: (days: number = 7) => client.get('/overview/daily-token-usage', { params: { days } }),
 }
 
 // ======== T2I ========

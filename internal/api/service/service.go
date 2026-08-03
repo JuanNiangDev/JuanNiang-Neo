@@ -1287,6 +1287,38 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	}))
 }
 
+// GetDailyTokenUsage 返回近 N 天（默认 7，上限 30）的每日 Token 用量，日期连续、缺失补 0。
+func (s *Service) GetDailyTokenUsage(ctx context.Context, c *app.RequestContext) {
+	days := 7
+	if v := c.Query("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 30 {
+			days = n
+		}
+	}
+
+	end := time.Now()
+	start := end.AddDate(0, 0, -(days - 1))
+
+	list, err := s.DAO.TokenUsageDaily.ListByRange(ctx, start.Format("2006-01-02"), end.Format("2006-01-02"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 补齐缺失日期为 0，保证前端折线图连续
+	byDate := make(map[string]int64, len(list))
+	for _, item := range list {
+		byDate[item.Date] = item.TokenCount
+	}
+	out := make([]dto.DailyTokenUsageResp, 0, days)
+	for i := 0; i < days; i++ {
+		d := start.AddDate(0, 0, i).Format("2006-01-02")
+		out = append(out, dto.DailyTokenUsageResp{Date: d, TokenCount: byDate[d]})
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, out))
+}
+
 // ====================================================================
 // Memory
 // ====================================================================

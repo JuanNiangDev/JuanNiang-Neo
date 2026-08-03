@@ -87,6 +87,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 
 	// Overview
 	api.GET("/overview", auth, svc.GetOverview)
+	api.GET("/overview/daily-token-usage", auth, svc.GetDailyTokenUsage)
 
 	// Chat Areas
 	api.GET("/chat-areas", auth, svc.GetChatAreas)

@@ -12,9 +12,18 @@ import (
 	"time"
 )
 
+// WebhookPluginInfo webhook 插件信息（GET /webhook 列表用）。
+type WebhookPluginInfo struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"` // URL 路径，如 /webhook/{plugin_name}
+	Enabled bool   `json:"enabled"`
+}
+
 // PluginWebhookRouter routes webhook requests to specific plugins by name.
 type PluginWebhookRouter interface {
 	RouteWebhook(pluginName string, path string, method string, payload map[string]any) (consumed bool, reply string)
+	// ListWebhookPlugins 返回所有启用 webhook 的插件及其 URL 路径。
+	ListWebhookPlugins() []WebhookPluginInfo
 }
 
 // WebhookConfig Webhook 适配器配置。
@@ -169,6 +178,19 @@ func (w *WebhookAdapter) handleRequest(rw http.ResponseWriter, r *http.Request) 
 	// Token 校验
 	if w.cfg.Token != "" && !checkWebhookAuth(r, w.cfg.Token) {
 		writeJSON(rw, http.StatusForbidden, WebhookResponse{Code: 403, Message: "forbidden"})
+		return
+	}
+
+	// GET /webhook 或 /webhook/ → 返回所有启用 webhook 的插件及其 URL 路径（JSON）
+	if r.Method == http.MethodGet && strings.Trim(r.URL.Path, "/") == "webhook" {
+		w.mu.RLock()
+		router := w.pluginRouter
+		w.mu.RUnlock()
+		list := []WebhookPluginInfo{}
+		if router != nil {
+			list = router.ListWebhookPlugins()
+		}
+		writeJSON(rw, http.StatusOK, WebhookResponse{Code: 0, Message: "ok", Metadata: list})
 		return
 	}
 

@@ -193,16 +193,14 @@ type ChatRecordResp struct {
 }
 
 type OverviewResp struct {
-	ChatAreaCount   int64 `json:"chat_area_count"`
-	MCPCount        int64 `json:"mcp_count"`
-	AdapterCount    int64 `json:"adapter_count"`
-	PluginCount     int64 `json:"plugin_count"`
-	ProviderCount   int   `json:"provider_count"`
-	SkillCount      int   `json:"skill_count"`
-	SessionCount    int   `json:"session_count"`
-	TotalTokenUsage int64 `json:"total_token_usage"`
-
-	// 系统状态
+	ChatAreaCount     int64  `json:"chat_area_count"`
+	MCPCount          int64  `json:"mcp_count"`
+	AdapterCount      int64  `json:"adapter_count"`
+	PluginCount       int64  `json:"plugin_count"`
+	ProviderCount     int    `json:"provider_count"`
+	SkillCount        int    `json:"skill_count"`
+	SessionCount      int    `json:"session_count"`
+	TotalTokenUsage   int64  `json:"total_token_usage"`
 	CPUCount          int    `json:"cpu_count"`            // 逻辑 CPU 核数
 	GoroutineNum      int    `json:"goroutine_num"`        // 当前 goroutine 数
 	MemAllocBytes     uint64 `json:"mem_alloc_bytes"`      // 堆已分配 (活跃对象)
@@ -218,6 +216,12 @@ type OverviewResp struct {
 	T2IHealthy     bool `json:"t2i_healthy"`     // HealthCheck 通过
 	SandboxActive  bool `json:"sandbox_active"`  // 客户端已加载
 	SandboxHealthy bool `json:"sandbox_healthy"` // HealthCheck 通过
+}
+
+// DailyTokenUsageResp 单日 Token 用量（折线图数据点）。
+type DailyTokenUsageResp struct {
+	Date       string `json:"date"`
+	TokenCount int64  `json:"token_count"`
 }
 
 type ChatRecordListResp struct {

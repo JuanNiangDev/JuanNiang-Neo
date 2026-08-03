@@ -516,6 +516,30 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 	return false
 }
 
+// ListWebhookPlugins 返回所有启用 webhook 的插件及其 URL 路径（GET /webhook 列表用）。
+// 判定条件：已加载 + 拥有 webhook 权限 + 定义了 on_webhook 回调。
+func (pe *PluginEngine) ListWebhookPlugins() []adapter.WebhookPluginInfo {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+
+	var out []adapter.WebhookPluginInfo
+	for _, p := range pe.plugins {
+		if !p.HasPermission("webhook") {
+			continue
+		}
+		fn := p.State.GetGlobal("on_webhook")
+		if fn.Type() != lua.LTFunction {
+			continue
+		}
+		out = append(out, adapter.WebhookPluginInfo{
+			Name:    p.Manifest.Name,
+			Path:    "/webhook/" + p.Manifest.Name,
+			Enabled: true,
+		})
+	}
+	return out
+}
+
 // RouteWebhook routes a webhook request to a specific plugin by name.
 // Returns (consumed, reply).
 func (pe *PluginEngine) RouteWebhook(pluginName string, path string, method string, payload map[string]any) (consumed bool, reply string) {

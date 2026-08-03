@@ -30,3 +30,28 @@
 ### 投递后跳过最终回复未生效（Flush 清空队列）
 - **问题**：`DeferredSendQueue.Flush` 会清空队列，但 `handleMessage` 在 Flush 之后才调用 `DeliveredTo` 判断是否已向当前会话投递，导致永远返回 false，静默抑制逻辑从未生效
 - **修复**：`DeliveredTo` 判断移到 `Flush` 之前
+
+## Token 统计
+
+### 修复 Token 统计不生效
+- **问题**：Eino 输出循环只收集文本，未读取 `ResponseMeta.Usage.TotalTokens`；`Session.UpdateTokenUsage` 无任何调用方；`recordChat` 的 token 参数写死 0，导致 `sessions.token_usage` 与 `chat_records.token_count`（Overview 总用量来源）恒为 0
+- **修复**：`handleMessage` 在收集输出时累加每次 LLM 调用的 TotalTokens（ReAct 每轮都计入）；调用 `Session.RecordTokenUsage` 写入会话总账；assistant 聊天记录的 `token_count` 写入真实值
+
+### 新增：每日 Token 用量统计
+- 新增 `token_usage_daily` 表（`TokenUsageDaily` 模型）：`date`（YYYY-MM-DD，主键）+ `token_count`，按自然日 UPSERT 累加，跨全部会话
+- `SessionManager.RecordTokenUsage` 同时写入会话总账（Session.TokenUsage）与每日统计，`UpdateTokenUsage` 由它取代
+- `TokenUsageDailyDAO`：`AddTokenUsage`（UPSERT）/ `ListByRange`（按日期区间查询）/ `Total`（历史累计）
+- 已注册 GORM AutoMigrate，启动自动建表
+
+### 新增：每日 Token 用量 Web API
+- `GET /api/v1/overview/daily-token-usage?days=7|15|30`（默认 7，上限 30），返回连续日期序列，缺失日期补 0
+- `service.GetDailyTokenUsage` + `dto.DailyTokenUsageResp`
+
+### 新增：仪表盘 Token 用量折线图
+- DashboardPage 新增「Token 用量趋势」卡片，支持近 7/15/30 天切换
+- 引入 echarts（按需引入 LineChart + Grid/Tooltip + CanvasRenderer），按暗色主题配色
+
+### 新增：Webhook /webhook 插件列表路由
+- Webhook 服务 `GET /webhook`（或 `/webhook/`）返回所有启用 webhook 的插件及其 URL 路径，JSON 格式：`{code, message, metadata: [{name, path, enabled}]}`
+- `adapter.PluginWebhookRouter` 接口新增 `ListWebhookPlugins`，由 `PluginEngine` 实现（判定：已加载 + webhook 权限 + 定义 on_webhook）
+- 其他方法（如 POST /webhook）仍走原有广播逻辑，不受影响
