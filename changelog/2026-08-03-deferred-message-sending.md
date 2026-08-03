@@ -73,3 +73,7 @@
 - **后端**：新增 `agent.LoopTracker`（内存态）跟踪当前活跃的 ReAct 循环（ChatArea/消息类型/目标/用户消息/当前工具/开始时间）；`handleMessage` 注册/注销，中间件在工具调用时更新当前工具
 - **API**：`GET /api/v1/agent/loops` 替换原 `/background-tasks` 路由（旧 service/dto/前端 API 一并移除，模型与 DAO 保留）
 - **前端**：BackgroundTasksPage 重写为 AgentLoopsPage，每 3 秒自动刷新，展示活跃循环及已运行时长；侧边栏/路由改名为 "Agent 循环"（`/agent-loops`）
+
+### 修复：总 Token 用量不更新
+- **问题**：投递抑制路径下（Agent 通过 send_* 工具向当前会话投递后最终回复被抑制），assistant 聊天记录由延迟投递消息写入，其 token_count 写死为 0，导致 `chat_records.token_count` 总和（Overview 总用量）不增长
+- **修复**：交付消息记录改为携带真实 token 用量；同一轮多次投递时 token 只记一次，避免重复计数

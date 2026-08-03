@@ -413,12 +413,20 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 	// 将投递给当前会话的交付消息写回记忆与聊天记录：
 	// 否则对话历史会停留在"用户消息无人回复"，导致后续 LLM 误以为旧任务仍待执行
 	// （如用户再次发言时，模型把上一个未回复的天气请求又执行一遍）。
+	// 注意：交付消息即本轮的 assistant 回复，需携带真实 token 用量，
+	// 否则 chat_records.token_count 总和（Overview 总用量）不会增长。
+	recordedTokens := false
 	for _, s := range flushed {
 		if !s.Delivery || s.MessageType != msg.MessageType || s.TargetID != currentTargetID {
 			continue
 		}
 		if text := s.Text(); text != "" {
-			h.recordChat(ctx, chatArea.ID, userID, "assistant", text, 0, callsJSON)
+			tokens := 0
+			if !recordedTokens {
+				tokens = int(totalTokens)
+				recordedTokens = true // 同一轮的 token 只记一次，避免多条投递重复计数
+			}
+			h.recordChat(ctx, chatArea.ID, userID, "assistant", text, tokens, callsJSON)
 			if h.Memory != nil {
 				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: text})
 			}
