@@ -2,7 +2,8 @@ package agent
 
 import (
 	"context"
-	"log/slog"
+	"fmt"
+	"sync"
 	"time"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
@@ -11,9 +12,9 @@ import (
 	"JuanNiang-Neo/internal/agent/cronjob"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
-	"JuanNiang-Neo/internal/agent/memory/bgtask"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
+	"JuanNiang-Neo/internal/agent/memory/skillmem"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/session"
@@ -23,47 +24,59 @@ import (
 	"JuanNiang-Neo/internal/core/cache"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/pluggin"
+
+	"github.com/cloudwego/eino/adk"
+	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
 )
 
 // HagoCenter 是 Agent 系统的中央调度器，聚合所有子模块。
 type HagoCenter struct {
-	Adapter   *adapter.Adapter
+	Adapter        *adapter.Adapter
 	WebhookAdapter *adapter.WebhookAdapter
-	Providers *provider.ProviderGroup
-	MCP       *mcp.MCPGroup
-	Memory    *memory.MemoryGroup
-	Prompt    *prompt.PromptManager
-	Session   *session.SessionManager
-	Tools     *tool.ToolRegistry
-	Skills    *skill.SkillEngine
-	ACL       *acl.ACL
-	DAO       *dao.Bundle
+	Providers      *provider.ProviderGroup
+	MCP            *mcp.MCPGroup
+	Memory         *memory.MemoryGroup
+	Prompt         *prompt.PromptManager
+	Session        *session.SessionManager
+	Tools          *tool.ToolRegistry
+	Skills         *skill.SkillEngine
+	ACL            *acl.ACL
+	DAO            *dao.Bundle
 
 	// T2I 和 Sandbox 运行时客户端（可通过 API 热更新）
 	SandboxClient *sandboxcaller.Client
 	T2IClient     *t2icaller.Client
 
-	BgTaskExecutor    *BackgroundTaskExecutor
-	Drainer           *DrainerAgent
-	OutputChan        chan DrainerOutput // BgTaskExecutor → Drainer
-	BgTaskResultChan  chan DrainerOutput // Drainer → 主 Agent 事件循环
-	CronJobManager    *cronjob.Manager
-	CronJobEvents     chan adapter.Event // CronJob → 主 Agent 事件循环
-	PluginEngine      *pluggin.PluginEngine
+	Concurrency    *ConcurrencyManager
+	CronJobManager *cronjob.Manager
+	CronJobEvents  chan adapter.Event // CronJob → 主 Agent 事件循环
+	PluginEngine   *pluggin.PluginEngine
+	Loops          *LoopTracker // 当前活跃的 Agent ReAct 循环（监控展示）
 
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
 	SelfQQ       int64
 	SelfNickname string
 
-	// StripMarkdown 缓存回复策略中的去 Markdown 开关（每次 processEvent 刷新）
-	StripMarkdown bool
-	// DisableSplit 缓存 AgentLite 模式开关，为 true 时 sendReply 不拆分多段消息
-	DisableSplit bool
+	// 发送者群内信息缓存（避免每条群消息都调 OneBot11 get_group_member_info）
+	memberInfoMu    sync.RWMutex
+	memberInfoCache map[string]memberInfoEntry
 
-	// CurrentSessionCtx 当前会话上下文（供 get_session_info 工具使用）
-	CurrentSessionCtx string
-	// CurrentMsg 当前正在处理的消息（供工具获取发送目标）
-	CurrentMsg *adapter.MessageEvent
+	// 消息批处理：同一 ChatArea 在短窗口内的消息合并为一次 Agent 处理
+	batchMu sync.Mutex
+	batches map[string]*pendingBatch
+
+	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
+	EinoAgent *adk.ChatModelAgent
+}
+
+// memberInfoTTL 群成员信息缓存有效期（角色变更不频繁，10 分钟足够）。
+const memberInfoTTL = 10 * time.Minute
+
+// memberInfoEntry 缓存条目。
+type memberInfoEntry struct {
+	info      *adapter.GroupMemberInfo
+	expiresAt time.Time
 }
 
 // Config HagoCenter 初始化配置。
@@ -86,9 +99,10 @@ func NewHagoCenter() *HagoCenter {
 		MCP:             mcp.NewMCPGroup(),
 		Tools:           tool.NewToolRegistry(),
 		Skills:          skill.NewSkillEngine(),
-		OutputChan:       make(chan DrainerOutput, 128),
-		BgTaskResultChan: make(chan DrainerOutput, 128),
-		CronJobEvents:    make(chan adapter.Event, 64),
+		CronJobEvents:   make(chan adapter.Event, 64),
+		Loops:           NewLoopTracker(),
+		memberInfoCache: make(map[string]memberInfoEntry),
+		batches:         make(map[string]*pendingBatch),
 	}
 }
 
@@ -106,38 +120,55 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	if info, err := h.Adapter.GetLoginInfo(); err == nil && info != nil {
 		h.SelfNickname = info.Nickname
 	}
-	slog.Info("机器人身份信息", "self_qq", h.SelfQQ, "self_nickname", h.SelfNickname)
+	log.Info("机器人身份信息", "self_qq", h.SelfQQ, "self_nickname", h.SelfNickname)
 
 	// 存储 T2I/Sandbox 运行时客户端
 	h.SandboxClient = cfg.Sandbox
 	h.T2IClient = cfg.T2I
 
-	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径)
-	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.Cache)
+	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径) + 每日 Token 统计
+	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.DAO.TokenUsageDaily, cfg.Cache)
 
-	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea) + 后台任务记忆
-	stConf := shortterm.Config{WindowSize: 20, AutoCompact: false}
-	ltConf := longterm.Config{HotAreaSize: 10, HotMemoryTTL: 24 * time.Hour}
+	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea)
+	stConf := shortterm.Config{WindowSize: 100, AutoCompact: true}
+	ltConf := longterm.Config{HotAreaSize: 10}
 	st := shortterm.New(stConf, cfg.Cache)
 	lt := longterm.New(ltConf, cfg.DAO.LongTermMemItem)
-	bgt := bgtask.New()
-	h.Memory = memory.NewMemoryGroup(st, lt, bgt)
+	sm := skillmem.New(cfg.DAO.SkillMemory)
+	if err := sm.Warmup(ctx); err != nil {
+		log.Warn("技能记忆预热失败", "err", err)
+	}
+	h.Memory = memory.NewMemoryGroup(st, lt, sm)
+	// 设置 LLM Provider 供 Compact 中的技能记忆更新使用
+	h.Memory.LLMProvider = h.Providers.SelectModel(provider.ModelTypeText)
 
 	h.Prompt = prompt.NewPromptManager(cfg.DAO.Prompt)
 	h.Skills = skill.NewSkillEngine()
 
 	// 启动时种子系统锁定提示词（幂等：已存在则同步内容）
 	if err := h.Prompt.EnsureSystemPrompt(ctx); err != nil {
-		slog.Warn("系统锁定提示词种子失败", "err", err)
+		log.Warn("系统锁定提示词种子失败", "err", err)
 	}
 
 	// 使用函数 getter 注册工具，支持运行时客户端热更新
+	// 注意：getSessionCtx / getCurrentMsg / getRecentMsgs 从 context 中读取 per-message 状态，
+	// 避免 HagoCenter 共享字段导致的数据竞争。
 	tool.RegisterBuiltinTools(h.Tools, cfg.Adapter,
 		func() *sandboxcaller.Client { return h.SandboxClient },
 		func() *t2icaller.Client { return h.T2IClient },
 		h.Providers.SelectModel(provider.ModelTypeImage),
-		func() string { return h.CurrentSessionCtx },
-		func() *adapter.MessageEvent { return h.CurrentMsg },
+		func(ctx context.Context) string {
+			if sc := GetMsgSessionCtx(ctx); sc != nil {
+				return sc.SessionCtxStr
+			}
+			return ""
+		},
+		func(ctx context.Context) *adapter.MessageEvent {
+			if sc := GetMsgSessionCtx(ctx); sc != nil {
+				return sc.Msg
+			}
+			return nil
+		},
 		func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error) {
 			return h.getRecentMessagesByMsgType(ctx, msgType, targetID, limit)
 		},
@@ -153,9 +184,13 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		return err
 	}
 
-	h.BgTaskExecutor = NewBackgroundTaskExecutor(h.Tools, h.MCP, h.DAO.BackgroundTask, h.OutputChan)
-	h.Drainer = NewDrainerAgent(h.OutputChan, h.BgTaskResultChan)
+	h.Concurrency = NewConcurrencyManager(8)
 	h.CronJobManager = cronjob.New(h.DAO.CronJob, h.CronJobEvents)
+
+	// 构建 Eino ChatModelAgent（替代手写的 ReAct 循环）
+	if err := h.buildEinoAgent(ctx); err != nil {
+		log.Warn("Eino Agent 构建失败，将回退到旧模式", "err", err)
+	}
 
 	return nil
 }
@@ -180,7 +215,7 @@ func (h *HagoCenter) loadProviders(ctx context.Context) error {
 		})
 		h.Providers.AddProvider(pr)
 	}
-	slog.Info("Provider 加载完成", "count", len(list))
+	log.Info("Provider 加载完成", "count", len(list))
 	return nil
 }
 
@@ -210,12 +245,12 @@ func (h *HagoCenter) loadMCPs(ctx context.Context) error {
 			AutoReconnect: srv.AutoReconnect,
 		})
 		if err := client.Connect(ctx); err != nil {
-			slog.Error("MCP 连接失败", "name", srv.Name, "err", err)
+			log.Error("MCP 连接失败", "name", srv.Name, "err", err)
 			continue
 		}
 		h.MCP.AddMCP(client)
 	}
-	slog.Info("MCP 加载完成", "count", len(list))
+	log.Info("MCP 加载完成", "count", len(list))
 	return nil
 }
 
@@ -231,7 +266,7 @@ func (h *HagoCenter) loadSkills(ctx context.Context) error {
 			Description:  s.Description,
 			Keywords:     s.Keywords,
 			RegexPattern: s.RegexPattern,
-			PromptRef:    s.PromptRef,
+			PromptRefs:   s.PromptRefs,
 			ToolRefs:     s.ToolRefs,
 			McpRefs:      s.McpRefs,
 			IsActive:     s.IsActive,
@@ -239,17 +274,58 @@ func (h *HagoCenter) loadSkills(ctx context.Context) error {
 			Priority:     s.Priority,
 		})
 	}
-	slog.Info("Skill 加载完成", "count", len(list))
+	log.Info("Skill 加载完成", "count", len(list))
 	return nil
 }
 
-// Start 启动 Agent 系统 (后台任务执行器 + 排水 Agent + 事件循环 + CronJob 调度器)。
+// buildEinoAgent 构建 Eino ChatModelAgent（替代手写的 ReAct 循环）。
+// 在 Init 末尾调用，要求 Providers 和 Tools 已就绪。
+func (h *HagoCenter) buildEinoAgent(ctx context.Context) error {
+	// 1. 选取文本模型并包装为 Eino 适配器
+	llm := h.Providers.SelectModel(provider.ModelTypeText)
+	if llm == nil {
+		return fmt.Errorf("无可用 Text 模型，无法构建 Eino Agent")
+	}
+	modelAdapter := provider.NewEinoModelAdapter(llm)
+
+	// 2. 将内置工具 + MCP 工具转换为 Eino InvokableTool
+	einoInvTools := tool.BuildEinoTools(h.Tools, h.MCP, h.MCP)
+
+	// 类型转换: []tool.InvokableTool → []tool.BaseTool (Eino 要求)
+	einoBaseTools := make([]einotool.BaseTool, len(einoInvTools))
+	for i, t := range einoInvTools {
+		einoBaseTools[i] = t
+	}
+
+	// 3. 创建 Agent（Instruction 为空，每条消息由 middleware.BeforeAgent 动态注入）
+	agent, err := adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        "juan-niang-neo",
+		Description: "QQ 群聊 AI 助手",
+		Model:       modelAdapter,
+		ToolsConfig: adk.ToolsConfig{
+			ToolsNodeConfig: compose.ToolsNodeConfig{
+				Tools: einoBaseTools,
+			},
+		},
+		MaxIterations: 20,
+		Handlers: []adk.ChatModelAgentMiddleware{
+			&JuanNiangMiddleware{h: h},
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("创建 Eino ChatModelAgent 失败: %w", err)
+	}
+
+	h.EinoAgent = agent
+	log.Info("Eino ChatModelAgent 已就绪", "tools", len(einoBaseTools))
+	return nil
+}
+
+// Start 启动 Agent 系统 (事件循环 + CronJob 调度器)。
 func (h *HagoCenter) Start(ctx context.Context) error {
-	go h.BgTaskExecutor.Run(ctx)
-	go h.Drainer.Run(ctx)
 	go h.runEventLoop(ctx)
 	go h.CronJobManager.Run(ctx)
-	slog.Info("HagoCenter 已启动")
+	log.Info("HagoCenter 已启动")
 	return nil
 }
 
@@ -271,9 +347,37 @@ func (h *HagoCenter) buildToolList(ctx context.Context) []provider.ToolDef {
 	return tools
 }
 
+// getGroupMemberInfoCached 带缓存的群成员信息查询：命中缓存直接返回，未命中调 OneBot11 API 并缓存。
+func (h *HagoCenter) getGroupMemberInfoCached(groupID, userID int64) (*adapter.GroupMemberInfo, error) {
+	if h.Adapter == nil {
+		return nil, nil
+	}
+	key := fmt.Sprintf("%d:%d", groupID, userID)
+	now := time.Now()
+
+	h.memberInfoMu.RLock()
+	if e, ok := h.memberInfoCache[key]; ok && now.Before(e.expiresAt) {
+		h.memberInfoMu.RUnlock()
+		return e.info, nil
+	}
+	h.memberInfoMu.RUnlock()
+
+	info, err := h.Adapter.GetGroupMemberInfo(groupID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	h.memberInfoMu.Lock()
+	h.memberInfoCache[key] = memberInfoEntry{info: info, expiresAt: now.Add(memberInfoTTL)}
+	// 防无界增长：超过上限时整体清空（简单策略）
+	if len(h.memberInfoCache) > 2048 {
+		h.memberInfoCache = make(map[string]memberInfoEntry)
+	}
+	h.memberInfoMu.Unlock()
+	return info, nil
+}
+
 // Stop 停止 Agent 系统。
 func (h *HagoCenter) Stop() {
-	close(h.OutputChan)
-	close(h.BgTaskResultChan)
-	slog.Info("HagoCenter 已停止")
+	log.Info("HagoCenter 已停止")
 }

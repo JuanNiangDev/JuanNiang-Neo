@@ -3,7 +3,6 @@ package adapter
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -57,7 +56,7 @@ func (p *Adapter) Start(ctx context.Context) error {
 	p.server = srv
 	p.closed = false
 	p.mu.Unlock()
-	slog.Info("adapter 已启动", "addr", listenAddr)
+	log.Info("adapter 已启动", "addr", listenAddr)
 	return nil
 }
 
@@ -108,7 +107,7 @@ func (p *Adapter) Stop(ctx context.Context) error {
 			p.events = nil
 		}
 
-		slog.Info("adapter 已停止")
+		log.Info("adapter 已停止")
 		done <- nil
 	}()
 
@@ -116,7 +115,7 @@ func (p *Adapter) Stop(ctx context.Context) error {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		slog.Warn("adapter Stop 超时, 强制退出", "err", ctx.Err())
+		log.Warn("adapter Stop 超时, 强制退出", "err", ctx.Err())
 		return ctx.Err()
 	}
 }
@@ -144,12 +143,12 @@ func (p *Adapter) Restart(ctx context.Context) error {
 	defer cancel()
 
 	if err := p.Stop(ctx); err != nil {
-		slog.Error("adapter 重启出错 (Stop)", "err", err.Error())
+		log.Error("adapter 重启出错 (Stop)", "err", err.Error())
 		return err
 	}
 
 	if err := p.Start(ctx); err != nil {
-		slog.Error("adapter 重启出错 (Start)", "err", err.Error())
+		log.Error("adapter 重启出错 (Start)", "err", err.Error())
 		return err
 	}
 
@@ -185,23 +184,23 @@ func (p *Adapter) SyncConfig(ctx context.Context, conf Config) error {
 	//   - 启用: 若已在运行, 先 Stop 再 Start 重启加载新配置; 否则直接 Start
 	//   - 停用: 调用 Stop
 	if conf.Enable {
-		slog.Info("adapter 重启中")
+		log.Info("adapter 重启中")
 		if err := p.Stop(ctx); err != nil {
-			slog.Error("adapter 配置更新出错 (Stop)", "err", err.Error())
+			log.Error("adapter 配置更新出错 (Stop)", "err", err.Error())
 			return err
 		}
 		if err := p.Start(ctx); err != nil {
-			slog.Error("adapter 配置更新出错 (Start)", "err", err.Error())
+			log.Error("adapter 配置更新出错 (Start)", "err", err.Error())
 			return err
 		}
 	} else {
 		if err := p.Stop(ctx); err != nil {
-			slog.Error("adapter 停止Adapter出错", "err", err.Error())
+			log.Error("adapter 停止Adapter出错", "err", err.Error())
 			return err
 		}
 	}
 
-	slog.Info("adapter 配置已更新")
+	log.Info("adapter 配置已更新")
 	return nil
 }
 

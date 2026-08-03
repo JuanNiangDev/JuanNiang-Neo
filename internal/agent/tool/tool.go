@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
 	"JuanNiang-Neo/internal/agent/provider"
 
+	"JuanNiang-Neo/internal/logging"
 	"github.com/openai/openai-go/v3"
 )
+
+var log = logging.NewModule("tool")
 
 // Tool 接口定义所有工具必须实现的方法。
 type Tool interface {
@@ -26,9 +28,9 @@ type Tool interface {
 
 // ToolRegistry 工具注册表，管理所有已注册的工具。
 type ToolRegistry struct {
-	mu        sync.RWMutex
-	tools     map[string]Tool
-	buildIns  []string // 内置工具名称列表
+	mu       sync.RWMutex
+	tools    map[string]Tool
+	buildIns []string // 内置工具名称列表
 }
 
 func NewToolRegistry() *ToolRegistry {
@@ -99,15 +101,15 @@ func (tr *ToolRegistry) Execute(ctx context.Context, name string, args json.RawM
 	execCtx := ctx
 
 	start := time.Now()
-	slog.Info("Tool 执行开始", "tool", name, "args", string(args))
+	log.Info("Tool 执行开始", "tool", name, "args", string(args))
 
 	result, err := t.Execute(execCtx, args)
 	elapsed := time.Since(start)
 	if err != nil {
-		slog.Error("Tool 执行失败", "tool", name, "elapsed", elapsed, "err", err)
+		log.Error("Tool 执行失败", "tool", name, "elapsed", elapsed, "err", err)
 		return "", err
 	}
-	slog.Info("Tool 执行完成", "tool", name, "elapsed", elapsed, "result_len", len(result))
+	log.Info("Tool 执行完成", "tool", name, "elapsed", elapsed, "result_len", len(result))
 	return result, nil
 }
 

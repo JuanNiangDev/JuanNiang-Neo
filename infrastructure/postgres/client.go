@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"time"
 
+	"JuanNiang-Neo/internal/logging"
+
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 type Option func(info *BasicInfo)
@@ -79,8 +82,18 @@ func NewPostgresClient(opts ...Option) (*gorm.DB, error) {
 		basicInfo.DefaultDB,
 		basicInfo.SSLMode,
 	)
+
+	// GORM 日志级别：Debug 模式显示全部 SQL，否则只记录 Warn/Error
+	gormLogLevel := gormlogger.Warn
+	if logging.IsDebug() {
+		gormLogLevel = gormlogger.Info
+	}
+
 	// 获取连接
-	db, err := gorm.Open(postgres.New(postgres.Config{DSN: dsn, PreferSimpleProtocol: true}), &gorm.Config{PrepareStmt: false})
+	db, err := gorm.Open(postgres.New(postgres.Config{DSN: dsn, PreferSimpleProtocol: true}), &gorm.Config{
+		PrepareStmt: false,
+		Logger:      NewGormLogger(gormLogLevel),
+	})
 	if err != nil {
 		return nil, err
 	}

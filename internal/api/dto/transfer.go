@@ -54,7 +54,7 @@ func RawSkill2Resp(raw *models.Skill) SkillResp {
 		Description:  raw.Description,
 		Keywords:     raw.Keywords,
 		RegexPattern: raw.RegexPattern,
-		PromptRef:    raw.PromptRef,
+		PromptRefs:   raw.PromptRefs,
 		ToolRefs:     raw.ToolRefs,
 		McpRefs:      raw.McpRefs,
 		IsActive:     raw.IsActive,
@@ -252,8 +252,10 @@ func RawLogEntry2Resp(raw logging.Entry) LogEntryResp {
 	return LogEntryResp{
 		Time:    raw.Time,
 		Level:   raw.Level,
+		Module:  raw.Module,
 		Message: raw.Message,
 		Attrs:   raw.Attrs,
+		Stack:   raw.Stack,
 	}
 }
 

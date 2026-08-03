@@ -43,6 +43,29 @@
         </v-col>
       </v-row>
 
+      <!-- Token 用量折线图 -->
+      <v-row class="mt-3">
+        <v-col cols="12">
+          <v-card rounded="lg" elevation="1" color="surface">
+            <v-card-item>
+              <template #title>
+                <div class="d-flex align-center justify-space-between">
+                  <span class="text-h6 font-weight-bold">Token 用量趋势</span>
+                  <v-btn-toggle v-model="tokenDays" density="compact" variant="tonal" color="primary" @update:model-value="fetchTokenUsage">
+                    <v-btn value="7" size="small">近7天</v-btn>
+                    <v-btn value="15" size="small">近15天</v-btn>
+                    <v-btn value="30" size="small">近30天</v-btn>
+                  </v-btn-toggle>
+                </div>
+              </template>
+            </v-card-item>
+            <v-card-text>
+              <div ref="chartEl" class="token-chart" />
+            </v-card-text>
+          </v-card>
+        </v-col>
+      </v-row>
+
       <!-- System & Services -->
       <v-row class="mt-3">
         <v-col cols="12" md="6" class="d-flex">
@@ -156,14 +179,64 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { overviewApi, adapterApi, type OverviewResp, type AdapterStatus } from '@/api'
+import { init, use, type EChartsType } from 'echarts/core'
+import { LineChart } from 'echarts/charts'
+import { GridComponent, TooltipComponent } from 'echarts/components'
+import { CanvasRenderer } from 'echarts/renderers'
+import { overviewApi, adapterApi, type OverviewResp, type AdapterStatus, type DailyTokenUsageResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
+
+use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
 
 const toastStore = useToastStore()
 const loading = ref(true)
 const overview = ref<OverviewResp | null>(null)
 const adapterRunning = ref(false)
 const adapterStatus = ref<AdapterStatus>({ running: false, listen_addr: '', self_id: 0, conn_count: 0, conn_ids: [], conns: [] })
+
+// Token 用量折线图
+const tokenDays = ref('7')
+const chartEl = ref<HTMLDivElement | null>(null)
+let chart: EChartsType | null = null
+
+async function fetchTokenUsage() {
+  try {
+    const res = await overviewApi.dailyTokenUsage(Number(tokenDays.value))
+    renderTokenChart((res.data.data ?? []) as DailyTokenUsageResp[])
+  } catch { toastStore.error('获取 Token 用量失败') }
+}
+
+function renderTokenChart(list: DailyTokenUsageResp[]) {
+  if (!chartEl.value) return
+  if (!chart) chart = init(chartEl.value)
+  chart.setOption({
+    grid: { left: 16, right: 16, top: 36, bottom: 8, containLabel: true },
+    tooltip: { trigger: 'axis', valueFormatter: (v: unknown) => `${Number(v).toLocaleString()} tokens` },
+    xAxis: {
+      type: 'category',
+      boundaryGap: false,
+      data: list.map(i => i.date.slice(5)),
+      axisLine: { lineStyle: { color: 'rgba(255,255,255,0.25)' } },
+      axisLabel: { color: 'rgba(255,255,255,0.65)' },
+    },
+    yAxis: {
+      type: 'value',
+      minInterval: 1,
+      axisLabel: { color: 'rgba(255,255,255,0.65)' },
+      splitLine: { lineStyle: { color: 'rgba(255,255,255,0.1)' } },
+    },
+    series: [{
+      name: 'Token',
+      type: 'line',
+      smooth: true,
+      symbolSize: 6,
+      data: list.map(i => i.token_count),
+      lineStyle: { width: 2, color: '#ff6b9d' },
+      itemStyle: { color: '#ff6b9d' },
+      areaStyle: { color: 'rgba(255,107,157,0.18)' },
+    }],
+  })
+}
 
 const topStats = computed(() => [
   { label: 'Chat Areas', value: overview.value?.chat_area_count ?? 0, subtitle: '活跃聊天区域', icon: 'mdi-forum', color: 'pink' },
@@ -194,9 +267,33 @@ async function fetchAll() {
   } catch { toastStore.error('获取数据失败') } finally { loading.value = false }
 }
 
+async function onGlobalRefresh() {
+  await fetchAll()
+  await fetchTokenUsage()
+}
+
 function formatNumber(n: number) { return n >= 1_000_000 ? (n / 1_000_000).toFixed(1) + 'M' : n >= 1_000 ? (n / 1_000).toFixed(1) + 'K' : String(n) }
 function formatBytes(bytes: number) { return bytes >= 1_073_741_824 ? (bytes / 1_073_741_824).toFixed(2) + ' GB' : bytes >= 1_048_576 ? (bytes / 1_048_576).toFixed(1) + ' MB' : bytes >= 1_024 ? (bytes / 1_024).toFixed(0) + ' KB' : bytes + ' B' }
 
-onMounted(() => { fetchAll(); window.addEventListener('global-refresh', fetchAll) })
-onBeforeUnmount(() => { window.removeEventListener('global-refresh', fetchAll) })
+onMounted(async () => {
+  await onGlobalRefresh()
+  window.addEventListener('global-refresh', onGlobalRefresh)
+  window.addEventListener('resize', onResize)
+})
+
+function onResize() { chart?.resize() }
+
+onBeforeUnmount(() => {
+  window.removeEventListener('global-refresh', onGlobalRefresh)
+  window.removeEventListener('resize', onResize)
+  chart?.dispose()
+  chart = null
+})
 </script>
+
+<style scoped>
+.token-chart {
+  width: 100%;
+  height: 300px;
+}
+</style>

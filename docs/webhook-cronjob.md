@@ -3,7 +3,7 @@
 本文档说明 JuanNiang-Neo 的两种"主动消息"机制。
 
 - **Webhook**：接收外部 HTTP 请求，转成 `webhook` 事件喂给 Lua 插件（不走 LLM Agent），用于外部系统集成。
-- **CronJob**：基于 cron 表达式定时构造合成 `cronjob` 事件，走 Agent 标准处理路径（跳过策略/ACL），让 Agent 在指定时间"主动接收用户消息"并回复。
+- **CronJob**：基于 cron 表达式定时构造合成 `cronjob` 事件，通过统一事件循环 → `Plugin.Dispatch` → 插件 `on_cronjob` 回调触发，**不**经过 Agent。
 
 ## Webhook
 
@@ -15,21 +15,23 @@
 
 ```
 外部服务 (GitHub / 监控 / 自定义)
-  │  POST http://your-server:8091/github
+  │  POST http://your-server:8091/webhook/my-plugin
   │  Body: {"action":"opened","pull_request":{...}}
   ▼
 WebhookAdapter (独立端口 8091, 默认关闭)
-  │  1. Token 校验 → 不匹配返回 401
+  │  1. Token 校验 → 不匹配返回 {"code":403,"message":"forbidden"}
   │  2. 读取 Body → JSON 解析成功则直接使用, 失败则包装为
   │     {"raw":"原文","type":"non-json"}
-  │  3. 构造 Event{
-  │       PostType:"webhook",
-  │       Webhook:{Path:"/github", Method:"POST", Payload:{...}},
-  │       Admins: OB 管理员列表
-  │     }
-  │  4. 非阻塞写入 events channel (cap=128)
-  │     · 满 → 丢弃事件, 返回 HTTP 503 → 外部服务应重试
-  ▼
+  │  3. 路径解析:
+  │     · /webhook/{plugin_name} → 调用 pluginRouter.RouteWebhook()
+  │       路由到指定插件 (按名称精确匹配)
+  │       - 命中 → {"code":0,"message":"ok"}
+  │       - 未命中 → {"code":404,"message":"plugin not found"} (HTTP 404)
+  │     · /webhook 或 / (无插件名) → legacy 广播模式
+  │       构造 Event{PostType:"webhook", Webhook:{Path, Method, Payload}, Admins}
+  │       非阻塞写入 events channel (cap=128)
+  │       - 满 → {"code":503,"message":"events channel full"}
+  ▼ (legacy 模式)
 HagoCenter.runEventLoop (事件循环 goroutine)
   │  select 收到 webhook 事件
   │  → processEvent(): PostType=="webhook" 分支, 构造
@@ -40,13 +42,12 @@ HagoCenter.runEventLoop (事件循环 goroutine)
   │    }
   │  → PluginEngine.OnWebhook(event) → 遍历所有已加载插件
   ▼
-PluginEngine.OnWebhook
-  │  遍历所有已加载插件
-  │  ├— 插件无 webhook 权限 → 跳过
-  │  └— 插件有 webhook 权限 → 调 on_webhook(event)
+PluginEngine (插件引擎)
+  │  定向模式: RouteWebhook() 按名称查找插件 → 调 on_webhook(event)
+  │  广播模式: OnWebhook() 遍历所有有 webhook 权限的插件 → 调 on_webhook(event)
   ▼
 Lua 插件 on_webhook(event)
-  │  event.webhook.path    = "/github"
+  │  event.webhook.path    = "/webhook/my-plugin" 或子路径
   │  event.webhook.method  = "POST"
   │  event.webhook.payload = {action:"opened", ...}
   │  event.admins          = {"管理员QQ号"}
@@ -54,8 +55,11 @@ Lua 插件 on_webhook(event)
   │  插件自行判断是否处理该事件:
   │    · 检查 payload 字段 → 不相关则 return false
   │    · 相关 → 执行逻辑 → return true (已消费)
+  │
+  │  定向模式下, 插件还可以 return (consumed, reply_string)
+  │  第二个返回值会作为响应 metadata 返回给调用方
   ▼
-  处理完毕, 事件循环继续等待下一个事件
+  处理完毕, 返回响应
 ```
 
 ### 核心特性
@@ -65,9 +69,12 @@ Lua 插件 on_webhook(event)
 | 独立端口 | `:8091`，与 API `:8090`、OB `:8081` 完全隔离 |
 | Token 鉴权 | Bearer token，配了才校验，不配则任何请求都通过 |
 | 不走 Agent | `PostType=="webhook"` 在事件循环中直接短路，永远不会进 LLM |
-| 广播模式 | 每个 webhook 事件会调用**所有**有 `webhook` 权限的插件 |
+| **定向模式** | `/webhook/{plugin_name}` 按名称精确路由到指定插件，其他插件不会收到事件 |
+| **广播模式** | `/webhook` 或 `/` 路径无插件名时，广播给所有有 `webhook` 权限的插件 |
 | 插件自决 | 插件自己在 `on_webhook` 里判断 payload 并决定是否处理 |
-| 队列丢弃 | events channel cap=128，满了返回 HTTP 503，外部服务应重试 |
+| 定向返回 | 定向模式下插件可返回 `(consumed, reply)`，reply 会作为响应 metadata 返回调用方 |
+| 统一响应 | 所有响应使用 `{"code":<int>,"message":"<str>","metadata":<any>}` 格式 |
+| 队列丢弃 | 广播模式 events channel cap=128，满了返回 `{"code":503,"message":"..."}` |
 | 热更新 | Web 面板点"启用"即生效，无需重启 |
 
 ### 配置入口
@@ -95,13 +102,32 @@ services:
 
 | 项目 | 说明 |
 |------|------|
-| 监听路径 | `/` 和 `/webhook` 都受理，路径透传到 event.webhook.path |
+| 路由 | **定向**: `/webhook/{plugin_name}` → 路由到指定插件；**广播**: `/` 或 `/webhook` → 广播给所有插件 |
 | 方法 | 任意（常用 POST） |
 | Header | `Authorization: Bearer <token>`（配了 token 才校验） |
 | Body | 任意。先尝试 JSON unmarshal；失败则包装为 `{"raw":"原文","type":"non-json"}` |
-| 成功 | `200 OK`，body 为空 |
-| 队列满 | `503 Service Unavailable`，事件被丢弃 |
-| 鉴权失败 | `401 Unauthorized` |
+| 成功 | `200 OK`，body: `{"code":0,"message":"ok"}`（定向命中时可能带 `metadata`） |
+| 未找到 | `404 Not Found`，body: `{"code":404,"message":"plugin not found"}` |
+| 队列满 | `503 Service Unavailable`，body: `{"code":503,"message":"events channel full"}` |
+| 鉴权失败 | `403 Forbidden`，body: `{"code":403,"message":"forbidden"}` |
+
+#### 响应格式
+
+所有 webhook 响应统一为：
+
+```json
+{
+  "code": 0,
+  "message": "ok",
+  "metadata": null
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `code` | int | `0`=成功, `403`=鉴权失败, `404`=插件未找到, `503`=队列满 |
+| `message` | string | 人类可读的描述 |
+| `metadata` | any | 定向模式下插件 `on_webhook` 返回的 reply 字符串；否则 `null` |
 
 ### Event 数据结构（Lua 侧）
 
@@ -126,9 +152,45 @@ event.admins = { "10001", "10002" } -- 系统管理员 QQ 列表
 
 ### 多插件共存：如何区分事件归属
 
-webhook 是**广播模式**——每个请求会调用所有有 `webhook` 权限的插件。插件通过以下三种方式自行判断是否处理。
+webhook 有**两种路由模式**：
+- **定向模式** (`/webhook/{plugin_name}`)：精确路由到指定插件，其他插件不会收到事件。这是推荐的隔离方式。
+- **广播模式** (`/webhook` 或 `/`)：无插件名时，广播给所有有 `webhook` 权限的插件。插件通过以下三种方式自行判断是否处理。
 
-#### 方式一：payload 字段自识别（推荐）
+#### 方式零：定向路由（推荐）
+
+使用 `/webhook/{plugin_name}` 路径，消息直接路由到指定插件：
+
+```bash
+# GitHub 插件配置这个 URL
+http://host:8091/webhook/my-github-plugin
+
+# 监控插件配置这个 URL
+http://host:8091/webhook/my-alert-plugin
+```
+
+```lua
+-- my-github-plugin 的 on_webhook
+function on_webhook(event)
+    local p = event.webhook.payload
+    -- 无需路径判断，只有本插件会收到此事件
+    onebot11.send_group_msg(987654321, "新 PR: " .. (p.pull_request.title or "?"))
+    return true
+end
+```
+
+定向模式下，插件可以返回 `(consumed, reply_string)`，reply 会作为响应的 `metadata` 返回给调用方：
+
+```lua
+function on_webhook(event)
+    local p = event.webhook.payload
+    if p.action == "opened" then
+        return true, "PR opened notification sent"
+    end
+    return false, "unhandled action: " .. (p.action or "?")
+end
+```
+
+#### 方式一：payload 字段自识别（广播模式下推荐）
 
 每个插件检查自己关心的字段，不相关则立即 `return false`：
 
@@ -297,28 +359,18 @@ end
 
 ### 用途
 
-CronJob 支持**两种分发模式**，可独立或同时使用：
+CronJob 定时触发插件的 `on_cronjob` 回调，通过统一事件循环 → `Plugin.Dispatch` 分发。**不**经过 Agent，不经过回复策略与 ACL。
 
-| 模式 | 字段 | 说明 |
-|------|------|------|
-| **Agent 分发** | `message` + `message_type` + `target_id` | 定时向 Agent 注入一条消息，Agent 将其作为用户输入处理并回复（原有行为） |
-| **Plugin 分发** | `plugin_ids` + `payload` | 定时触发指定插件的 `on_timer_call(event)` 回调，传递 JSON payload |
+| 字段 | 说明 |
+|------|------|
+| `plugin_ids` | 触发插件列表（插件目录名），到点时调用其 `on_cronjob(event)` |
+| `payload` | JSON 字符串，传递给 `event.payload` |
 
-当 `message` 为空时不发给 Agent，当 `plugin_ids` 为空时不触发插件。两者可同时配置。
+到点时 `CronJobManager.makeJobFunc` 构造合成 `Event{PostType:"cronjob"}`，注入统一事件循环，经 `Plugin.Dispatch` 分发到指定插件的 `on_cronjob` 回调。
 
-#### Agent 分发
+只有**已加载且定义了 `on_cronjob` 全局函数**的插件会被调用。前端"定时任务"页面多选下拉框自动过滤显示 `supports_cronjob=true` 的已启用插件。
 
-到点时 `CronJobManager.makeJobFunc` 构造一个合成 `Event{PostType:"cronjob", IsCronJob:true}`，注入主 EventLoop，走 `handleMessage` 标准路径——Agent 把 `message` 当用户输入处理。
-
-合成事件会**跳过回复策略与 ACL**（`event.go:150`），因为这是系统主动任务，必须回复。
-
-#### Plugin 分发
-
-到点时 `CronJobManager.makeJobFunc` 解析 `plugin_ids`（插件目录名列表），调用 `PluginEngine.OnTimerCall()`。只有**已加载且定义了 `on_timer_call` 全局函数**的插件会被调用。`payload` 作为 JSON 对象传入 `event.payload`。
-
-前端"定时任务"页面在新建/编辑时通过 Tab 切换 Agent/Plugin 模式，Plugin 模式下多选下拉框自动过滤显示 `supports_timer=true` 的已启用插件。
-
-检测方式：运行时检查插件 Lua 全局 `on_timer_call` 是否为函数 → `ListMaps()` 返回 `supports_timer: bool`。
+检测方式：运行时检查插件 Lua 全局 `on_cronjob` 是否为函数 → `ListMaps()` 返回 `supports_cronjob: bool`。
 
 **示例插件**：`data/pluggins/cron-example/` 提供了一个完整的定时触发示例——向 payload 中指定的 QQ 号或群发送消息。
 
@@ -364,39 +416,9 @@ CronJob 支持**两种分发模式**，可独立或同时使用：
 | `DELETE` | `/api/v1/cronjobs/:id` | 删除（自动 reload） |
 | `PUT` | `/api/v1/cronjobs/:id/toggle` | 启停（自动 reload） |
 
-`AddCronJobReq` body 字段：`name`、`cron_expr`、`message`（可选，空则不发给 Agent）、`message_type`（默认 `private`）、`target_id`、`is_active`、`plugin_ids`（`string[]`，可选）、`payload`（JSON 字符串，可选）。
+`AddCronJobReq` body 字段：`name`、`cron_expr`、`is_active`、`plugin_ids`（`string[]`，可选）、`payload`（JSON 字符串，可选）。
 
-### 示例：每天早上 9 点私聊提醒（Agent 分发）
-
-```bash
-curl -X POST http://localhost:8090/api/v1/cronjobs \
-  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
-  -d '{
-    "name": "早安提醒",
-    "cron_expr": "0 0 9 * * *",
-    "message": "早上好！记得喝水。",
-    "message_type": "private",
-    "target_id": 123456789,
-    "is_active": true
-  }'
-```
-
-### 示例：群每日播报（Agent 分发）
-
-```bash
-curl -X POST http://localhost:8090/api/v1/cronjobs \
-  -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
-  -d '{
-    "name":"群每日播报",
-    "cron_expr":"0 0 8 * * *",
-    "message":"今天有什么新闻？",
-    "message_type":"group",
-    "target_id":987654321,
-    "is_active":true
-  }'
-```
-
-### 示例：每 10 秒触发插件发消息（Plugin 分发）
+### 示例：每 10 秒触发插件发消息
 
 ```bash
 curl -X POST http://localhost:8090/api/v1/cronjobs \
@@ -410,54 +432,33 @@ curl -X POST http://localhost:8090/api/v1/cronjobs \
   }'
 ```
 
-到点后 Agent 会接到一条"群 987654321 发来消息 '今天有什么新闻？'"，按它能力回复。`message` 等同用户输入，会被 LLM 处理并可调工具（如 `browser_search`）。
-
 ### 运行时流（细节）
 
-**Agent 分发路径**（`message` 非空）：
-```
-robfig/cron 到期 → CronJobManager.makeJobFunc(job)
-  ├─ DAO.CronJob.UpdateLastRun(now, err)
-  ├─ 构造 MessageEvent{MessageType=job.MessageType,
-  │                   RawMessage=job.Message,
-  │                   GroupID or UserID=job.TargetID}
-  └─ 构造 Event{PostType:"cronjob", IsCronJob:true, Message, Time:now}
-     └─ 非阻塞 send → HagoCenter.CronJobEvents (满则丢)
-
-EventLoop 分支5 → processEvent (PostType=="cronjob") → handleMessage
-  跳过策略与 ACL，正常 SendMessage 给 LLM，LLM 可调工具再 sendReply
-```
-
-**Plugin 分发路径**（`plugin_ids` 非空）：
 ```
 robfig/cron 到期 → CronJobManager.makeJobFunc(job)
   ├─ DAO.CronJob.UpdateLastRun(now, err)
   ├─ 解析 plugin_ids JSON → []string
   ├─ 解析 payload JSON → map[string]any
-  └─ PluginTimerDispatcher.OnTimerCall(pluginIDs, payload, admins)
-     └─ PluginEngine.OnTimerCall → 遍历指定插件
-        └─ 调用 Lua on_timer_call(event) （event.payload = payload）
+  └─ 构造 Event{PostType:"cronjob", ...}
+     └─ 注入统一事件循环 → Plugin.Dispatch
+        └─ PluginEngine.Dispatch → 遍历指定插件
+           └─ 调用 Lua on_cronjob(event)（event.payload = payload）
 ```
-
-两种路径**相互独立**：若同时配置则都会执行。
 
 `LastRunAt`/`LastError` 回写 DB，前端"定时任务"页可看历史。删改/toggle 后由 `Service.AddCronJob/...` 调 `CronJobManager.Reload()` 同步调度器，无需重启进程。
 
 ### 注意
 
-- **满则丢**：`CronJobEvents` cap=64，并发突发触发 queued 会被丢，不阻塞调度器
-- **AgentSkill 触发**：`message` 走 `Skills.Match`——可让"早安"skill 在 `message=早安` 时注入特定 prompt
-- **Token 计费**：CronJob 触发的消息也走 Session，按账记 `TokenUsage`
+- **满则丢**：事件队列满时会被丢弃，不阻塞调度器
 - **跨容器时区**：`TZ=Asia/Shanghai` 容器内是北京时间；裸机部署注意主机时区
-- **target 必须 ChatArea 已存在**：`GetOrCreate` 会自动按 (type, targetID) 创建新 ChatArea，所以首次触发 Session 是新建的（无短期历史）
-- **Plugin 调用的检测**：只有定义了 `on_timer_call` 全局函数且已加载的插件才会被调用；前端多选下拉框自动过滤
+- **Plugin 调用的检测**：只有定义了 `on_cronjob` 全局函数且已加载的插件才会被调用；前端多选下拉框自动过滤
 - **Plugin Payload**：必须是合法 JSON 字符串，保存时前端 CodeMirror 编辑器会实时校验格式
-- **插件重载**：`POST /api/v1/plugins/reload` 可热重载全部非系统插件，新增/修改 `on_timer_call` 后需重载才生效
+- **插件重载**：`POST /api/v1/plugins/reload` 可热重载全部非系统插件，新增/修改 `on_cronjob` 后需重载才生效
 
 ## 二者结合场景
 
 - **监控报警 → Webhook → 插件 → 立即推送 + 创建临时 CronJob 多波次提醒**
-  - 插件在 `on_webhook` 处理时调 `POST /api/v1/cronjobs` 建一个每隔 10 分钟触发的任务，告诉 Agent"提醒用户报警还在"
-  - 用 CronJob 的 `message` 把上一轮报警内容装进去让 Agent 轮询处理
+  - 插件在 `on_webhook` 处理时调 `POST /api/v1/cronjobs` 建一个每隔 10 分钟触发的任务
+  - CronJob 到点后通过 `on_cronjob` 回调触发插件，插件自行检查报警状态并推送提醒
 
-这利用了 Webhook 不走 LLM、CronJob 走 LLM 的差异，分工精确省 token。
+Webhook 和 CronJob 都不经过 Agent，全部由插件处理，省 token 且逻辑清晰。

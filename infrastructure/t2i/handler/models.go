@@ -60,5 +60,9 @@ type GenerateRequest struct {
 // ────────────────────── 响应模型 ──────────────────────
 
 type GenerateResponse struct {
-	ID string `json:"id"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+	Data    struct {
+		ID string `json:"id"`
+	} `json:"data"`
 }

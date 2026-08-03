@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
+	"strings"
+	"sync"
 
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/cache"
+	"JuanNiang-Neo/internal/logging"
 )
+
+var log = logging.NewModule("shortterm")
 
 // ChatMessage 聊天消息模型。
 type ChatMessage struct {
@@ -26,19 +30,26 @@ type Config struct {
 // ShortTermMemory 基于 Redis 的短期记忆，使用 List 实现滑动窗口。
 // 所有方法按 areaID 隔离，实例本身无状态，可跨 ChatArea 共享。
 type ShortTermMemory struct {
-	conf  Config
-	cache *cache.Cache
+	conf       Config
+	cache      *cache.Cache
+	compacting sync.Map // areaID → *sync.Mutex (per-area compact lock)
 }
 
 func New(conf Config, c *cache.Cache) *ShortTermMemory {
 	if conf.WindowSize <= 0 {
-		conf.WindowSize = 20
+		conf.WindowSize = 100
 	}
 	return &ShortTermMemory{conf: conf, cache: c}
 }
 
+// compactLock 返回指定 areaID 的 Compact 互斥锁（不存在则创建）。
+func (m *ShortTermMemory) compactLock(areaID string) *sync.Mutex {
+	v, _ := m.compacting.LoadOrStore(areaID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 func (m *ShortTermMemory) WindowSize() int64     { return m.conf.WindowSize }
-func (m *ShortTermMemory) SetWindowSize(n int64)  { m.conf.WindowSize = n }
+func (m *ShortTermMemory) SetWindowSize(n int64) { m.conf.WindowSize = n }
 func (m *ShortTermMemory) AutoCompact() bool     { return m.conf.AutoCompact }
 func (m *ShortTermMemory) SetAutoCompact(v bool) { m.conf.AutoCompact = v }
 
@@ -102,7 +113,13 @@ func (m *ShortTermMemory) Clear(ctx context.Context, areaID string) error {
 }
 
 // Compact 压缩短期记忆: 调用 LLM 摘要后写入长期记忆。
-func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provider.Provider, store LongTermStore) error {
+func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provider.Provider, store CompactStore) error {
+	mu := m.compactLock(areaID)
+	if !mu.TryLock() {
+		return fmt.Errorf("compact already in progress for area %s", areaID)
+	}
+	defer mu.Unlock()
+
 	msgs, err := m.GetAll(ctx, areaID)
 	if err != nil {
 		return err
@@ -112,16 +129,33 @@ func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provid
 	}
 
 	content := buildCompactContent(msgs)
-	prompt := "请将以下对话历史压缩为简洁摘要，保留关键信息和上下文:\n\n" + content
+
+	// 获取当前长期记忆供 LLM 参考
+	var existingMemory string
+	if existing, err := store.GetExistingLongTermMemory(ctx, areaID); err == nil && len(existing) > 0 {
+		existingMemory = "已有的长期记忆摘要:\n" + strings.Join(existing, "\n") + "\n\n"
+	}
+
+	prompt := existingMemory + "以下是最近的对话记录:\n" + content
+
+	systemPrompt := `你是一个对话记忆管理助手。请根据对话记录生成一份简洁的长期记忆摘要。
+
+要求：
+1. 提取对话中的关键信息：用户偏好、重要事实、待办事项、反复提及的话题
+2. 保留对后续对话有价值的上下文信息
+3. 用简洁的中文描述，不要超过200字
+4. 如果已有长期记忆，在其基础上更新（加入新信息，去除已过时的内容）
+5. 不要包含无意义的寒暄和重复内容
+6. 直接输出摘要内容，不要加任何前缀或解释`
 
 	resp, err := llm.Chat(ctx, provider.ChatRequest{
 		Messages: []provider.ChatMessage{
-			{Role: "system", Content: "你是一个对话摘要助手，请用中文输出简洁摘要。"},
+			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: prompt},
 		},
 	})
 	if err != nil {
-		slog.Error("Compact LLM 调用失败", "err", err)
+		log.Error("Compact LLM 调用失败", "err", err)
 		return err
 	}
 
@@ -130,12 +164,26 @@ func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provid
 		return fmt.Errorf("compact 写入长期记忆失败: %w", err)
 	}
 
-	slog.Info("短期记忆 Compact 完成", "area_id", areaID, "summary_len", len(summary))
+	// 同时触发技能记忆更新
+	if sm, ok := store.(SkillMemoryUpdater); ok {
+		if err := sm.UpdateSkillMemory(ctx, msgs); err != nil {
+			log.Warn("Compact 技能记忆更新失败", "err", err)
+		}
+	}
+
+	log.Info("短期记忆 Compact 完成", "area_id", areaID, "summary_len", len(summary))
 	return nil
 }
 
-type LongTermStore interface {
+// CompactStore 是 Compact 时需要的存储接口。
+type CompactStore interface {
 	AddLongTermMemory(ctx context.Context, areaID string, content string) error
+	GetExistingLongTermMemory(ctx context.Context, areaID string) ([]string, error)
+}
+
+// SkillMemoryUpdater 可选接口：CompactStore 若实现此接口，Compact 时会自动更新技能记忆。
+type SkillMemoryUpdater interface {
+	UpdateSkillMemory(ctx context.Context, recentMsgs []ChatMessage) error
 }
 
 func buildCompactContent(msgs []ChatMessage) string {

@@ -3,7 +3,6 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 )
 
 // ============================================================
@@ -335,7 +334,7 @@ func normalizeMessage(msg any) any {
 	case *MessageBuilder:
 		return v.Build()
 	default:
-		slog.Warn("未知消息类型", "type", fmt.Sprintf("%T", msg))
+		log.Warn("未知消息类型", "type", fmt.Sprintf("%T", msg))
 		return fmt.Sprint(v)
 	}
 }

@@ -117,7 +117,7 @@ type AddSkillReq struct {
 	Description  string           `json:"description"`
 	Keywords     models.JSONSlice `json:"keywords"`
 	RegexPattern string           `json:"regex_pattern"`
-	PromptRef    string           `json:"prompt_ref"`
+	PromptRefs   models.JSONSlice `json:"prompt_refs"`
 	ToolRefs     models.JSONSlice `json:"tool_refs"`
 	McpRefs      models.JSONSlice `json:"mcp_refs"`
 	IsActive     bool             `json:"is_active"`
@@ -130,7 +130,7 @@ type UpdateSkillReq struct {
 	Description  string           `json:"description"`
 	Keywords     models.JSONSlice `json:"keywords"`
 	RegexPattern string           `json:"regex_pattern"`
-	PromptRef    string           `json:"prompt_ref"`
+	PromptRefs   models.JSONSlice `json:"prompt_refs"`
 	ToolRefs     models.JSONSlice `json:"tool_refs"`
 	McpRefs      models.JSONSlice `json:"mcp_refs"`
 	IsActive     bool             `json:"is_active"`

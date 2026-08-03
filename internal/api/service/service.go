@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +28,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/sse"
 	"golang.org/x/crypto/bcrypt"
 )
+
+var log = logging.NewModule("api")
 
 func (s *Service) Login(ctx context.Context, c *app.RequestContext) {
 	var data dto.LoginReq
@@ -436,7 +437,7 @@ func (s *Service) AddMCPServer(ctx context.Context, c *app.RequestContext) {
 		client := mcp.NewSSEMCPClient(buildMcpSSEConfig(&m))
 		if err := client.Connect(ctx); err != nil {
 			// 连接失败不影响 DB 写入结果，仅记录日志
-			slog.Error("MCP 连接失败", "name", m.Name, "err", err)
+			log.Error("MCP 连接失败", "name", m.Name, "err", err)
 		} else {
 			s.MCPGroup.AddMCP(client)
 		}
@@ -478,7 +479,7 @@ func (s *Service) UpdateMCPServer(ctx context.Context, c *app.RequestContext) {
 		if data.IsActive {
 			client := mcp.NewSSEMCPClient(buildMcpSSEConfig(&m))
 			if err := client.Connect(ctx); err != nil {
-				slog.Error("MCP 重连失败", "name", m.Name, "err", err)
+				log.Error("MCP 重连失败", "name", m.Name, "err", err)
 			} else {
 				s.MCPGroup.AddMCP(client)
 			}
@@ -521,7 +522,7 @@ func (s *Service) ToggleMCPServer(ctx context.Context, c *app.RequestContext) {
 			if err == nil {
 				client := mcp.NewSSEMCPClient(buildMcpSSEConfig(raw))
 				if err := client.Connect(ctx); err != nil {
-					slog.Error("MCP 连接失败", "id", id, "err", err)
+					log.Error("MCP 连接失败", "id", id, "err", err)
 				} else {
 					s.MCPGroup.AddMCP(client)
 				}
@@ -594,7 +595,7 @@ func (s *Service) AddSkill(ctx context.Context, c *app.RequestContext) {
 		Description:  data.Description,
 		Keywords:     data.Keywords,
 		RegexPattern: data.RegexPattern,
-		PromptRef:    data.PromptRef,
+		PromptRefs:   data.PromptRefs,
 		ToolRefs:     data.ToolRefs,
 		McpRefs:      data.McpRefs,
 		IsActive:     data.IsActive,
@@ -627,7 +628,7 @@ func (s *Service) UpdateSkill(ctx context.Context, c *app.RequestContext) {
 		Description:  data.Description,
 		Keywords:     data.Keywords,
 		RegexPattern: data.RegexPattern,
-		PromptRef:    data.PromptRef,
+		PromptRefs:   data.PromptRefs,
 		ToolRefs:     data.ToolRefs,
 		McpRefs:      data.McpRefs,
 		IsActive:     data.IsActive,
@@ -699,6 +700,7 @@ func (s *Service) AddPrompt(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	s.invalidatePromptCache()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawPrompt2Resp(&p)))
 }
 
@@ -734,6 +736,7 @@ func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	s.invalidatePromptCache()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawPrompt2Resp(&p)))
 }
 
@@ -751,6 +754,7 @@ func (s *Service) DeletePrompt(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	s.invalidatePromptCache()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
@@ -775,7 +779,15 @@ func (s *Service) TogglePrompt(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	s.invalidatePromptCache()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// invalidatePromptCache 提示词变更后使 PromptManager 静态缓存失效，下次消息即时生效。
+func (s *Service) invalidatePromptCache() {
+	if s.PromptMgr != nil {
+		s.PromptMgr.Invalidate()
+	}
 }
 
 // ====================================================================
@@ -1027,11 +1039,11 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 	if s.PluginEngine != nil {
 		if data.IsActive {
 			if err := s.PluginEngine.Load(name); err != nil {
-				slog.Error("插件加载失败", "name", name, "err", err)
+				log.Error("插件加载失败", "name", name, "err", err)
 			}
 		} else {
 			if err := s.PluginEngine.Unload(name); err != nil {
-				slog.Error("插件卸载失败", "name", name, "err", err)
+				log.Error("插件卸载失败", "name", name, "err", err)
 			}
 		}
 	}
@@ -1039,7 +1051,7 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 	// 持久化启用/停用状态到插件自身的 pluggin.yaml
 	if s.PluginEngine != nil {
 		if err := s.PluginEngine.SetEnabled(name, data.IsActive); err != nil {
-			slog.Warn("写入插件 enabled 状态失败", "name", name, "err", err)
+			log.Warn("写入插件 enabled 状态失败", "name", name, "err", err)
 		}
 	}
 
@@ -1059,7 +1071,7 @@ func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	if s.PluginEngine != nil {
 		if err := s.PluginEngine.Unload(name); err != nil {
 			// 非系统插件的卸载错误仅记录，不阻断删除流程
-			slog.Warn("插件卸载失败（继续删除流程）", "name", name, "err", err)
+			log.Warn("插件卸载失败（继续删除流程）", "name", name, "err", err)
 		}
 	}
 
@@ -1067,14 +1079,14 @@ func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	dbPlugin, err := s.DAO.Plugin.GetByName(ctx, name)
 	if err == nil {
 		if err := s.DAO.Plugin.Delete(ctx, dbPlugin.ID); err != nil {
-			slog.Warn("插件 DB 记录删除失败", "name", name, "err", err)
+			log.Warn("插件 DB 记录删除失败", "name", name, "err", err)
 		}
 	}
 
 	// 删除插件目录
 	pluginDir := filepath.Join("data/pluggins", name)
 	if err := os.RemoveAll(pluginDir); err != nil {
-		slog.Warn("插件目录删除失败", "dir", pluginDir, "err", err)
+		log.Warn("插件目录删除失败", "dir", pluginDir, "err", err)
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
@@ -1087,7 +1099,7 @@ func (s *Service) ReloadAllPlugins(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	if err := s.PluginEngine.ReloadAll(); err != nil {
-		slog.Error("重载所有插件失败", "err", err)
+		log.Error("重载所有插件失败", "err", err)
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -1286,6 +1298,38 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	}))
 }
 
+// GetDailyTokenUsage 返回近 N 天（默认 7，上限 30）的每日 Token 用量，日期连续、缺失补 0。
+func (s *Service) GetDailyTokenUsage(ctx context.Context, c *app.RequestContext) {
+	days := 7
+	if v := c.Query("days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 30 {
+			days = n
+		}
+	}
+
+	end := time.Now()
+	start := end.AddDate(0, 0, -(days - 1))
+
+	list, err := s.DAO.TokenUsageDaily.ListByRange(ctx, start.Format("2006-01-02"), end.Format("2006-01-02"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 补齐缺失日期为 0，保证前端折线图连续
+	byDate := make(map[string]int64, len(list))
+	for _, item := range list {
+		byDate[item.Date] = item.TokenCount
+	}
+	out := make([]dto.DailyTokenUsageResp, 0, days)
+	for i := 0; i < days; i++ {
+		d := start.AddDate(0, 0, i).Format("2006-01-02")
+		out = append(out, dto.DailyTokenUsageResp{Date: d, TokenCount: byDate[d]})
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, out))
+}
+
 // ====================================================================
 // Memory
 // ====================================================================
@@ -1360,8 +1404,7 @@ func (s *Service) UpdateLongTermMemoryConfig(ctx context.Context, c *app.Request
 	// 运行时同步
 	if s.MemoryGroup != nil {
 		s.MemoryGroup.UpdateLongTermConfig(memory.LongTermMemoryConfig{
-			HotAreaSize:  data.HotAreaSize,
-			HotMemoryTTL: time.Duration(data.HotMemoryTTL) * time.Second,
+			HotAreaSize: data.HotAreaSize,
 		})
 	}
 
@@ -1542,7 +1585,7 @@ func (s *Service) UpdateWebhookConfig(ctx context.Context, c *app.RequestContext
 			Admins: s.Adapter.Admins(),
 		}
 		if err := s.WebhookAdapter.SyncConfig(ctx, conf); err != nil {
-			slog.Error("webhook adapter 配置同步失败", "err", err)
+			log.Error("webhook adapter 配置同步失败", "err", err)
 		}
 	}
 
@@ -1636,52 +1679,25 @@ func writeLogEvent(w *sse.Writer, entry logging.Entry) error {
 	return w.WriteEvent("", "log", data)
 }
 
-// ---------- Background Tasks ----------
+// ---------- Agent 活跃循环 ----------
 
-// ListBackgroundTasks 返回所有后台任务。
-func (s *Service) ListBackgroundTasks(ctx context.Context, c *app.RequestContext) {
-	list, err := s.DAO.BackgroundTask.ListAll(ctx)
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	resp := make([]dto.BackgroundTaskResp, 0, len(list))
-	for _, t := range list {
-		resp = append(resp, dto.BackgroundTaskResp{
-			ID:          t.ID,
-			ChatAreaID:  t.ChatAreaID,
-			Status:      string(t.Status),
-			MessageType: t.MessageType,
-			TargetID:    t.TargetID,
-			UserPrompt:  t.UserPrompt,
-			Steps:       t.Steps,
-			Results:     t.Results,
-			CreatedAt:   t.CreatedAt,
-			UpdatedAt:   t.UpdatedAt,
+// ListAgentLoops 返回当前所有活跃的 Agent ReAct 循环（监控展示）。
+func (s *Service) ListAgentLoops(ctx context.Context, c *app.RequestContext) {
+	loops := s.LoopTracker.List()
+	resp := make([]dto.AgentLoopResp, 0, len(loops))
+	for _, l := range loops {
+		resp = append(resp, dto.AgentLoopResp{
+			ID:          l.ID,
+			ChatAreaID:  l.ChatAreaID,
+			MessageType: l.MessageType,
+			TargetID:    l.TargetID,
+			UserID:      l.UserID,
+			UserMsg:     l.UserMsg,
+			CurrentTool: l.CurrentTool,
+			StartedAt:   l.StartedAt,
 		})
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
-}
-
-// GetBackgroundTask 返回单个后台任务详情。
-func (s *Service) GetBackgroundTask(ctx context.Context, c *app.RequestContext) {
-	t, err := s.DAO.BackgroundTask.GetByID(ctx, c.Param("id"))
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.BackgroundTaskResp{
-		ID:          t.ID,
-		ChatAreaID:  t.ChatAreaID,
-		Status:      string(t.Status),
-		MessageType: t.MessageType,
-		TargetID:    t.TargetID,
-		UserPrompt:  t.UserPrompt,
-		Steps:       t.Steps,
-		Results:     t.Results,
-		CreatedAt:   t.CreatedAt,
-		UpdatedAt:   t.UpdatedAt,
-	}))
 }
 
 // ---------- CronJob ----------
@@ -1843,7 +1859,6 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		string(models.StrategyNeverReply): true,
 		string(models.StrategyAtOnly):     true,
 		string(models.StrategyAlways):     true,
-		string(models.StrategyPluginOnly): true,
 		string(models.StrategyRelevance):  true,
 	}
 	if !validStrategies[data.Strategy] {
@@ -1944,7 +1959,7 @@ func buildSkillConfig(s *models.Skill) *skill.SkillConfig {
 		Description:  s.Description,
 		Keywords:     s.Keywords,
 		RegexPattern: s.RegexPattern,
-		PromptRef:    s.PromptRef,
+		PromptRefs:   s.PromptRefs,
 		ToolRefs:     s.ToolRefs,
 		McpRefs:      s.McpRefs,
 		IsActive:     s.IsActive,

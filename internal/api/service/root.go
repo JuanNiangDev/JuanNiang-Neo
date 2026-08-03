@@ -8,9 +8,11 @@ import (
 	t2i "JuanNiang-Neo/infrastructure/t2i"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent"
 	cronjobmgr "JuanNiang-Neo/internal/agent/cronjob"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
+	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/session"
 	"JuanNiang-Neo/internal/agent/skill"
@@ -45,10 +47,14 @@ type Service struct {
 	OnUpdateSandbox func(client *sandboxcaller.Client)
 	// CronJobManager 在 CronJob 变更时调用 Reload 同步调度器。
 	CronJobManager *cronjobmgr.Manager
+	// LoopTracker 当前活跃的 Agent ReAct 循环（监控展示）。
+	LoopTracker *agent.LoopTracker
+	// PromptMgr 提示词管理器（缓存失效用）。
+	PromptMgr *prompt.PromptManager
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {
-	return &Service{DAO: dao, Adapter: adapter, WebhookAdapter: webhookAdapter, PluginEngine: pluginEngine, LogHub: logging.Default}
+	return &Service{DAO: dao, Adapter: adapter, WebhookAdapter: webhookAdapter, PluginEngine: pluginEngine, LogHub: logging.DefaultHub}
 }
 
 // t2iClientFactory 根据配置创建 T2I 客户端。

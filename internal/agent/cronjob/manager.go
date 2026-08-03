@@ -2,8 +2,6 @@ package cronjob
 
 import (
 	"context"
-	"encoding/json"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -11,22 +9,18 @@ import (
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
 
+	"JuanNiang-Neo/internal/logging"
+
 	"github.com/robfig/cron/v3"
 )
 
-// PluginTimerDispatcher 定时任务触发插件回调的接口。
-// 由 PluginEngine 实现，在 cronjob 包中通过接口解耦。
-type PluginTimerDispatcher interface {
-	OnTimerCall(pluginIDs []string, payload map[string]any, admins []string)
-}
+var log = logging.NewModule("cronjob")
 
 // Manager 管理定时任务的生命周期与向 Agent 注入事件。
 type Manager struct {
-	cron             *cron.Cron
-	dao              *dao.CronJobDAO
-	eventChan        chan adapter.Event // 向 Agent 事件循环发送合成事件
-	pluginDispatcher PluginTimerDispatcher
-	admins           []string
+	cron      *cron.Cron
+	dao       *dao.CronJobDAO
+	eventChan chan adapter.Event // 向 Agent 事件循环发送合成事件
 
 	mu      sync.RWMutex
 	entries map[string]cron.EntryID // cronJobID → entryID
@@ -45,22 +39,16 @@ func New(d *dao.CronJobDAO, eventChan chan adapter.Event) *Manager {
 	}
 }
 
-// SetPluginTimer 设置插件定时回调分发器及管理员列表。
-func (m *Manager) SetPluginTimer(dispatcher PluginTimerDispatcher, admins []string) {
-	m.pluginDispatcher = dispatcher
-	m.admins = admins
-}
-
 // Run 加载所有启用的定时任务并启动调度器。
 // ctx 用于监听退出信号；直到 ctx 结束前本函数会 block。
 func (m *Manager) Run(ctx context.Context) {
 	m.reloadAll()
 	m.cron.Start()
-	slog.Info("CronJob 调度器已启动")
+	log.Info("CronJob 调度器已启动")
 
 	<-ctx.Done()
 	m.cron.Stop()
-	slog.Info("CronJob 调度器已停止")
+	log.Info("CronJob 调度器已停止")
 }
 
 // Reload 重新从 DB 加载所有启用的任务，移除已停用/删除的，添加新启用的。
@@ -85,7 +73,7 @@ func (m *Manager) reloadAll() {
 
 	jobs, err := m.dao.ListActive(ctx)
 	if err != nil {
-		slog.Error("CronJob: 加载任务失败", "err", err)
+		log.Error("CronJob: 加载任务失败", "err", err)
 		return
 	}
 
@@ -95,73 +83,51 @@ func (m *Manager) reloadAll() {
 		fn := m.makeJobFunc(&job)
 		eid, err := m.cron.AddFunc(job.CronExpr, fn)
 		if err != nil {
-			slog.Error("CronJob: 注册任务失败", "name", job.Name, "cron_expr", job.CronExpr, "err", err)
+			log.Error("CronJob: 注册任务失败", "name", job.Name, "cron_expr", job.CronExpr, "err", err)
 			continue
 		}
 		m.entries[job.ID] = eid
-		slog.Info("CronJob 任务已注册", "name", job.Name, "cron_expr", job.CronExpr, "msg_type", job.MessageType, "target", job.TargetID)
+		log.Info("CronJob 任务已注册", "name", job.Name, "cron_expr", job.CronExpr, "msg_type", job.MessageType, "target", job.TargetID)
 	}
 }
 
-// makeJobFunc 返回一个闭包：触发时构造 Event 并注入到 Agent 事件循环，
-// 同时可选地将事件分发给插件 on_timer_call。
+// makeJobFunc 返回一个闭包：触发时构造 cronjob Event 并注入到 Agent 事件循环。
+// 事件经事件循环 → PluginEngine.Dispatch → 各插件 on_cronjob 回调。
 func (m *Manager) makeJobFunc(job *models.CronJob) func() {
 	return func() {
-		slog.Info("CronJob 触发", "name", job.Name, "msg_type", job.MessageType, "target", job.TargetID)
+		log.Info("CronJob 触发", "name", job.Name, "msg_type", job.MessageType, "target", job.TargetID)
 
 		// 更新最后执行时间
 		if err := m.dao.UpdateLastRun(context.Background(), job.ID, time.Now(), ""); err != nil {
-			slog.Warn("CronJob: 更新 last_run_at 失败", "name", job.Name, "err", err)
+			log.Warn("CronJob: 更新 last_run_at 失败", "name", job.Name, "err", err)
 		}
 
-		// 1. 如果有 PluginIDs，分发给插件 on_timer_call
-		if job.PluginIDs != "" && m.pluginDispatcher != nil {
-			var pluginIDs []string
-			if err := json.Unmarshal([]byte(job.PluginIDs), &pluginIDs); err != nil {
-				slog.Warn("CronJob: 解析 plugin_ids 失败", "name", job.Name, "plugin_ids", job.PluginIDs, "err", err)
-			} else if len(pluginIDs) > 0 {
-				var payload map[string]any
-				if job.Payload != "" {
-					if err := json.Unmarshal([]byte(job.Payload), &payload); err != nil {
-						slog.Warn("CronJob: 解析 payload 失败，使用空 payload", "name", job.Name, "payload", job.Payload, "err", err)
-						payload = make(map[string]any)
-					}
-				}
-				m.pluginDispatcher.OnTimerCall(pluginIDs, payload, m.admins)
-				slog.Info("CronJob 已分发给插件", "name", job.Name, "plugins", pluginIDs)
-			}
-		}
-
-		// 2. 如果 Message 非空，发送给 Agent（保持向后兼容）
-		if job.Message == "" {
-			return
-		}
-
-		// 构造 MessageEvent（模拟 OneBot11 消息事件）
-		msg := &adapter.MessageEvent{
-			MessageType: job.MessageType,
-			RawMessage:  job.Message,
-		}
-
-		if job.MessageType == "group" {
-			msg.GroupID = job.TargetID
-		} else {
-			msg.UserID = job.TargetID
-		}
-
+		// 构造 cronjob 事件，发送给 Agent 事件循环（经 PluginEngine.Dispatch 分发给插件）
 		ev := adapter.Event{
 			PostType:  "cronjob",
 			IsCronJob: true,
-			Message:   msg,
 			Time:      time.Now().Unix(),
+		}
+
+		if job.Message != "" {
+			msg := &adapter.MessageEvent{
+				MessageType: job.MessageType,
+				RawMessage:  job.Message,
+			}
+			if job.MessageType == "group" {
+				msg.GroupID = job.TargetID
+			} else {
+				msg.UserID = job.TargetID
+			}
+			ev.Message = msg
 		}
 
 		// 非阻塞发送到 Agent 事件循环
 		select {
 		case m.eventChan <- ev:
-			slog.Info("CronJob 事件已注入 Agent 事件循环", "name", job.Name)
+			log.Info("CronJob 事件已注入 Agent 事件循环", "name", job.Name)
 		default:
-			slog.Warn("CronJob: 事件通道已满，丢弃事件", "name", job.Name)
+			log.Warn("CronJob: 事件通道已满，丢弃事件", "name", job.Name)
 		}
 	}
 }

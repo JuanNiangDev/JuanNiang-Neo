@@ -9,7 +9,6 @@ const (
 	StrategyNeverReply ReplyStrategy = "never_reply" // 完全不回复
 	StrategyAtOnly     ReplyStrategy = "at_only"     // 仅@我时回复
 	StrategyAlways     ReplyStrategy = "always"      // 完全回复（默认）
-	StrategyPluginOnly ReplyStrategy = "plugin_only" // 仅 Plugin
 	StrategyRelevance  ReplyStrategy = "relevance"   // 按相关性回复
 )
 
@@ -20,7 +19,7 @@ type ReplyStrategyConfig struct {
 	RelevanceThreshold float64       `gorm:"default:0.5" json:"relevance_threshold"`
 	BotName            string        `gorm:"default:''" json:"bot_name"`
 	StripMarkdown      bool          `gorm:"default:false" json:"strip_markdown"` // 是否去除 Agent 消息中的 Markdown 格式
-	AgentLite          bool          `gorm:"default:false" json:"agent_lite"`    // AgentLite 模式：不调用工具/MCP，无 Agent 循环
+	AgentLite          bool          `gorm:"default:false" json:"agent_lite"`     // AgentLite 模式：不调用工具/MCP，无 Agent 循环
 	CreatedAt          time.Time     `json:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at"`
 }

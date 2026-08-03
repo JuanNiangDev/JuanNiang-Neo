@@ -97,7 +97,7 @@ type SkillResp struct {
 	Description  string           `json:"description"`
 	Keywords     models.JSONSlice `json:"keywords"`
 	RegexPattern string           `json:"regex_pattern"`
-	PromptRef    string           `json:"prompt_ref"`
+	PromptRefs   models.JSONSlice `json:"prompt_refs"`
 	ToolRefs     models.JSONSlice `json:"tool_refs"`
 	McpRefs      models.JSONSlice `json:"mcp_refs"`
 	IsActive     bool             `json:"is_active"`
@@ -193,16 +193,14 @@ type ChatRecordResp struct {
 }
 
 type OverviewResp struct {
-	ChatAreaCount   int64 `json:"chat_area_count"`
-	MCPCount        int64 `json:"mcp_count"`
-	AdapterCount    int64 `json:"adapter_count"`
-	PluginCount     int64 `json:"plugin_count"`
-	ProviderCount   int   `json:"provider_count"`
-	SkillCount      int   `json:"skill_count"`
-	SessionCount    int   `json:"session_count"`
-	TotalTokenUsage int64 `json:"total_token_usage"`
-
-	// 系统状态
+	ChatAreaCount     int64  `json:"chat_area_count"`
+	MCPCount          int64  `json:"mcp_count"`
+	AdapterCount      int64  `json:"adapter_count"`
+	PluginCount       int64  `json:"plugin_count"`
+	ProviderCount     int    `json:"provider_count"`
+	SkillCount        int    `json:"skill_count"`
+	SessionCount      int    `json:"session_count"`
+	TotalTokenUsage   int64  `json:"total_token_usage"`
 	CPUCount          int    `json:"cpu_count"`            // 逻辑 CPU 核数
 	GoroutineNum      int    `json:"goroutine_num"`        // 当前 goroutine 数
 	MemAllocBytes     uint64 `json:"mem_alloc_bytes"`      // 堆已分配 (活跃对象)
@@ -218,6 +216,12 @@ type OverviewResp struct {
 	T2IHealthy     bool `json:"t2i_healthy"`     // HealthCheck 通过
 	SandboxActive  bool `json:"sandbox_active"`  // 客户端已加载
 	SandboxHealthy bool `json:"sandbox_healthy"` // HealthCheck 通过
+}
+
+// DailyTokenUsageResp 单日 Token 用量（折线图数据点）。
+type DailyTokenUsageResp struct {
+	Date       string `json:"date"`
+	TokenCount int64  `json:"token_count"`
 }
 
 type ChatRecordListResp struct {
@@ -259,24 +263,24 @@ type WebhookConfigResp struct {
 type LogEntryResp struct {
 	Time    time.Time      `json:"time"`
 	Level   string         `json:"level"`
+	Module  string         `json:"module,omitempty"`
 	Message string         `json:"message"`
 	Attrs   map[string]any `json:"attrs,omitempty"`
+	Stack   string         `json:"stack,omitempty"`
 }
 
-// ---------- Background Tasks ----------
+// ---------- Agent 活跃循环 ----------
 
-// BackgroundTaskResp 后台任务前端响应。
-type BackgroundTaskResp struct {
-	ID          string         `json:"id"`
-	ChatAreaID  string         `json:"chat_area_id"`
-	Status      string         `json:"status"`
-	MessageType string         `json:"message_type"`
-	TargetID    int64          `json:"target_id"`
-	UserPrompt  string         `json:"user_prompt"`
-	Steps       models.JSONMap `json:"steps"`
-	Results     models.JSONMap `json:"results"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+// AgentLoopResp 当前活跃的 Agent ReAct 循环（监控展示）。
+type AgentLoopResp struct {
+	ID          string    `json:"id"`
+	ChatAreaID  string    `json:"chat_area_id"`
+	MessageType string    `json:"message_type"` // private / group
+	TargetID    int64     `json:"target_id"`    // 私聊: user_id; 群聊: group_id
+	UserID      int64     `json:"user_id"`
+	UserMsg     string    `json:"user_msg"`
+	CurrentTool string    `json:"current_tool"` // 当前正在执行的工具；空表示思考/生成中
+	StartedAt   time.Time `json:"started_at"`
 }
 
 // ---------- CronJob ----------

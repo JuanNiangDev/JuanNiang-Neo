@@ -123,17 +123,18 @@ func (c *Client) GenerateImage(ctx context.Context, req GenerateRequest) ([]byte
 }
 
 // GenerateURL 生成图片并返回可访问的 URL。
+// API 返回的 ID 已包含 "data/" 前缀（如 "data/rendered_xxx.png"）。
 func (c *Client) GenerateURL(ctx context.Context, req GenerateRequest) (string, error) {
 	genResp, err := c.Generate(ctx, req)
 	if err != nil {
 		return "", err
 	}
-	return c.Config.BaseURL + "/text2img/data/" + genResp.ID, nil
+	return c.Config.BaseURL + "/text2img/" + genResp.Data.ID, nil
 }
 
 // GetImage 根据 ID 获取图片。
 func (c *Client) GetImage(ctx context.Context, id string) ([]byte, error) {
-	resp, err := c.do(ctx, http.MethodGet, "/text2img/data/"+id, nil)
+	resp, err := c.do(ctx, http.MethodGet, "/text2img/"+id, nil)
 	if err != nil {
 		return nil, err
 	}

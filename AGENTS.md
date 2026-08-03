@@ -38,13 +38,17 @@ Top-level:
 - `cmd/server/main.go` — program entry (currently a stub).
 - `internal/` — app code, nothing exported outside the module:
   - `adapter/` — OneBot11 WS server + API + events + message segments.
-  - `agent/` — Agent core; subpackages `mcp`, `memory`, `prompt`, `provider`,
-    `session`, `skill`, `tool`. Aggregated by `HagoCenter` in `agent.go`.
+  - `agent/` — Agent core built on Eino ADK; subpackages `mcp`, `memory`, `prompt`,
+    `provider`, `session`, `skill`, `tool`. `ConcurrencyManager` limits parallel
+    Agent loops per ChatArea; three-phase event loop (ACL → BeforeAgent → ReAct).
+    Aggregated by `HagoCenter` in `agent.go`.
+    - `concurrency.go` — 每 ChatArea 并发控制 (默认 8 goroutine).
   - `api/` — Hertz web engine + `middleware` + `router` + `service` (web admin).
     API routes are grouped under `/api/v1` (`internal/api/router/router.go`); only
     `GET /health` lives on the root.
   - `core/` — `acl`, `cache`, `dao`, `handler`, `models`.
   - `pluggin/` — Lua plugin engine.
+  - `logging/` — fatih/color 彩色输出 + JSON 格式化 + 调用栈 + Hub(SSE).
   - `web/` — **NEW**. Frontend SPA serving helper (`SPAHandler`). Runtime reads
     `WEB_DIR` (default `web/dist`); `engine.New(addr, webDir, svc)` registers a
     `h.NoRoute` fallback: `/api/*` → standard 404 JSON envelope, anything else →
@@ -113,9 +117,8 @@ Top-level:
   `Admin123` (change on first boot).
 - OneBot11 API functions are registered as Agent Tools; new OneBot11-capable
   tools should wrap `internal/adapter.Provider` methods rather than re-implement.
-- Long-running steps (MCP/Tool calls) run as background tasks and write results
-  into bgtask memory; a separate Agent (not the chat Agent) drains the buffer
-  and sends the final QQ message. Model errgroup-style concurrency.
+- All tool calls execute synchronously. Eino ADK ChatModelAgent handles the
+  ReAct loop. ConcurrencyManager limits parallel Agent loops per ChatArea.
 
 ## Conventions
 
@@ -125,3 +128,4 @@ Top-level:
   `internal/adapter/provider.go`. Preserve that ordering.
 - Comments and identifiers are mixed Chinese/English — keep that style in the
   file you are editing; do not translate.
+- 开发时 `cp dev.yaml.example dev.yaml`; `make run` 自动读取 dev.yaml 中的基础设施连接端点。

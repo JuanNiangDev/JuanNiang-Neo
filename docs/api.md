@@ -83,7 +83,7 @@
 - `ACLScope`: `chat` | `tool` | `mcp`
 - `ACLPermission`: `allow` | `deny`
 - `ACLTargetType`: `all` | `list`（`list` 时 `user_ids` 才有效）
-- `ReplyStrategy`: `never_reply` | `at_only` | `always` | `plugin_only` | `relevance`
+- `ReplyStrategy`: `never_reply` | `at_only` | `always` | `relevance`
 
 **ACL 语义**：无规则=允许所有；`deny`>`allow`；存在 `allow` 规则时未命中即拒绝；Admins 列表中的用户绕过所有 ACL 检查。
 
@@ -98,8 +98,7 @@
 5. [Memory](#6-memory) · [聊天记录](#12-聊天记录) · [Chat Areas](#13-chat-areas) · [Overview](#14-overview)
 6. [Plugins](#11-plugins) · [ACL](#15-acl)
 7. [T2I](#18-t2i) · [Sandbox](#19-sandbox)
-8. [Logs](#16-日志) · [Background Tasks](#120-background-tasks)
-9. [CronJob](#21-cronjob) · [回复策略](#22-回复策略)
+8. [Logs](#16-日志) · [CronJob](#21-cronjob) · [回复策略](#22-回复策略)
 
 ---
 
@@ -370,13 +369,13 @@ Prompt 模板 CRUD。
 
 ## 9. Skills
 
-Skill = 关键词/正则触发的 Prompt+Tool 组合配置。`priority` 越大越优先。
+Skill = 关键词/正则触发的 Prompt+Tool 组合配置。`priority` 越大越优先。`prompt_refs` 支持引用多个 Prompt。
 
 ### GET /skills
-**data** `SkillResp[]`: `id`、`name`、`description`、`keywords` string[]、`regex_pattern`、`prompt_ref`、`tool_refs` string[]、`mcp_refs` string[]、`is_active`、`is_system`、`priority` int、`created_at`。
+**data** `SkillResp[]`: `id`、`name`、`description`、`keywords` string[]、`regex_pattern`、`prompt_refs` string[]、`tool_refs` string[]、`mcp_refs` string[]、`is_active`、`is_system`、`priority` int、`created_at`。
 
 ### POST /skills
-**Body** `AddSkillReq`: `name`（必填）；`description`、`keywords`、`regex_pattern`、`prompt_ref`、`tool_refs`、`mcp_refs`（可选）；`is_active`（必填）；`is_system`、`priority`（可选）。
+**Body** `AddSkillReq`: `name`（必填）；`description`、`keywords`、`regex_pattern`、`prompt_refs`、`tool_refs`、`mcp_refs`（可选）；`is_active`（必填）；`is_system`、`priority`（可选）。
 
 **data** `SkillResp`。
 
@@ -585,20 +584,6 @@ Text-to-Image 配置与健康管理。单行配置（ID=1）。详见 [external-
 
 ---
 
-## 1.20 Background Tasks
-
-后台任务查看（BackgroundTaskExecutor 产物）。
-
-### GET /background-tasks
-列出所有后台任务（最多 200 条）。
-
-**data** `BackgroundTaskResp[]`: `id`、`chat_area_id`、`status`（`pending`/`running`/`done`/`failed`）、`message_type`、`target_id` int64、`user_prompt`、`steps` JSONMap、`results` JSONMap、`created_at`、`updated_at`。
-
-### GET /background-tasks/:id
-单个详情。**data** `BackgroundTaskResp`。
-
----
-
 ## 21. CronJob
 
 定时任务管理。详见 [webhook-cronjob.md](webhook-cronjob.md)。
@@ -620,14 +605,13 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 |------|------|------|------|
 | `name` | string | 是 | 名称 |
 | `cron_expr` | string | 是 | 6 字段 cron，如 `0 0 9 * * *` 每天 9:00 |
-| `message` | string | 是 | 触发时发送的消息 |
-| `message_type` | string | 否 | `private`/`group`，默认 `private` |
-| `target_id` | int64 | 是 | 目标 QQ 或群号 |
 | `is_active` | bool | 是 | 是否立即启用 |
+| `plugin_ids` | string[] | 否 | 触发插件列表（插件目录名），到点时调用其 `on_cronjob` 回调 |
+| `payload` | string | 否 | JSON 字符串，传递给插件 `on_cronjob(event)` 的 `event.payload` |
 
 **data** `CronJobResp`。
 
-`CronJobResp`: `id`、`name`、`cron_expr`、`message`、`message_type`、`target_id` int64、`is_active`、`last_run_at` *time、`last_error`、`created_at`、`updated_at`。
+`CronJobResp`: `id`、`name`、`cron_expr`、`plugin_ids` JSONSlice、`payload` JSONMap、`is_active`、`last_run_at` *time、`last_error`、`created_at`、`updated_at`。
 
 ### PUT /cronjobs/:id
 覆盖更新，自动 reload。**Body** `UpdateCronJobReq`（同 Add）。**data** `CronJobResp`。
@@ -651,7 +635,6 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 | `never_reply` | 完全不回复 |
 | `at_only` | 仅被 @ 时回复 |
 | `always` | 始终回复（默认） |
-| `plugin_only` | 仅插件处理，不调用 LLM Agent |
 | `relevance` | LLM 评估相关性后决定是否回复（受 `relevance_threshold` 影响） |
 
 ### GET /reply-strategy

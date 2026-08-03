@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"sync"
 
@@ -11,10 +10,14 @@ import (
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
 
+	"JuanNiang-Neo/internal/logging"
+
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
+
+var log = logging.NewModule("core")
 
 // AutoMigrate 自动迁移所有 GORM 模型。
 func AutoMigrate(db *gorm.DB) error {
@@ -40,6 +43,8 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.WebhookConfig{},
 		&models.CronJob{},
 		&models.ReplyStrategyConfig{},
+		&models.SkillMemory{},
+		&models.TokenUsageDaily{},
 	)
 }
 
@@ -50,7 +55,7 @@ func InitAdminUser(ctx context.Context, userDAO *dao.UserDAO) error {
 		return err
 	}
 	if exists {
-		slog.Info("管理员用户已存在，跳过初始化")
+		log.Info("管理员用户已存在，跳过初始化")
 		return nil
 	}
 
@@ -67,7 +72,7 @@ func InitAdminUser(ctx context.Context, userDAO *dao.UserDAO) error {
 	if err := userDAO.Create(ctx, user); err != nil {
 		return err
 	}
-	slog.Warn("已创建默认管理员用户", "username", "admin", "password", "Admin123")
+	log.Warn("已创建默认管理员用户", "username", "admin", "password", "Admin123")
 	return nil
 }
 

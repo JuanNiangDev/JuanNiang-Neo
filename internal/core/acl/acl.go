@@ -3,12 +3,14 @@ package acl
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strconv"
 
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/logging"
 )
+
+var log = logging.NewModule("acl")
 
 // ACL 访问控制列表，决定用户是否可在指定 ChatArea 执行特定操作。
 type ACL struct {
@@ -30,7 +32,7 @@ func NewACL(dao *dao.ACLDAO) *ACL {
 func (a *ACL) Check(ctx context.Context, userID int64, chatAreaID string, scope models.ACLScope) bool {
 	rules, err := a.dao.GetByChatAreaAndScope(ctx, chatAreaID, scope)
 	if err != nil {
-		slog.Error("ACL 查询失败", "user_id", userID, "chat_area_id", chatAreaID, "scope", scope, "err", err)
+		log.Error("ACL 查询失败", "user_id", userID, "chat_area_id", chatAreaID, "scope", scope, "err", err)
 		return true // 查询失败默认允许
 	}
 	if len(rules) == 0 {

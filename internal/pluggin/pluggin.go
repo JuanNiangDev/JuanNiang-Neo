@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -229,11 +228,11 @@ func (pe *PluginEngine) LoadAll() error {
 		// 读取 manifest 判断 enabled 状态（非系统插件且 enabled=false 则跳过）
 		manifest, _ := pe.readManifest(filepath.Join(pe.basePath, entry.Name()))
 		if manifest != nil && !manifest.Enabled && !manifest.System {
-			slog.Info("插件已禁用，跳过加载", "name", entry.Name())
+			log.Info("插件已禁用，跳过加载", "name", entry.Name())
 			continue
 		}
 		if err := pe.Load(entry.Name()); err != nil {
-			slog.Error("插件加载失败", "name", entry.Name(), "err", err)
+			log.Error("插件加载失败", "name", entry.Name(), "err", err)
 		}
 	}
 	return nil
@@ -257,9 +256,9 @@ func (pe *PluginEngine) Load(name string) error {
 	if manifest.PPID == "" {
 		manifest.PPID = newPluginUUID()
 		if werr := pe.writeManifest(pluginDir, manifest); werr != nil {
-			slog.Warn("写回插件 PPID 失败", "name", name, "err", werr)
+			log.Warn("写回插件 PPID 失败", "name", name, "err", werr)
 		} else {
-			slog.Info("已为插件生成 PPID", "name", name, "ppid", manifest.PPID)
+			log.Info("已为插件生成 PPID", "name", name, "ppid", manifest.PPID)
 		}
 	}
 
@@ -277,7 +276,7 @@ func (pe *PluginEngine) Load(name string) error {
 	}
 
 	pe.plugins[name] = &LoadedPlugin{Manifest: *manifest, State: L, Dir: pluginDir}
-	slog.Info("插件加载成功", "name", name, "version", manifest.Version, "system", manifest.System)
+	log.Info("插件加载成功", "name", name, "version", manifest.Version, "system", manifest.System)
 	return nil
 }
 
@@ -297,7 +296,7 @@ func (pe *PluginEngine) Unload(name string) error {
 
 	p.State.Close()
 	delete(pe.plugins, name)
-	slog.Info("插件已卸载", "name", name)
+	log.Info("插件已卸载", "name", name)
 	return nil
 }
 
@@ -412,6 +411,13 @@ type EventData struct {
 	Sender    map[string]any `json:"sender,omitempty"`     // 发送者信息（nickname/card/sex/age）
 }
 
+// DispatchResult 是 Plugin 引擎统一派发结果。
+type DispatchResult struct {
+	Consumed  bool          // Plugin 已消费事件
+	Event     adapter.Event // 可能被 Plugin 修改后的事件
+	SkipReply bool          // skip_reply_check 标记：跳过回复策略直接给 Agent
+}
+
 // HasPluginCommand 检查消息是否匹配已注册的插件命令（不执行，仅供策略层判断）。
 func (pe *PluginEngine) HasPluginCommand(raw string) bool {
 	return pe.commands.HasCommand(raw)
@@ -427,7 +433,7 @@ func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 	if strings.HasPrefix(strings.TrimSpace(event.RawMessage), "/") {
 		c, reply, err := pe.commands.Dispatch(event.RawMessage, event)
 		if err != nil {
-			slog.Error("命令派发错误", "raw", event.RawMessage, "err", err)
+			log.Error("命令派发错误", "raw", event.RawMessage, "err", err)
 		}
 		// 只要命令已消费或有回复内容，都视为已处理（避免消息流入 Agent）
 		if c || reply != "" {
@@ -451,7 +457,7 @@ func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
 		p.State.Push(fn)
 		p.State.Push(table)
 		if err := p.State.PCall(1, 2, nil); err != nil {
-			slog.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
+			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
 			continue
 		}
 		consumedRet := p.State.Get(-2)
@@ -498,7 +504,7 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 		p.State.Push(fn)
 		p.State.Push(table)
 		if err := p.State.PCall(1, 2, nil); err != nil {
-			slog.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
+			log.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
 			continue
 		}
 		consumedRet := p.State.Get(-2)
@@ -508,6 +514,75 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 		}
 	}
 	return false
+}
+
+// ListWebhookPlugins 返回所有启用 webhook 的插件及其 URL 路径（GET /webhook 列表用）。
+// 判定条件：已加载 + 拥有 webhook 权限 + 定义了 on_webhook 回调。
+func (pe *PluginEngine) ListWebhookPlugins() []adapter.WebhookPluginInfo {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+
+	var out []adapter.WebhookPluginInfo
+	for _, p := range pe.plugins {
+		if !p.HasPermission("webhook") {
+			continue
+		}
+		fn := p.State.GetGlobal("on_webhook")
+		if fn.Type() != lua.LTFunction {
+			continue
+		}
+		out = append(out, adapter.WebhookPluginInfo{
+			Name:    p.Manifest.Name,
+			Path:    "/webhook/" + p.Manifest.Name,
+			Enabled: true,
+		})
+	}
+	return out
+}
+
+// RouteWebhook routes a webhook request to a specific plugin by name.
+// Returns (consumed, reply).
+func (pe *PluginEngine) RouteWebhook(pluginName string, path string, method string, payload map[string]any) (consumed bool, reply string) {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+
+	for _, p := range pe.plugins {
+		if p.Manifest.Name != pluginName {
+			continue
+		}
+		if !p.HasPermission("webhook") {
+			return false, "plugin does not have webhook permission"
+		}
+		fn := p.State.GetGlobal("on_webhook")
+		if fn.Type() != lua.LTFunction {
+			return false, "plugin has no on_webhook handler"
+		}
+		event := EventData{
+			PostType: "webhook",
+			Webhook: map[string]any{
+				"path":    path,
+				"method":  method,
+				"payload": payload,
+			},
+		}
+		table := eventToLuaTable(p.State, event)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 2, nil); err != nil {
+			return false, err.Error()
+		}
+		replyRet := p.State.Get(-1)
+		consumedRet := p.State.Get(-2)
+		p.State.Pop(2)
+
+		r := ""
+		if replyRet.Type() == lua.LTString {
+			r = string(replyRet.(lua.LString))
+		}
+		c := consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool))
+		return c, r
+	}
+	return false, "plugin not found"
 }
 
 // OnNotice 通知事件（群成员增减、禁言、文件上传等）。
@@ -523,7 +598,7 @@ func (pe *PluginEngine) OnNotice(event EventData) {
 		p.State.Push(fn)
 		p.State.Push(table)
 		if err := p.State.PCall(1, 0, nil); err != nil {
-			slog.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
+			log.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
 		}
 	}
 }
@@ -541,43 +616,296 @@ func (pe *PluginEngine) OnRequest(event EventData) {
 		p.State.Push(fn)
 		p.State.Push(table)
 		if err := p.State.PCall(1, 0, nil); err != nil {
-			slog.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
+			log.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
 		}
 	}
 }
 
-// OnTimerCall 定时任务触发插件 on_timer_call 回调。
-// pluginIDs 指定要调用的插件（目录名列表），payload 为 CronJob 配置的 JSON payload，
-// admins 为系统管理员 QQ 列表。
-// 实现 cronjob.PluginTimerDispatcher 接口。
-func (pe *PluginEngine) OnTimerCall(pluginIDs []string, payload map[string]any, admins []string) {
+// Dispatch 统一派发所有事件类型给 Plugin。
+// Plugin 可以消费事件、修改事件内容、或标记 skip_reply_check。
+func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
 
-	event := EventData{
-		PostType: "timer",
-		Admins:   admins,
-		Payload:  payload,
+	switch ev.PostType {
+	case "webhook":
+		if ev.Webhook != nil {
+			pluginEvent := EventData{
+				PostType: "webhook",
+				Admins:   ev.Admins,
+				Webhook: map[string]any{
+					"path":    ev.Webhook.Path,
+					"method":  ev.Webhook.Method,
+					"payload": ev.Webhook.Payload,
+				},
+			}
+			consumed, reply := pe.onWebhookLocked(pluginEvent)
+			if reply != "" {
+				pe.sendWebhookReply(ev, reply)
+			}
+			return DispatchResult{Consumed: consumed, Event: ev}
+		}
+	case "notice":
+		if ev.Notice != nil {
+			n := ev.Notice
+			pluginEvent := EventData{
+				PostType:   "notice",
+				NoticeType: n.NoticeType,
+				SubType:    n.SubType,
+				UserID:     n.UserID,
+				GroupID:    n.GroupID,
+				OperatorID: n.OperatorID,
+				TargetID:   n.TargetID,
+				Duration:   n.Duration,
+				Admins:     ev.Admins,
+			}
+			if n.File != nil {
+				pluginEvent.File = map[string]any{
+					"id": n.File.ID, "name": n.File.Name,
+					"size": n.File.Size, "busid": n.File.BusID,
+				}
+			}
+			consumed := pe.onNoticeLocked(pluginEvent)
+			return DispatchResult{Consumed: consumed, Event: ev}
+		}
+	case "request":
+		if ev.Request != nil {
+			r := ev.Request
+			pluginEvent := EventData{
+				PostType:    "request",
+				RequestType: r.RequestType,
+				SubType:     r.SubType,
+				UserID:      r.UserID,
+				GroupID:     r.GroupID,
+				Comment:     r.Comment,
+				Flag:        r.Flag,
+				Admins:      ev.Admins,
+			}
+			consumed := pe.onRequestLocked(pluginEvent)
+			return DispatchResult{Consumed: consumed, Event: ev}
+		}
+	case "cronjob":
+		pluginEvent := EventData{
+			PostType: "cronjob",
+			Admins:   ev.Admins,
+		}
+		if ev.Message != nil {
+			pluginEvent.RawMessage = ev.Message.RawMessage
+			pluginEvent.MessageType = ev.Message.MessageType
+			pluginEvent.UserID = ev.Message.UserID
+			pluginEvent.GroupID = ev.Message.GroupID
+		}
+		consumed := pe.onCronJobLocked(pluginEvent)
+		return DispatchResult{Consumed: consumed, Event: ev}
+	case "message":
+		if ev.Message != nil {
+			return pe.dispatchMessageLocked(ev)
+		}
 	}
 
-	for _, name := range pluginIDs {
-		p, ok := pe.plugins[name]
-		if !ok {
-			slog.Warn("OnTimerCall: 插件未加载", "plugin", name)
+	return DispatchResult{Event: ev}
+}
+
+// dispatchMessageLocked 消息事件的统一派发（需在持有读锁时调用）。
+func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
+	msg := ev.Message
+	pluginEvent := EventData{
+		PostType:    "message",
+		MessageType: msg.MessageType,
+		UserID:      msg.UserID,
+		GroupID:     msg.GroupID,
+		RawMessage:  msg.RawMessage,
+		MessageID:   msg.MessageID,
+		Admins:      ev.Admins,
+		Sender: map[string]any{
+			"user_id":  msg.Sender.UserID,
+			"nickname": msg.Sender.Nickname,
+			"sex":      msg.Sender.Sex,
+			"age":      float64(msg.Sender.Age),
+			"card":     msg.Sender.Card,
+		},
+	}
+
+	pe.currentEv = pluginEvent
+
+	// 1. 命令注册表
+	if strings.HasPrefix(strings.TrimSpace(pluginEvent.RawMessage), "/") {
+		c, reply, err := pe.commands.Dispatch(pluginEvent.RawMessage, pluginEvent)
+		if err != nil {
+			log.Error("命令派发错误", "raw", pluginEvent.RawMessage, "err", err)
+		}
+		if c || reply != "" {
+			if reply != "" {
+				pe.sendReply(pluginEvent, reply)
+			}
+			return DispatchResult{Consumed: true, Event: ev}
+		}
+	}
+
+	// 2. 派发给各插件的 on_message
+	var anySkipReply bool
+	for _, p := range pe.plugins {
+		if !p.HasPermission("onebot11") {
 			continue
 		}
-		fn := p.State.GetGlobal("on_timer_call")
+		fn := p.State.GetGlobal("on_message")
 		if fn.Type() != lua.LTFunction {
-			slog.Warn("OnTimerCall: 插件未定义 on_timer_call", "plugin", name)
+			continue
+		}
+		table := eventToLuaTable(p.State, pluginEvent)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 3, nil); err != nil { // 3 return values
+			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
+			continue
+		}
+
+		// 返回值: consumed, modified_event, skip_reply
+		skipReplyRet := p.State.Get(-1)
+		modifiedRet := p.State.Get(-2)
+		consumedRet := p.State.Get(-3)
+		p.State.Pop(3)
+
+		consumed := consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool))
+		skipReply := skipReplyRet.Type() == lua.LTBool && bool(skipReplyRet.(lua.LBool))
+
+		// 解析修改后的事件
+		resultEvent := ev
+		if modifiedRet.Type() == lua.LTTable {
+			if t, ok := modifiedRet.(*lua.LTable); ok {
+				resultEvent = pe.luaTableToEvent(t, ev)
+			}
+		}
+
+		if consumed {
+			return DispatchResult{Consumed: true, Event: resultEvent, SkipReply: skipReply}
+		}
+		// 即使未消费，也保留修改后的事件和 skip_reply 标记
+		ev = resultEvent
+		if skipReply {
+			anySkipReply = true
+		}
+	}
+
+	return DispatchResult{Consumed: false, Event: ev, SkipReply: anySkipReply}
+}
+
+// onCronJobLocked 派发 cronjob 事件给插件（需在持有读锁时调用）。
+func (pe *PluginEngine) onCronJobLocked(event EventData) bool {
+	for _, p := range pe.plugins {
+		fn := p.State.GetGlobal("on_cronjob")
+		if fn.Type() != lua.LTFunction {
 			continue
 		}
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
-		if err := p.State.PCall(1, 0, nil); err != nil {
-			slog.Error("插件 on_timer_call 错误", "plugin", name, "err", err)
+		if err := p.State.PCall(1, 1, nil); err != nil {
+			log.Error("插件 on_cronjob 错误", "plugin", p.Manifest.Name, "err", err)
+			continue
+		}
+		consumedRet := p.State.Get(-1)
+		p.State.Pop(1)
+		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
+			return true
 		}
 	}
+	return false
+}
+
+// onNoticeLocked 派发 notice 事件给插件（需在持有读锁时调用）。
+func (pe *PluginEngine) onNoticeLocked(event EventData) bool {
+	for _, p := range pe.plugins {
+		fn := p.State.GetGlobal("on_notice")
+		if fn.Type() != lua.LTFunction {
+			continue
+		}
+		table := eventToLuaTable(p.State, event)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 1, nil); err != nil {
+			log.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
+			continue
+		}
+		consumedRet := p.State.Get(-1)
+		p.State.Pop(1)
+		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
+			return true
+		}
+	}
+	return false
+}
+
+// onRequestLocked 派发 request 事件给插件（需在持有读锁时调用）。
+func (pe *PluginEngine) onRequestLocked(event EventData) bool {
+	for _, p := range pe.plugins {
+		fn := p.State.GetGlobal("on_request")
+		if fn.Type() != lua.LTFunction {
+			continue
+		}
+		table := eventToLuaTable(p.State, event)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 1, nil); err != nil {
+			log.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
+			continue
+		}
+		consumedRet := p.State.Get(-1)
+		p.State.Pop(1)
+		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
+			return true
+		}
+	}
+	return false
+}
+
+// onWebhookLocked 派发 webhook 事件给插件（需在持有读锁时调用）。
+func (pe *PluginEngine) onWebhookLocked(event EventData) (consumed bool, reply string) {
+	for _, p := range pe.plugins {
+		if !p.HasPermission("webhook") {
+			continue
+		}
+		fn := p.State.GetGlobal("on_webhook")
+		if fn.Type() != lua.LTFunction {
+			continue
+		}
+		table := eventToLuaTable(p.State, event)
+		p.State.Push(fn)
+		p.State.Push(table)
+		if err := p.State.PCall(1, 2, nil); err != nil {
+			log.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
+			continue
+		}
+		replyRet := p.State.Get(-1)
+		consumedRet := p.State.Get(-2)
+		p.State.Pop(2)
+		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
+			r := ""
+			if replyRet.Type() == lua.LTString {
+				r = string(replyRet.(lua.LString))
+			}
+			return true, r
+		}
+	}
+	return false, ""
+}
+
+// sendWebhookReply 将 webhook 处理结果回传给 webhook adapter。
+func (pe *PluginEngine) sendWebhookReply(ev adapter.Event, reply string) {
+	// Webhook reply 由 webhook adapter 层处理，这里仅记录日志。
+	log.Info("Webhook reply", "reply_len", len(reply))
+}
+
+// luaTableToEvent 将 Lua 插件修改后的事件表转换回 adapter.Event。
+func (pe *PluginEngine) luaTableToEvent(t *lua.LTable, original adapter.Event) adapter.Event {
+	result := original
+	// 更新 RawMessage（如插件修改了消息内容）
+	if v := t.RawGetString("raw_message"); v.Type() == lua.LTString {
+		if result.Message != nil {
+			result.Message.RawMessage = string(v.(lua.LString))
+		}
+	}
+	return result
 }
 
 // SupportsTimer 检查插件是否支持定时任务回调（定义了 on_timer_call 全局函数）。
@@ -631,15 +959,15 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 	logTable := L.NewTable()
 	L.SetFuncs(logTable, map[string]lua.LGFunction{
 		"info": func(L *lua.LState) int {
-			slog.Info("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
+			log.Info("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
 			return 0
 		},
 		"warn": func(L *lua.LState) int {
-			slog.Warn("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
+			log.Warn("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
 			return 0
 		},
 		"error": func(L *lua.LState) int {
-			slog.Error("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
+			log.Error("[plugin:"+pluginName+"]", "msg", L.CheckString(1))
 			return 0
 		},
 	})
@@ -693,7 +1021,7 @@ func (pe *PluginEngine) injectSDK(L *lua.LState, pluginName string) {
 	pathScript := fmt.Sprintf(`package.path = "%s/?.lua;" .. (package.path or "")`,
 		strings.ReplaceAll(sdkDir, "\\", "/"))
 	if err := L.DoString(pathScript); err != nil {
-		slog.Warn("设置 package.path 失败", "plugin", pluginName, "err", err)
+		log.Warn("设置 package.path 失败", "plugin", pluginName, "err", err)
 	}
 }
 
@@ -859,7 +1187,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		data, err := os.ReadFile(fullPath)
 		readDur := time.Since(t0)
 		if err != nil {
-			slog.Warn("读取插件图片文件失败", "plugin", pluginName, "path", fullPath, "err", err)
+			log.Warn("读取插件图片文件失败", "plugin", pluginName, "path", fullPath, "err", err)
 			return path
 		}
 		ext := strings.TrimPrefix(filepath.Ext(fullPath), ".")
@@ -869,7 +1197,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		t1 := time.Now()
 		b64 := "base64://" + base64.StdEncoding.EncodeToString(data)
 		encDur := time.Since(t1)
-		slog.Debug("插件图片处理耗时", "plugin", pluginName, "file", path, "size_bytes", len(data),
+		log.Debug("插件图片处理耗时", "plugin", pluginName, "file", path, "size_bytes", len(data),
 			"read_us", readDur.Microseconds(), "encode_us", encDur.Microseconds(), "total_us", time.Since(t0).Microseconds())
 		return b64
 	}
@@ -904,9 +1232,9 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			go func() {
 				t0 := time.Now()
 				if _, err := sendAdp.SendPrivateMsg(userID, msg); err != nil {
-					slog.Warn("插件异步发送私聊消息失败", "plugin", pluginName, "user_id", userID, "err", err)
+					log.Warn("插件异步发送私聊消息失败", "plugin", pluginName, "user_id", userID, "err", err)
 				} else {
-					slog.Debug("插件异步发送私聊消息完成", "plugin", pluginName, "user_id", userID, "dur_ms", time.Since(t0).Milliseconds())
+					log.Debug("插件异步发送私聊消息完成", "plugin", pluginName, "user_id", userID, "dur_ms", time.Since(t0).Milliseconds())
 				}
 			}()
 			return pushOk(L)
@@ -926,9 +1254,9 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			go func() {
 				t0 := time.Now()
 				if _, err := sendAdp.SendGroupMsg(groupID, msg); err != nil {
-					slog.Warn("插件异步发送群消息失败", "plugin", pluginName, "group_id", groupID, "err", err)
+					log.Warn("插件异步发送群消息失败", "plugin", pluginName, "group_id", groupID, "err", err)
 				} else {
-					slog.Debug("插件异步发送群消息完成", "plugin", pluginName, "group_id", groupID, "dur_ms", time.Since(t0).Milliseconds())
+					log.Debug("插件异步发送群消息完成", "plugin", pluginName, "group_id", groupID, "dur_ms", time.Since(t0).Milliseconds())
 				}
 			}()
 			return pushOk(L)
@@ -1260,7 +1588,7 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(err.Error()))
 				return 2
 			}
-			L.Push(lua.LString(resp.ID))
+			L.Push(lua.LString(resp.Data.ID))
 			return 1
 		},
 		"generate_url": func(L *lua.LState) int {
@@ -1847,34 +2175,34 @@ var systemPluginMain string
 func (pe *PluginEngine) ensureEmbeddedAssets() {
 	// 0. 确保 basePath 存在且可写
 	if err := os.MkdirAll(pe.basePath, 0o755); err != nil {
-		slog.Error("无法创建插件根目录，内嵌资源写入跳过", "basePath", pe.basePath, "err", err)
+		log.Error("无法创建插件根目录，内嵌资源写入跳过", "basePath", pe.basePath, "err", err)
 		return
 	}
 
 	// 1. SDK 总是覆盖
 	sdkDir := filepath.Join(pe.basePath, "sdk")
 	if err := os.MkdirAll(sdkDir, 0o755); err != nil {
-		slog.Warn("创建 SDK 目录失败", "err", err)
+		log.Warn("创建 SDK 目录失败", "err", err)
 	} else {
 		sdkFile := filepath.Join(sdkDir, "jn.lua")
 		if err := os.WriteFile(sdkFile, []byte(jnSDKSource), 0o644); err != nil {
-			slog.Warn("写入 SDK 文件失败", "path", sdkFile, "err", err)
+			log.Warn("写入 SDK 文件失败", "path", sdkFile, "err", err)
 		} else {
-			slog.Info("SDK 已同步到磁盘", "path", sdkFile)
+			log.Info("SDK 已同步到磁盘", "path", sdkFile)
 		}
 	}
 
 	// 2. system 插件始终覆盖（随二进制更新同步）
 	sysDir := filepath.Join(pe.basePath, "system")
 	if err := os.MkdirAll(sysDir, 0o755); err != nil {
-		slog.Warn("创建 system 插件目录失败", "err", err)
+		log.Warn("创建 system 插件目录失败", "err", err)
 		return
 	}
 	if err := os.WriteFile(filepath.Join(sysDir, "pluggin.yaml"), []byte(systemPluginManifest), 0o644); err != nil {
-		slog.Warn("写入 system pluggin.yaml 失败", "err", err)
+		log.Warn("写入 system pluggin.yaml 失败", "err", err)
 	}
 	if err := os.WriteFile(filepath.Join(sysDir, "main.lua"), []byte(systemPluginMain), 0o644); err != nil {
-		slog.Warn("写入 system main.lua 失败", "err", err)
+		log.Warn("写入 system main.lua 失败", "err", err)
 	}
-	slog.Info("system 插件已同步到磁盘")
+	log.Info("system 插件已同步到磁盘")
 }

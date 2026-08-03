@@ -87,6 +87,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 
 	// Overview
 	api.GET("/overview", auth, svc.GetOverview)
+	api.GET("/overview/daily-token-usage", auth, svc.GetDailyTokenUsage)
 
 	// Chat Areas
 	api.GET("/chat-areas", auth, svc.GetChatAreas)
@@ -114,9 +115,8 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.GET("/logs", auth, svc.GetLogs)
 	api.GET("/logs/stream", auth, svc.StreamLogs)
 
-	// Background Tasks
-	api.GET("/background-tasks", auth, svc.ListBackgroundTasks)
-	api.GET("/background-tasks/:id", auth, svc.GetBackgroundTask)
+	// Agent 活跃循环（原后台任务页改造）
+	api.GET("/agent/loops", auth, svc.ListAgentLoops)
 
 	// CronJob
 	api.GET("/cronjobs", auth, svc.ListCronJobs)

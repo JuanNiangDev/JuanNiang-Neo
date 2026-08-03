@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"time"
 
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/cache"
@@ -17,11 +18,12 @@ import (
 type SessionManager struct {
 	dao       *dao.SessionDAO
 	recordDAO *dao.ChatRecordDAO
+	dailyDAO  *dao.TokenUsageDailyDAO
 	cache     *cache.Cache
 }
 
-func NewSessionManager(dao *dao.SessionDAO, recordDAO *dao.ChatRecordDAO, c *cache.Cache) *SessionManager {
-	return &SessionManager{dao: dao, recordDAO: recordDAO, cache: c}
+func NewSessionManager(dao *dao.SessionDAO, recordDAO *dao.ChatRecordDAO, dailyDAO *dao.TokenUsageDailyDAO, c *cache.Cache) *SessionManager {
+	return &SessionManager{dao: dao, recordDAO: recordDAO, dailyDAO: dailyDAO, cache: c}
 }
 
 func (sm *SessionManager) GetOrCreate(ctx context.Context, chatAreaID string) (*models.Session, error) {
@@ -69,9 +71,20 @@ func (sm *SessionManager) ClearHistory(ctx context.Context, sessionID string) er
 	return sm.cache.Del(ctx, key)
 }
 
-// UpdateTokenUsage 累加 Token 用量。
-func (sm *SessionManager) UpdateTokenUsage(ctx context.Context, sessionID string, tokens int64) error {
-	return sm.dao.AddTokenUsage(ctx, sessionID, tokens)
+// RecordTokenUsage 累加 Token 用量，同时写入两份账本：
+//   - 会话总账：Session.TokenUsage（该会话的历史总开销）
+//   - 每日统计：TokenUsageDaily（按自然日 YYYY-MM-DD 聚合，跨全部会话）
+func (sm *SessionManager) RecordTokenUsage(ctx context.Context, sessionID string, tokens int64) error {
+	if tokens <= 0 {
+		return nil
+	}
+	if err := sm.dao.AddTokenUsage(ctx, sessionID, tokens); err != nil {
+		return err
+	}
+	if sm.dailyDAO != nil {
+		return sm.dailyDAO.AddTokenUsage(ctx, time.Now().Format("2006-01-02"), tokens)
+	}
+	return nil
 }
 
 // ListSessions 列出所有会话。

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -69,7 +68,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 					// 下载图片并调用 Vision
 					resp, err := visionModel.Vision(ctx, nil, prompt) // Vision expects raw image bytes
 					if err != nil {
-						slog.Warn("Vision 调用失败", "err", err)
+						log.Warn("Vision 调用失败", "err", err)
 						return 0, "Vision 调用失败"
 					}
 					// 解析 JSON
@@ -137,7 +136,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 
 	resp, err := llm.Chat(ctx, req)
 	if err != nil {
-		slog.Warn("相关性检查 LLM 调用失败", "err", err)
+		log.Warn("相关性检查 LLM 调用失败", "err", err)
 		return 0, "LLM 调用失败"
 	}
 
@@ -148,7 +147,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 		result = extractRelevanceJSON(content)
 	}
 
-	slog.Info("相关性检查结果", "relevance", result.Relevance, "reason", result.Reason, "raw", content)
+	log.Info("相关性检查结果", "relevance", result.Relevance, "reason", result.Reason, "raw", content)
 	return result.Relevance, result.Reason
 }
 

@@ -2,16 +2,14 @@ package tool
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
-	"JuanNiang-Neo/internal/adapter"
-	"JuanNiang-Neo/internal/agent/provider"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
+	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/provider"
 
 	"github.com/openai/openai-go/v3"
 )
@@ -52,7 +50,7 @@ type SessionInfo struct {
 	SenderRole  string `json:"sender_role"` // owner / admin / member (群聊); 私聊为空
 	SelfQQ      int64  `json:"self_qq"`
 	SelfName    string `json:"self_name"` // 机器人昵称
-	Admins      string `json:"admins"`   // 管理员 QQ 列表
+	Admins      string `json:"admins"`    // 管理员 QQ 列表
 }
 
 // RegisterBuiltinTools 注册所有内置工具到注册表。
@@ -63,8 +61,8 @@ func RegisterBuiltinTools(
 	getSandbox func() *sandboxcaller.Client,
 	getT2I func() *t2icaller.Client,
 	imageModel provider.Provider,
-	getSessionCtx func() string,
-	getCurrentMsg func() *adapter.MessageEvent,
+	getSessionCtx func(ctx context.Context) string,
+	getCurrentMsg func(ctx context.Context) *adapter.MessageEvent,
 	getRecentMsgs func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error),
 ) {
 	tools := []Tool{}
@@ -89,17 +87,37 @@ func RegisterBuiltinTools(
 			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				UserID  int64           `json:"user_id"`
+				UserID  FlexInt64       `json:"user_id"`
 				Message json.RawMessage `json:"message"`
 			}
+			// 容错：LLM 偶尔把消息内容直接当作参数传入（如 "[CQ:image,file=...] 文字"），
+			// 此时将原始参数整体视为 message，目标回退到当前会话。
 			if err := json.Unmarshal(args, &p); err != nil {
-				return "", err
+				log.Warn("send_private_msg 参数非标准 JSON，按消息内容容错解析", "err", err, "args_len", len(args))
+				p.Message = args
 			}
-			msg, err := BuildMessageFromJSON(p.Message)
+
+			msg, err := BuildMessageLoose(p.Message)
 			if err != nil {
-				return "", fmt.Errorf("消息格式错误: %w", err)
+				return "", fmt.Errorf("消息内容无效: %w", err)
 			}
-			id, err := adapter.SendPrivateMsg(p.UserID, msg)
+
+			// LLM 常省略 user_id（意图为当前会话）：从当前消息上下文兜底
+			userID := int64(p.UserID)
+			if userID == 0 {
+				if cur := getCurrentMsg(ctx); cur != nil && cur.MessageType == "private" {
+					userID = cur.UserID
+				}
+			}
+			if userID == 0 {
+				return "", fmt.Errorf("缺少 user_id 参数，且无法从当前会话推断目标用户")
+			}
+			// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
+			if q := GetDeferredSendQueue(ctx); q != nil {
+				q.Add(DeferredSend{MessageType: "private", TargetID: userID, Message: msg, Delivery: true})
+				return "私聊消息已加入发送队列，将在任务执行完成后统一发送", nil
+			}
+			id, err := adapter.SendPrivateMsg(userID, msg)
 			if err != nil {
 				return "", err
 			}
@@ -119,12 +137,37 @@ func RegisterBuiltinTools(
 			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				GroupID int64           `json:"group_id"`
+				GroupID FlexInt64       `json:"group_id"`
 				Message json.RawMessage `json:"message"`
 			}
-			json.Unmarshal(args, &p)
-			msg, _ := BuildMessageFromJSON(p.Message)
-			id, err := adapter.SendGroupMsg(p.GroupID, msg)
+			// 容错：LLM 偶尔把消息内容直接当作参数传入（如 "[CQ:image,file=...] 文字"），
+			// 此时将原始参数整体视为 message，目标回退到当前会话。
+			if err := json.Unmarshal(args, &p); err != nil {
+				log.Warn("send_group_msg 参数非标准 JSON，按消息内容容错解析", "err", err, "args_len", len(args))
+				p.Message = args
+			}
+
+			msg, err := BuildMessageLoose(p.Message)
+			if err != nil {
+				return "", fmt.Errorf("消息内容无效: %w", err)
+			}
+
+			// LLM 常省略 group_id（意图为当前会话）：从当前消息上下文兜底
+			groupID := int64(p.GroupID)
+			if groupID == 0 {
+				if cur := getCurrentMsg(ctx); cur != nil && cur.MessageType == "group" {
+					groupID = cur.GroupID
+				}
+			}
+			if groupID == 0 {
+				return "", fmt.Errorf("缺少 group_id 参数，且无法从当前会话推断目标群")
+			}
+			// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
+			if q := GetDeferredSendQueue(ctx); q != nil {
+				q.Add(DeferredSend{MessageType: "group", TargetID: groupID, Message: msg, Delivery: true})
+				return "群消息已加入发送队列，将在任务执行完成后统一发送", nil
+			}
+			id, err := adapter.SendGroupMsg(groupID, msg)
 			if err != nil {
 				return "", err
 			}
@@ -136,7 +179,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "delete_msg", "撤回消息",
 			Int64Param("message_id", "消息 ID", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ MessageID int64 `json:"message_id"` }
+			var p struct {
+				MessageID int64 `json:"message_id"`
+			}
 			json.Unmarshal(args, &p)
 			if err := adapter.DeleteMsg(p.MessageID); err != nil {
 				return "", err
@@ -149,7 +194,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "get_msg", "根据消息 ID 获取消息的完整内容（包括被引用的消息）",
 			Int64Param("message_id", "消息 ID", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ MessageID int64 `json:"message_id"` }
+			var p struct {
+				MessageID int64 `json:"message_id"`
+			}
 			json.Unmarshal(args, &p)
 			msg, err := adapter.GetMsg(p.MessageID)
 			if err != nil {
@@ -166,7 +213,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "get_group_info", "获取群信息",
 			Int64Param("group_id", "群号", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ GroupID int64 `json:"group_id"` }
+			var p struct {
+				GroupID int64 `json:"group_id"`
+			}
 			json.Unmarshal(args, &p)
 			info, err := adapter.GetGroupInfo(p.GroupID)
 			if err != nil {
@@ -181,7 +230,9 @@ func RegisterBuiltinTools(
 		BaseTool: NewTool("", "get_group_member_list", "获取群成员列表",
 			Int64Param("group_id", "群号", true), true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-			var p struct{ GroupID int64 `json:"group_id"` }
+			var p struct {
+				GroupID int64 `json:"group_id"`
+			}
 			json.Unmarshal(args, &p)
 			list, err := adapter.GetGroupMemberList(p.GroupID)
 			if err != nil {
@@ -387,7 +438,9 @@ func RegisterBuiltinTools(
 				if sandbox == nil {
 					return "", fmt.Errorf("沙箱服务未启用")
 				}
-				var p struct{ Status string `json:"status"` }
+				var p struct {
+					Status string `json:"status"`
+				}
 				json.Unmarshal(args, &p)
 				list, err := sandbox.ListSandboxes(ctx, 20, "", p.Status)
 				if err != nil {
@@ -399,11 +452,11 @@ func RegisterBuiltinTools(
 		})
 	}
 
-	// --- 沙箱工具 (长耗时, 需要 sandbox_id) ---
+	// --- 沙箱工具 (需要 sandbox_id) ---
 
 	if getSandbox != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "browser_search", "在沙箱中执行浏览器搜索(长耗时)",
+			BaseTool: NewTool("", "browser_search", "在沙箱中执行浏览器搜索",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -411,7 +464,7 @@ func RegisterBuiltinTools(
 						"query":      map[string]any{"type": "string", "description": "搜索关键词"},
 					},
 					"required": []string{"sandbox_id", "query"},
-				}, true, true),
+				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				sandbox := getSandbox()
 				if sandbox == nil {
@@ -461,7 +514,7 @@ except Exception as e:
 		})
 
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "command_exec", "在沙箱中执行系统命令(长耗时)",
+			BaseTool: NewTool("", "command_exec", "在沙箱中执行系统命令",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -469,7 +522,7 @@ except Exception as e:
 						"command":    map[string]any{"type": "string", "description": "要执行的命令"},
 					},
 					"required": []string{"sandbox_id", "command"},
-				}, true, true),
+				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				sandbox := getSandbox()
 				if sandbox == nil {
@@ -492,7 +545,7 @@ except Exception as e:
 		})
 
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "code_exec", "在沙箱中执行 Python 代码(长耗时)",
+			BaseTool: NewTool("", "code_exec", "在沙箱中执行 Python 代码",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -500,7 +553,7 @@ except Exception as e:
 						"code":       map[string]any{"type": "string", "description": "Python 代码"},
 					},
 					"required": []string{"sandbox_id", "code"},
-				}, true, true),
+				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				sandbox := getSandbox()
 				if sandbox == nil {
@@ -523,26 +576,32 @@ except Exception as e:
 		})
 	}
 
-	// --- 文生图 (长耗时) ---
+	// --- 文生图 ---
 
 	if getT2I != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片(长耗时)，系统自动发送。你只需告知用户图片已生成，无需手动发送。",
+			BaseTool: NewTool("", "text_to_image", "根据 HTML/模板生成图片，返回图片 URL。图片不会自动发送，请你在要发送的消息中用 [CQ:image,file=URL] 拼接图片，可与文字组成一条富文本消息。",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
 						"html": map[string]any{"type": "string", "description": "HTML 内容"},
 					},
 					"required": []string{"html"},
-				}, true, true),
+				}, true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 				t2i := getT2I()
 				if t2i == nil {
 					return "", fmt.Errorf("T2I 服务未启用")
 				}
-				var p struct{ HTML string `json:"html"` }
-				json.Unmarshal(args, &p)
-				imgBytes, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
+				var p struct {
+					HTML string `json:"html"`
+				}
+				if err := json.Unmarshal(args, &p); err != nil {
+					return "", fmt.Errorf("参数解析失败: %w", err)
+				}
+
+				// 使用 Generate 获取图片 ID（而非 GenerateImage 返回的原始字节）
+				genResp, err := t2i.Generate(ctx, t2icaller.GenerateRequest{
 					HTML: p.HTML,
 					Options: &t2icaller.GenerateOptions{
 						Type:    t2icaller.ImageTypeJPEG,
@@ -552,8 +611,17 @@ except Exception as e:
 				if err != nil {
 					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
-				b64 := base64.StdEncoding.EncodeToString(imgBytes)
-				return fmt.Sprintf("图片已生成并发送 (%d bytes)\n[CQ:image,file=base64://%s]", len(imgBytes), b64), nil
+
+				// 构造图片 URL
+				// T2I API 返回的 ID 已包含 "data/" 前缀（如 "data/rendered_xxx.png"），
+				// 所以 URL = BaseURL + "/text2img/" + ID
+				imageID := genResp.Data.ID
+				imageURL := t2i.Config.BaseURL + "/text2img/" + imageID
+
+				log.Info("T2I 图片已生成", "id", imageID, "image_url", imageURL)
+
+				// 不自动发送：由 LLM 在消息中用 [CQ:image,file=URL] 拼接富文本发送
+				return fmt.Sprintf("图片已生成。URL: %s，请在发送的消息中使用 [CQ:image,file=%s] 拼接图片（可与文字组成富文本消息）。", imageURL, imageURL), nil
 			},
 		})
 	}
@@ -599,7 +667,7 @@ except Exception as e:
 			BaseTool: NewTool("", "get_session_info", "获取当前聊天会话信息（私聊/群聊、对方QQ/群号、发送者信息、机器人身份等）",
 				TimeParams(), true, false),
 			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-				return getSessionCtx(), nil
+				return getSessionCtx(ctx), nil
 			},
 		})
 	}
@@ -608,12 +676,12 @@ except Exception as e:
 
 	if getCurrentMsg != nil {
 		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "send_face", "发送 QQ 超级表情到当前会话。⚠️ 必须先调用 list_super_faces 查询表情 ID 和 sub_type，再传入正确的 face_id 和 sub_type！不要自己编造参数。注意：这是 QQ 内置表情系统，非图片。",
+			BaseTool: NewTool("", "send_face", "发送 QQ 表情到当前会话。经典小黄脸 face_id 参考: 0=惊讶, 1=撇嘴, 2=色, 3=发呆, 4=得意, 5=流泪, 6=害羞, 7=闭嘴, 10=发怒, 14=微笑, 18=可爱, 21=疑问, 22=无语, 28=再见, 37=呲牙, 39=偷笑, 55=流汗, 63=委屈, 66=坏笑, 74=可怜, 76=酷, 89=尴尬, 97=大笑, 111=爱心, 142=抱拳, 182=耶, 188=狗头, 201=点赞, 211=笑哭, 277=鲜花。超级表情(sub_type=3): 5=流泪, 53=蛋糕, 114=篮球, 181=戳一戳, 311=打call, 317=菜汪, 318=崇拜, 319=比心, 320=庆祝, 325=惊吓, 360=亲亲, 375=超级鼓掌, 383=企鹅爱心, 384=晚安, 386=呜呜呜。手势(sub_type=5): 2=比心, 4=比心_心碎",
 				openai.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
-						"face_id":  map[string]any{"type": "integer", "description": "QQ 表情 ID。必须先调用 list_super_faces 查询！常见经典小黄脸参考: 0=惊讶, 1=撇嘴, 2=色, 3=发呆, 4=得意, 5=流泪, 6=害羞, 7=闭嘴, 10=发怒, 14=微笑, 18=可爱, 21=疑问, 22=无语, 28=再见, 37=呲牙, 39=偷笑, 55=流汗, 63=委屈, 66=坏笑, 74=可怜, 76=酷, 89=尴尬, 97=大笑, 111=爱心, 142=抱拳, 182=耶, 188=狗头, 201=点赞, 211=笑哭, 277=鲜花"},
-						"sub_type": map[string]any{"type": "integer", "description": "表情 sub_type，超级表情为 3 或 5，经典小黄脸不填"},
+						"face_id":  map[string]any{"type": "integer", "description": "QQ 表情 ID，参考工具描述中的列表"},
+						"sub_type": map[string]any{"type": "integer", "description": "表情 sub_type: 经典小黄脸不填, 超级表情填 3, 手势填 5"},
 					},
 					"required": []string{"face_id"},
 				}, true, false),
@@ -623,7 +691,7 @@ except Exception as e:
 					SubType int `json:"sub_type"`
 				}
 				json.Unmarshal(args, &p)
-				msg := getCurrentMsg()
+				msg := getCurrentMsg(ctx)
 				if msg == nil {
 					return "未获取到当前会话信息", nil
 				}
@@ -632,6 +700,17 @@ except Exception as e:
 					cqCode = fmt.Sprintf("[CQ:face,id=%d,sub_type=%d]", p.FaceID, p.SubType)
 				} else {
 					cqCode = fmt.Sprintf("[CQ:face,id=%d]", p.FaceID)
+				}
+				// 任务执行期间不直接发送：入队等待，任务完成后由事件循环统一发送
+				if q := GetDeferredSendQueue(ctx); q != nil {
+					targetID := int64(0)
+					if msg.MessageType == "private" {
+						targetID = msg.UserID
+					} else {
+						targetID = msg.GroupID
+					}
+					q.Add(DeferredSend{MessageType: msg.MessageType, TargetID: targetID, Message: cqCode})
+					return fmt.Sprintf("QQ 表情 (face_id=%d) 已加入发送队列，将在任务执行完成后统一发送", p.FaceID), nil
 				}
 				switch msg.MessageType {
 				case "private":
@@ -647,69 +726,6 @@ except Exception as e:
 			},
 		})
 
-		// list_super_faces
-		tools = append(tools, &onebotTool{
-			BaseTool: NewTool("", "list_super_faces", "查询所有可用的 QQ 超级表情（sub_type=3 动态表情 + sub_type=5 手势表情）。返回 ID 和名称列表。⚠️ 使用 send_face 前必须先调用此工具查询正确的 face_id！",
-				openai.FunctionParameters{
-					"type": "object",
-					"properties": map[string]any{},
-				}, true, false),
-			executor: func(ctx context.Context, args json.RawMessage) (string, error) {
-				type faceEntry struct {
-					ID     int    `json:"id"`
-					Name   string `json:"name"`
-					SubType int   `json:"sub_type"`
-				}
-				// sub_type=3 (动态超级表情): 98条
-				sub3 := []faceEntry{
-					{5, "流泪", 3}, {53, "蛋糕", 3}, {114, "篮球", 3}, {181, "戳一戳", 3},
-					{311, "打call", 3}, {312, "变形", 3}, {314, "仔细分析", 3}, {317, "菜汪", 3},
-					{318, "崇拜", 3}, {319, "比心", 3}, {320, "庆祝", 3}, {324, "吃糖", 3},
-					{325, "惊吓", 3}, {337, "花朵脸", 3}, {338, "我想开了", 3}, {339, "舔屏", 3},
-					{341, "打招呼", 3}, {342, "酸Q", 3}, {343, "我方了", 3}, {344, "大怨种", 3},
-					{346, "你真棒棒", 3}, {349, "坚强", 3}, {350, "贴贴", 3}, {351, "敲敲", 3},
-					{360, "亲亲", 3}, {361, "狗狗笑哭", 3}, {362, "好兄弟", 3}, {363, "狗狗可怜", 3},
-					{364, "超级赞", 3}, {365, "狗狗生气", 3}, {366, "芒狗", 3}, {367, "狗狗疑问", 3},
-					{368, "奥特笑哭", 3}, {369, "彩虹", 3}, {370, "祝贺", 3}, {371, "冒泡", 3},
-					{372, "气呼呼", 3}, {373, "忙", 3}, {374, "波波流泪", 3}, {375, "超级鼓掌", 3},
-					{376, "跺脚", 3}, {377, "嗨", 3}, {378, "企鹅笑哭", 3}, {379, "企鹅流泪", 3},
-					{380, "真棒", 3}, {381, "路过", 3}, {382, "emo", 3}, {383, "企鹅爱心", 3},
-					{384, "晚安", 3}, {385, "太气了", 3}, {386, "呜呜呜", 3}, {387, "太好笑", 3},
-					{388, "太头疼", 3}, {389, "太赞了", 3}, {390, "太头秃", 3}, {391, "太沧桑", 3},
-					{395, "略略略", 3}, {396, "狼狗", 3}, {397, "抛媚眼", 3}, {398, "超级ok", 3},
-					{399, "tui", 3}, {400, "快乐", 3}, {401, "超级转圈", 3}, {402, "别说话", 3},
-					{403, "出去玩", 3}, {404, "闪亮登场", 3}, {405, "好运来", 3}, {406, "姐是女王", 3},
-					{407, "我听听", 3}, {408, "臭美", 3}, {409, "送你花花", 3}, {410, "么么哒", 3},
-					{411, "一起嗨", 3}, {412, "开心", 3}, {413, "摇起来", 3}, {424, "续标识", 3},
-					{425, "求放过", 3}, {426, "玩火", 3}, {427, "偷感", 3}, {450, "撇嘴", 3},
-					{451, "色", 3}, {452, "微笑", 3}, {453, "发呆", 3}, {454, "得意", 3},
-					{455, "害羞", 3}, {456, "闭嘴", 3}, {457, "睡", 3}, {458, "我吗", 3},
-					{459, "优雅", 3}, {460, "硬撑", 3}, {461, "宕机", 3}, {462, "无语", 3},
-					{463, "新年快乐", 3}, {464, "马上到", 3}, {465, "拆红包", 3}, {466, "羞羞哒", 3},
-					{467, "摇花手", 3}, {468, "失眠", 3}, {469, "坚毅", 3}, {472, "心动", 3},
-					{474, "给你一拳", 3}, {475, "干饭", 3}, {476, "不是吧", 3}, {477, "你懂的", 3},
-					{478, "对的对的", 3}, {479, "不对不对", 3}, {480, "散味儿", 3}, {481, "学习", 3},
-					{482, "热化了", 3}, {483, "略", 3}, {484, "比爱心", 3},
-				}
-				// sub_type=5 (手势表情): 2种
-				sub5 := []faceEntry{
-					{2, "比心", 5}, {4, "比心_心碎", 5},
-				}
-
-				var b strings.Builder
-				b.WriteString(fmt.Sprintf("共 %d 个超级表情，按 sub_type 分组:\n", len(sub3)+len(sub5)))
-				b.WriteString("\n=== sub_type=3 动态超级表情 ===\n")
-				for _, e := range sub3 {
-					b.WriteString(fmt.Sprintf("  ID=%d  %s\n", e.ID, e.Name))
-				}
-				b.WriteString("\n=== sub_type=5 手势表情 ===\n")
-				for _, e := range sub5 {
-					b.WriteString(fmt.Sprintf("  ID=%d  %s\n", e.ID, e.Name))
-				}
-
-				return b.String(), nil
-			},
-		})
 	}
 
 	// --- 消息查询 ---
@@ -733,7 +749,7 @@ except Exception as e:
 			if p.Limit > 50 {
 				p.Limit = 50
 			}
-			msg := getCurrentMsg()
+			msg := getCurrentMsg(ctx)
 			if msg == nil {
 				return "未获取到当前会话信息", nil
 			}

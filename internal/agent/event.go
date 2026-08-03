@@ -2,57 +2,61 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log/slog"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
-	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
-	"JuanNiang-Neo/internal/pluggin"
+
+	"github.com/cloudwego/eino/adk"
+	einoschema "github.com/cloudwego/eino/schema"
 )
 
 // SilenceToken 是 LLM 在不回复时输出的固定标记。
 // prompt 会告知 LLM："判定不回复时输出 __NO_REPLY__，系统检测到后自动丢弃"。
 const SilenceToken = "__NO_REPLY__"
 
+// ReplySettings 包含从回复策略配置中提取的 per-message 设置。
+// 通过函数参数传递（而非 HagoCenter 共享字段），避免数据竞争。
+type ReplySettings struct {
+	Strategy           models.ReplyStrategy
+	StripMarkdown      bool
+	AgentLite          bool
+	BotName            string
+	RelevanceThreshold float64
+}
+
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
 // 当 adapter 的 events channel 关闭时（如重启），会尝试等待后重新获取新的 channel，
 // 而不是直接退出事件循环。
 func (h *HagoCenter) runEventLoop(ctx context.Context) {
-	slog.Info("事件循环已启动")
-
+	log.Info("事件循环已启动")
 	adapterEvents := h.Adapter.Events()
-
 	var webhookEvents <-chan adapter.Event
 	if h.WebhookAdapter != nil {
 		webhookEvents = h.WebhookAdapter.Events()
 	}
-
 	for {
 		select {
 		case <-ctx.Done():
-			slog.Info("事件循环已停止")
+			log.Info("事件循环已停止")
 			return
 		case ev, ok := <-adapterEvents:
 			if !ok {
-				slog.Warn("Adapter events channel 已关闭，尝试重新获取...")
-				// 等待 adapter 重启后重新获取新的 channel
+				log.Warn("Adapter events channel 已关闭，尝试重新获取...")
 				select {
 				case <-ctx.Done():
-					slog.Info("事件循环已停止")
 					return
 				case <-time.After(time.Second):
 				}
 				adapterEvents = h.Adapter.Events()
-				slog.Info("已重新获取 Adapter events channel")
 				continue
 			}
-			// 透传 Admins 列表（来自 adapter 配置）
 			ev.Admins = h.Adapter.Admins()
 			h.processEvent(ctx, ev)
 		case ev, ok := <-webhookEvents:
@@ -61,697 +65,685 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 				continue
 			}
 			h.processEvent(ctx, ev)
-		case output, ok := <-h.BgTaskResultChan:
-			if !ok {
-				continue
-			}
-			slog.Info("收到后台任务结果，注入主 Agent", "task_id", output.TaskID, "chat_area_id", output.ChatAreaID, "media", len(output.MediaPayloads))
-			// 先发送媒体负载（图片等 CQ 码）直接到 QQ
-			if len(output.MediaPayloads) > 0 {
-				// 构造临时 MessageEvent 用于 sendReply
-				tmpMsg := &adapter.MessageEvent{
-					MessageType: output.MessageType,
-				}
-				if output.MessageType == "private" {
-					tmpMsg.UserID = output.TargetID
-				} else {
-					tmpMsg.GroupID = output.TargetID
-				}
-				for _, media := range output.MediaPayloads {
-					slog.Info("BgTaskResult 直接发送媒体", "cq_len", len(media))
-					h.sendReply(tmpMsg, media)
-				}
-			}
-			// 将 DrainerOutput 转换为合成 Event，触发主 Agent 处理（LLM 只需生成文字回复）
-			syntheticEvent := h.bgTaskOutputToEvent(output)
-			h.processEvent(ctx, syntheticEvent)
 		case ev, ok := <-h.CronJobEvents:
 			if !ok {
 				continue
 			}
-			slog.Info("收到 CronJob 事件，注入 Agent", "post_type", ev.PostType)
 			ev.Admins = h.Adapter.Admins()
 			h.processEvent(ctx, ev)
 		}
 	}
 }
 
-// bgTaskOutputToEvent 将 Drainer 汇总结果转换为合成 Event，供主 Agent 处理。
-func (h *HagoCenter) bgTaskOutputToEvent(output DrainerOutput) adapter.Event {
-	// 构造用户消息：包含原始请求上下文 + 任务结果
-	rawMsg := output.Result
-	if output.UserPrompt != "" {
-		rawMsg = fmt.Sprintf("用户曾请求：%s\n\n%s", output.UserPrompt, rawMsg)
+// processEvent 三阶段架构：Plugin 拦截 → 消息过滤 → 回复策略 → Agent。
+func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
+	// Phase 1: Plugin 统一拦截
+	if h.PluginEngine != nil {
+		result := h.PluginEngine.Dispatch(ev)
+		if result.Consumed {
+			return
+		}
+		ev = result.Event
+		// Phase 2: 仅 message 事件继续
+		if ev.PostType != "message" || ev.Message == nil {
+			return
+		}
+		// 插件标记 skip_reply 等价于 SkipReplyCheck，统一折叠到事件标记上
+		if result.SkipReply {
+			ev.SkipReplyCheck = true
+		}
+		// Phase 3: 回复策略快速检查（never / at_only / always）。
+		// relevance 策略的 LLM 判断耗时较长，延迟到 dispatchToAgent 的 goroutine 内执行，
+		// 避免阻塞事件循环（否则一条消息的相关性判断会拖慢后续所有消息）。
+		rs := h.getReplySettings(ctx)
+		if !ev.SkipReplyCheck && !h.checkReplyStrategyFast(ctx, ev, rs) {
+			return
+		}
+		h.dispatchToAgent(ctx, ev, rs)
+		return
 	}
 
-	msg := &adapter.MessageEvent{
-		MessageType: output.MessageType,
-		RawMessage:  rawMsg,
+	// 无 Plugin 引擎时：只处理 message 事件
+	if ev.PostType != "message" || ev.Message == nil {
+		return
 	}
-
-	if output.MessageType == "group" {
-		msg.GroupID = output.TargetID
-		msg.UserID = 0 // 系统消息
-	} else {
-		msg.UserID = output.TargetID
+	rs := h.getReplySettings(ctx)
+	if !h.checkReplyStrategyFast(ctx, ev, rs) {
+		return
 	}
+	h.dispatchToAgent(ctx, ev, rs)
+}
 
-	return adapter.Event{
-		PostType:       "message",
-		IsBgTaskResult: true,
-		Admins:         h.Adapter.Admins(),
-		Message:        msg,
+// checkReplyStrategyFast 廉价策略检查（不调用 LLM）：never / at_only / always。
+// 返回 true 表示继续处理；relevance 策略一律返回 true，其 LLM 判断
+// 由 dispatchToAgent 在 goroutine 内调用完整的 checkReplyStrategy 完成。
+func (h *HagoCenter) checkReplyStrategyFast(ctx context.Context, ev adapter.Event, rs ReplySettings) bool {
+	msg := ev.Message
+	switch rs.Strategy {
+	case models.StrategyNeverReply:
+		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
+		return false
+	case models.StrategyAtOnly:
+		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage) {
+			log.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+			return false
+		}
+		return true
+	case models.StrategyRelevance:
+		// 延迟到派发 goroutine 内判断（避免阻塞事件循环）
+		return true
+	default: // StrategyAlways
+		return true
 	}
 }
 
-// processEvent 派发事件：webhook/notice/request 走 PluginEngine 回调，message 走 Agent。
-func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
-	// Webhook 事件交给插件 on_webhook 处理
-	if ev.PostType == "webhook" && ev.Webhook != nil {
-		if h.PluginEngine != nil {
-			pluginEvent := pluggin.EventData{
-				PostType: "webhook",
-				Admins:   ev.Admins,
-				Webhook: map[string]any{
-					"path":    ev.Webhook.Path,
-					"method":  ev.Webhook.Method,
-					"payload": ev.Webhook.Payload,
-				},
-			}
-			h.PluginEngine.OnWebhook(pluginEvent)
-		}
-		return
-	}
-
-	// Notice 事件交给插件 on_notice 处理
-	if ev.PostType == "notice" && ev.Notice != nil {
-		if h.PluginEngine != nil {
-			n := ev.Notice
-			pluginEvent := pluggin.EventData{
-				PostType:   "notice",
-				NoticeType: n.NoticeType,
-				SubType:    n.SubType,
-				UserID:     n.UserID,
-				GroupID:    n.GroupID,
-				OperatorID: n.OperatorID,
-				TargetID:   n.TargetID,
-				Duration:   n.Duration,
-				Admins:     ev.Admins,
-			}
-			if n.File != nil {
-				pluginEvent.File = map[string]any{
-					"id":    n.File.ID,
-					"name":  n.File.Name,
-					"size":  n.File.Size,
-					"busid": n.File.BusID,
-				}
-			}
-			h.PluginEngine.OnNotice(pluginEvent)
-		}
-		return
-	}
-
-	// Request 事件交给插件 on_request 处理
-	if ev.PostType == "request" && ev.Request != nil {
-		if h.PluginEngine != nil {
-			r := ev.Request
-			pluginEvent := pluggin.EventData{
-				PostType:    "request",
-				RequestType: r.RequestType,
-				SubType:     r.SubType,
-				UserID:      r.UserID,
-				GroupID:     r.GroupID,
-				Comment:     r.Comment,
-				Flag:        r.Flag,
-				Admins:      ev.Admins,
-			}
-			h.PluginEngine.OnRequest(pluginEvent)
-		}
-		return
-	}
-
-	if (ev.PostType != "message" && ev.PostType != "cronjob") || ev.Message == nil {
-		return
-	}
-
-	// CronJob 事件跳过所有策略检查
-	if ev.PostType == "cronjob" {
-		h.handleMessage(ctx, ev)
-		return
-	}
-
-	// 后台任务结果事件（Drainer 合成）跳过策略检查，图片等媒体已由 Drainer 直接发送
-	if ev.IsBgTaskResult {
-		if cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx); err == nil {
-			h.StripMarkdown = cfg.StripMarkdown
-			h.DisableSplit = cfg.AgentLite
-		}
-		h.handleMessage(ctx, ev)
-		return
-	}
-
-	// === 回复策略过滤 ===
-	msg := ev.Message
-
-	// 私聊消息：除"完全不回复"外一律正常处理（无需@、无需相关性判断）
-	if msg.MessageType == "private" {
-		cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
-		if err != nil {
-			slog.Warn("获取回复策略失败，跳过过滤", "err", err)
-		} else {
-			h.StripMarkdown = cfg.StripMarkdown
-			h.DisableSplit = cfg.AgentLite
-			if cfg.Strategy == models.StrategyNeverReply {
-				slog.Debug("回复策略: 完全不回复，跳过私聊", "user_id", msg.UserID)
-				return
-			}
-			if cfg.Strategy == models.StrategyPluginOnly {
-				// 仅 Plugin，不调用 Agent
-				h.runPluginOnly(ctx, ev)
-				return
-			}
-		}
-
-		// Plugin 拦截（与群聊相同）
-		if h.PluginEngine != nil {
-			pluginEvent := pluggin.EventData{
-				PostType:    "message",
-				MessageType: ev.Message.MessageType,
-				UserID:      ev.Message.UserID,
-				GroupID:     ev.Message.GroupID,
-				RawMessage:  ev.Message.RawMessage,
-				MessageID:   ev.Message.MessageID,
-				Admins:      ev.Admins,
-				Sender: map[string]any{
-					"user_id":  ev.Message.Sender.UserID,
-					"nickname": ev.Message.Sender.Nickname,
-					"sex":      ev.Message.Sender.Sex,
-					"age":      float64(ev.Message.Sender.Age),
-					"card":     ev.Message.Sender.Card,
-				},
-			}
-			if h.PluginEngine.OnMessage(pluginEvent) {
-				return
-			}
-		}
-
-		// 非完全不回复策略，私聊直接放行
-		h.handleMessage(ctx, ev)
-		return
-	}
-
+// getReplySettings 从 DB 读取回复策略配置，返回 per-message 设置。
+// 不写入 HagoCenter 共享字段，避免数据竞争。
+func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
-		slog.Warn("获取回复策略失败，跳过过滤", "err", err)
-	} else {
-		h.StripMarkdown = cfg.StripMarkdown
-		h.DisableSplit = cfg.AgentLite
-		switch cfg.Strategy {
-		case models.StrategyNeverReply:
-			// 完全不处理
-			slog.Debug("回复策略: 完全不回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+		log.Warn("获取回复策略失败，使用默认值", "err", err)
+		return ReplySettings{Strategy: models.StrategyAlways}
+	}
+	return ReplySettings{
+		Strategy:           cfg.Strategy,
+		StripMarkdown:      cfg.StripMarkdown,
+		AgentLite:          cfg.AgentLite,
+		BotName:            cfg.BotName,
+		RelevanceThreshold: cfg.RelevanceThreshold,
+	}
+}
+
+// checkReplyStrategy 根据回复策略配置决定是否继续处理消息。
+func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event, rs ReplySettings) bool {
+	msg := ev.Message
+	switch rs.Strategy {
+	case models.StrategyNeverReply:
+		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
+		return false
+	case models.StrategyAtOnly:
+		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage) {
+			log.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+			return false
+		}
+		return true
+	case models.StrategyRelevance:
+		// 仅对群聊 message 做相关性判断
+		if msg.MessageType != "group" {
+			return true
+		}
+		if h.isAtSelf(msg.RawMessage) || h.isPluginCommand(msg.RawMessage) {
+			return true
+		}
+		chatAreaID := ""
+		area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, msg.GroupID)
+		if err == nil {
+			chatAreaID = area.ID
+		}
+		recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
+		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs.BotName)
+		if score < rs.RelevanceThreshold {
+			log.Debug("回复策略: 相关性不足", "score", score, "threshold", rs.RelevanceThreshold, "reason", reason)
+			return false
+		}
+		log.Debug("回复策略: 相关性通过", "score", score, "reason", reason)
+		return true
+	default: // StrategyAlways
+		return true
+	}
+}
+
+// batchWindow 同一 ChatArea 消息的批处理窗口：窗口内的消息合并为一次 Agent 处理，
+// 避免多条消息同时到达时各自触发完整 ReAct 循环（重复执行任务 + 回复串味）。
+const batchWindow = time.Second
+
+// pendingBatch 同一 ChatArea 在批处理窗口内收集的消息。
+type pendingBatch struct {
+	events []adapter.Event
+	rs     ReplySettings
+	timer  *time.Timer
+}
+
+// dispatchToAgent 根据消息类型获取 ChatArea，通过批处理窗口合并后派发给 Agent。
+func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs ReplySettings) {
+	msg := ev.Message
+	chatArea := h.getChatArea(ctx, msg)
+	if chatArea == nil {
+		// 无法获取 ChatArea 时直接处理（不限制并发、不批处理）
+		h.handleMessage(ctx, []adapter.Event{ev}, nil, rs)
+		return
+	}
+	h.enqueueBatch(ctx, ev, chatArea, rs)
+}
+
+// enqueueBatch 将消息加入对应 ChatArea 的待处理批次；窗口结束后统一派发。
+// 若窗口内又来新消息，直接追加到同一批次，保证同一时间每个 ChatArea 只有一个待处理批次。
+func (h *HagoCenter) enqueueBatch(ctx context.Context, ev adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+	h.batchMu.Lock()
+	if b, ok := h.batches[chatArea.ID]; ok {
+		b.events = append(b.events, ev)
+		h.batchMu.Unlock()
+		return
+	}
+	b := &pendingBatch{events: []adapter.Event{ev}, rs: rs}
+	h.batches[chatArea.ID] = b
+	h.batchMu.Unlock()
+
+	// 窗口结束后派发整个批次（复制事件，避免与后续追加竞争）
+	b.timer = time.AfterFunc(batchWindow, func() {
+		h.batchMu.Lock()
+		delete(h.batches, chatArea.ID)
+		events := append([]adapter.Event(nil), b.events...)
+		h.batchMu.Unlock()
+		if len(events) == 0 {
 			return
-		case models.StrategyAtOnly:
-			// 仅@我时回复，未被@则跳过
-			if !h.isAtSelf(msg.RawMessage) {
-				slog.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+		}
+		h.spawnBatch(ctx, events, b.rs, chatArea)
+	})
+}
+
+// spawnBatch 启动一个批次的 Agent 处理（relevance 检查与并发控制都在 goroutine 内，不阻塞事件循环）。
+func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs ReplySettings, chatArea *models.ChatArea) {
+	if h.Concurrency != nil {
+		go func() {
+			if events = h.filterRelevant(ctx, events, rs); len(events) == 0 {
 				return
 			}
-		case models.StrategyPluginOnly:
-			// 仅 Plugin，不调用 Agent
-			h.runPluginOnly(ctx, ev)
-			return
-		case models.StrategyRelevance:
-			// 相关性判断：@我 或 插件命令 直接通过，否则调用相关性 Agent
-			if !h.isAtSelf(msg.RawMessage) && !h.isPluginCommand(msg.RawMessage) {
-				// 获取 ChatArea 用于短期记忆查询
-				chatAreaID := ""
-				if msg.MessageType == "group" {
-					area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, msg.GroupID)
-					if err == nil {
-						chatAreaID = area.ID
-					}
-				}
-				recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
-				score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, cfg.BotName)
-				if score < cfg.RelevanceThreshold {
-					slog.Debug("回复策略: 相关性不足，跳过",
-						"score", score, "threshold", cfg.RelevanceThreshold, "reason", reason,
-						"group_id", msg.GroupID, "user_id", msg.UserID)
-					return
-				}
-				slog.Debug("回复策略: 相关性通过",
-					"score", score, "threshold", cfg.RelevanceThreshold, "reason", reason)
+			if err := h.Concurrency.Acquire(ctx, chatArea.ID); err != nil {
+				log.Warn("Agent 并发获取失败", "err", err, "area", chatArea.ID)
+				return
 			}
-		}
-		// StrategyAlways: 正常处理，无需额外操作
+			defer h.Concurrency.Release(chatArea.ID)
+			h.handleMessage(ctx, events, chatArea, rs)
+		}()
+		return
 	}
 
-	// Plugin 拦截
-	if h.PluginEngine != nil {
-		pluginEvent := pluggin.EventData{
-			PostType:    "message",
-			MessageType: ev.Message.MessageType,
-			UserID:      ev.Message.UserID,
-			GroupID:     ev.Message.GroupID,
-			RawMessage:  ev.Message.RawMessage,
-			MessageID:   ev.Message.MessageID,
-			Admins:      ev.Admins,
-			Sender: map[string]any{
-				"user_id":  ev.Message.Sender.UserID,
-				"nickname": ev.Message.Sender.Nickname,
-				"sex":      ev.Message.Sender.Sex,
-				"age":      float64(ev.Message.Sender.Age),
-				"card":     ev.Message.Sender.Card,
-			},
-		}
-		if h.PluginEngine.OnMessage(pluginEvent) {
-			return
-		}
+	if events = h.filterRelevant(ctx, events, rs); len(events) == 0 {
+		return
 	}
-
-	h.handleMessage(ctx, ev)
+	h.handleMessage(ctx, events, chatArea, rs)
 }
 
-// runPluginOnly 仅 Plugin 模式：运行插件但不调用 Agent。
-func (h *HagoCenter) runPluginOnly(ctx context.Context, ev adapter.Event) {
-	if h.PluginEngine != nil {
-		pluginEvent := pluggin.EventData{
-			PostType:    "message",
-			MessageType: ev.Message.MessageType,
-			UserID:      ev.Message.UserID,
-			GroupID:     ev.Message.GroupID,
-			RawMessage:  ev.Message.RawMessage,
-			MessageID:   ev.Message.MessageID,
-			Admins:      ev.Admins,
-			Sender: map[string]any{
-				"user_id":  ev.Message.Sender.UserID,
-				"nickname": ev.Message.Sender.Nickname,
-				"sex":      ev.Message.Sender.Sex,
-				"age":      float64(ev.Message.Sender.Age),
-				"card":     ev.Message.Sender.Card,
-			},
-		}
-		h.PluginEngine.OnMessage(pluginEvent)
+// filterRelevant 对批次内消息做相关性策略过滤（relevance 策略需要 LLM 判断，在此统一执行）。
+func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event, rs ReplySettings) []adapter.Event {
+	if rs.Strategy != models.StrategyRelevance {
+		return events
 	}
-	slog.Debug("回复策略: 仅 Plugin，跳过 Agent", "group_id", ev.Message.GroupID, "user_id", ev.Message.UserID)
+	out := make([]adapter.Event, 0, len(events))
+	for _, ev := range events {
+		if ev.SkipReplyCheck || h.checkReplyStrategy(ctx, ev, rs) {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
-func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event) {
-	msg := ev.Message
-	userID := msg.UserID
+// getChatArea 根据消息类型获取或创建 ChatArea，失败返回 nil。
+func (h *HagoCenter) getChatArea(ctx context.Context, msg *adapter.MessageEvent) *models.ChatArea {
 	var chatAreaType models.AreaType
 	var targetID int64
-
 	switch msg.MessageType {
 	case "private":
 		chatAreaType = models.AreaTypePrivate
-		targetID = userID
+		targetID = msg.UserID
 	case "group":
 		chatAreaType = models.AreaTypeGroup
 		targetID = msg.GroupID
 	default:
-		return
+		return nil
 	}
-
-	chatArea, err := h.DAO.ChatArea.GetOrCreate(ctx, chatAreaType, targetID)
+	area, err := h.DAO.ChatArea.GetOrCreate(ctx, chatAreaType, targetID)
 	if err != nil {
-		slog.Error("获取 ChatArea 失败", "err", err)
+		log.Error("获取 ChatArea 失败", "err", err)
+		return nil
+	}
+	return area
+}
+
+// handleMessage 处理一批消息（同一 ChatArea 在批处理窗口内合并的消息）。
+// 批内消息合并为一次 ReAct 循环：逐条做 ACL 检查/技能匹配/记忆/聊天记录，
+// 上下文包含全部用户消息（带发言人标识），最终回复一次（发给最后一条消息的目标会话）。
+func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+	if len(events) == 0 {
 		return
 	}
+	msg := events[len(events)-1].Message
+	userID := msg.UserID
 
-	// ACL 检查：admin 自动绕过；后台任务/定时任务事件也跳过
-	if !ev.IsBgTaskResult && !ev.IsCronJob && !isAdmin(userID, ev.Admins) && !h.ACL.CheckChat(ctx, userID, chatArea.ID) {
-		slog.Info("ACL 拒绝", "user_id", userID, "chat_area_id", chatArea.ID, "scope", "chat")
-		return
+	// 如果没有传入 chatArea，尝试获取（fallback 路径）
+	if chatArea == nil {
+		chatArea = h.getChatArea(ctx, msg)
+		if chatArea == nil {
+			return
+		}
 	}
 
+	// 逐条 ACL 检查（无权限的消息从批次中剔除）
+	kept := events[:0]
+	for _, ev := range events {
+		m := ev.Message
+		if isAdmin(m.UserID, ev.Admins) || h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
+			kept = append(kept, ev)
+		} else {
+			log.Info("ACL 拒绝", "user_id", m.UserID, "chat_area_id", chatArea.ID)
+		}
+	}
+	if len(kept) == 0 {
+		return
+	}
+	events = kept
+	msg = events[len(events)-1].Message
+	userID = msg.UserID
+
+	// 确保 Session 存在（供 ChatRecord 持久化 + Token 用量累加使用）
 	sess, err := h.Session.GetOrCreate(ctx, chatArea.ID)
 	if err != nil {
-		slog.Error("获取 Session 失败", "err", err)
+		log.Error("获取 Session 失败", "err", err)
 		return
 	}
 
-	userMsg := strings.TrimSpace(msg.RawMessage)
+	// 收集批次内各条用户消息（带发言人标识）+ 技能匹配
+	var userMsgs []string
+	var memMsgs []shortterm.ChatMessage
+	var skillPromptContents []string
+	for _, ev := range events {
+		m := ev.Message
+		uMsg := strings.TrimSpace(m.RawMessage)
+		if uMsg == "" {
+			continue
+		}
+		// 记忆中的用户消息带发言人标识（昵称+QQ+群号），
+		// 避免多人同时发言时 LLM 混淆消息归属
+		memMsg := uMsg
+		if speaker := buildMemorySpeaker(m); speaker != "" {
+			memMsg = speaker + uMsg
+		}
+		userMsgs = append(userMsgs, memMsg)
+		memMsgs = append(memMsgs, shortterm.ChatMessage{Role: "user", Content: memMsg})
 
-	matchedSkill, skillMatched := h.Skills.Match(userMsg)
-
-	llm := h.Providers.SelectModel(provider.ModelTypeText)
-	if llm == nil {
-		slog.Error("无可用 Text 模型")
+		// 技能匹配（批内多条消息时合并收集提示词）
+		if s, ok := h.Skills.Match(uMsg); ok {
+			for _, refID := range s.PromptRefs {
+				if refID == "" {
+					continue
+				}
+				if sp, err := h.Prompt.GetByID(ctx, refID); err == nil {
+					skillPromptContents = append(skillPromptContents, "[Active Skill: "+s.Name+"]\n"+sp.Content)
+				}
+			}
+		}
+	}
+	if len(userMsgs) == 0 {
 		return
 	}
+	combinedUserMsg := strings.Join(userMsgs, "\n")
 
+	// 注册活跃 Agent 循环（供 Web 监控页展示当前正在执行的 ReAct 循环）
+	loopID := ""
+	if h.Loops != nil {
+		loopID = h.Loops.Register(&AgentLoop{
+			ChatAreaID:  chatArea.ID,
+			MessageType: msg.MessageType,
+			TargetID:    getTargetID(msg),
+			UserID:      userID,
+			UserMsg:     combinedUserMsg,
+		})
+		defer h.Loops.Unregister(loopID)
+	}
+
+	// ---------- 构建系统提示词（工具描述 + 长期记忆 + 核心提示词） ----------
 	var longTermMems []string
 	if h.Memory != nil {
 		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, chatArea.ID, "", 5)
 	}
 	toolList := h.buildToolList(ctx)
-
 	toolDescs := ""
 	for _, t := range toolList {
 		toolDescs += fmt.Sprintf("- %s: %s\n", t.Function.Name, t.Function.Description)
 	}
 
-	// 构建会话上下文（透传发送者QQ/名字/权限 + 环境信息）
-	h.CurrentMsg = msg
-	h.CurrentSessionCtx = h.buildSessionContext(ctx, msg, ev.Admins)
-
-	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs)
-
-	messages := []provider.ChatMessage{
-		{Role: "system", Content: systemCtx},
+	sessionCtxStr := h.buildSessionContext(ctx, msg, events[len(events)-1].Admins)
+	skillMem := ""
+	if h.Memory != nil {
+		skillMem = h.Memory.GetSkillMemory()
 	}
+	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs, skillMem)
 
-	// 注入当前会话上下文（让 Agent 感知聊天环境：谁在说话、什么群、自己的身份等）
-	if h.CurrentSessionCtx != "" {
-		messages = append(messages, provider.ChatMessage{
-			Role: "system", Content: h.CurrentSessionCtx,
-		})
+	// ---------- 构建 Eino 消息列表 ----------
+	einoMsgs := []*einoschema.Message{
+		{Role: einoschema.System, Content: systemCtx},
 	}
-
-	if skillMatched && matchedSkill.PromptRef != "" {
-		skillPrompt, err := h.Prompt.GetByID(ctx, matchedSkill.PromptRef)
-		if err == nil {
-			messages = append(messages, provider.ChatMessage{
-				Role: "system", Content: "[Active Skill: " + matchedSkill.Name + "]\n" + skillPrompt.Content,
-			})
-		}
+	if sessionCtxStr != "" {
+		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.System, Content: sessionCtxStr})
 	}
-
+	for _, spc := range skillPromptContents {
+		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.System, Content: spc})
+	}
 	if h.Memory != nil {
 		stMsgs, err := h.Memory.GetShortTermMessages(ctx, chatArea.ID)
 		if err == nil {
 			for _, m := range stMsgs {
-				messages = append(messages, provider.ChatMessage{Role: m.Role, Content: m.Content, Name: m.Name})
+				einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.RoleType(m.Role), Content: m.Content, Name: m.Name})
 			}
 		}
 	}
+	for _, mu := range userMsgs {
+		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: mu})
+	}
 
-	messages = append(messages, provider.ChatMessage{Role: "user", Content: userMsg})
-
+	// 写短期记忆 + 持久化聊天记录（批次内每条）
 	if h.Memory != nil {
-		h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "user", Content: userMsg})
+		for _, mm := range memMsgs {
+			h.Memory.AddShortTermMessage(ctx, chatArea.ID, mm)
+		}
 	}
-	// 持久化原始聊天记录到 DB (与短期记忆解耦, 不受 Redis 重启或 Compact 影响)
-	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0, nil)
-
-	// 读取回复策略：always 模式跳过静默检测；AgentLite 模式不传工具、跳过工具循环
-	replyCfg, _ := h.DAO.ReplyStrategy.GetOrCreate(ctx)
-	skipSilenceCheck := replyCfg != nil && replyCfg.Strategy == models.StrategyAlways
-	agentLite := replyCfg != nil && replyCfg.AgentLite
-
-	req := provider.ChatRequest{
-		Messages:    messages,
-		Tools:       toolList,
-		Temperature: 0.7,
+	for _, ev := range events {
+		h.Session.AppendRecord(ctx, chatArea.ID, ev.Message.UserID, "user", strings.TrimSpace(ev.Message.RawMessage), 0, nil)
 	}
-	// AgentLite 模式：不向 LLM 暴露工具，并注入提示词
+
+	// ---------- 回复策略 & AgentLite ----------
+	skipSilenceCheck := rs.Strategy == models.StrategyAlways
+	agentLite := rs.AgentLite
+
+	// 构建注入给 Eino Agent 的系统指令（Instruction）
+	instruction := systemCtx
+	if sessionCtxStr != "" {
+		instruction += "\n\n" + sessionCtxStr
+	}
+	for _, spc := range skillPromptContents {
+		instruction += "\n\n" + spc
+	}
 	if agentLite {
-		req.Tools = nil
-		messages = append([]provider.ChatMessage{{
-			Role:    "system",
-			Content: "【AgentLite 精简模式】你无法使用任何工具、MCP 或外部能力。如果用户提出的任务需要工具或外部操作才能完成（如发送消息、查天气、生成图片、执行代码、搜索等），直接拒绝并说明当前处于精简模式无法执行该操作。回复中不要假装已经完成了需要工具的任务。",
-		}}, messages...)
-		req.Messages = messages
+		instruction = "【AgentLite 精简模式】你无法使用任何工具、MCP 或外部能力。" +
+			"如果用户提出的任务需要工具或外部操作才能完成（如发送消息、查天气、生成图片、执行代码、搜索等），" +
+			"直接拒绝并说明当前处于精简模式无法执行该操作。回复中不要假装已经完成了需要工具的任务。\n\n" + instruction
 	}
 
-	resp, err := llm.Chat(ctx, req)
-	if err != nil {
-		slog.Error("LLM 调用失败", "err", err)
+	// 将 per-message 状态注入 context（避免 HagoCenter 共享字段数据竞争）
+	msgCtx := &MsgSessionCtx{
+		Msg:                msg,
+		SessionCtxStr:      sessionCtxStr,
+		RecentMsgsFn:       h.getRecentMessagesByMsgType,
+		DynamicInstruction: instruction,
+		AgentLite:          agentLite,
+		StripMarkdown:      rs.StripMarkdown,
+		DisableSplit:       rs.AgentLite,
+		LoopID:             loopID,
+	}
+	ctx = WithMsgSessionCtx(ctx, msgCtx)
+
+	// 任务执行期间的发送请求（send_* / text_to_image 等）统一入队，
+	// 执行完成后由下方 Flush 统一发送，保证“中途不发、执行完再发”。
+	deferredSends := tool.NewDeferredSendQueue()
+	ctx = tool.WithDeferredSendQueue(ctx, deferredSends)
+
+	// ---------- 运行 Eino Agent ----------
+	if h.EinoAgent == nil {
+		log.Error("Eino Agent 未就绪")
 		return
 	}
 
-	h.Session.UpdateTokenUsage(ctx, sess.ID, int64(resp.TokenUsage))
+	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: h.EinoAgent})
+	iter := runner.Run(ctx, einoMsgs)
 
-	if resp.Message.Content != "" {
-		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(resp.Message.Content)
-		if silenced {
-			slog.Info("群聊静默响应已丢弃", "content", resp.Message.Content, "group_id", msg.GroupID)
-		} else {
-			h.sendReply(msg, resp.Message.Content)
-			h.recordChat(ctx, chatArea.ID, userID, "assistant", resp.Message.Content, resp.TokenUsage, marshalToolCalls(resp.Message.ToolCalls))
+	// 收集 Agent 输出 + Token 用量 + 工具调用
+	var assistantContent string
+	var totalTokens int64
+	var toolCalls []einoschema.ToolCall
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			log.Error("Eino Agent 错误", "err", event.Err)
+			break
+		}
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
+		}
+		mv := event.Output.MessageOutput
+		if mv.Role == einoschema.Assistant && !mv.IsStreaming && mv.Message != nil {
+			assistantContent += mv.Message.Content
+			// 收集该轮 LLM 发起的工具调用（含 ReAct 中途轮次）
+			toolCalls = append(toolCalls, mv.Message.ToolCalls...)
+			// 累加每次 LLM 调用的 Token 开销（输入 + 输出，ReAct 每轮都计入）
+			if meta := mv.Message.ResponseMeta; meta != nil && meta.Usage != nil {
+				totalTokens += int64(meta.Usage.TotalTokens)
+			}
+		}
+	}
+
+	// 工具调用记录（供聊天记录页展示）
+	callsJSON := marshalEinoToolCalls(toolCalls)
+
+	// ---------- Token 用量：会话总账（Session）+ 每日统计（TokenUsageDaily） ----------
+	if totalTokens > 0 {
+		if err := h.Session.RecordTokenUsage(ctx, sess.ID, totalTokens); err != nil {
+			log.Error("记录 Token 用量失败", "err", err)
+		}
+	}
+
+	// 若任务期间已通过发送类工具（send_*_msg）向当前会话投递了消息，
+	// 该消息即回答本体，最终回复通常只是复述/操作过程描述，直接丢弃。
+	// 注意：必须在 Flush 之前判断（Flush 会清空队列）。
+	currentTargetID := int64(0)
+	switch msg.MessageType {
+	case "private":
+		currentTargetID = msg.UserID
+	case "group":
+		currentTargetID = msg.GroupID
+	}
+	deliveredToCurrent := deferredSends.DeliveredTo(msg.MessageType, currentTargetID)
+
+	// ---------- 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发） ----------
+	flushed := deferredSends.Flush(ctx, h.Adapter)
+
+	// 将投递给当前会话的交付消息写回记忆与聊天记录：
+	// 否则对话历史会停留在"用户消息无人回复"，导致后续 LLM 误以为旧任务仍待执行
+	// （如用户再次发言时，模型把上一个未回复的天气请求又执行一遍）。
+	// 注意：交付消息即本轮的 assistant 回复，需携带真实 token 用量，
+	// 否则 chat_records.token_count 总和（Overview 总用量）不会增长。
+	recordedTokens := false
+	for _, s := range flushed {
+		if !s.Delivery || s.MessageType != msg.MessageType || s.TargetID != currentTargetID {
+			continue
+		}
+		if text := s.Text(); text != "" {
+			tokens := 0
+			if !recordedTokens {
+				tokens = int(totalTokens)
+				recordedTokens = true // 同一轮的 token 只记一次，避免多条投递重复计数
+			}
+			h.recordChat(ctx, chatArea.ID, userID, "assistant", text, tokens, callsJSON)
 			if h.Memory != nil {
-				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: resp.Message.Content})
+				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: text})
 			}
 		}
 	}
 
-	// AgentLite 模式：跳过所有工具/MCP 调用和 Agent 循环
-	if agentLite {
-		return
-	}
-
-	// 静默响应时也跳过工具调用（防止 LLM 绕过文本输出直接调 send_group_msg 发废话）
-	// always 模式下不跳过工具调用
-	toolSilenced := !skipSilenceCheck && msg.MessageType == "group" && resp.Message.Content != "" && isSilenceResponse(resp.Message.Content)
-	if !toolSilenced && len(resp.Message.ToolCalls) > 0 {
-		h.handleToolCalls(ctx, msg, chatArea.ID, userID, userMsg, sess.ID, messages, resp, ev.Admins)
-	}
-}
-
-func (h *HagoCenter) handleToolCalls(
-	ctx context.Context, msg *adapter.MessageEvent,
-	chatAreaID string, userID int64, userMsg string, sessionID string,
-	history []provider.ChatMessage, resp *provider.ChatResponse,
-	admins []string,
-) {
-	llm := h.Providers.SelectModel(provider.ModelTypeText)
-	if llm == nil {
-		return
-	}
-
-	userIsAdmin := isAdmin(userID, admins)
-	history = append(history, resp.Message)
-
-	for _, tc := range resp.Message.ToolCalls {
-		toolName := tc.Function.Name
-		args := tc.Function.Arguments
-
-		// 判定工具来源：优先 MCP（MCP 工具可覆盖同名内置工具），再查 ToolRegistry
-		isMCPTool := h.MCP != nil && h.MCP.HasTool(ctx, toolName)
-		_, isRegistryTool := h.Tools.Get(toolName)
-
-		slog.Info("Tool 调用开始", "tool", toolName, "is_mcp", isMCPTool, "is_builtin", isRegistryTool,
-			"chat_area_id", chatAreaID, "user_id", userID)
-
-		if isMCPTool {
-			// --- MCP 工具调用 ---
-			if !userIsAdmin {
-				allowed, denialMsg := h.ACL.CheckMCP(ctx, userID, chatAreaID, toolName)
-				if !allowed {
-					history = append(history, provider.ChatMessage{
-						Role:       "tool",
-						Content:    denialMsg,
-						ToolCallID: tc.ID,
-						Name:       toolName,
-					})
-					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0, nil)
-					slog.Info("ACL 拒绝 MCP 调用", "user_id", userID, "tool", toolName)
-					continue
-				}
-			}
-
-			// MCP 长耗时工具也走后台任务
-			if h.Tools.IsLongRunning(toolName) {
-				steps := []TaskStep{
-					{ID: tc.ID, ToolName: toolName, Args: args},
-				}
-				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), userMsg, steps)
-				if err != nil {
-					slog.Error("提交后台任务失败(MCP)", "tool", toolName, "err", err)
-					continue
-				}
-				slog.Info("MCP 长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
-				h.sendReply(msg, fmt.Sprintf("MCP 任务 %s 已提交后台执行...", toolName))
-				history = append(history, provider.ChatMessage{
-					Role:       "tool",
-					Content:    fmt.Sprintf("[系统] MCP 任务 %s 已提交后台执行 (task_id: %s)。你不需要做任何后续处理——禁止编造或猜测执行结果。只需告知用户任务已提交。", toolName, taskID),
-					ToolCallID: tc.ID,
-				})
-				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("MCP 任务 %s -> 后台执行: %s", toolName, taskID), 0, nil)
-				continue
-			}
-
-			slog.Info("MCP Tool 执行中", "tool", toolName)
-			result, err := h.MCP.CallTool(ctx, toolName, args)
-			if err != nil {
-				result = fmt.Sprintf("MCP调用失败: %s", err.Error())
-				slog.Error("MCP调用失败", "tool", toolName, "err", err)
-			} else {
-				slog.Info("MCP Tool 执行完成", "tool", toolName, "result_len", len(result))
-			}
-
-			history = append(history, provider.ChatMessage{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: tc.ID,
-				Name:       toolName,
-			})
-			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("MCP %s: %s", toolName, result), 0, nil)
-		} else if isRegistryTool {
-			// --- 内置工具调用 ---
-			if !userIsAdmin {
-				allowed, denialMsg := h.ACL.CheckTool(ctx, userID, chatAreaID, toolName)
-				if !allowed {
-					history = append(history, provider.ChatMessage{
-						Role:       "tool",
-						Content:    denialMsg,
-						ToolCallID: tc.ID,
-						Name:       toolName,
-					})
-					h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, denialMsg), 0, nil)
-					slog.Info("ACL 拒绝工具调用", "user_id", userID, "tool", toolName)
-					continue
-				}
-			}
-
-			if h.Tools.IsLongRunning(toolName) {
-				steps := []TaskStep{
-					{ID: tc.ID, ToolName: toolName, Args: args},
-				}
-				taskID, err := h.BgTaskExecutor.Submit(ctx, chatAreaID, msg.MessageType, getTargetID(msg), userMsg, steps)
-				if err != nil {
-					slog.Error("提交后台任务失败", "tool", toolName, "err", err)
-					continue
-				}
-
-				slog.Info("内置长耗时工具已提交后台", "tool", toolName, "task_id", taskID)
-				h.sendReply(msg, fmt.Sprintf("任务 %s 已提交后台执行...", toolName))
-				history = append(history, provider.ChatMessage{
-					Role:       "tool",
-					Content:    fmt.Sprintf("[系统] 任务 %s 已提交后台执行 (task_id: %s)。你不需要做任何后续处理——禁止编造或猜测执行结果。只需告知用户任务已提交。", toolName, taskID),
-					ToolCallID: tc.ID,
-				})
-				h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("任务 %s -> 后台执行: %s", toolName, taskID), 0, nil)
-				continue
-			}
-
-			slog.Info("内置 Tool 执行中", "tool", toolName)
-			result, err := h.Tools.Execute(ctx, toolName, args)
-			if err != nil {
-				result = fmt.Sprintf("工具执行失败: %s", err.Error())
-				slog.Error("内置工具执行失败", "tool", toolName, "err", err)
-			} else {
-				slog.Info("内置 Tool 执行完成", "tool", toolName, "result_len", len(result))
-			}
-
-			history = append(history, provider.ChatMessage{
-				Role:       "tool",
-				Content:    result,
-				ToolCallID: tc.ID,
-				Name:       toolName,
-			})
-			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, result), 0, nil)
+	// ---------- 后处理：静默检测 + 发送 + 记忆 ----------
+	if assistantContent != "" && !deliveredToCurrent {
+		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(assistantContent)
+		if silenced {
+			log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
 		} else {
-			// 未找到工具
-			errMsg := fmt.Sprintf("工具 %q 未找到 (非内置工具也非 MCP 工具)", toolName)
-			slog.Error("工具未找到", "tool", toolName)
-			history = append(history, provider.ChatMessage{
-				Role:       "tool",
-				Content:    errMsg,
-				ToolCallID: tc.ID,
-				Name:       toolName,
-			})
-			h.recordChat(ctx, chatAreaID, userID, "tool", fmt.Sprintf("%s: %s", toolName, errMsg), 0, nil)
-		}
-	}
-
-	followUp, err := llm.Chat(ctx, provider.ChatRequest{
-		Messages:    history,
-		Tools:       h.buildToolList(ctx),
-		Temperature: 0.7,
-	})
-	if err != nil {
-		slog.Error("LLM followUp 调用失败", "err", err)
-		return
-	}
-
-	h.Session.UpdateTokenUsage(ctx, sessionID, int64(followUp.TokenUsage))
-
-	if followUp.Message.Content != "" {
-		h.sendReply(msg, followUp.Message.Content)
-		h.recordChat(ctx, chatAreaID, userID, "assistant", followUp.Message.Content, followUp.TokenUsage, marshalToolCalls(followUp.Message.ToolCalls))
-		if h.Memory != nil {
-			h.Memory.AddShortTermMessage(ctx, chatAreaID, shortterm.ChatMessage{Role: "assistant", Content: followUp.Message.Content})
-		}
-	}
-
-	// 递归处理可能的后续 tool calls
-	if len(followUp.Message.ToolCalls) > 0 {
-		h.handleToolCalls(ctx, msg, chatAreaID, userID, userMsg, sessionID, history, followUp, admins)
-	}
-}
-
-// isAdmin 检查 userID 是否在 admins 列表中（admins 元素为字符串形式的 QQ 号）。
-func isAdmin(userID int64, admins []string) bool {
-	if len(admins) == 0 {
-		return false
-	}
-	uidStr := strconv.FormatInt(userID, 10)
-	for _, a := range admins {
-		if a == uidStr {
-			return true
-		}
-	}
-	return false
-}
-
-// splitMessages 将 LLM 输出拆分为多条独立消息。
-// 优先使用 <|msg|> 显式分隔符；未找到时回退到 \n\n（双换行）拆分。
-// 不尝试拆分超过 5 段的输出（避免破坏多段落长消息）。
-func splitMessages(content string) []string {
-	// 优先：显式 <|msg|> 分隔符
-	if strings.Contains(content, "<|msg|>") {
-		var parts []string
-		for _, p := range strings.Split(content, "<|msg|>") {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				parts = append(parts, p)
+			h.sendReply(msg, assistantContent, rs)
+			h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), callsJSON)
+			if h.Memory != nil {
+				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
 			}
 		}
-		return parts
+	} else if assistantContent != "" {
+		log.Info("已通过工具向当前会话发送消息，跳过最终回复", "content", assistantContent, "message_type", msg.MessageType, "target", currentTargetID)
 	}
-	// 回退：\n\n 拆分（DeepSeek 习惯用空行分隔多条独立消息）
-	// 限制 2~5 段，避免拆分多段落长消息
-	parts := strings.Split(content, "\n\n")
-	if len(parts) >= 2 && len(parts) <= 5 {
-		var result []string
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				result = append(result, p)
-			}
-		}
-		if len(result) >= 2 {
-			return result
-		}
-	}
-	return []string{content}
 }
 
-func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string) {
+// cqCodeRegexp 匹配 CQ 码: [CQ:type,key=value,...]
+var cqCodeRegexp = regexp.MustCompile(`\[CQ:[a-zA-Z_]+(?:,[^\]]+)?\]`)
+
+// urlRegexp 匹配 URL，提取为包级变量避免每次调用 splitMessages 时重新编译。
+var urlRegexp = regexp.MustCompile(`https?://\S+`)
+
+// sendReply 解析 CQ 码并组装消息段发送。
+// rs 从调用链传入，避免读取 HagoCenter 共享字段导致数据竞争。
+func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs ReplySettings) {
 	var parts []string
-	if h.DisableSplit {
+	if rs.AgentLite {
 		parts = []string{content}
 	} else {
 		parts = splitMessages(content)
 	}
 	for _, part := range parts {
-		if h.StripMarkdown {
+		if rs.StripMarkdown {
 			part = stripMarkdown(part)
 		}
+		// 解析 CQ 码并组装消息段
+		segments := parseCQToSegments(part)
 		var err error
 		switch msg.MessageType {
 		case "private":
-			_, err = h.Adapter.SendPrivateMsg(msg.UserID, part)
+			_, err = h.Adapter.SendPrivateMsg(msg.UserID, segments)
 		case "group":
-			_, err = h.Adapter.SendGroupMsg(msg.GroupID, part)
+			_, err = h.Adapter.SendGroupMsg(msg.GroupID, segments)
 		}
 		if err != nil {
-			slog.Error("发送消息失败", "err", err)
+			log.Error("发送消息失败", "err", err)
 		}
 	}
+}
+
+// parseCQToSegments 将包含 CQ 码的文本解析为 adapter.Segment 数组。
+// 纯文本部分 → {Type: "text", Data: {"text": "..."}}
+// CQ 码部分 → {Type: "image", Data: {"file": "..."}} 等
+func parseCQToSegments(content string) []adapter.Segment {
+	var segments []adapter.Segment
+	lastIdx := 0
+	for _, loc := range cqCodeRegexp.FindAllStringIndex(content, -1) {
+		// 前面的纯文本
+		if loc[0] > lastIdx {
+			text := content[lastIdx:loc[0]]
+			if text != "" {
+				segments = append(segments, adapter.Segment{Type: "text", Data: map[string]any{"text": text}})
+			}
+		}
+		// CQ 码
+		cqStr := content[loc[0]:loc[1]]
+		seg := parseCQCode(cqStr)
+		segments = append(segments, seg)
+		lastIdx = loc[1]
+	}
+	// 尾部纯文本
+	if lastIdx < len(content) {
+		text := content[lastIdx:]
+		if text != "" {
+			segments = append(segments, adapter.Segment{Type: "text", Data: map[string]any{"text": text}})
+		}
+	}
+	if len(segments) == 0 {
+		segments = append(segments, adapter.Segment{Type: "text", Data: map[string]any{"text": content}})
+	}
+	return segments
+}
+
+// parseCQCode 解析单个 CQ 码字符串为 Segment。
+// 例如: "[CQ:image,file=http://example.com/img.jpg]" → {Type: "image", Data: {"file": "http://..."}}
+func parseCQCode(s string) adapter.Segment {
+	// 去掉 [CQ: 和 ]
+	inner := s[4 : len(s)-1] // "image,file=http://..."
+	parts := strings.SplitN(inner, ",", 2)
+	segType := parts[0]
+	data := make(map[string]any)
+	if len(parts) > 1 {
+		for _, kv := range strings.Split(parts[1], ",") {
+			eq := strings.IndexByte(kv, '=')
+			if eq > 0 {
+				data[kv[:eq]] = kv[eq+1:]
+			}
+		}
+	}
+	return adapter.Segment{Type: segType, Data: data}
+}
+
+// splitMessages 将 Agent 输出拆分为最多 3 段消息。
+// 算法参考 Maibot：在自然断句处（。！？；）拆分，每段有效文字 ≤60 字。
+// CQ 码和 URL 不计入有效字数。换行不是拆分点：多行内容保留在同一条消息内，
+// 内部换行原样保留（不再被 TrimSpace 吞掉）。
+func splitMessages(content string) []string {
+	effectiveLen := func(s string) int {
+		s = cqCodeRegexp.ReplaceAllString(s, "")
+		s = urlRegexp.ReplaceAllString(s, "")
+		return len([]rune(strings.TrimSpace(s)))
+	}
+
+	total := effectiveLen(content)
+	if total <= 60 {
+		return []string{content}
+	}
+
+	// 按自然断句拆分，保留分隔符附着在前一段尾部
+	splitRe := regexp.MustCompile(`[。！？；]`)
+	matches := splitRe.FindAllStringIndex(content, -1)
+	if len(matches) == 0 {
+		return []string{content}
+	}
+	var parts []string
+	start := 0
+	for _, loc := range matches {
+		// 包含分隔符在当前段尾部
+		parts = append(parts, content[start:loc[1]])
+		start = loc[1]
+	}
+	if start < len(content) {
+		tail := content[start:]
+		if strings.TrimSpace(tail) != "" {
+			parts = append(parts, tail)
+		}
+	}
+	// 过滤纯空白段（含内容的段保留其内部换行）
+	var nonEmpty []string
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			nonEmpty = append(nonEmpty, p)
+		}
+	}
+	if len(nonEmpty) <= 1 {
+		return []string{content}
+	}
+
+	// 贪心合并到最多 3 段，每段 ≤60 有效字
+	maxSegs := 3
+	if total <= 120 {
+		maxSegs = 2
+	}
+	var segments []string
+	var buf string
+	for _, p := range nonEmpty {
+		candidate := buf + p
+		if effectiveLen(candidate) > 60 && buf != "" {
+			segments = append(segments, strings.TrimLeft(buf, " \t\n"))
+			buf = p
+		} else {
+			buf = candidate
+		}
+	}
+	if buf != "" {
+		segments = append(segments, strings.TrimSpace(buf))
+	}
+
+	// 硬限制 3 段：合并尾部多余的段
+	for len(segments) > maxSegs {
+		last := segments[len(segments)-1]
+		prev := segments[len(segments)-2]
+		segments = segments[:len(segments)-2]
+		segments = append(segments, prev+last)
+	}
+
+	if len(segments) <= 1 {
+		return []string{content}
+	}
+	return segments
 }
 
 // isSilenceResponse 检测 LLM 是否输出了静默标记或静默声明类废话。
@@ -814,19 +806,64 @@ func getTargetID(msg *adapter.MessageEvent) int64 {
 
 func (h *HagoCenter) recordChat(ctx context.Context, chatAreaID string, userID int64, role, content string, tokens int, toolCalls models.JSONMap) {
 	if err := h.Session.AppendRecord(ctx, chatAreaID, userID, role, content, tokens, toolCalls); err != nil {
-		slog.Error("记录聊天失败", "err", err)
+		log.Error("记录聊天失败", "err", err)
 	}
 }
 
-// marshalToolCalls 将 ToolCall 列表转为 JSONMap 存入 DB
-func marshalToolCalls(tcs []provider.ToolCall) models.JSONMap {
+// marshalEinoToolCalls 将 Eino schema ToolCall 列表转为 JSONMap 存入 DB（聊天记录的 tool_calls 列）
+func marshalEinoToolCalls(tcs []einoschema.ToolCall) models.JSONMap {
 	if len(tcs) == 0 {
 		return nil
 	}
-	b, _ := json.Marshal(tcs)
-	var raw []any
-	json.Unmarshal(b, &raw)
+	raw := make([]any, 0, len(tcs))
+	for _, tc := range tcs {
+		raw = append(raw, map[string]any{
+			"id":   tc.ID,
+			"type": tc.Type,
+			"function": map[string]any{
+				"name":      tc.Function.Name,
+				"arguments": tc.Function.Arguments,
+			},
+		})
+	}
 	return models.JSONMap{"tool_calls": raw}
+}
+
+// isAdmin 检查 userID 是否在 admins 列表中（admins 元素为字符串形式的 QQ 号）。
+func isAdmin(userID int64, admins []string) bool {
+	if len(admins) == 0 {
+		return false
+	}
+	uidStr := strconv.FormatInt(userID, 10)
+	for _, a := range admins {
+		if a == uidStr {
+			return true
+		}
+	}
+	return false
+}
+
+// senderDisplayName 返回发送者的展示名（群名片优先，其次昵称）。
+func senderDisplayName(msg *adapter.MessageEvent) string {
+	if msg.Sender.Card != "" {
+		return msg.Sender.Card
+	}
+	return msg.Sender.Nickname
+}
+
+// buildMemorySpeaker 构建记忆中的发言人标识，如 "[TuF3i(QQ:1483915073) 在群1076723599] "。
+// 写入短期记忆时拼在用户消息前，让 LLM 能区分不同说话人，避免多人同时发言时混淆。
+func buildMemorySpeaker(msg *adapter.MessageEvent) string {
+	name := senderDisplayName(msg)
+	if name == "" {
+		name = fmt.Sprintf("QQ%d", msg.UserID)
+	}
+	switch msg.MessageType {
+	case "group":
+		return fmt.Sprintf("[%s(QQ:%d) 在群%d] ", name, msg.UserID, msg.GroupID)
+	default:
+		return fmt.Sprintf("[%s(QQ:%d)] ", name, msg.UserID)
+	}
 }
 
 // buildSessionContext 构建当前会话上下文，包含发送者、群信息、机器人身份等。
@@ -844,17 +881,13 @@ func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.Messa
 	case "group":
 		parts = append(parts, "消息类型: 群聊")
 		parts = append(parts, fmt.Sprintf("群号: %d", msg.GroupID))
-		// 获取发送者群内信息
-		senderName := msg.Sender.Card
-		if senderName == "" {
-			senderName = msg.Sender.Nickname
-		}
+		// 发送者展示名（群名片优先，其次昵称）
 		parts = append(parts, fmt.Sprintf("发送者QQ: %d", msg.UserID))
-		parts = append(parts, fmt.Sprintf("发送者名称: %s", senderName))
+		parts = append(parts, fmt.Sprintf("发送者名称: %s", senderDisplayName(msg)))
 
-		// 获取群内权限（owner/admin/member）
+		// 获取群内权限（owner/admin/member）——带缓存，避免每条消息调 OneBot11 API
 		if h.Adapter != nil {
-			memberInfo, err := h.Adapter.GetGroupMemberInfo(msg.GroupID, msg.UserID)
+			memberInfo, err := h.getGroupMemberInfoCached(msg.GroupID, msg.UserID)
 			if err == nil && memberInfo != nil {
 				roleLabel := memberInfo.Role
 				switch memberInfo.Role {

@@ -38,6 +38,18 @@
 
 > 注意：`T2I_BASE_URL` / `SANDBOX_API_KEY` 等是文档性 env，**真正生效**的配置在 DB（启动时 `loadT2IFromDB`/`loadSandboxFromDB` 读取并构建客户端）。首次启动 DB 无配置时自动 `InitConfig` 建默认行，前端可编辑。
 
+## 开发环境配置（dev.yaml）
+
+本地开发时可用 `dev.yaml` 配置基础设施连接端点，避免每次手动设置环境变量：
+
+```bash
+cp dev.yaml.example dev.yaml   # 复制并按需修改
+make run                        # 自动读取 dev.yaml
+make run-debug                  # 自动读取 dev.yaml + debug 模式
+```
+
+优先级：**环境变量 > dev.yaml > 内置默认值**。`dev.yaml` 不存在时程序正常启动（使用环境变量或内置默认值）。`make run` / `make run-debug` 通过 `-dev-config` 参数传入，二进制本身不硬编码该路径。
+
 ## 端口约定
 
 | 端口 | 用途 |
@@ -65,10 +77,10 @@ make web-build          # typecheck + vite build
 # 开发: Vite(:3000) + Go(:8090) 并行
 make dev
 
-# 仅跑后端 go run, 前端走 web/dist
+# 仅跑后端 go run, 自动读取 dev.yaml, 前端走 web/dist
 make run
 
-# Debug 模式：pprof (:6060) + Debug 级别日志
+# Debug 模式：自动读取 dev.yaml + pprof (:6060) + Debug 级别日志
 make run-debug
 
 # 综合检查 (go vet + 前端 typecheck)
@@ -96,8 +108,9 @@ make lint
 
 ## 日志排查
 
-- 全部走 `log/slog` 结构化输出
-- 双写到 stdout 与 `logging.Default` Hub（环形 250 条 + SSE 实时订阅）
+- 使用 `internal/logging` 自定义日志包（底层 `github.com/fatih/color`），支持彩色 stdout、JSON 格式化、WARN+ 调用栈
+- 双写到 stdout 与 `logging.Default` Hub（环形 250 条 + SSE 实时订阅）；GORM SQL 语句也可通过 Hub 订阅
+- 通过 `logging.NewModule("name")` 创建模块 logger，Web UI 可集中查看所有模块日志
 - 前端查看：Web 面板"日志"页（`GET /api/v1/logs` 最近 250 + `GET /api/v1/logs/stream` SSE）
 - 命令行查看：`docker logs -f juan-niang-neo` 或 `journalctl -u juan-niang-neo -f`（systemd）
 - 插件日志带 `[plugin:<name>]` 前缀
@@ -119,7 +132,7 @@ Debug 模式下：
 
 | 功能 | 说明 |
 |------|------|
-| 日志级别 | Debug，所有 `slog.Debug(...)` 可见（插件图片处理耗时、异步消息发送耗时等） |
+| 日志级别 | Debug，所有 Debug 级别日志可见（插件图片处理耗时、异步消息发送耗时、Eino tool call 详情等） |
 | pprof | HTTP 服务 `:6060`，支持 CPU/heap/goroutine 等 profile |
 | 启动详情 | 打印 Go 版本、CPU 核数、每个插件的 name/version/permissions |
 
@@ -225,8 +238,6 @@ WantedBy=multi-user.target
 **Q: 为什么 LLM 拒绝调用某个工具？** A: ACL 规则把它拒绝了，或它在 MCP 但 MCP 断连；可在"ACL"页或"日志"流查看。
 
 **Q: Agent 在群里不回我？** A: 检查回复策略 + `isAtSelf` 是否精确匹配 `[CQ:at,qq=<bot>]`；`relevance` 模式下不会回复相关性低的消息。
-
-**Q: 后台任务结果丢失？** A: `BgTaskExecutor` 启动时 `recoverTasks` 从 DB 恢复未完成项，缺 `TargetID`/`MessageType` 的 legacy 任务会被标记 failed 跳过。
 
 **Q: 想只换前端不重编 Go？** A: 可以——前端是磁盘文件，`WEB_DIR` 指向新 `web/dist` 即可；二进制不嵌入它。
 
