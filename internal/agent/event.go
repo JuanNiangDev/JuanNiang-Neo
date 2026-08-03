@@ -275,6 +275,13 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 	userMsg := strings.TrimSpace(msg.RawMessage)
 	matchedSkill, skillMatched := h.Skills.Match(userMsg)
 
+	// 记忆中的用户消息带发言人标识（昵称+QQ+群号），
+	// 避免多人同时发言时 LLM 混淆消息归属（如 A 问天气、B 打招呼被混在一起）
+	memUserMsg := userMsg
+	if speaker := buildMemorySpeaker(msg); speaker != "" {
+		memUserMsg = speaker + userMsg
+	}
+
 	// 注册活跃 Agent 循环（供 Web 监控页展示当前正在执行的 ReAct 循环）
 	loopID := ""
 	if h.Loops != nil {
@@ -338,11 +345,11 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 			}
 		}
 	}
-	einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: userMsg})
+	einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: memUserMsg})
 
 	// 写短期记忆 + 持久化聊天记录
 	if h.Memory != nil {
-		h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "user", Content: userMsg})
+		h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "user", Content: memUserMsg})
 	}
 	h.Session.AppendRecord(ctx, chatArea.ID, userID, "user", userMsg, 0, nil)
 
@@ -747,6 +754,29 @@ func isAdmin(userID int64, admins []string) bool {
 	return false
 }
 
+// senderDisplayName 返回发送者的展示名（群名片优先，其次昵称）。
+func senderDisplayName(msg *adapter.MessageEvent) string {
+	if msg.Sender.Card != "" {
+		return msg.Sender.Card
+	}
+	return msg.Sender.Nickname
+}
+
+// buildMemorySpeaker 构建记忆中的发言人标识，如 "[TuF3i(QQ:1483915073) 在群1076723599] "。
+// 写入短期记忆时拼在用户消息前，让 LLM 能区分不同说话人，避免多人同时发言时混淆。
+func buildMemorySpeaker(msg *adapter.MessageEvent) string {
+	name := senderDisplayName(msg)
+	if name == "" {
+		name = fmt.Sprintf("QQ%d", msg.UserID)
+	}
+	switch msg.MessageType {
+	case "group":
+		return fmt.Sprintf("[%s(QQ:%d) 在群%d] ", name, msg.UserID, msg.GroupID)
+	default:
+		return fmt.Sprintf("[%s(QQ:%d)] ", name, msg.UserID)
+	}
+}
+
 // buildSessionContext 构建当前会话上下文，包含发送者、群信息、机器人身份等。
 // 这些信息以 system prompt 形式注入，让 Agent 感知聊天环境。
 func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.MessageEvent, admins []string) string {
@@ -762,13 +792,9 @@ func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.Messa
 	case "group":
 		parts = append(parts, "消息类型: 群聊")
 		parts = append(parts, fmt.Sprintf("群号: %d", msg.GroupID))
-		// 获取发送者群内信息
-		senderName := msg.Sender.Card
-		if senderName == "" {
-			senderName = msg.Sender.Nickname
-		}
+		// 发送者展示名（群名片优先，其次昵称）
 		parts = append(parts, fmt.Sprintf("发送者QQ: %d", msg.UserID))
-		parts = append(parts, fmt.Sprintf("发送者名称: %s", senderName))
+		parts = append(parts, fmt.Sprintf("发送者名称: %s", senderDisplayName(msg)))
 
 		// 获取群内权限（owner/admin/member）——带缓存，避免每条消息调 OneBot11 API
 		if h.Adapter != nil {
