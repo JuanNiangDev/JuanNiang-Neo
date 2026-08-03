@@ -565,9 +565,11 @@ except Exception as e:
 					return "", fmt.Errorf("T2I 生成失败: %w", err)
 				}
 
-				// 构造图片 URL（处理 ID 可能已包含 "data/" 前缀的情况）
+				// 构造图片 URL
+				// T2I API 返回的 ID 已包含 "data/" 前缀（如 "data/rendered_xxx.png"），
+				// 所以 URL = BaseURL + "/text2img/" + ID
 				imageID := genResp.Data.ID
-				imageURL := t2i.Config.BaseURL + "/text2img/data/" + imageID
+				imageURL := t2i.Config.BaseURL + "/text2img/" + imageID
 
 				log.Info("T2I 图片已生成", "id", imageID, "image_url", imageURL)
 
