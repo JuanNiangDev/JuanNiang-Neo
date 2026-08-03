@@ -233,8 +233,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 		return
 	}
 
-	// 确保 Session 存在（供 ChatRecord 持久化使用）
-	if _, err := h.Session.GetOrCreate(ctx, chatArea.ID); err != nil {
+	// 确保 Session 存在（供 ChatRecord 持久化 + Token 用量累加使用）
+	sess, err := h.Session.GetOrCreate(ctx, chatArea.ID)
+	if err != nil {
 		log.Error("获取 Session 失败", "err", err)
 		return
 	}
@@ -344,8 +345,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: h.EinoAgent})
 	iter := runner.Run(ctx, einoMsgs)
 
-	// 收集 Agent 输出
+	// 收集 Agent 输出 + Token 用量
 	var assistantContent string
+	var totalTokens int64
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -359,10 +361,19 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 			continue
 		}
 		mv := event.Output.MessageOutput
-		if mv.Role == einoschema.Assistant {
-			if !mv.IsStreaming && mv.Message != nil {
-				assistantContent += mv.Message.Content
+		if mv.Role == einoschema.Assistant && !mv.IsStreaming && mv.Message != nil {
+			assistantContent += mv.Message.Content
+			// 累加每次 LLM 调用的 Token 开销（输入 + 输出，ReAct 每轮都计入）
+			if meta := mv.Message.ResponseMeta; meta != nil && meta.Usage != nil {
+				totalTokens += int64(meta.Usage.TotalTokens)
 			}
+		}
+	}
+
+	// ---------- Token 用量：会话总账（Session）+ 每日统计（TokenUsageDaily） ----------
+	if totalTokens > 0 {
+		if err := h.Session.RecordTokenUsage(ctx, sess.ID, totalTokens); err != nil {
+			log.Error("记录 Token 用量失败", "err", err)
 		}
 	}
 
@@ -388,7 +399,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 			log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
 		} else {
 			h.sendReply(msg, assistantContent, rs)
-			h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, 0, nil)
+			h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), nil)
 			if h.Memory != nil {
 				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
 			}

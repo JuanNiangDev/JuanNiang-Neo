@@ -103,8 +103,8 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.SandboxClient = cfg.Sandbox
 	h.T2IClient = cfg.T2I
 
-	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径)
-	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.Cache)
+	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径) + 每日 Token 统计
+	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.DAO.TokenUsageDaily, cfg.Cache)
 
 	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea)
 	stConf := shortterm.Config{WindowSize: 100, AutoCompact: true}

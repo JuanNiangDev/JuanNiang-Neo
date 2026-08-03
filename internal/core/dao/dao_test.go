@@ -32,6 +32,7 @@ func testDB(t *testing.T) *gorm.DB {
 		&models.ChatRecord{},
 		&models.Plugin{},
 		&models.ACLRule{},
+		&models.TokenUsageDaily{},
 	); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
@@ -154,6 +155,49 @@ func TestSessionDAO_GetOrCreate(t *testing.T) {
 	updated, _ := sessionDAO.GetByID(ctx, sess.ID)
 	if updated.TokenUsage != 100 {
 		t.Errorf("expected token_usage 100, got %d", updated.TokenUsage)
+	}
+}
+
+func TestTokenUsageDailyDAO_AddTokenUsage(t *testing.T) {
+	db := testDB(t)
+	dao := NewTokenUsageDailyDAO(db)
+	ctx := context.Background()
+
+	// 首次写入
+	if err := dao.AddTokenUsage(ctx, "2026-08-03", 100); err != nil {
+		t.Fatal(err)
+	}
+	// 同一天累加（UPSERT）
+	if err := dao.AddTokenUsage(ctx, "2026-08-03", 50); err != nil {
+		t.Fatal(err)
+	}
+	// 另一天
+	if err := dao.AddTokenUsage(ctx, "2026-08-04", 30); err != nil {
+		t.Fatal(err)
+	}
+
+	total, err := dao.Total(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 180 {
+		t.Errorf("expected total 180, got %d", total)
+	}
+
+	list, err := dao.ListByRange(ctx, "2026-08-03", "2026-08-03")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].TokenCount != 150 {
+		t.Errorf("unexpected daily list: %+v", list)
+	}
+
+	list, err = dao.ListByRange(ctx, "", "2026-08-04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 {
+		t.Errorf("expected 2 daily records, got %d", len(list))
 	}
 }
 

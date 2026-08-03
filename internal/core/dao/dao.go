@@ -39,6 +39,7 @@ type Bundle struct {
 	CronJob         *CronJobDAO
 	ReplyStrategy   *ReplyStrategyDAO
 	SkillMemory     *SkillMemoryDAO
+	TokenUsageDaily *TokenUsageDailyDAO
 }
 
 func NewBundle(db *gorm.DB) *Bundle {
@@ -65,5 +66,6 @@ func NewBundle(db *gorm.DB) *Bundle {
 		CronJob:         NewCronJobDAO(db),
 		ReplyStrategy:   NewReplyStrategyDAO(db),
 		SkillMemory:     NewSkillMemoryDAO(db),
+		TokenUsageDaily: NewTokenUsageDailyDAO(db),
 	}
 }
