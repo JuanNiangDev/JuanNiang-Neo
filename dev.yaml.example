@@ -25,8 +25,6 @@ redis:
 # ---------- OneBot11 反向 WebSocket ----------
 onebot11:
   port: 8081
-  token: ""                        # 空 = 不鉴权
-  admins: []                       # 管理员 QQ 号列表, 如 ["123456", "789012"]
 
 # ---------- Web API ----------
 api:
@@ -42,5 +40,5 @@ jwt:
 
 # ---------- 调试 ----------
 debug:
-  enabled: false                   # make run-debug 会强制开启
+  enabled: true                   # make run-debug 会强制开启
   pprof_addr: ":6060"

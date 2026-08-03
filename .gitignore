@@ -39,3 +39,4 @@ web/.DS_Store
 
 bin/*
 server
+dev.yaml
