@@ -8,6 +8,7 @@ import (
 	t2i "JuanNiang-Neo/infrastructure/t2i"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent"
 	cronjobmgr "JuanNiang-Neo/internal/agent/cronjob"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
@@ -45,6 +46,8 @@ type Service struct {
 	OnUpdateSandbox func(client *sandboxcaller.Client)
 	// CronJobManager 在 CronJob 变更时调用 Reload 同步调度器。
 	CronJobManager *cronjobmgr.Manager
+	// LoopTracker 当前活跃的 Agent ReAct 循环（监控展示）。
+	LoopTracker *agent.LoopTracker
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {

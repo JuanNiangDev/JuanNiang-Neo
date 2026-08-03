@@ -1668,52 +1668,25 @@ func writeLogEvent(w *sse.Writer, entry logging.Entry) error {
 	return w.WriteEvent("", "log", data)
 }
 
-// ---------- Background Tasks ----------
+// ---------- Agent 活跃循环 ----------
 
-// ListBackgroundTasks 返回所有后台任务。
-func (s *Service) ListBackgroundTasks(ctx context.Context, c *app.RequestContext) {
-	list, err := s.DAO.BackgroundTask.ListAll(ctx)
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	resp := make([]dto.BackgroundTaskResp, 0, len(list))
-	for _, t := range list {
-		resp = append(resp, dto.BackgroundTaskResp{
-			ID:          t.ID,
-			ChatAreaID:  t.ChatAreaID,
-			Status:      string(t.Status),
-			MessageType: t.MessageType,
-			TargetID:    t.TargetID,
-			UserPrompt:  t.UserPrompt,
-			Steps:       t.Steps,
-			Results:     t.Results,
-			CreatedAt:   t.CreatedAt,
-			UpdatedAt:   t.UpdatedAt,
+// ListAgentLoops 返回当前所有活跃的 Agent ReAct 循环（监控展示）。
+func (s *Service) ListAgentLoops(ctx context.Context, c *app.RequestContext) {
+	loops := s.LoopTracker.List()
+	resp := make([]dto.AgentLoopResp, 0, len(loops))
+	for _, l := range loops {
+		resp = append(resp, dto.AgentLoopResp{
+			ID:          l.ID,
+			ChatAreaID:  l.ChatAreaID,
+			MessageType: l.MessageType,
+			TargetID:    l.TargetID,
+			UserID:      l.UserID,
+			UserMsg:     l.UserMsg,
+			CurrentTool: l.CurrentTool,
+			StartedAt:   l.StartedAt,
 		})
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
-}
-
-// GetBackgroundTask 返回单个后台任务详情。
-func (s *Service) GetBackgroundTask(ctx context.Context, c *app.RequestContext) {
-	t, err := s.DAO.BackgroundTask.GetByID(ctx, c.Param("id"))
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.BackgroundTaskResp{
-		ID:          t.ID,
-		ChatAreaID:  t.ChatAreaID,
-		Status:      string(t.Status),
-		MessageType: t.MessageType,
-		TargetID:    t.TargetID,
-		UserPrompt:  t.UserPrompt,
-		Steps:       t.Steps,
-		Results:     t.Results,
-		CreatedAt:   t.CreatedAt,
-		UpdatedAt:   t.UpdatedAt,
-	}))
 }
 
 // ---------- CronJob ----------

@@ -63,3 +63,13 @@
 ### 修复：对话历史记忆断层导致旧任务被重复执行
 - **问题**：延迟队列投递的消息未写回短期记忆/ChatRecord；当最终回复被静默或投递抑制丢弃时，记忆里留下"用户请求无人回复"的空档，下次用户发言时 LLM 误以为旧任务（如查询天气）仍待执行
 - **修复**：`DeferredSendQueue.Flush` 返回本次发送列表；`handleMessage` 将投递给当前会话的交付消息（`Delivery=true`）写回短期记忆与聊天记录
+
+### 修复：聊天记录的工具调用查询不到
+- **问题**：Eino 循环收集到的工具调用从未写入 `ChatRecord.tool_calls`（`recordChat` 传 nil，`marshalToolCalls` 为死代码且类型不匹配 Eino 的 schema.ToolCall），聊天记录页的"Tool Calls"详情始终为空
+- **修复**：`handleMessage` 收集每轮 LLM 发起的工具调用（含 ReAct 中途轮次），新增 `marshalEinoToolCalls` 落库；正常回复与延迟投递消息的 assistant 记录都带上 tool_calls
+
+### 后台任务页改为 Agent 活跃循环页
+- **背景**：后台任务已废弃（无生产者），原页面无数据可展示
+- **后端**：新增 `agent.LoopTracker`（内存态）跟踪当前活跃的 ReAct 循环（ChatArea/消息类型/目标/用户消息/当前工具/开始时间）；`handleMessage` 注册/注销，中间件在工具调用时更新当前工具
+- **API**：`GET /api/v1/agent/loops` 替换原 `/background-tasks` 路由（旧 service/dto/前端 API 一并移除，模型与 DAO 保留）
+- **前端**：BackgroundTasksPage 重写为 AgentLoopsPage，每 3 秒自动刷新，展示活跃循环及已运行时长；侧边栏/路由改名为 "Agent 循环"（`/agent-loops`）

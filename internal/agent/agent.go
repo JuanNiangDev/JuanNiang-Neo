@@ -50,6 +50,7 @@ type HagoCenter struct {
 	CronJobManager *cronjob.Manager
 	CronJobEvents  chan adapter.Event // CronJob → 主 Agent 事件循环
 	PluginEngine   *pluggin.PluginEngine
+	Loops          *LoopTracker // 当前活跃的 Agent ReAct 循环（监控展示）
 
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
 	SelfQQ       int64
@@ -80,6 +81,7 @@ func NewHagoCenter() *HagoCenter {
 		Tools:         tool.NewToolRegistry(),
 		Skills:        skill.NewSkillEngine(),
 		CronJobEvents: make(chan adapter.Event, 64),
+		Loops:         NewLoopTracker(),
 	}
 }
 

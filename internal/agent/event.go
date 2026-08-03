@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -11,7 +10,6 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
-	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
 
@@ -243,6 +241,19 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 	userMsg := strings.TrimSpace(msg.RawMessage)
 	matchedSkill, skillMatched := h.Skills.Match(userMsg)
 
+	// 注册活跃 Agent 循环（供 Web 监控页展示当前正在执行的 ReAct 循环）
+	loopID := ""
+	if h.Loops != nil {
+		loopID = h.Loops.Register(&AgentLoop{
+			ChatAreaID:  chatArea.ID,
+			MessageType: msg.MessageType,
+			TargetID:    getTargetID(msg),
+			UserID:      userID,
+			UserMsg:     userMsg,
+		})
+		defer h.Loops.Unregister(loopID)
+	}
+
 	// ---------- 构建系统提示词（工具描述 + 长期记忆 + 核心提示词） ----------
 	var longTermMems []string
 	if h.Memory != nil {
@@ -328,6 +339,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 		AgentLite:          agentLite,
 		StripMarkdown:      rs.StripMarkdown,
 		DisableSplit:       rs.AgentLite,
+		LoopID:             loopID,
 	}
 	ctx = WithMsgSessionCtx(ctx, msgCtx)
 
@@ -345,9 +357,10 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: h.EinoAgent})
 	iter := runner.Run(ctx, einoMsgs)
 
-	// 收集 Agent 输出 + Token 用量
+	// 收集 Agent 输出 + Token 用量 + 工具调用
 	var assistantContent string
 	var totalTokens int64
+	var toolCalls []einoschema.ToolCall
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -363,12 +376,17 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 		mv := event.Output.MessageOutput
 		if mv.Role == einoschema.Assistant && !mv.IsStreaming && mv.Message != nil {
 			assistantContent += mv.Message.Content
+			// 收集该轮 LLM 发起的工具调用（含 ReAct 中途轮次）
+			toolCalls = append(toolCalls, mv.Message.ToolCalls...)
 			// 累加每次 LLM 调用的 Token 开销（输入 + 输出，ReAct 每轮都计入）
 			if meta := mv.Message.ResponseMeta; meta != nil && meta.Usage != nil {
 				totalTokens += int64(meta.Usage.TotalTokens)
 			}
 		}
 	}
+
+	// 工具调用记录（供聊天记录页展示）
+	callsJSON := marshalEinoToolCalls(toolCalls)
 
 	// ---------- Token 用量：会话总账（Session）+ 每日统计（TokenUsageDaily） ----------
 	if totalTokens > 0 {
@@ -400,7 +418,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 			continue
 		}
 		if text := s.Text(); text != "" {
-			h.recordChat(ctx, chatArea.ID, userID, "assistant", text, 0, nil)
+			h.recordChat(ctx, chatArea.ID, userID, "assistant", text, 0, callsJSON)
 			if h.Memory != nil {
 				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: text})
 			}
@@ -414,7 +432,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 			log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
 		} else {
 			h.sendReply(msg, assistantContent, rs)
-			h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), nil)
+			h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), callsJSON)
 			if h.Memory != nil {
 				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
 			}
@@ -654,14 +672,22 @@ func (h *HagoCenter) recordChat(ctx context.Context, chatAreaID string, userID i
 	}
 }
 
-// marshalToolCalls 将 ToolCall 列表转为 JSONMap 存入 DB
-func marshalToolCalls(tcs []provider.ToolCall) models.JSONMap {
+// marshalEinoToolCalls 将 Eino schema ToolCall 列表转为 JSONMap 存入 DB（聊天记录的 tool_calls 列）
+func marshalEinoToolCalls(tcs []einoschema.ToolCall) models.JSONMap {
 	if len(tcs) == 0 {
 		return nil
 	}
-	b, _ := json.Marshal(tcs)
-	var raw []any
-	json.Unmarshal(b, &raw)
+	raw := make([]any, 0, len(tcs))
+	for _, tc := range tcs {
+		raw = append(raw, map[string]any{
+			"id":   tc.ID,
+			"type": tc.Type,
+			"function": map[string]any{
+				"name":      tc.Function.Name,
+				"arguments": tc.Function.Arguments,
+			},
+		})
+	}
 	return models.JSONMap{"tool_calls": raw}
 }
 

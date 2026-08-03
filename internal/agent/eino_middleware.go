@@ -53,6 +53,7 @@ type MsgSessionCtx struct {
 	AgentLite          bool   // 精简模式：禁用所有工具
 	StripMarkdown      bool   // 去除 Markdown 格式
 	DisableSplit       bool   // 禁用分段回复
+	LoopID             string // 当前消息对应的 Agent 循环 ID（LoopTracker 用）
 }
 
 type msgSessionKey struct{}
@@ -81,6 +82,11 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 
 	wrapped := func(ctx context.Context, argsJSON string, opts ...einotool.Option) (string, error) {
 		log.Info("Eino tool call", "tool", toolName, "call_id", tCtx.CallID, "args_len", len(argsJSON))
+
+		// 更新活跃循环的当前工具（供 Web 监控页展示）
+		if sc := GetMsgSessionCtx(ctx); sc != nil && m.h.Loops != nil {
+			m.h.Loops.UpdateTool(sc.LoopID, toolName)
+		}
 
 		// --- ACL 检查 ---
 		if !m.isAdmin {

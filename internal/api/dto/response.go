@@ -269,20 +269,18 @@ type LogEntryResp struct {
 	Stack   string         `json:"stack,omitempty"`
 }
 
-// ---------- Background Tasks ----------
+// ---------- Agent 活跃循环 ----------
 
-// BackgroundTaskResp 后台任务前端响应。
-type BackgroundTaskResp struct {
-	ID          string         `json:"id"`
-	ChatAreaID  string         `json:"chat_area_id"`
-	Status      string         `json:"status"`
-	MessageType string         `json:"message_type"`
-	TargetID    int64          `json:"target_id"`
-	UserPrompt  string         `json:"user_prompt"`
-	Steps       models.JSONMap `json:"steps"`
-	Results     models.JSONMap `json:"results"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+// AgentLoopResp 当前活跃的 Agent ReAct 循环（监控展示）。
+type AgentLoopResp struct {
+	ID          string    `json:"id"`
+	ChatAreaID  string    `json:"chat_area_id"`
+	MessageType string    `json:"message_type"` // private / group
+	TargetID    int64     `json:"target_id"`    // 私聊: user_id; 群聊: group_id
+	UserID      int64     `json:"user_id"`
+	UserMsg     string    `json:"user_msg"`
+	CurrentTool string    `json:"current_tool"` // 当前正在执行的工具；空表示思考/生成中
+	StartedAt   time.Time `json:"started_at"`
 }
 
 // ---------- CronJob ----------

@@ -100,7 +100,7 @@ const navGroups = [
       { title: 'Chat Areas', icon: 'mdi-forum-outline', to: '/chat-areas' },
       { title: 'Chat Records', icon: 'mdi-message-text-outline', to: '/chat-records' },
       { title: 'ACL 规则', icon: 'mdi-shield-account-outline', to: '/acl' },
-      { title: '后台任务', icon: 'mdi-progress-clock', to: '/background-tasks' },
+      { title: 'Agent 循环', icon: 'mdi-brain', to: '/agent-loops' },
     ],
   },
   {
