@@ -88,12 +88,16 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		if ev.PostType != "message" || ev.Message == nil {
 			return
 		}
-		// Phase 3: 回复策略检查 (skip_reply 标记时跳过)
+		// 插件标记 skip_reply 等价于 SkipReplyCheck，统一折叠到事件标记上
+		if result.SkipReply {
+			ev.SkipReplyCheck = true
+		}
+		// Phase 3: 回复策略快速检查（never / at_only / always）。
+		// relevance 策略的 LLM 判断耗时较长，延迟到 dispatchToAgent 的 goroutine 内执行，
+		// 避免阻塞事件循环（否则一条消息的相关性判断会拖慢后续所有消息）。
 		rs := h.getReplySettings(ctx)
-		if !result.SkipReply && !ev.SkipReplyCheck {
-			if !h.checkReplyStrategy(ctx, ev, rs) {
-				return
-			}
+		if !ev.SkipReplyCheck && !h.checkReplyStrategyFast(ctx, ev, rs) {
+			return
 		}
 		h.dispatchToAgent(ctx, ev, rs)
 		return
@@ -104,10 +108,33 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		return
 	}
 	rs := h.getReplySettings(ctx)
-	if !h.checkReplyStrategy(ctx, ev, rs) {
+	if !h.checkReplyStrategyFast(ctx, ev, rs) {
 		return
 	}
 	h.dispatchToAgent(ctx, ev, rs)
+}
+
+// checkReplyStrategyFast 廉价策略检查（不调用 LLM）：never / at_only / always。
+// 返回 true 表示继续处理；relevance 策略一律返回 true，其 LLM 判断
+// 由 dispatchToAgent 在 goroutine 内调用完整的 checkReplyStrategy 完成。
+func (h *HagoCenter) checkReplyStrategyFast(ctx context.Context, ev adapter.Event, rs ReplySettings) bool {
+	msg := ev.Message
+	switch rs.Strategy {
+	case models.StrategyNeverReply:
+		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
+		return false
+	case models.StrategyAtOnly:
+		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage) {
+			log.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+			return false
+		}
+		return true
+	case models.StrategyRelevance:
+		// 延迟到派发 goroutine 内判断（避免阻塞事件循环）
+		return true
+	default: // StrategyAlways
+		return true
+	}
 }
 
 // getReplySettings 从 DB 读取回复策略配置，返回 per-message 设置。
@@ -179,6 +206,10 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 	// 异步执行：goroutine + 并发控制
 	if h.Concurrency != nil {
 		go func() {
+			// relevance 策略的 LLM 判断放在 goroutine 内执行，避免阻塞事件循环
+			if rs.Strategy == models.StrategyRelevance && !ev.SkipReplyCheck && !h.checkReplyStrategy(ctx, ev, rs) {
+				return
+			}
 			if err := h.Concurrency.Acquire(ctx, chatArea.ID); err != nil {
 				log.Warn("Agent 并发获取失败", "err", err, "area", chatArea.ID)
 				return
@@ -187,6 +218,9 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 			h.handleMessage(ctx, ev, chatArea, rs)
 		}()
 	} else {
+		if rs.Strategy == models.StrategyRelevance && !ev.SkipReplyCheck && !h.checkReplyStrategy(ctx, ev, rs) {
+			return
+		}
 		h.handleMessage(ctx, ev, chatArea, rs)
 	}
 }
@@ -736,9 +770,9 @@ func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.Messa
 		parts = append(parts, fmt.Sprintf("发送者QQ: %d", msg.UserID))
 		parts = append(parts, fmt.Sprintf("发送者名称: %s", senderName))
 
-		// 获取群内权限（owner/admin/member）
+		// 获取群内权限（owner/admin/member）——带缓存，避免每条消息调 OneBot11 API
 		if h.Adapter != nil {
-			memberInfo, err := h.Adapter.GetGroupMemberInfo(msg.GroupID, msg.UserID)
+			memberInfo, err := h.getGroupMemberInfoCached(msg.GroupID, msg.UserID)
 			if err == nil && memberInfo != nil {
 				roleLabel := memberInfo.Role
 				switch memberInfo.Role {

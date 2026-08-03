@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"strings"
+	"sync"
 
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
@@ -160,6 +161,12 @@ MCP 工具来自系统配置的外部服务器，名称/功能取决于实际配
 // PromptManager 提示词管理器。
 type PromptManager struct {
 	dao *dao.PromptDAO
+
+	// 静态提示词缓存（系统锁定 + system + personality + custom），
+	// 避免每条消息都执行 4 次 DB 查询；提示词增删改时调用 Invalidate 失效。
+	mu     sync.RWMutex
+	cached string
+	valid  bool
 }
 
 func NewPromptManager(dao *dao.PromptDAO) *PromptManager {
@@ -174,6 +181,15 @@ func NewPromptManager(dao *dao.PromptDAO) *PromptManager {
 //
 // 提示词内容直接拼接，不再进行模板渲染。
 func (pm *PromptManager) BuildSystemPrompt(ctx context.Context) (string, error) {
+	// 缓存命中直接返回
+	pm.mu.RLock()
+	if pm.valid {
+		s := pm.cached
+		pm.mu.RUnlock()
+		return s, nil
+	}
+	pm.mu.RUnlock()
+
 	var parts []string
 
 	// 1. 系统锁定提示词（最优先，确保始终生效）
@@ -222,7 +238,23 @@ func (pm *PromptManager) BuildSystemPrompt(ctx context.Context) (string, error) 
 		parts = append(parts, p.Content)
 	}
 
-	return strings.Join(parts, "\n\n"), nil
+	result := strings.Join(parts, "\n\n")
+	pm.mu.Lock()
+	pm.cached = result
+	pm.valid = true
+	pm.mu.Unlock()
+	return result, nil
+}
+
+// Invalidate 使静态提示词缓存失效（提示词增删改/启停后调用）。
+func (pm *PromptManager) Invalidate() {
+	if pm == nil {
+		return
+	}
+	pm.mu.Lock()
+	pm.valid = false
+	pm.cached = ""
+	pm.mu.Unlock()
 }
 
 // BuildFullContext 构建完整上下文 (system prompts + 长期记忆 + 技能记忆 + 工具/技能描述)。
@@ -279,6 +311,7 @@ func (pm *PromptManager) EnsureSystemPrompt(ctx context.Context) error {
 			if err := pm.dao.Update(ctx, existing); err != nil {
 				return err
 			}
+			pm.Invalidate()
 			log.Info("系统锁定提示词已同步到最新版本", "id", existing.ID)
 		}
 		return nil
@@ -299,6 +332,7 @@ func (pm *PromptManager) EnsureSystemPrompt(ctx context.Context) error {
 	if err := pm.dao.Create(ctx, p); err != nil {
 		return err
 	}
+	pm.Invalidate()
 	log.Info("系统锁定提示词已创建", "id", p.ID)
 	return nil
 }

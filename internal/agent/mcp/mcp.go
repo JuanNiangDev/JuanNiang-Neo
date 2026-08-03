@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/logging"
+
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -151,12 +152,21 @@ func (g *MCPGroup) CallTool(ctx context.Context, name string, args json.RawMessa
 	return "", fmt.Errorf("MCP tool %q not found", name)
 }
 
+// mcpToolsTTL 工具列表缓存有效期：MCP 工具变更不频繁，1 分钟足够。
+// 缓存同时作用于 buildToolList（提示词工具描述）与工具调用时的 HasTool/CallTool 查找，
+// 避免每条消息/每次调用都对每个 MCP 服务器发起 ListTools 网络 RPC。
+const mcpToolsTTL = time.Minute
+
 // ---------- SDK 客户端封装 ----------
 
 type sdkMCPClient struct {
 	cfg McpSSEConfig
 	cli *mcpclient.Client
 	mu  sync.Mutex
+
+	toolsMu    sync.Mutex
+	toolsCache []ToolDefinition
+	toolsAt    time.Time
 }
 
 func NewSSEMCPClient(cfg McpSSEConfig) MCP {
@@ -214,6 +224,10 @@ func (c *sdkMCPClient) Disconnect() error {
 		c.cli.Close()
 		c.cli = nil
 	}
+	// 断开后清空工具缓存，下次连接重新拉取
+	c.toolsMu.Lock()
+	c.toolsCache = nil
+	c.toolsMu.Unlock()
 	return nil
 }
 
@@ -224,6 +238,15 @@ func (c *sdkMCPClient) IsConnected() bool {
 }
 
 func (c *sdkMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error) {
+	// 缓存命中直接返回，避免每次调用都走网络 RPC
+	c.toolsMu.Lock()
+	if c.toolsCache != nil && time.Since(c.toolsAt) < mcpToolsTTL {
+		tools := c.toolsCache
+		c.toolsMu.Unlock()
+		return tools, nil
+	}
+	c.toolsMu.Unlock()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cli == nil {
@@ -249,6 +272,11 @@ func (c *sdkMCPClient) ListTools(ctx context.Context) ([]ToolDefinition, error) 
 		}
 		tools = append(tools, td)
 	}
+
+	c.toolsMu.Lock()
+	c.toolsCache = tools
+	c.toolsAt = time.Now()
+	c.toolsMu.Unlock()
 	return tools, nil
 }
 

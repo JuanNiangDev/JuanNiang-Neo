@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
@@ -56,8 +58,21 @@ type HagoCenter struct {
 	SelfQQ       int64
 	SelfNickname string
 
+	// 发送者群内信息缓存（避免每条群消息都调 OneBot11 get_group_member_info）
+	memberInfoMu    sync.RWMutex
+	memberInfoCache map[string]memberInfoEntry
+
 	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
 	EinoAgent *adk.ChatModelAgent
+}
+
+// memberInfoTTL 群成员信息缓存有效期（角色变更不频繁，10 分钟足够）。
+const memberInfoTTL = 10 * time.Minute
+
+// memberInfoEntry 缓存条目。
+type memberInfoEntry struct {
+	info      *adapter.GroupMemberInfo
+	expiresAt time.Time
 }
 
 // Config HagoCenter 初始化配置。
@@ -76,12 +91,13 @@ type Config struct {
 // NewHagoCenter 创建并初始化 HagoCenter。
 func NewHagoCenter() *HagoCenter {
 	return &HagoCenter{
-		Providers:     provider.NewProviderGroup(),
-		MCP:           mcp.NewMCPGroup(),
-		Tools:         tool.NewToolRegistry(),
-		Skills:        skill.NewSkillEngine(),
-		CronJobEvents: make(chan adapter.Event, 64),
-		Loops:         NewLoopTracker(),
+		Providers:       provider.NewProviderGroup(),
+		MCP:             mcp.NewMCPGroup(),
+		Tools:           tool.NewToolRegistry(),
+		Skills:          skill.NewSkillEngine(),
+		CronJobEvents:   make(chan adapter.Event, 64),
+		Loops:           NewLoopTracker(),
+		memberInfoCache: make(map[string]memberInfoEntry),
 	}
 }
 
@@ -324,6 +340,36 @@ func (h *HagoCenter) buildToolList(ctx context.Context) []provider.ToolDef {
 		}
 	}
 	return tools
+}
+
+// getGroupMemberInfoCached 带缓存的群成员信息查询：命中缓存直接返回，未命中调 OneBot11 API 并缓存。
+func (h *HagoCenter) getGroupMemberInfoCached(groupID, userID int64) (*adapter.GroupMemberInfo, error) {
+	if h.Adapter == nil {
+		return nil, nil
+	}
+	key := fmt.Sprintf("%d:%d", groupID, userID)
+	now := time.Now()
+
+	h.memberInfoMu.RLock()
+	if e, ok := h.memberInfoCache[key]; ok && now.Before(e.expiresAt) {
+		h.memberInfoMu.RUnlock()
+		return e.info, nil
+	}
+	h.memberInfoMu.RUnlock()
+
+	info, err := h.Adapter.GetGroupMemberInfo(groupID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	h.memberInfoMu.Lock()
+	h.memberInfoCache[key] = memberInfoEntry{info: info, expiresAt: now.Add(memberInfoTTL)}
+	// 防无界增长：超过上限时整体清空（简单策略）
+	if len(h.memberInfoCache) > 2048 {
+		h.memberInfoCache = make(map[string]memberInfoEntry)
+	}
+	h.memberInfoMu.Unlock()
+	return info, nil
 }
 
 // Stop 停止 Agent 系统。

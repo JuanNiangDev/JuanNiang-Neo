@@ -12,6 +12,7 @@ import (
 	cronjobmgr "JuanNiang-Neo/internal/agent/cronjob"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
+	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/session"
 	"JuanNiang-Neo/internal/agent/skill"
@@ -48,6 +49,8 @@ type Service struct {
 	CronJobManager *cronjobmgr.Manager
 	// LoopTracker 当前活跃的 Agent ReAct 循环（监控展示）。
 	LoopTracker *agent.LoopTracker
+	// PromptMgr 提示词管理器（缓存失效用）。
+	PromptMgr *prompt.PromptManager
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {

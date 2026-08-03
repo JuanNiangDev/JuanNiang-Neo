@@ -700,6 +700,7 @@ func (s *Service) AddPrompt(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	s.invalidatePromptCache()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawPrompt2Resp(&p)))
 }
 
@@ -735,6 +736,7 @@ func (s *Service) UpdatePrompt(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	s.invalidatePromptCache()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawPrompt2Resp(&p)))
 }
 
@@ -752,6 +754,7 @@ func (s *Service) DeletePrompt(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	s.invalidatePromptCache()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
@@ -776,7 +779,15 @@ func (s *Service) TogglePrompt(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	s.invalidatePromptCache()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// invalidatePromptCache 提示词变更后使 PromptManager 静态缓存失效，下次消息即时生效。
+func (s *Service) invalidatePromptCache() {
+	if s.PromptMgr != nil {
+		s.PromptMgr.Invalidate()
+	}
 }
 
 // ====================================================================

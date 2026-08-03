@@ -77,3 +77,17 @@
 ### 修复：总 Token 用量不更新
 - **问题**：投递抑制路径下（Agent 通过 send_* 工具向当前会话投递后最终回复被抑制），assistant 聊天记录由延迟投递消息写入，其 token_count 写死为 0，导致 `chat_records.token_count` 总和（Overview 总用量）不增长
 - **修复**：交付消息记录改为携带真实 token 用量；同一轮多次投递时 token 只记一次，避免重复计数
+
+## 性能优化（消息处理链路）
+
+### 群成员信息缓存
+- `GetGroupMemberInfo`（OneBot11 API 网络调用）每条群消息都执行 → 增加 TTL 10 分钟内存缓存（`getGroupMemberInfoCached`），角色变更不频繁，命中缓存零耗时
+
+### MCP 工具列表缓存
+- `ListTools` 对每个 MCP 服务器发网络 RPC，每条消息/每次工具调用都执行 → 增加 TTL 1 分钟缓存（断开连接时清空），提示词工具描述与 HasTool/CallTool 查找都受益
+
+### 系统提示词静态部分缓存
+- `BuildSystemPrompt` 每条消息执行 4 次 DB 查询 → 内存缓存（`PromptManager.Invalidate` 失效），提示词增删改/启停时由 API 层自动失效
+
+### 相关性检查移出事件循环
+- relevance 策略的 LLM 判断（约 1s+）原在事件循环内同步执行，会阻塞后续所有消息 → 拆分为 `checkReplyStrategyFast`（never/at_only/always 廉价检查）+ 相关性判断移到派发 goroutine 内执行，事件循环不再被 LLM 调用阻塞
