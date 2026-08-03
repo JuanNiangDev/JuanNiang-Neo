@@ -55,3 +55,11 @@
 - Webhook 服务 `GET /webhook`（或 `/webhook/`）返回所有启用 webhook 的插件及其 URL 路径，JSON 格式：`{code, message, metadata: [{name, path, enabled}]}`
 - `adapter.PluginWebhookRouter` 接口新增 `ListWebhookPlugins`，由 `PluginEngine` 实现（判定：已加载 + webhook 权限 + 定义 on_webhook）
 - 其他方法（如 POST /webhook）仍走原有广播逻辑，不受影响
+
+### 修复：每日 Token 统计 UPSERT 报 ambiguous
+- **问题**：`ON CONFLICT DO UPDATE SET token_count = token_count + X` 的 RHS 未限定表名，Postgres 中与 INSERT 列清单同名列冲突，报 `column reference "token_count" is ambiguous (SQLSTATE 42702)`，每日累加全部失败
+- **修复**：表达式限定为 `token_usage_dailies.token_count + ?`
+
+### 修复：对话历史记忆断层导致旧任务被重复执行
+- **问题**：延迟队列投递的消息未写回短期记忆/ChatRecord；当最终回复被静默或投递抑制丢弃时，记忆里留下"用户请求无人回复"的空档，下次用户发言时 LLM 误以为旧任务（如查询天气）仍待执行
+- **修复**：`DeferredSendQueue.Flush` 返回本次发送列表；`handleMessage` 将投递给当前会话的交付消息（`Delivery=true`）写回短期记忆与聊天记录

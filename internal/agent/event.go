@@ -390,7 +390,22 @@ func (h *HagoCenter) handleMessage(ctx context.Context, ev adapter.Event, chatAr
 	deliveredToCurrent := deferredSends.DeliveredTo(msg.MessageType, currentTargetID)
 
 	// ---------- 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发） ----------
-	deferredSends.Flush(ctx, h.Adapter)
+	flushed := deferredSends.Flush(ctx, h.Adapter)
+
+	// 将投递给当前会话的交付消息写回记忆与聊天记录：
+	// 否则对话历史会停留在"用户消息无人回复"，导致后续 LLM 误以为旧任务仍待执行
+	// （如用户再次发言时，模型把上一个未回复的天气请求又执行一遍）。
+	for _, s := range flushed {
+		if !s.Delivery || s.MessageType != msg.MessageType || s.TargetID != currentTargetID {
+			continue
+		}
+		if text := s.Text(); text != "" {
+			h.recordChat(ctx, chatArea.ID, userID, "assistant", text, 0, nil)
+			if h.Memory != nil {
+				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: text})
+			}
+		}
+	}
 
 	// ---------- 后处理：静默检测 + 发送 + 记忆 ----------
 	if assistantContent != "" && !deliveredToCurrent {

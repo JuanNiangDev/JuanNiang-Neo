@@ -2,7 +2,10 @@ package tool
 
 import (
 	"context"
+	"strings"
 	"sync"
+
+	"JuanNiang-Neo/internal/adapter"
 )
 
 // DeferredSend 任务执行期间排队、任务执行完成后统一发送的消息。
@@ -61,10 +64,31 @@ func (q *DeferredSendQueue) DeliveredTo(messageType string, targetID int64) bool
 	return false
 }
 
-// Flush 按入队顺序发送所有排队消息，发送后清空队列。
-func (q *DeferredSendQueue) Flush(ctx context.Context, a AdapterProvider) {
+// Text 返回消息的纯文本内容（供写入记忆/聊天记录用）。
+// string 原样返回；[]Segment 拼接 text 段；其他类型返回空串。
+func (s DeferredSend) Text() string {
+	switch v := s.Message.(type) {
+	case string:
+		return v
+	case []adapter.Segment:
+		var b strings.Builder
+		for _, seg := range v {
+			if seg.Type == "text" {
+				if t, ok := seg.Data["text"].(string); ok {
+					b.WriteString(t)
+				}
+			}
+		}
+		return b.String()
+	default:
+		return ""
+	}
+}
+
+// Flush 按入队顺序发送所有排队消息，发送后清空队列，并返回本次发送的列表（供调用方写入记忆/记录）。
+func (q *DeferredSendQueue) Flush(ctx context.Context, a AdapterProvider) []DeferredSend {
 	if q == nil || a == nil {
-		return
+		return nil
 	}
 	q.mu.Lock()
 	sends := q.sends
@@ -72,7 +96,7 @@ func (q *DeferredSendQueue) Flush(ctx context.Context, a AdapterProvider) {
 	q.mu.Unlock()
 
 	if len(sends) == 0 {
-		return
+		return nil
 	}
 	log.Info("任务执行完成，统一发送排队消息", "count", len(sends))
 
@@ -98,6 +122,8 @@ func (q *DeferredSendQueue) Flush(ctx context.Context, a AdapterProvider) {
 			log.Warn("延迟发送忽略未知消息类型", "type", s.MessageType)
 		}
 	}
+
+	return sends
 }
 
 // ---------- context 传递 ----------

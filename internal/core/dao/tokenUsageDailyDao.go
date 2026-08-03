@@ -21,9 +21,13 @@ func (d *TokenUsageDailyDAO) AddTokenUsage(ctx context.Context, date string, tok
 		return nil
 	}
 	record := &models.TokenUsageDaily{Date: date, TokenCount: tokens}
+	// 注意：DO UPDATE 表达式中列名必须限定表名。Postgres 中 INSERT 列清单与目标表
+	// 同名列会冲突，未限定会报 "column reference is ambiguous" (SQLSTATE 42702)。
 	return d.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "date"}},
-		DoUpdates: clause.Assignments(map[string]any{"token_count": gorm.Expr("token_count + ?", tokens)}),
+		Columns: []clause.Column{{Name: "date"}},
+		DoUpdates: clause.Assignments(map[string]any{
+			"token_count": gorm.Expr("token_usage_dailies.token_count + ?", tokens),
+		}),
 	}).Create(record).Error
 }
 
