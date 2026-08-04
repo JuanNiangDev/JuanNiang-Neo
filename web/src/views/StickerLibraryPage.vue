@@ -104,7 +104,7 @@
                   <div class="text-caption text-medium-emphasis">{{ formatSize(selectedImage.size_bytes) }}</div>
                 </div>
               </div>
-              <v-btn variant="tonal" size="small" prepend-icon="mdi-image-multiple-outline" @click="pickerDialog = true">
+              <v-btn variant="tonal" size="small" prepend-icon="mdi-image-multiple-outline" @click="openPickerDialog">
                 {{ selectedImage ? '更换图片' : '选择图片' }}
               </v-btn>
             </v-col>
@@ -123,6 +123,17 @@
       <v-card rounded="lg">
         <v-card-title>选择图床图片</v-card-title>
         <v-card-text>
+          <v-select
+            v-model="pickerFolder"
+            :items="pickerFolderOptions"
+            item-title="title"
+            item-value="value"
+            label="文件夹"
+            density="compact"
+            hide-details
+            class="mb-3"
+            @update:model-value="loadPickerImages"
+          />
           <div v-if="pickerImages.length" class="picker-grid">
             <v-card
               v-for="img in pickerImages"
@@ -220,7 +231,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { stickerApi, stickerTagApi, imageApi, imageFileUrl, type StickerResp, type StickerTagResp, type ImageResp } from '@/api'
+import { stickerApi, stickerTagApi, imageApi, imageFolderApi, imageFileUrl, type StickerResp, type StickerTagResp, type ImageResp, type ImageFolderResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
@@ -246,8 +257,15 @@ const saving = ref(false)
 // 图床图片选择器
 const pickerDialog = ref(false)
 const pickerImages = ref<ImageResp[]>([])
+const pickerFolders = ref<ImageFolderResp[]>([])
+const pickerFolder = ref('/')
 const pickerSelectedId = ref('')
 const pickerLoaded = ref(false)
+
+const pickerFolderOptions = computed(() => [
+  { title: '根目录 /', value: '/' },
+  ...pickerFolders.value.map(f => ({ title: `文件夹 ${f.name}`, value: '/' + f.name })),
+])
 
 // 详情
 const detailDialog = ref(false)
@@ -315,14 +333,31 @@ function clearSearch() {
 }
 
 async function loadPickerImages() {
-  if (pickerLoaded.value) return
+  pickerLoaded.value = true
   try {
-    const res = (await imageApi.list({ page: 1, page_size: 100 })).data.data
+    const res = (await imageApi.list({ folder: pickerFolder.value, page: 1, page_size: 100 })).data.data
     pickerImages.value = res.list || []
-    pickerLoaded.value = true
   } catch (e: any) {
     toastStore.error(e?.message || '加载图床图片失败')
   }
+}
+
+async function loadPickerFolders() {
+  try {
+    const res = (await imageFolderApi.list()).data.data
+    pickerFolders.value = res || []
+  } catch (e: any) {
+    // 静默失败
+  }
+}
+
+function openPickerDialog() {
+  pickerSelectedId.value = ''
+  pickerLoaded.value = false
+  pickerFolder.value = '/'
+  pickerDialog.value = true
+  loadPickerImages()
+  loadPickerFolders()
 }
 
 function openCreate() {
@@ -332,7 +367,7 @@ function openCreate() {
   pickerSelectedId.value = ''
   pickerLoaded.value = false
   editDialog.value = true
-  loadPickerImages()
+  openPickerDialog()
 }
 
 function openEdit(s: StickerResp) {

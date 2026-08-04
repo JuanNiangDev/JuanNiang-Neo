@@ -127,7 +127,7 @@
                     <v-textarea v-else-if="seg.source === 't2i'" v-model="seg.content" label="HTML 模板（T2I 渲染）" density="compact" hide-details rows="1" auto-grow class="flex-grow-1" />
                     <template v-else-if="seg.source === 'imgstore'">
                       <span class="text-caption me-2 text-truncate" style="max-width: 240px">{{ seg.content || '未选择图床图片' }}</span>
-                      <v-btn size="small" variant="tonal" prepend-icon="mdi-image-multiple-outline" @click="pickerTarget = { bi, si }">选择图床图片</v-btn>
+                      <v-btn size="small" variant="tonal" prepend-icon="mdi-image-multiple-outline" @click="openPicker(bi, si)">选择图床图片</v-btn>
                     </template>
                   </template>
                   <v-btn icon="mdi-delete" size="x-small" variant="text" color="error" class="ms-1" @click="block.segments?.splice(si, 1)" />
@@ -197,6 +197,17 @@
       <v-card rounded="lg">
         <v-card-title>选择图床图片</v-card-title>
         <v-card-text>
+          <v-select
+            v-model="pickerFolder"
+            :items="pickerFolderOptions"
+            item-title="title"
+            item-value="value"
+            label="文件夹"
+            density="compact"
+            hide-details
+            class="mb-3"
+            @update:model-value="loadPickerImages"
+          />
           <div v-if="pickerImages.length" class="picker-grid">
             <v-card
               v-for="img in pickerImages"
@@ -237,7 +248,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { scheduledMessageApi, imageApi, imageFileUrl, type ScheduledMessageResp, type ScheduledBlock, type ScheduledSegment, type ImageResp } from '@/api'
+import { scheduledMessageApi, imageApi, imageFolderApi, imageFileUrl, type ScheduledMessageResp, type ScheduledBlock, type ScheduledSegment, type ImageResp, type ImageFolderResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
@@ -307,7 +318,14 @@ const pickerOpen = computed({
   set: (v: boolean) => { if (!v) pickerTarget.value = null },
 })
 const pickerImages = ref<ImageResp[]>([])
+const pickerFolders = ref<ImageFolderResp[]>([])
+const pickerFolder = ref('/')
 const pickerSelectedId = ref('')
+
+const pickerFolderOptions = computed(() => [
+  { title: '根目录 /', value: '/' },
+  ...pickerFolders.value.map(f => ({ title: `文件夹 ${f.name}`, value: '/' + f.name })),
+])
 
 const deleteDialog = ref(false)
 const deleteTarget = ref<ScheduledMessageResp | null>(null)
@@ -399,11 +417,29 @@ function pickFace(id: string) {
 
 async function loadPickerImages() {
   try {
-    const res = (await imageApi.list({ page: 1, page_size: 100 })).data.data
+    const res = (await imageApi.list({ folder: pickerFolder.value, page: 1, page_size: 100 })).data.data
     pickerImages.value = res.list || []
   } catch (e: any) {
     toastStore.error(e?.message || '加载图床图片失败')
   }
+}
+
+async function loadPickerFolders() {
+  try {
+    const res = (await imageFolderApi.list()).data.data
+    pickerFolders.value = res || []
+  } catch (e: any) {
+    // 静默失败，不影响主流程
+  }
+}
+
+function openPicker(bi: number, si: number) {
+  pickerTarget.value = { bi, si }
+  pickerFolder.value = '/'
+  pickerSelectedId.value = ''
+  pickerOpen.value = true
+  loadPickerImages()
+  loadPickerFolders()
 }
 
 async function confirmPicker() {
