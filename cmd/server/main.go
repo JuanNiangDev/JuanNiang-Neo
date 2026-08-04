@@ -23,6 +23,7 @@ import (
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
+	"JuanNiang-Neo/internal/agent/fishcal"
 	"JuanNiang-Neo/internal/api/engine"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/api/service"
@@ -271,6 +272,14 @@ func main() {
 	svc.LoopTracker = hago.Loops
 	svc.PromptMgr = hago.Prompt
 	svc.ImageStore = imgStore
+
+	// ---------- 摸鱼人日历（独立调度器，不复用 CronJob） ----------
+	fishCal := fishcal.New(coreInst.DAO.FishCalendar,
+		func() *t2icaller.Client { return hago.T2IClient },
+		adapterProv)
+	go fishCal.Run(ctx)
+	svc.OnFishCalReload = func() { fishCal.Reload(context.Background()) }
+	svc.OnFishCalTrigger = func(triggerCtx context.Context) error { return fishCal.TriggerNow(triggerCtx) }
 
 	// 前端静态资源目录: 默认 web/dist (构建产物), 可通过 WEB_DIR 覆盖。
 	//   - 开发模式: 前端走 Vite (:3000) 代理 /api 到 :8090, 后端无需服务前端。

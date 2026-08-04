@@ -159,4 +159,9 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.GET("/sticker-tags", auth, svc.ListStickerTags)
 	api.POST("/sticker-tags", auth, svc.CreateStickerTag)
 	api.DELETE("/sticker-tags/:id", auth, svc.DeleteStickerTag)
+
+	// 摸鱼人日历（独立于 CronJob）
+	api.GET("/fish-calendar/config", auth, svc.GetFishCalendarConfig)
+	api.PUT("/fish-calendar/config", auth, svc.UpdateFishCalendarConfig)
+	api.POST("/fish-calendar/trigger", auth, svc.TriggerFishCalendar)
 }

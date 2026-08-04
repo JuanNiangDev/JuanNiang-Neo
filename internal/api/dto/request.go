@@ -220,6 +220,16 @@ type CreateStickerTagReq struct {
 	Name string `json:"name"`
 }
 
+// ---------- 摸鱼人日历 ----------
+
+// UpdateFishCalendarConfigReq 更新摸鱼日历配置。
+type UpdateFishCalendarConfigReq struct {
+	Enabled       bool   `json:"enabled"`         // 总开关
+	CronExpr      string `json:"cron_expr"`       // 发送时间（6 字段秒级 cron）
+	TargetGroupID int64  `json:"target_group_id"` // 目标群号
+	GroupAffairs  string `json:"group_affairs"`   // 今日群务文本
+}
+
 // ---------- Plugin ----------
 
 type TogglePluginReq struct {

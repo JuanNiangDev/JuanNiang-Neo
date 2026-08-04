@@ -81,8 +81,9 @@ func (s *Scheduler) Reload(ctx context.Context) {
 	log.Info("摸鱼日历已调度", "expr", cfg.CronExpr, "group", cfg.TargetGroupID)
 }
 
-// Run 启动调度器并阻塞直到 ctx 结束。
+// Run 启动调度器并阻塞直到 ctx 结束（启动前先加载一次配置）。
 func (s *Scheduler) Run(ctx context.Context) {
+	s.Reload(ctx)
 	s.cron.Start()
 	log.Info("摸鱼日历调度器已启动")
 	<-ctx.Done()

@@ -49,6 +49,7 @@ var (
 	StickerTagExist         = Response{Status: 40040, Info: "标签已存在"}
 	StickerTagNotExist      = Response{Status: 40041, Info: "标签不存在"}
 	StickerImageExist       = Response{Status: 40042, Info: "该图床图片已被其他表情引用"}
+	FishCalConfigNotExist   = Response{Status: 40043, Info: "摸鱼日历配置不存在"}
 )
 
 type TokenResp struct {
@@ -298,6 +299,16 @@ type StickerTagResp struct {
 type StickerListResp struct {
 	Total int64         `json:"total"`
 	List  []StickerResp `json:"list"`
+}
+
+// FishCalendarConfigResp 摸鱼人日历配置。
+type FishCalendarConfigResp struct {
+	Enabled       bool       `json:"enabled"`
+	CronExpr      string     `json:"cron_expr"`
+	TargetGroupID int64      `json:"target_group_id"`
+	GroupAffairs  string     `json:"group_affairs"`
+	LastRunAt     *time.Time `json:"last_run_at"`
+	LastError     string     `json:"last_error"`
 }
 
 type PluginUploadResp struct {

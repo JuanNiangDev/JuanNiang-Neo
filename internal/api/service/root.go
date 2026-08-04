@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"time"
 
 	sandbox "JuanNiang-Neo/infrastructure/sandbox"
@@ -62,6 +63,10 @@ type Service struct {
 	PromptMgr *prompt.PromptManager
 	// ImageStore 图床文件存储（data/imgs，二进制文件读写）。
 	ImageStore *imgstore.Store
+	// OnFishCalReload 摸鱼日历配置变更后重新调度。
+	OnFishCalReload func()
+	// OnFishCalTrigger 手动触发摸鱼日历立即执行一次。
+	OnFishCalTrigger func(ctx context.Context) error
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {

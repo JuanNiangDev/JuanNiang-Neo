@@ -2589,6 +2589,80 @@ func (s *Service) DeleteStickerTag(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+// ---------- 摸鱼人日历 ----------
+
+// GetFishCalendarConfig 读取摸鱼日历配置（未初始化则写入默认配置）。
+func (s *Service) GetFishCalendarConfig(ctx context.Context, c *app.RequestContext) {
+	cfg, err := s.DAO.FishCalendar.GetConfig(ctx)
+	if err != nil {
+		if initErr := s.DAO.FishCalendar.InitConfig(ctx); initErr != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.FishCalConfigNotExist, dto.ErrorDetail{ErrorDetail: initErr.Error()}))
+			return
+		}
+		cfg, err = s.DAO.FishCalendar.GetConfig(ctx)
+		if err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.FishCalendarConfigResp{
+		Enabled:       cfg.Enabled,
+		CronExpr:      cfg.CronExpr,
+		TargetGroupID: cfg.TargetGroupID,
+		GroupAffairs:  cfg.GroupAffairs,
+		LastRunAt:     cfg.LastRunAt,
+		LastError:     cfg.LastError,
+	}))
+}
+
+// UpdateFishCalendarConfig 更新摸鱼日历配置并重新调度。
+func (s *Service) UpdateFishCalendarConfig(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateFishCalendarConfigReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	cfg, err := s.DAO.FishCalendar.GetConfig(ctx)
+	if err != nil {
+		_ = s.DAO.FishCalendar.InitConfig(ctx)
+		cfg, _ = s.DAO.FishCalendar.GetConfig(ctx)
+	}
+	if cfg == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.FishCalConfigNotExist, nil))
+		return
+	}
+	if strings.TrimSpace(data.CronExpr) != "" {
+		cfg.CronExpr = strings.TrimSpace(data.CronExpr)
+	}
+	cfg.Enabled = data.Enabled
+	if data.TargetGroupID != 0 {
+		cfg.TargetGroupID = data.TargetGroupID
+	}
+	cfg.GroupAffairs = strings.TrimSpace(data.GroupAffairs)
+	if err := s.DAO.FishCalendar.UpdateConfig(ctx, cfg); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnFishCalReload != nil {
+		s.OnFishCalReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// TriggerFishCalendar 手动触发摸鱼日历立即生成并发送。
+func (s *Service) TriggerFishCalendar(ctx context.Context, c *app.RequestContext) {
+	if s.OnFishCalTrigger == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "摸鱼日历未初始化"}))
+		return
+	}
+	if err := s.OnFishCalTrigger(ctx); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// cleanStickerTags 清洗表情标签：去空白、去重。
 // validateStickerTags 校验标签均已提前创建（标签先建后选），返回去重清洗后的标签。
 func (s *Service) validateStickerTags(ctx context.Context, tags []string) ([]string, error) {
 	cleaned := cleanStickerTags(tags)
