@@ -31,6 +31,7 @@ const router = createRouter({
         { path: 'chat-areas', name: 'ChatAreas', component: () => import('@/views/ChatAreasPage.vue') },
         { path: 'chat-records', name: 'ChatRecords', component: () => import('@/views/ChatRecordsPage.vue') },
         { path: 'memory', name: 'Memory', component: () => import('@/views/MemoryPage.vue') },
+        { path: 'knowledge', name: 'Knowledge', component: () => import('@/views/KnowledgePage.vue') },
         { path: 't2i', name: 'T2I', component: () => import('@/views/T2IPage.vue') },
         { path: 'sandbox', name: 'Sandbox', component: () => import('@/views/SandboxPage.vue') },
         { path: 'webhook', name: 'Webhook', component: () => import('@/views/WebhookPage.vue') },

@@ -93,6 +93,7 @@ const navGroups = [
       { title: 'Tools', icon: 'mdi-tools', to: '/tools' },
       { title: 'Sessions', icon: 'mdi-chat-processing-outline', to: '/sessions' },
       { title: 'Memory', icon: 'mdi-memory', to: '/memory' },
+      { title: '知识库', icon: 'mdi-book-open-variant', to: '/knowledge' },
       { title: 'Agent 循环', icon: 'mdi-brain', to: '/agent-loops' },
     ],
   },

@@ -252,3 +252,24 @@ export const replyStrategyApi = {
   get: () => client.get('/reply-strategy'),
   update: (data: UpdateReplyStrategyReq) => client.put('/reply-strategy', data),
 }
+
+export interface KnowledgeResp {
+  id: string
+  title: string
+  content: string
+  keywords: string[]
+  keyword_status: string // pending / ready / failed
+  created_at: string
+  updated_at: string
+}
+export interface AddKnowledgeReq { title: string; content: string }
+export interface KnowledgeListResp { total: number; list: KnowledgeResp[] }
+
+export const knowledgeApi = {
+  list: (page = 1, page_size = 20) => client.get('/knowledge', { params: { page, page_size } }),
+  get: (id: string) => client.get(`/knowledge/${id}`),
+  create: (data: AddKnowledgeReq) => client.post('/knowledge', data),
+  update: (id: string, data: AddKnowledgeReq) => client.put(`/knowledge/${id}`, data),
+  delete: (id: string) => client.delete(`/knowledge/${id}`),
+  reExtract: (id: string) => client.post(`/knowledge/${id}/re-extract`),
+}

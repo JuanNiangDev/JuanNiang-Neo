@@ -1,0 +1,193 @@
+<template>
+  <div>
+    <div class="page-header">
+      <div class="page-title"><v-icon class="me-2" color="primary">mdi-book-open-variant</v-icon>知识库</div>
+      <div class="page-subtitle">SQL 驱动知识库：对话前自动模糊匹配并注入提示词</div>
+    </div>
+
+    <div class="d-flex justify-end mb-4">
+      <v-btn color="primary" prepend-icon="mdi-plus" @click="openAdd">新增知识</v-btn>
+    </div>
+
+    <v-data-table :headers="headers" :items="items" :loading="loading" :items-per-page="pageSize" :items-per-page-options="[10, 20, 50]" @update:options="onPageChange">
+      <template #item.title="{ item }">
+        <span class="font-weight-medium">{{ item.title || '(无标题)' }}</span>
+      </template>
+      <template #item.content="{ item }">
+        <span class="text-body-2 text-medium-emphasis" style="max-width: 320px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom">{{ item.content }}</span>
+      </template>
+      <template #item.keywords="{ item }">
+        <div v-if="item.keyword_status === 'ready' && item.keywords?.length">
+          <v-chip v-for="kw in item.keywords.slice(0, 5)" :key="kw" size="x-small" variant="tonal" color="primary" class="me-1 mb-1">{{ kw }}</v-chip>
+          <span v-if="item.keywords.length > 5" class="text-caption text-medium-emphasis">+{{ item.keywords.length - 5 }}</span>
+        </div>
+        <span v-else class="text-caption text-medium-emphasis">-</span>
+      </template>
+      <template #item.keyword_status="{ item }">
+        <v-chip size="small" :color="statusColor(item.keyword_status)" variant="tonal">
+          <v-progress-circular v-if="item.keyword_status === 'pending'" indeterminate size="14" width="2" class="me-1" />
+          {{ statusLabel(item.keyword_status) }}
+        </v-chip>
+      </template>
+      <template #item.actions="{ item }">
+        <v-btn v-if="item.keyword_status === 'failed'" icon="mdi-refresh" size="small" variant="text" color="warning" title="重试提取关键词" :loading="extractingId === item.id" @click="reExtract(item)" />
+        <v-btn icon="mdi-pencil" size="small" variant="text" color="primary" title="编辑" @click="openEdit(item)" />
+        <v-btn icon="mdi-delete" size="small" variant="text" color="error" title="删除" @click="confirmDelete(item)" />
+      </template>
+    </v-data-table>
+
+    <!-- 新增/编辑弹窗 -->
+    <v-dialog v-model="dialog" max-width="640">
+      <v-card rounded="lg">
+        <v-card-title>{{ editing ? '编辑知识' : '新增知识' }}</v-card-title>
+        <v-card-text>
+          <v-form ref="formRef">
+            <v-text-field v-model="form.title" label="标题（可选）" class="mb-3" />
+            <v-textarea v-model="form.content" label="知识内容" rows="8" counter class="mb-2" />
+            <div class="text-caption text-medium-emphasis">
+              保存后系统会异步提取关键词用于对话匹配；提取完成前该条暂不参与匹配。
+            </div>
+          </v-form>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="dialog = false">取消</v-btn>
+          <v-btn color="primary" variant="tonal" @click="handleSave" :loading="saving" :disabled="!form.content.trim()">保存</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <!-- 删除确认 -->
+    <v-dialog v-model="deleteDialog" max-width="400">
+      <v-card rounded="lg">
+        <v-card-title>确认删除</v-card-title>
+        <v-card-text>确定要删除这条知识吗？此操作不可撤销。</v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="deleteDialog = false">取消</v-btn>
+          <v-btn color="error" variant="tonal" @click="handleDelete" :loading="deleting">删除</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { knowledgeApi, type KnowledgeResp } from '@/api'
+import { useToastStore } from '@/stores/toast'
+
+const toastStore = useToastStore()
+const loading = ref(true)
+const saving = ref(false)
+const deleting = ref(false)
+const extractingId = ref<string | null>(null)
+const items = ref<KnowledgeResp[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = ref(20)
+const dialog = ref(false)
+const deleteDialog = ref(false)
+const editing = ref<string | null>(null)
+const deleteTarget = ref<KnowledgeResp | null>(null)
+
+const headers = [
+  { title: '标题', key: 'title' },
+  { title: '内容', key: 'content' },
+  { title: '关键词', key: 'keywords' },
+  { title: '提取状态', key: 'keyword_status', align: 'center' as const },
+  { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
+]
+
+const defaultForm = () => ({ title: '', content: '' })
+const form = ref(defaultForm())
+
+const statusLabel = (s: string) => ({ pending: '提取中', ready: '已就绪', failed: '失败' }[s] || s)
+const statusColor = (s: string) => ({ pending: 'warning', ready: 'success', failed: 'error' }[s] || 'default')
+
+async function fetch() {
+  loading.value = true
+  try {
+    const res = (await knowledgeApi.list(page.value, pageSize.value)).data.data
+    items.value = res.list || []
+    total.value = res.total || 0
+  } catch (e: any) {
+    toastStore.error(e?.message || '获取列表失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+function onPageChange(opts: any) {
+  page.value = opts.page || 1
+  if (opts.itemsPerPage) pageSize.value = opts.itemsPerPage
+  fetch()
+}
+
+function openAdd() {
+  editing.value = null
+  form.value = defaultForm()
+  dialog.value = true
+}
+
+function openEdit(item: KnowledgeResp) {
+  editing.value = item.id
+  form.value = { title: item.title, content: item.content }
+  dialog.value = true
+}
+
+async function handleSave() {
+  if (!form.value.content.trim()) return
+  saving.value = true
+  try {
+    if (editing.value) {
+      await knowledgeApi.update(editing.value, form.value)
+      toastStore.success('已更新，关键词重新提取中')
+    } else {
+      await knowledgeApi.create(form.value)
+      toastStore.success('已新增，关键词提取中')
+    }
+    dialog.value = false
+    await fetch()
+  } catch (e: any) {
+    toastStore.error(e?.message || '保存失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+function confirmDelete(item: KnowledgeResp) {
+  deleteTarget.value = item
+  deleteDialog.value = true
+}
+
+async function handleDelete() {
+  if (!deleteTarget.value) return
+  deleting.value = true
+  try {
+    await knowledgeApi.delete(deleteTarget.value.id)
+    toastStore.success('已删除')
+    deleteDialog.value = false
+    await fetch()
+  } catch (e: any) {
+    toastStore.error(e?.message || '删除失败')
+  } finally {
+    deleting.value = false
+  }
+}
+
+async function reExtract(item: KnowledgeResp) {
+  extractingId.value = item.id
+  try {
+    await knowledgeApi.reExtract(item.id)
+    toastStore.success('已重新提交关键词提取')
+    item.keyword_status = 'pending'
+  } catch (e: any) {
+    toastStore.error(e?.message || '操作失败')
+  } finally {
+    extractingId.value = null
+  }
+}
+
+onMounted(fetch)
+</script>
