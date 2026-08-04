@@ -56,6 +56,7 @@ type Bundle struct {
 	Image           *ImageDAO
 	Sticker         *StickerDAO
 	FishCalendar    *FishCalendarDAO
+	ScheduledMsg    *ScheduledMessageDAO
 }
 
 func NewBundle(db *gorm.DB) *Bundle {
@@ -87,5 +88,6 @@ func NewBundle(db *gorm.DB) *Bundle {
 		Image:           NewImageDAO(db),
 		Sticker:         NewStickerDAO(db),
 		FishCalendar:    NewFishCalendarDAO(db),
+		ScheduledMsg:    NewScheduledMessageDAO(db),
 	}
 }
