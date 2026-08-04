@@ -24,7 +24,7 @@ func (p *Adapter) SendGroupMsg(groupID int64, message any) (int64, error) {
 func (p *Adapter) sendMsg(msgType string, id int64, message any) (int64, error) {
 	params := map[string]any{
 		"message_type": msgType,
-		"message":      normalizeMessage(message),
+		"message":      p.resolveImageAssets(normalizeMessage(message)),
 	}
 	switch msgType {
 	case "private":
@@ -339,6 +339,33 @@ func normalizeMessage(msg any) any {
 		log.Warn("未知消息类型", "type", fmt.Sprintf("%T", msg))
 		return fmt.Sprint(v)
 	}
+}
+
+// resolveImageAssets 把消息中的图床图片引用（file="imgs://<id>"）替换为 base64。
+// 纯文本消息（不含 CQ 码）原样返回；只处理 []Segment。
+func (p *Adapter) resolveImageAssets(msg any) any {
+	segs, ok := msg.([]Segment)
+	if !ok || len(segs) == 0 {
+		return msg
+	}
+	p.mu.RLock()
+	resolver := p.imageResolver
+	p.mu.RUnlock()
+	if resolver == nil {
+		return msg
+	}
+	out := make([]Segment, len(segs))
+	for i, seg := range segs {
+		if seg.Type == "image" {
+			if f, ok := seg.Data["file"].(string); ok && f != "" {
+				if b64, resolved := resolver(f); resolved {
+					seg.Data["file"] = b64
+				}
+			}
+		}
+		out[i] = seg
+	}
+	return out
 }
 
 // callAndParse 调用 API 并解析单个对象响应。
