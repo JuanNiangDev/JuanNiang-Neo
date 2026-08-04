@@ -130,7 +130,7 @@ const navGroups = [
   			{ title: '图床', icon: 'mdi-image-multiple-outline', to: '/advanced/image-host' },
   			{ title: '表情包库', icon: 'mdi-emoticon-outline', to: '/advanced/stickers' },
   			{ title: '摸鱼人日历', icon: 'mdi-calendar-month-outline', to: '/advanced/fish-calendar' },
-  			{ title: '定时消息', icon: 'mdi-message-clock-outline', to: '/advanced/scheduled-messages' },
+			{ title: '定时消息', icon: 'mdi-message-text-clock-outline', to: '/advanced/scheduled-messages' },
   		],
   	},
   ]
