@@ -361,9 +361,11 @@ Eino ADK ReAct 循环 (MaxIterations=20)
       ├─ 工具来源: buildEinoAgent 时合并的 Eino 工具列表
       │   (builtin 在前 + MCP 追加在后, 见 tool/eino_tool.go::BuildEinoTools)
       ├─ 由 JuanNiangMiddleware.WrapInvokableToolCall 包装后同步执行
-      │   (记录日志 + 更新 LoopTracker 当前工具, 供 Web 监控页展示)
+      │   (记录日志 + 更新 LoopTracker 当前工具 + 高危工具管理员校验)
       ├─ 执行结果回填 tool-role msg → 继续下一轮 ReAct 迭代
-      └─ ACL 不再限制工具调用 (仅聊天黑名单, 在 handleMessage 阶段过滤)
+      └─ 权限: ACL 仅聊天黑名单(handleMessage 阶段); 高危工具(踢人/禁言/全员禁言/
+         群名片/好友与加群请求/撤回)在 WrapInvokableToolCall 强制校验调用者为
+         Admins 列表内, 否则拒绝执行(防提示词注入)
 ```
 
 > **已移除**：BgTaskExecutor 和 DrainerAgent 已完全移除。所有工具调用（包括长时间运行的操作）均在 Eino ADK 的 ReAct 循环内同步完成。

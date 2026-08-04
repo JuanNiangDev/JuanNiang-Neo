@@ -584,6 +584,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// 将 per-message 状态注入 context（避免 HagoCenter 共享字段数据竞争）
 	msgCtx := &MsgSessionCtx{
 		Msg:                msg,
+		Admins:             events[len(events)-1].Admins,
 		SessionCtxStr:      sessionCtxStr,
 		RecentMsgsFn:       h.getRecentMessagesByMsgType,
 		DynamicInstruction: instruction,
