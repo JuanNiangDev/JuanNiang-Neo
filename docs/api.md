@@ -62,6 +62,10 @@
 | 40036 | 图片不存在 |
 | 40037 | 文件夹已存在 |
 | 40038 | 文件夹不存在 |
+| 40039 | 表情不存在 |
+| 40040 | 标签已存在 |
+| 40041 | 标签不存在 |
+| 40042 | 该图床图片已被其他表情引用 |
 | 50000 | 服务器内部错误 |
 
 ## 认证
@@ -105,7 +109,7 @@
 6. [Plugins](#11-plugins) · [ACL](#15-acl)
 7. [T2I](#18-t2i) · [Sandbox](#19-sandbox)
 8. [Logs](#16-日志) · [Agent 活跃循环](#20-agent-活跃循环) · [CronJob](#21-cronjob) · [回复策略](#22-回复策略) · [知识库](#23-知识库)
-9. [图床](#24-图床)
+9. [图床](#24-图床) · [表情包库](#25-表情包库)
 
 ---
 
@@ -784,6 +788,57 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 
 `ImageResp`: `id`、`name`、`folder`（虚拟路径，`/` 为根）、`mime_type`、`size_bytes`、`created_at`、`updated_at`。
 `ImageFolderResp`: `id`、`name`、`created_at`。
+
+---
+
+## 25. 表情包库
+
+基于图床的二次封装：表情引用图床图片（`image_id` 长 UUID），对外暴露短 UUID（8 位 hex）作为表情 ID。
+发送时用 `[CQ:image,file=stk://<短UUID>,subType=1]`（OneBot11 以 `subType=1` 区分表情与普通图片），
+发送层（`internal/adapter`）自动把短 UUID 解析为图床长 UUID 并转 base64，Plugin / Agent 只接触表情 ID。
+
+### Agent 工具
+
+- `send_sticker`：单独发送表情（参数 `sticker_id` 短 UUID + 可选 `message_type`/`target_id`）
+- `list_sticker_tags`：获取全部标签
+- `list_stickers`：按标签分页获取表情（`tag`/`page`/`page_size`）
+- `search_stickers`：关键词模糊匹配表情名称/简介（`keyword`/`limit`）
+
+### Plugin API
+
+- `onebot11.send_group_sticker(group_id, sticker_id)`
+- `onebot11.send_private_sticker(user_id, sticker_id)`
+- 消息段方式：`{{type="image", data={file="stk://<短UUID>", subType=1}}}`
+
+### GET /stickers
+分页列出表情。**Query** `tag`（标签过滤）、`keyword`（名称/简介模糊匹配）、`page`（默认 1）、`page_size`（默认 24，上限 100）。
+
+**data** `{total int64, list StickerResp[]}`。
+
+### GET /stickers/:id
+表情详情。**data** `StickerResp`。
+
+### POST /stickers
+新建表情。**Body** `CreateStickerReq`: `image_id` string（必填，图床图片长 UUID）、`name` string（必填）、`desc` string（可选）、`tags` string[]（可选）。
+图床图片不存在返回 40036；已被其他表情引用返回 40042。**data** `StickerResp`（`id` 为短 UUID）。
+
+### PUT /stickers/:id
+编辑表情。**Body** `UpdateStickerReq`: `name` / `desc` / `tags`。**data** `StickerResp`。
+
+### DELETE /stickers/:id
+删除表情（软删，不影响图床图片）。**data** `null`。
+
+### GET /sticker-tags
+列出全部标签。**data** `StickerTagResp[]`。
+
+### POST /sticker-tags
+创建标签。**Body** `CreateStickerTagReq`: `name` string（必填，重名返回 40040）。**data** `StickerTagResp`。
+
+### DELETE /sticker-tags/:id
+删除标签（所有表情中的该标签一并移除，不存在返回 40041）。**data** `null`。
+
+`StickerResp`: `id`（短 UUID）、`image_id`（图床长 UUID）、`name`、`desc`、`tags` string[]、`created_at`、`updated_at`。
+`StickerTagResp`: `id`、`name`、`created_at`。
 
 ---
 
