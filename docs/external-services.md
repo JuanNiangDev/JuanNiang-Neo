@@ -60,7 +60,7 @@ type Provider interface {
 - 单个 MCP server 描述：`server_url`（SSE 端点）、`headers`、`timeout`、`retry_count`、`tool_filter`（工具白名单，空=全量）、`auto_reconnect`
 - 客户端 `sdkMCPClient`（`internal/agent/mcp/mcp.go:154`）`NewSSEMCPClient` → `Connect`（Start + Initialize，协议 LATEST 版本，clientInfo `{Name:"JuanNiang-Neo", Version:"1.0.0"}`）→ `ListTools`/`CallTool`
 - `MCPGroup` 聚合所有 MCP，提供 `ListTools()`（仅已连接）和 `CallTool(name, args)`（按名分发）
-- **MCP 优先**：当工具名在 builtin 与 MCP 中都存在，`MCPGroup.HasTool(name)` 命中则走 MCP（`event.go::handleToolCalls`）；这允许 MCP 覆盖 builtin 同名工具
+- **工具合并**：内置工具与 MCP 工具在 `tool.BuildEinoTools`（`internal/agent/tool/eino_tool.go`）中合并为 Eino 工具列表（内置在前、MCP 追加在后），由 LLM 在 ReAct 循环内按名同步调用；同名工具会并列出现，配置 MCP 的 `tool_filter` 可避免与 builtin 冲突
 
 ### 接入指南
 
@@ -70,7 +70,7 @@ type Provider interface {
 
 ### 名称解析冲突
 
-builtin 工具名（如 `send_group_msg`）可能被 MCP 同名工具覆盖。设计是有意的，便于用 MCP 接入更优实现替换默认行为。如不希望被覆盖，配 MCP 的 `tool_filter` 排除该名。
+builtin 工具名（如 `send_group_msg`）可能与 MCP 工具同名并同时在 Eino 工具列表中可见，由 LLM 决定调用哪一个。如不希望 MCP 工具与 builtin 冲突，配 MCP 的 `tool_filter` 排除该名。
 
 ## Postgres
 
@@ -81,17 +81,17 @@ builtin 工具名（如 `send_group_msg`）可能被 MCP 同名工具覆盖。�
 - `PreferSimpleProtocol:true`、`PrepareStmt:false`
 - 连接池：`MaxOpenConns=150`、`MaxIdleConns=10`、`ConnMaxLifetime=1h`、`ConnMaxIdleTime=15m`
 
-`main.go:46` 用 `WithHost/WithPort/WithUser/WithPassword/WithDefaultDB` 从 env 组装。
+`cmd/server/main.go:98` 用 `WithHost/WithPort/WithUser/WithPassword/WithDefaultDB` 从 env 组装。
 
 ### Schema
 
-`core.Init` 调用 `AutoMigrate` 创建 22 张表。**不读 `sql/init.sql`**（仅文档参考）。GORM AutoMigrate 按列追加/索引同步，**不会删列**，开发期字段删除需手工 `ALTER TABLE`。
+`core.Init` 调用 `AutoMigrate` 创建 23 张表。**不读 `sql/init.sql`**（仅文档参考）。GORM AutoMigrate 按列追加/索引同步，**不会删列**，开发期字段删除需手工 `ALTER TABLE`。
 
 ## Redis
 
 ### 客户端
 
-`infrastructure/redis/client.go`。函数名 `NewRedisSentinelClient`（保留了"Sentinel"字眼兼容旧调用），**实为单节点** `redis.NewClient`（注释 line 47），ping 5s 超时。`WithAddr/WithPassword/WithDB`。`main.go:59` 调用。
+`infrastructure/redis/client.go`。函数名 `NewRedisSentinelClient`（保留了"Sentinel"字眼兼容旧调用），**实为单节点** `redis.NewClient`（注释 line 47），ping 5s 超时。`WithAddr/WithPassword/WithDB`。`cmd/server/main.go:111` 调用。
 
 ### 用途
 
@@ -125,8 +125,8 @@ builtin 工具名（如 `send_group_msg`）可能被 MCP 同名工具覆盖。�
 
 ### 运行时
 
-- 启动时 `loadT2IFromDB`（`main.go:273`）读 `t2i_configs` 单行；DB 无配置则 `InitConfig`，T2I 不可用则注销 `text_to_image` 工具的特性
-- `Service.OnUpdateT2I`（`main.go:166`）回调：每次 `PUT /t2i/config` 用最新配置重建 `*Client` 并改写 `HagoCenter.T2IClient` 与 `Service.T2IClient`；插件通过 `agentOp.GetT2IClient()` 拿到最新指针
+- 启动时 `loadT2IFromDB`（`cmd/server/main.go:347`）读 `t2i_configs` 单行；DB 无配置则 `InitConfig`，T2I 不可用则注销 `text_to_image` 工具的特性
+- `Service.OnUpdateT2I`（`cmd/server/main.go:228`）回调：每次 `PUT /t2i/config` 用最新配置重建 `*Client` 并改写 `HagoCenter.T2IClient` 与 `Service.T2IClient`；插件通过 `agentOp.GetT2IClient()` 拿到最新指针
 - Web 面板 T2I 页：`PUT /t2i/config` `/is_active=true` 即生效，无需重启
 
 ### 接入指南
@@ -154,15 +154,15 @@ builtin 工具名（如 `send_group_msg`）可能被 MCP 同名工具覆盖。�
 
 ### 运行时
 
-- 启动 `loadSandboxFromDB`（`main.go:304`）；`Service.OnUpdateSandbox` 热更新 `HagoCenter.SandboxClient`/`Service.SandboxClient`
-- 启用时注册 sandbox 系列内置工具：`create_sandbox`、`list_sandboxes`、长任务 `browser_search`（Bing in-Python）、`code_exec`、`text_to_image` 的兄弟
+- 启动 `loadSandboxFromDB`（`cmd/server/main.go:378`）；`Service.OnUpdateSandbox` 热更新 `HagoCenter.SandboxClient`/`Service.SandboxClient`
+- 启用时注册 sandbox 系列内置工具：`create_sandbox`、`list_sandboxes`、`browser_search`、`command_exec`、`code_exec`（均与 MCP 工具一样同步执行）
 - 关闭/未配置时返回"未启用"提示；不影响其他工具
 
 ### 接入指南
 
 1. 起一个 Sandbox 实现（HTTP 服务，符合上述接口，建议带 APIKey 鉴权）
 2. Web 面板"Sandbox"页填 `base_url`、`api_key`、`timeout`、勾"启用"
-3. Agent 内置工具 `command_exec`/`code_exec`/`browser_search` 走后台调度（标记 `IsLongRunning`）；Lua 插件 `sandbox.create/exec_shell/exec_python/list/delete`
+3. Agent 内置工具 `command_exec`/`code_exec`/`browser_search`/`create_sandbox`/`list_sandboxes` 与 MCP 工具一样在 Eino ReAct 循环内**同步执行**（无后台调度管道；`IsLongRunning` 仅作元数据标记，不影响执行方式）；Lua 插件 `sandbox.create/exec_shell/exec_python/list/delete`
 
 ## 一致性：HagoCenter 与 Service 共享同指针
 
@@ -170,7 +170,7 @@ T2I 与 Sandbox 的客户端**热更新关键**在于 `HagoCenter` 与 `Service`
 
 - `Service.OnUpdateT2I = func(c *t2icaller.Client) { hago.T2IClient = c }`
 - 同时 `svc.T2IClient = c`
-- 插件通过 `agentOp.GetT2IClient()`（`pluggin.go:979`）拿到同一指针
+- 插件通过 `agentOp.GetT2IClient()`（`pluggin.AgentOperator` 接口，实现于 `internal/agent/agent_operator.go`）拿到同一指针
 
 → 无需广播通知，谁拿到指针谁就用最新版。任何端点都自动一致。
 

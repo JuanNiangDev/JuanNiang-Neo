@@ -80,12 +80,12 @@
 - `ModelType`: `text_model` | `image_model` | `embedding_model`
 - `PromptType`: `system` | `personality` | `custom`（`system` 保留给系统锁定提示词，禁止新建）
 - `AreaType`: `private` | `group`
-- `ACLScope`: `chat` | `tool` | `mcp`
+- `ACLScope`: `chat` | `tool` | `mcp`（**当前仅 `chat` 生效**，`tool`/`mcp` 为历史保留）
 - `ACLPermission`: `allow` | `deny`
 - `ACLTargetType`: `all` | `list`（`list` 时 `user_ids` 才有效）
 - `ReplyStrategy`: `never_reply` | `at_only` | `always` | `relevance`
 
-**ACL 语义**：无规则=允许所有；`deny`>`allow`；存在 `allow` 规则时未命中即拒绝；Admins 列表中的用户绕过所有 ACL 检查。
+**ACL 语义**（当前仅聊天黑名单）：无规则=允许所有；仅 `deny` 规则生效（`all`=禁止所有人、`list`=禁止指定 `user_ids`）；`allow` 规则不再生效；Admins 列表中的用户绕过 ACL。
 
 ---
 
@@ -98,7 +98,7 @@
 5. [Memory](#6-memory) · [聊天记录](#12-聊天记录) · [Chat Areas](#13-chat-areas) · [Overview](#14-overview)
 6. [Plugins](#11-plugins) · [ACL](#15-acl)
 7. [T2I](#18-t2i) · [Sandbox](#19-sandbox)
-8. [Logs](#16-日志) · [CronJob](#21-cronjob) · [回复策略](#22-回复策略)
+8. [Logs](#16-日志) · [Agent 活跃循环](#20-agent-活跃循环) · [CronJob](#21-cronjob) · [回复策略](#22-回复策略)
 
 ---
 
@@ -446,7 +446,7 @@ curl -X POST http://localhost:8090/api/v1/plugins/upload \
 
 ### POST /plugins/reload
 **热重载所有非系统插件**。先卸载全部非系统插件，再调用 `LoadAll()` 重新扫描并加载。
-适用于：新增/修改 `on_timer_call` 或注册了新命令后无需重启进程即可生效。
+适用于：新增/修改 `on_cronjob` 或注册了新命令后无需重启进程即可生效。
 **Body** 无。**data** `null`。
 
 ---
@@ -486,6 +486,15 @@ curl -X POST http://localhost:8090/api/v1/plugins/upload \
 返回系统全局概览（资源计数 + 系统状态 + T2I/Sandbox 健康）。
 
 **data** `OverviewResp`: `chat_area_count`、`mcp_count`、`adapter_count`（固定 1）、`plugin_count`、`provider_count`、`skill_count`、`session_count`、`total_token_usage` int64、`cpu_count`、`goroutine_num`、`mem_alloc_bytes`、`mem_sys_bytes`、`mem_heap_inuse_bytes` uint64、`go_version`、`t2i_active`、`t2i_healthy`、`sandbox_active`、`sandbox_healthy` bool。
+
+### GET /overview/daily-token-usage
+近 N 天每日 Token 用量（折线图数据点）。
+
+| Query | 类型 | 默认 | 说明 |
+|-------|------|------|------|
+| `days` | int | 7 | 天数，范围 1–30 |
+
+**data** `DailyTokenUsageResp[]`: `date` string（`YYYY-MM-DD`）、`token_count` int64。
 
 ---
 
@@ -584,6 +593,28 @@ Text-to-Image 配置与健康管理。单行配置（ID=1）。详见 [external-
 
 ---
 
+## 20. Agent 活跃循环
+
+当前正在执行的 Agent ReAct 循环（监控展示，原后台任务页改造）。对应前端页面 `web/src/views/AgentLoopsPage.vue`，实现见 `internal/agent/loop_tracker.go`。
+
+### GET /agent/loops
+返回当前所有活跃的 Agent ReAct 循环。
+
+**data** `AgentLoopResp[]`:
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 循环 ID |
+| `chat_area_id` | string | 所属 ChatArea |
+| `message_type` | string | `private` / `group` |
+| `target_id` | int64 | 私聊: user_id；群聊: group_id |
+| `user_id` | int64 | 发起者 QQ |
+| `user_msg` | string | 触发消息（批内合并） |
+| `current_tool` | string | 当前正在执行的工具；空=思考/生成中 |
+| `started_at` | time | 开始时间 |
+
+---
+
 ## 21. CronJob
 
 定时任务管理。详见 [webhook-cronjob.md](webhook-cronjob.md)。
@@ -606,6 +637,9 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 | `name` | string | 是 | 名称 |
 | `cron_expr` | string | 是 | 6 字段 cron，如 `0 0 9 * * *` 每天 9:00 |
 | `is_active` | bool | 是 | 是否立即启用 |
+| `message` | string | 否 | 合成消息内容（透传给插件 `event.raw_message`） |
+| `message_type` | string | 否 | `private`（默认）/ `group` |
+| `target_id` | int64 | 否 | 消息目标：私聊=QQ 号，群聊=群号 |
 | `plugin_ids` | string[] | 否 | 触发插件列表（插件目录名），到点时调用其 `on_cronjob` 回调 |
 | `payload` | string | 否 | JSON 字符串，传递给插件 `on_cronjob(event)` 的 `event.payload` |
 
@@ -640,12 +674,12 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 ### GET /reply-strategy
 获取配置。首次 GET 不存在时自动创建（`strategy=always, relevance_threshold=0.5`）。
 
-**data** `ReplyStrategyResp`: `id`、`strategy`、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`created_at`、`updated_at`。
+**data** `ReplyStrategyResp`: `id`、`strategy`、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`created_at`、`updated_at`。
 
 ### PUT /reply-strategy
 更新。
 
-**Body** `UpdateReplyStrategyReq`: `strategy`、`relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）。
+**Body** `UpdateReplyStrategyReq`: `strategy`、`relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）。
 
 **data** `ReplyStrategyResp`。
 

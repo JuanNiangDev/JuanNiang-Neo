@@ -416,7 +416,7 @@ CronJob 定时触发插件的 `on_cronjob` 回调，通过统一事件循环 →
 | `DELETE` | `/api/v1/cronjobs/:id` | 删除（自动 reload） |
 | `PUT` | `/api/v1/cronjobs/:id/toggle` | 启停（自动 reload） |
 
-`AddCronJobReq` body 字段：`name`、`cron_expr`、`is_active`、`plugin_ids`（`string[]`，可选）、`payload`（JSON 字符串，可选）。
+`AddCronJobReq` body 字段：`name`、`cron_expr`、`is_active`、`message`（合成消息内容，可选）、`message_type`（`private`/`group`，默认 `private`）、`target_id`（私聊=QQ 号 / 群聊=群号）、`plugin_ids`（`string[]`，可选）、`payload`（JSON 字符串，可选）。
 
 ### 示例：每 10 秒触发插件发消息
 

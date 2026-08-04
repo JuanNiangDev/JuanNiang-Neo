@@ -374,7 +374,7 @@ jn.sandbox.delete(sid)
 
 ## 全局表: `agent`
 
-权限：`agent`。提供 Agent 配置查询与运行时管理（共 16 个函数）。
+权限：`agent`。提供 Agent 配置查询与运行时管理（共 17 个函数）。
 
 ### 配置查询（从 DB 读取）
 
@@ -701,13 +701,13 @@ type Manifest struct {
 var jnSDKSource string
 ```
 
-`ensureEmbeddedAssets`（`pluggin.go:1554`）每次启动强制覆盖落盘：`<basePath>/sdk/jn.lua` 与 `system/{pluggin.yaml,main.lua}`，确保 Docker 镜像在不同 bind-mount 上一致。`injectSDK` 把 `<basePath>/sdk/?.lua` 追加到 `package.path`，使 `require("jn")` 可用。
+`ensureEmbeddedAssets`（`pluggin.go:2200`）每次启动强制覆盖落盘：`<basePath>/sdk/jn.lua` 与 `system/{pluggin.yaml,main.lua}`，确保 Docker 镜像在不同 bind-mount 上一致。`injectSDK` 把 `<basePath>/sdk/?.lua` 追加到 `package.path`，使 `require("jn")` 可用。
 
 ### 3. 按 permissions gate 注入全局表（`injectBaseAPI`）
 
 ```go
-// pluggin.go:503-568
-func (pe *PluginEngine) injectBaseAPI(L *lua.LState, plugin *LoadedPlugin) {
+// pluggin.go:973
+func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissions []string) {
     // log / json 始终
     if plugin.HasPermission("onebot11") { ... }
     if plugin.HasPermission("http")    { ... }
@@ -719,12 +719,12 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, plugin *LoadedPlugin) {
 }
 ```
 
-`HasPermission(perm)`（`pluggin.go:490`）支持精确匹配或 `"*"` 通配。多余申请不会注入，日志会有提示。
+`HasPermission(perm)`（`pluggin.go:960`）支持精确匹配或 `"*"` 通配。多余申请不会注入，日志会有提示。
 
 ### 4. 命令 API（`injectCommandAPI`）
 
 ```go
-// pluggin.go:585-668
+// pluggin.go:1055
 __jn_internal.register_command(path, handlerFn, opts)
    ├─ path 转 CommandNode 路径，逐级创建
    ├─ handler 注册到全局 key __jn_cmd_handler_<plugin>_<path> 保活（防 GC）
@@ -736,7 +736,7 @@ SDK `jn.command.register` 是它的薄包装。
 ### 5. t2i / sandbox 客户端运行时获取
 
 ```go
-// pluggin.go:979 (t2i)
+// pluggin.go:1587 (t2i)
 getCurrentClient := func() *t2icaller.Client {
     if agentOp != nil {
         if c := genT2IClient(); c != nil { return c }
@@ -763,7 +763,7 @@ Dispatch(raw, event):
 | 层 | 位置 | 作用 |
 |----|------|------|
 | Manifest.System | `pluggin.yaml` `system: true` | 标记 |
-| `PluginEngine.IsSystem(name)` | `pluggin.go:185` | 引擎层 Unload 拒绝 |
+| `PluginEngine.IsSystem(name)` | `pluggin.go:187` | 引擎层 Unload 拒绝 |
 | Service Toggle/Delete | `internal/api/service` | API 层拒绝（返回 40028 PluginIsSystem） |
 
 确保 `system` 插件不可删/停，但**可启用**（支持 idempotent 场景）。

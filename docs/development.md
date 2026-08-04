@@ -11,7 +11,7 @@
   - `make vet` — `go vet ./...`
   - `make lint` — `go vet` + `web-typecheck` (`vue-tsc` ≥ 2.x)
   - `make dev` — Vite + Go 并行
-- **无 CI，无 `*_test.go` 体系**（仅 `internal/agent/skill/skill_test.go` 一个；`make test` 是占位）
+- **无 CI**，但有少量单元测试（5 个）：`internal/agent/event_memory_test.go`、`internal/agent/event_reply_test.go`、`internal/agent/skill/skill_test.go`、`internal/core/acl/acl_test.go`、`internal/core/dao/dao_test.go`；`make test` 直接跑它们
 
 ## 术语陷阱（别再被坑）
 
@@ -24,7 +24,7 @@
 
 | 你想做 | 起点 |
 |--------|------|
-| 加一条 Web API | `internal/api/router/router.go`（68 路由在此注册）、`internal/api/service/service.go`（handler）、`internal/api/dto/` |
+| 加一条 Web API | `internal/api/router/router.go`（69 路由在此注册 + `/health`）、`internal/api/service/service.go`（handler）、`internal/api/dto/` |
 | 加 Agent 内置工具 | `internal/agent/tool/builtin.go::RegisterBuiltinTools`；参考既有 `send_*_msg`/`browser_search` 等 |
 | 接新 LLM 协议 | `internal/agent/provider/provider.go`（现 OpenAI 兼容 + Eino ADK adapter），实现 `Provider` 接口 |
 | 加记忆类型 | `internal/agent/memory/` 子包：`shortterm/`（Redis 滑窗，默认 100 条 + AutoCompact）、`longterm/`（PG + HotArea）、`skillmem/`（技能记忆） |
@@ -32,7 +32,7 @@
 | 调整 Agent 并发限制 | `internal/agent/concurrency.go`（默认 8/ChatArea） |
 | 修改分段回复算法 | `internal/agent/event.go::splitMessages`（Maibot 式自然断句） |
 | 加 ACL 维度 | `internal/core/acl/acl.go::Check` + `models.ACLRule` |
-| 写 Lua 插件 | 读 [pluggin/development.md](pluggin/development.md) |
+| 写 Lua 插件 | 读 [plugin-development.md](plugin-development.md) |
 | 改前端页面 | `web/src/views/*.vue`（22 页）、`web/src/api/*`（typed endpoints）、`web/src/router/index.ts` |
 | 改 Plugin SDK | `internal/pluggin/sdk/jn.lua`（`//go:embed`，带 LuaCATS 注解） |
 | 加数据模型 | `internal/core/models/` 加 GORM model + `core.go::AutoMigrate` 注册 + `internal/core/dao/` DAO + `dao.NewBundle` 接入 |
@@ -53,13 +53,13 @@ internal/
     tool/       ToolRegistry + 内置工具 + Eino InvokableTool 适配 (BuildEinoTools)
     cronjob/    robfig/cron 调度器 (on_cronjob 事件注入)
     agent.go            HagoCenter 聚合 (Init/Stop/buildEinoAgent)
-    agent_operator.go   handleMessage / handleToolCalls
+    agent_operator.go   插件 Agent 操作 (SetProviderActive/SwitchProvider/SetMCPActive/SetToolActive/CompactMemory…)
     concurrency.go      每 ChatArea 并发控制 (默认 8 goroutine)
-    eino_middleware.go  Eino ADK 中间件 (BeforeAgent 注入 / WrapInvokableToolCall ACL)
+    eino_middleware.go  Eino ADK 中间件 (BeforeAgent 动态指令注入 / AgentLite 工具过滤 / WrapInvokableToolCall 同步执行包装)
     event.go            三阶段事件循环 (Plugin.Dispatch → ReplyStrategy → dispatchToAgent)
     reply_strategy.go   回复策略 (NeverReply/AtOnly/Always/Relevance)
   api/          Hertz Web (engine + middleware + router + service)
-  core/         Init / dao.Bundle / models (22 表) / acl / cache
+  core/         Init / dao.Bundle / models (23 表) / acl / cache
   pluggin/      Lua 引擎 + 命令树 + 内嵌 SDK + 系统插件
   web/          SPAHandler (NoRoute 兜底)
   logging/      fatih/color 彩色 stdout + JSON 格式化 + 调用栈 + Hub(SSE)
@@ -86,12 +86,12 @@ docs/                   本文档树
 | Prompt (SystemLocked + BuildFullContext) | ✅ |
 | ToolRegistry + 内置工具 | ✅（除 `vision` builtin 只返回提示，真 Vision 走 reply_strategy.go）|
 | Lua 插件引擎 + 命令树 + 系统 SDK + 系统插件 | ✅ |
-| Web API 68 路由 + JWT + SSE 日志 | ✅ |
+| Web API 69 路由 (+`/health`) + JWT + SSE 日志 | ✅ |
 | 前端 22 页 (Vue 3 + Vuetify 3) | ✅ |
 | AgentLite 模式 / StripMarkdown / 分消息段 | ✅ |
 | `internal/agent/memory/root.go::Memory` 接口 | ⚠ 空 stub (无方法) |
 | `internal/agent/skill/root.go`、`prompt/root.go` | ⚠ 占位 (实现在 .go) |
-| `HagoCenter.Stop()` | ⚠ 仅关两路 channel，不显式停 EventLoop/CronJob ctx (赖外层 ctx) |
+| `HagoCenter.Stop()` | ⚠ 空实现（仅打日志），事件循环/CronJob 退出依赖外层 ctx 取消 |
 | `HagoCenter.SetToolActive` | ⚠ 停用只能 Unregister，无法重新注册已 Unregister 的 builtin |
 | `internal/core/handler/` | ⚠ 空目录占位 |
 | `database` 插件权限的 `prefixSQL` | ⚠ 桩，未生效，任意 SQL |
@@ -112,7 +112,7 @@ docs/                   本文档树
 
 ## 数据模型与持久化策略
 
-- Postgres 拥有**所有**持久状态（22 张表，见 `internal/core/core.go::AutoMigrate`）
+- Postgres 拥有**所有**持久状态（23 张表，见 `internal/core/core.go::AutoMigrate`）
 - Redis 仅作：短期记忆滑动窗口（`shortterm:msgs:<areaID>` List）、PubSub 任务结果通知、插件/Agent 任意缓存
 - `ChatRecord.id` 为自增 int64（不是 UUID，多数表用 UUID），保留这个差异
 - 单行配置表（`Onebot11Adapter`/`WebhookConfig`/`T2IConfig`/`SandboxConfig`）固定 `id=1`，首次 `InitConfig` 用 `OnConflict DoNothing` 建默认行

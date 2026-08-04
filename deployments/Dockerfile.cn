@@ -4,6 +4,8 @@
 #   2) go-builder  : Go 1.25 编译后端二进制
 #   3) runtime     : Alpine + 非 root 用户
 #
+# ⚠️ 当前 runtime 实际以 root 运行（无 USER 指令）；如需非 root，请自行添加 useradd + USER。
+#
 # 使用方式:
 #   docker build -f deployments/Dockerfile.cn -t juan-niang-neo .
 #   docker compose -f deployments/docker-compose.yaml build  # 需替换 docker-compose 内 dockerfile 引用
