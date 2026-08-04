@@ -2,7 +2,6 @@ package dto
 
 import (
 	"JuanNiang-Neo/internal/adapter"
-	"JuanNiang-Neo/internal/agent"
 	"JuanNiang-Neo/internal/core/models"
 	"time"
 )
@@ -129,13 +128,6 @@ type ToolConfigResp struct {
 	IsBuiltin   bool           `json:"is_builtin"`
 	AdminOnly   bool           `json:"admin_only"` // 仅管理员可调用
 	CreatedAt   time.Time      `json:"created_at"`
-}
-
-// KnowledgeStatsResp 知识库统计（LRU 缓存 + 词云 + 命中排行）。
-type KnowledgeStatsResp struct {
-	LRU     []agent.KnowledgeLRUEntryInfo `json:"lru"`
-	Cloud   []models.KeywordCount         `json:"cloud"`
-	HitRank []models.KeywordHit           `json:"hit_rank"`
 }
 
 // KnowledgeResp 知识库条目。
