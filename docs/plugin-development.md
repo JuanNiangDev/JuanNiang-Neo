@@ -569,7 +569,7 @@ function on_cronjob(event)
 end
 ```
 
-完整示例见 `data/pluggins/cron-example/`。
+完整示例见 `data/pluggins/webhook-cron/`（on_cronjob + on_webhook）。
 
 ## 回调: `on_notice`
 
@@ -602,7 +602,7 @@ function on_notice(event)
 end
 ```
 
-完整示例见 `data/pluggins/welcome/` 和 `data/pluggins/poke-reply/`。
+完整示例见 `data/pluggins/group-manager/`（on_notice + on_request + 群管理）。
 
 ## 回调: `on_request`
 
