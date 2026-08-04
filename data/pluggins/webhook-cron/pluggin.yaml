@@ -1,0 +1,9 @@
+name: webhook-cron
+version: "1.0.0"
+author: JuanNiang-Neo
+description: "外部集成示例：Webhook 接收 HTTP 触发 + CronJob 定时触发"
+entry: main.lua
+system: false
+enabled: true
+permissions:
+  - onebot11

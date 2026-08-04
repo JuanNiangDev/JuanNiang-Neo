@@ -1,0 +1,10 @@
+name: rich-message
+version: "1.0.0"
+author: JuanNiang-Neo
+description: "富文本消息示例：消息段（文字/@/图片/表情）+ 群信息查询 + 图床表情发送"
+entry: main.lua
+system: false
+enabled: true
+permissions:
+  - onebot11
+  - http

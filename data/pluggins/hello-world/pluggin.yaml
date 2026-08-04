@@ -1,0 +1,9 @@
+name: hello-world
+version: "1.0.0"
+author: JuanNiang-Neo
+description: "入门示例：命令注册 + on_message 事件监听 + log/json 使用"
+entry: main.lua
+system: false
+enabled: true
+permissions:
+  - onebot11

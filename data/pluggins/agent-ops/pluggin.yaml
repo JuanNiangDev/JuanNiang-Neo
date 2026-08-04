@@ -1,0 +1,10 @@
+name: agent-ops
+version: "1.0.0"
+author: JuanNiang-Neo
+description: "Agent 管理示例：Provider/MCP/Tool/Skill/Session 查询 + 运行时切换（多级命令）"
+entry: main.lua
+system: false
+enabled: true
+permissions:
+  - agent
+  - onebot11

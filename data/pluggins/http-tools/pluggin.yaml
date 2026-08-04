@@ -1,0 +1,10 @@
+name: http-tools
+version: "1.0.0"
+author: JuanNiang-Neo
+description: "HTTP 请求示例：一言金句 / 天气查询 / POST 演示"
+entry: main.lua
+system: false
+enabled: true
+permissions:
+  - http
+  - onebot11

@@ -1,0 +1,11 @@
+name: data-store
+version: "1.0.0"
+author: JuanNiang-Neo
+description: "数据持久化示例：Redis 缓存计数器 + Postgres 笔记 CRUD"
+entry: main.lua
+system: false
+enabled: true
+permissions:
+  - database
+  - cache
+  - onebot11

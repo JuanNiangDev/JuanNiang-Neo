@@ -1,0 +1,9 @@
+name: group-manager
+version: "1.0.0"
+author: JuanNiang-Neo
+description: "群管理示例：禁言/踢人/设名片（仅 admin）+ 入群欢迎 + 好友申请处理"
+entry: main.lua
+system: false
+enabled: true
+permissions:
+  - onebot11

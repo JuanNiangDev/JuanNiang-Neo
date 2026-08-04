@@ -1,0 +1,11 @@
+name: media-gen
+version: "1.0.0"
+author: JuanNiang-Neo
+description: "媒体生成示例：T2I 文生图 + Sandbox 代码沙箱执行"
+entry: main.lua
+system: false
+enabled: true
+permissions:
+  - t2i
+  - sandbox
+  - onebot11
