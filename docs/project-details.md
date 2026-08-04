@@ -96,6 +96,7 @@ classDiagram
   class ReplyStrategyConfig { string ID; ReplyStrategy Strategy; float64 RelevanceThreshold; string BotName; bool StripMarkdown; bool AgentLite; string RelevancePrompt; string RelevanceModel; string JudgeFailPolicy }
   class Plugin { string ID; string Name; string Version; string Path; JSONMap Config; bool IsActive }
   class SkillMemory { string ID; string Content }
+  class KnowledgeItem { string ID; string Title; string Content; JSONSlice Keywords; string KeywordStatus }
 
   ChatArea "1" --|> "1" Session
   ChatArea "1" --|> "1" ShortTermMemory
@@ -115,6 +116,7 @@ classDiagram
 - **Plugin `Manifest.System`**：系统插件三层守卫（Manifest.System + `PluginEngine.IsSystem()` + Service 层 Toggle/Delete）禁删/禁停。
 - **`CronJob`**：不与 ChatArea 建外键；触发时由 `cronjob.Manager` 构造合成 `adapter.Event{PostType:"cronjob", IsCronJob:true}` 经 `CronJobEvents` channel 注入事件循环。
 - **`SkillMemory`**：全局技能记忆单例（`id="global"`），存储从对话中提取的技能/知识/黑话。Compact 时由 LLM 自动更新，写回 Postgres。
+- **`KnowledgeItem`**：SQL 知识库条目，存入时由 Agent 异步提取 `Keywords`（`keyword_status`: pending→ready/failed）；对话前 `buildKnowledgeContext` 按关键词命中 + 内容 ILIKE 匹配，命中结果注入系统提示词（LRU 50 条缓存）。
 
 ## 状态管理
 
@@ -330,6 +332,8 @@ handleMessage                                       event.go:311
 ├─ skillMem = h.Memory.GetSkillMemory()              event.go:413
 ├─ systemCtx = h.Prompt.BuildFullContext(longTermMem, skillMem)
 │   (工具感知不拼入提示词, 由 Eino 每次模型调用自动携带 tools 参数)
+├─ buildKnowledgeContext(批内消息): LRU/DB 模糊匹配知识库, 命中拼入 systemCtx
+│   (关键词命中 + 内容 ILIKE 兜底, 限 5 条, LRU 50 条缓存)
 │                                                   event.go:415
 ├─ einoMsgs 组装: system → sessionCtx → [Skill:] → 短期记忆 → user
 │                                                   event.go:418-437

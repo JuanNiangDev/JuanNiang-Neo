@@ -37,6 +37,7 @@
 | 改前端页面 | `web/src/views/*.vue`（22 页）、`web/src/api/*`（typed endpoints）、`web/src/router/index.ts` |
 | 改 Plugin SDK | `internal/pluggin/sdk/jn.lua`（`//go:embed`，带 LuaCATS 注解） |
 | 加数据模型 | `internal/core/models/` 加 GORM model + `core.go::AutoMigrate` 注册 + `internal/core/dao/` DAO + `dao.NewBundle` 接入 |
+| 加知识库内容/调匹配策略 | `internal/core/dao/knowledgeDao.go::Match`（关键词+ILIKE 匹配）；`internal/agent/knowledge.go`（LRU/异步提取/注入） |
 
 ## 项目目录速查
 
@@ -92,6 +93,7 @@ docs/                   本文档树
 | AgentLite 模式 / StripMarkdown / 分消息段 | ✅ |
 | relevance 判断优化（L1 规则快路径 / L2 批量判断+结果缓存+冷却 / L3 并发限流+超时 / L4 刷屏降级+失败策略） | ✅ |
 | 工具"仅管理员"开关（admin_only，Tools 页逐工具切换，防提示词注入） | ✅ |
+| SQL 知识库（Web CRUD + Agent 异步提取关键词 + 对话前 LRU/模糊匹配注入提示词） | ✅ |
 | `internal/agent/memory/root.go::Memory` 接口 | ⚠ 空 stub (无方法) |
 | `internal/agent/skill/root.go`、`prompt/root.go` | ⚠ 占位 (实现在 .go) |
 | `HagoCenter.Stop()` | ⚠ 空实现（仅打日志），事件循环/CronJob 退出依赖外层 ctx 取消 |

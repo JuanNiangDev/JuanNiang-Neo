@@ -56,6 +56,7 @@
 | 40030 | 内置工具运行时常驻，不支持启停 |
 | 40031 | CronJob 不存在 |
 | 40032 | 回复策略配置不存在 |
+| 40033 | 知识内容不能为空 |
 | 50000 | 服务器内部错误 |
 
 ## 认证
@@ -98,7 +99,7 @@
 5. [Memory](#6-memory) · [聊天记录](#12-聊天记录) · [Chat Areas](#13-chat-areas) · [Overview](#14-overview)
 6. [Plugins](#11-plugins) · [ACL](#15-acl)
 7. [T2I](#18-t2i) · [Sandbox](#19-sandbox)
-8. [Logs](#16-日志) · [Agent 活跃循环](#20-agent-活跃循环) · [CronJob](#21-cronjob) · [回复策略](#22-回复策略)
+8. [Logs](#16-日志) · [Agent 活跃循环](#20-agent-活跃循环) · [CronJob](#21-cronjob) · [回复策略](#22-回复策略) · [知识库](#23-知识库)
 
 ---
 
@@ -693,6 +694,38 @@ curl -X PUT http://localhost:8090/api/v1/reply-strategy \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
   -d '{"strategy":"relevance","relevance_threshold":0.6,"bot_name":"小卷","judge_fail_policy":"reply"}'
 ```
+
+---
+
+## 23. 知识库
+
+SQL 驱动知识库：Web 存入知识条目，Agent 异步提取关键词；对话前按关键词/内容模糊匹配，命中结果注入系统提示词（LRU 50 条缓存加速）。
+
+> `keyword_status`：`pending`（提取中，暂不参与匹配）→ `ready`（可匹配）→ `failed`（提取失败，可手动重试）。新增/编辑后自动异步提取关键词。
+
+### GET /knowledge
+分页列出。**Query** `page`（默认 1）、`page_size`（默认 20，上限 100）。
+
+**data** `{total int64, list KnowledgeResp[]}`。
+
+### GET /knowledge/:id
+详情。**data** `KnowledgeResp`。
+
+### POST /knowledge
+新增，触发异步关键词提取。
+
+**Body** `AddKnowledgeReq`: `title` string（可选）、`content` string（必填，非空否则 40033）。**data** `KnowledgeResp`（`keyword_status=pending`）。
+
+### PUT /knowledge/:id
+编辑，重新触发异步提取。**Body** `UpdateKnowledgeReq`（同 Add）。**data** `KnowledgeResp`。
+
+### DELETE /knowledge/:id
+删除（软删）。**data** `null`。
+
+### POST /knowledge/:id/re-extract
+手动重试关键词提取（`failed` 状态时用）。**data** `null`。
+
+`KnowledgeResp`: `id`、`title`、`content`、`keywords` string[]、`keyword_status`、`created_at`、`updated_at`。
 
 ---
 
