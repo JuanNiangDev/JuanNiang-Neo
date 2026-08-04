@@ -876,10 +876,17 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 
 ## 27. 定时消息
 
-独立于 CronJob 系统的定时任务（`internal/agent/scheduledmsg`）：一个任务含**多段消息**，
-按配置的 cron 表达式触发后逐段发送，段间可自定义延迟。
+独立于 CronJob 系统的定时任务（`internal/agent/scheduledmsg`），采用**积木式编排**：
+任务从触发器（cron 表达式）开始，按序执行编排块链，最后一个块执行完任务即结束。
 
-消息段类型（`ScheduledSegmentReq`）：
+编排块（`ScheduledBlockReq`）：
+
+| type | 字段 | 说明 |
+|------|------|------|
+| `message` | `segments` | 消息块：块内所有段拼成**一条**富文本消息 |
+| `delay` | `delay_seconds` | 延时块：等待 N 秒后继续下一个块（1~3600） |
+
+消息块内的段（`ScheduledSegmentReq`）：
 
 | type | source | content |
 |------|--------|---------|
@@ -889,8 +896,6 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 | `image` | `imgstore` | 图床引用（`imgs://<图片ID>`，发送层自动转 base64） |
 | `face` | - | CQ 码表情（如 `[CQ:face,id=66]`） |
 
-`delay_seconds`：本段发送完成后到下一段开始前的延迟（0~3600 秒）。
-
 ### GET /scheduled-messages
 分页列出。**Query** `page`、`page_size`（默认 20）。**data** `{total, list ScheduledMessageResp[]}`。
 
@@ -898,7 +903,7 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 任务详情。**data** `ScheduledMessageResp`。
 
 ### POST /scheduled-messages
-新建任务。**Body** `AddScheduledMessageReq`: `name`、`enabled`、`cron_expr`（6 字段秒级）、`target_type`（group/private）、`target_id`、`segments` ScheduledSegmentReq[]。**data** `ScheduledMessageResp`。
+新建任务。**Body** `AddScheduledMessageReq`: `name`、`enabled`、`cron_expr`（6 字段秒级触发器）、`target_type`（group/private）、`target_id`、`blocks` ScheduledBlockReq[]。**data** `ScheduledMessageResp`。
 
 ### PUT /scheduled-messages/:id
 编辑任务。**Body** `UpdateScheduledMessageReq`（同 Add）。**data** `ScheduledMessageResp`。
@@ -910,9 +915,9 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 启停任务。**Body** `{enabled bool}`。**data** `ScheduledMessageResp`。
 
 ### POST /scheduled-messages/:id/trigger
-手动触发立即执行（逐段发送，段间按延迟等待）。**data** `null`。
+手动触发立即执行（沿块链顺序：消息块发一条消息，延时块等待）。**data** `null`。
 
-`ScheduledMessageResp`: `id`、`name`、`enabled`、`cron_expr`、`target_type`、`target_id`、`segments`、`last_run_at`、`last_error`、`created_at`、`updated_at`。
+`ScheduledMessageResp`: `id`、`name`、`enabled`、`cron_expr`、`target_type`、`target_id`、`blocks`、`last_run_at`、`last_error`、`created_at`、`updated_at`。
 
 ---
 
