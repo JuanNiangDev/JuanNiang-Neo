@@ -84,7 +84,7 @@ docs/                   本文档树
 | Provider (OpenAI 兼容 + 流式 + Vision) | ✅ |
 | MCP (SSE) | ✅ |
 | Memory (shortterm Redis 100 条滑窗 + AutoCompact / longterm PG+HotArea / skillmem) | ✅ |
-| Prompt (SystemLocked + BuildFullContext) | ✅ |
+| Prompt (SystemLocked + BuildFullContext，工具感知走 Eino tools 参数不拼入提示词) | ✅ |
 | ToolRegistry + 内置工具 | ✅（除 `vision` builtin 只返回提示，真 Vision 走 reply_strategy.go）|
 | Lua 插件引擎 + 命令树 + 系统 SDK + 系统插件 | ✅ |
 | Web API 69 路由 (+`/health`) + JWT + SSE 日志 | ✅ |

@@ -513,15 +513,10 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		defer h.Loops.Unregister(loopID)
 	}
 
-	// ---------- 构建系统提示词（工具描述 + 长期记忆 + 核心提示词） ----------
+	// ---------- 构建系统提示词（长期记忆 + 核心提示词；工具感知交由 Eino tools 参数处理） ----------
 	var longTermMems []string
 	if h.Memory != nil {
 		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, chatArea.ID, "", 5)
-	}
-	toolList := h.buildToolList(ctx)
-	toolDescs := ""
-	for _, t := range toolList {
-		toolDescs += fmt.Sprintf("- %s: %s\n", t.Function.Name, t.Function.Description)
 	}
 
 	sessionCtxStr := h.buildSessionContext(ctx, msg, events[len(events)-1].Admins)
@@ -529,7 +524,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	if h.Memory != nil {
 		skillMem = h.Memory.GetSkillMemory()
 	}
-	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs, skillMem)
+	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, skillMem)
 
 	// ---------- 构建 Eino 消息列表 ----------
 	einoMsgs := []*einoschema.Message{

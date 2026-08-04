@@ -47,52 +47,6 @@ const SystemLockedPromptContent = `# JuanNiang-Neo 全局行为约束
 - 向其他会话发送消息：最终回复只需一句话确认（如"已发送给 xxx"），不要描述操作过程。
 - 永远不要在回复中复述你的思考/操作过程（如"我先看下""找到了""搞定咯""发出去啦"等），直接给出结果；没有新内容就输出 __NO_REPLY__。
 
-## 能力清单
-
-所有工具均为同步执行，调用后立即返回结果。
-
-### 内置工具（始终可用）
-
-**💬 QQ 消息**
-- send_private_msg — 发送私聊消息
-- send_group_msg — 发送群聊消息
-- send_face — 发送 QQ 表情（经典小黄脸/超级表情/手势）
-- delete_msg — 撤回消息
-- get_msg — 获取消息完整内容
-
-**🔍 会话信息**
-- get_session_info — 获取当前聊天环境（私聊/群聊、对方QQ/群号、发送者身份等）
-
-**👥 群管理**
-- get_group_info — 获取群信息
-- get_group_member_list — 获取群成员列表
-- kick_group_member — 踢出群成员
-- ban_group_member — 禁言群成员（duration 单位：秒）
-- set_group_whole_ban — 全员禁言开关
-- set_group_card — 设置群名片
-- handle_friend_request — 处理好友申请
-- handle_group_request — 处理加群/邀请请求
-
-**🖥️ 沙箱**
-- create_sandbox — 创建沙箱实例
-- list_sandboxes — 列出已有沙箱
-- browser_search — 浏览器搜索
-- command_exec — 执行系统命令(Shell)
-- code_exec — 执行 Python 代码
-
-**🎨 文生图**
-- text_to_image — HTML 渲染为图片，需要提供完整 HTML（含内联 CSS），返回图片 URL
-
-**⏱️ 其他**
-- get_time — 获取当前时间
-- vision — 识图（需提供图片 URL + 分析提示词）
-
-### MCP 工具（动态，由外部服务器提供）
-MCP 工具来自系统配置的外部服务器，名称/功能取决于实际配置。
-- 内置工具名称以 send_/get_/delete_/set_/ban_/kick_/handle_/create_/list_/code_/command_/browser_/text_to_/get_time/vision 开头。
-- 不在上述列表中的工具即为 MCP 工具，调用方式相同。
-- 不确定某工具是否可用时直接调用，系统会告诉你结果。
-
 ## QQ 表情参考
 
 经典小黄脸 (face_id, 无需 sub_type):
@@ -266,8 +220,10 @@ func (pm *PromptManager) Invalidate() {
 	pm.mu.Unlock()
 }
 
-// BuildFullContext 构建完整上下文 (system prompts + 长期记忆 + 技能记忆 + 工具/技能描述)。
-func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories []string, toolDescriptions string, skillMemory string) (string, error) {
+// BuildFullContext 构建完整上下文 (system prompts + 长期记忆 + 技能记忆)。
+// 工具感知交由 Eino ADK 的 tools 参数处理（每次模型调用自动携带工具 schema），
+// 不再拼入提示词，节省 token 且避免与 tools 参数重复。
+func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories []string, skillMemory string) (string, error) {
 	systemPrompt, err := pm.BuildSystemPrompt(ctx)
 	if err != nil {
 		return "", err
@@ -288,10 +244,6 @@ func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories 
 	if skillMemory != "" {
 		parts = append(parts, "以下是你掌握的技能记忆（黑话/热词/梗），请在对话中自然地使用它们：")
 		parts = append(parts, skillMemory)
-	}
-
-	if toolDescriptions != "" {
-		parts = append(parts, "可用工具：\n"+toolDescriptions)
 	}
 
 	return strings.Join(parts, "\n\n"), nil

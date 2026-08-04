@@ -159,7 +159,7 @@ flowchart LR
 | `provider` | `provider.go` | OpenAI 兼容 `/v1/chat/completions`（流式 SSE）、`Vision`（inline base64）；`ProviderGroup` 同类型单 Active 管理 |
 | `mcp` | `mcp.go` | `mark3labs/mcp-go` SSE 客户端；`MCPGroup` 聚合连接 + `ListTools`/`CallTool`（MCP 可覆盖 builtin 同名工具） |
 | `memory` | `memory.go` + `shortterm`/`longterm`/`skillmem` | 四层记忆：短期(Redis 滑窗, 默认100条, 自动Compact) / 长期(Postgres + 内存 LRU HotArea) / 技能记忆(SkillMemory, Compact 时 LLM 自动提取) / 会话记录(Postgres 审计) |
-| `prompt` | `prompt.go` | `PromptManager` + 系统锁定提示词 `EnsureSystemPrompt` 幂等播种 + `BuildFullContext` |
+| `prompt` | `prompt.go` | `PromptManager` + 系统锁定提示词 `EnsureSystemPrompt` 幂等播种 + `BuildFullContext`（工具感知不拼入提示词，由 Eino tools 参数提供） |
 | `session` | `session.go` | `SessionManager`：`GetOrCreate` / `AppendRecord`(Postgres) / `UpdateTokenUsage` |
 | `skill` | `skill.go` | `SkillEngine.Match(input)` 按关键词 / 正则 / priority 匹配首个激活技能 |
 | `tool` | `tool.go` / `builtin.go` | `ToolRegistry` + 内置工具 `RegisterBuiltinTools`（OneBot11 / 沙箱 / T2I / vision 等），工具注册为 Eino ADK ToolNode |
@@ -328,8 +328,8 @@ handleMessage                                       event.go:311
 ├─ Loops.Register 活跃循环 (Web 监控页展示)         event.go:388-397
 ├─ longTermMems = h.Memory.GetLongTermMemory          event.go:402
 ├─ skillMem = h.Memory.GetSkillMemory()              event.go:413
-├─ toolList = h.buildToolList(ctx)                    event.go:404
-├─ systemCtx = h.Prompt.BuildFullContext(longTermMem, toolDescs, skillMem)
+├─ systemCtx = h.Prompt.BuildFullContext(longTermMem, skillMem)
+│   (工具感知不拼入提示词, 由 Eino 每次模型调用自动携带 tools 参数)
 │                                                   event.go:415
 ├─ einoMsgs 组装: system → sessionCtx → [Skill:] → 短期记忆 → user
 │                                                   event.go:418-437
@@ -537,7 +537,7 @@ sequenceDiagram
   HM->>HM: GetOrCreate ChatArea/Session
   HM->>HM: ACL.CheckChat (admin 跳过)
   HM->>HM: Skills.Match + Memory + SkillMemory
-  HM->>HM: Prompt.BuildFullContext<br/>(SystemLocked + skillMemory + tools)
+  HM->>HM: Prompt.BuildFullContext<br/>(SystemLocked + 长期记忆 + skillMemory)<br/>工具感知交由 Eino tools 参数
   HM->>HM: AddShortTermMessage(Redis) + AppendRecord(Postgres)
   HM->>EA: EinoAgent.Run (ReAct 循环, MaxIterations=20)
   EA->>EA: LLM.Chat → 工具调用(同步) → 循环
