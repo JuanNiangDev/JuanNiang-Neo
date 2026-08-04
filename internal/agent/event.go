@@ -637,6 +637,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		}
 	}
 
+	// 工具权限被拒（admin_only 工具被非管理员调用）：直接以权限说明回复，
+	// 覆盖 LLM 可能编造的"已执行"输出，避免误导用户
+	if msgCtx.PermDenied != "" {
+		assistantContent = msgCtx.PermDenied
+		toolCalls = nil
+		log.Warn("工具权限被拒，最终回复已覆盖为权限说明", "reason", msgCtx.PermDenied)
+	}
+
 	// 工具调用记录（供聊天记录页展示）
 	callsJSON := marshalEinoToolCalls(toolCalls)
 

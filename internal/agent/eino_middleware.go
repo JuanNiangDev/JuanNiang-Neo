@@ -77,6 +77,8 @@ func filterAgentLiteTools(ctx context.Context, h *HagoCenter, tools []einotool.B
 
 // MsgSessionCtx 携带单条消息的 per-goroutine 状态。
 // 通过 context 传递，避免 HagoCenter 共享字段导致的数据竞争。
+// 注意：Eino ReAct 循环在单个 goroutine 内同步执行，工具调用与 handleMessage
+// 共享同一个 *MsgSessionCtx 指针，字段读写无竞争。
 type MsgSessionCtx struct {
 	Msg                *adapter.MessageEvent
 	Admins             []string // 当前消息透传的管理员 QQ 列表（高危工具权限校验用）
@@ -87,6 +89,11 @@ type MsgSessionCtx struct {
 	StripMarkdown      bool   // 去除 Markdown 格式
 	DisableSplit       bool   // 禁用分段回复
 	LoopID             string // 当前消息对应的 Agent 循环 ID（LoopTracker 用）
+
+	// PermDenied 工具权限被拒原因（非空=本轮已有 admin_only 工具被拒绝）。
+	// 设置后：后续所有工具调用被短路，且最终回复固定为权限说明，
+	// 防止 LLM 无视拒绝结果编造"已执行"。
+	PermDenied string
 }
 
 type msgSessionKey struct{}
@@ -143,14 +150,27 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 	wrapped := func(ctx context.Context, argsJSON string, opts ...einotool.Option) (string, error) {
 		log.Info("Eino tool call", "tool", toolName, "call_id", tCtx.CallID, "args_len", len(argsJSON))
 
+		sc := GetMsgSessionCtx(ctx)
+
+		// 本轮已有工具被权限拒绝：短路所有后续工具调用，
+		// 防止 LLM 改用其它工具（如 send_group_msg）补发"已执行"的假消息
+		if sc != nil && sc.PermDenied != "" {
+			log.Info("权限已拒绝，短路后续工具调用", "tool", toolName)
+			return "操作已被系统拒绝，无需继续调用工具。", nil
+		}
+
 		// 仅管理员工具权限校验：admin_only 开启的工具只允许 Admins 内用户调用
 		if !isAdminOnlyToolAllowed(m.h.isToolAdminOnly(toolName), msgUserID(ctx), msgAdmins(ctx)) {
+			permMsg := "该操作仅限管理员执行，已被系统拒绝，未执行任何操作。请如实告知用户没有权限。"
+			if sc != nil {
+				sc.PermDenied = permMsg
+			}
 			log.Warn("仅管理员工具被非管理员调用，已拒绝", "tool", toolName, "user_id", msgUserID(ctx))
-			return "该操作仅限管理员执行，已拒绝执行。", nil
+			return permMsg, nil
 		}
 
 		// 更新活跃循环的当前工具（供 Web 监控页展示）
-		if sc := GetMsgSessionCtx(ctx); sc != nil && m.h.Loops != nil {
+		if sc != nil && m.h.Loops != nil {
 			m.h.Loops.UpdateTool(sc.LoopID, toolName)
 		}
 
