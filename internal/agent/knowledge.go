@@ -137,6 +137,8 @@ func (h *HagoCenter) extractKnowledgeKeywords(ctx context.Context, itemID string
 		status = models.KeywordStatusFailed
 	}
 	if err := h.DAO.Knowledge.SetKeywords(ctx, itemID, cleaned, status); err != nil {
+		// 防御：写回失败也把状态标成 failed，避免前端一直显示“提取中”
+		_ = h.DAO.Knowledge.SetKeywordStatus(ctx, itemID, models.KeywordStatusFailed)
 		return err
 	}
 	log.Info("知识关键词提取完成", "id", itemID, "keywords", len(cleaned))

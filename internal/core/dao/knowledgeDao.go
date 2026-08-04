@@ -59,9 +59,11 @@ func (d *KnowledgeDAO) Count(ctx context.Context) (int64, error) {
 }
 
 // SetKeywords 写回提取的关键词与状态。
+// keywords 必须转成 models.JSONSlice，否则 GORM 直接把 []string 交给 PG jsonb 列会报
+// “column \"keywords\" is of type jsonb but expression is of type record”(SQLSTATE 42804)。
 func (d *KnowledgeDAO) SetKeywords(ctx context.Context, id string, keywords []string, status string) error {
 	return d.db.WithContext(ctx).Model(&models.KnowledgeItem{}).Where("id = ?", id).
-		Updates(map[string]any{"keywords": keywords, "keyword_status": status}).Error
+		Updates(map[string]any{"keywords": models.JSONSlice(keywords), "keyword_status": status}).Error
 }
 
 // SetKeywordStatus 更新关键词提取状态。
