@@ -85,9 +85,9 @@
             <v-col cols="12" md="6">
               <v-text-field v-model="form.name" label="名称" class="mb-2" />
               <v-textarea v-model="form.desc" label="简介（支持模糊匹配）" rows="3" class="mb-2" />
-              <v-combobox
+              <v-select
                 v-model="form.tags"
-                label="标签（可输入创建）"
+                label="标签（从已创建的标签中选择）"
                 :items="tags.map(t => t.name)"
                 multiple
                 chips

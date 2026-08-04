@@ -2471,8 +2471,13 @@ func (s *Service) CreateSticker(ctx context.Context, c *app.RequestContext) {
 		ImageID: data.ImageID,
 		Name:    data.Name,
 		Desc:    strings.TrimSpace(data.Desc),
-		Tags:    models.JSONSlice(cleanStickerTags(data.Tags)),
 	}
+	tags, err := s.validateStickerTags(ctx, data.Tags)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	item.Tags = models.JSONSlice(tags)
 	if err := s.DAO.Sticker.Create(ctx, item); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -2498,7 +2503,12 @@ func (s *Service) UpdateSticker(ctx context.Context, c *app.RequestContext) {
 	if data.Desc != "" {
 		item.Desc = strings.TrimSpace(data.Desc)
 	}
-	item.Tags = models.JSONSlice(cleanStickerTags(data.Tags))
+	tags, err := s.validateStickerTags(ctx, data.Tags)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	item.Tags = models.JSONSlice(tags)
 	if err := s.DAO.Sticker.Update(ctx, item); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -2577,6 +2587,28 @@ func (s *Service) DeleteStickerTag(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// validateStickerTags 校验标签均已提前创建（标签先建后选），返回去重清洗后的标签。
+func (s *Service) validateStickerTags(ctx context.Context, tags []string) ([]string, error) {
+	cleaned := cleanStickerTags(tags)
+	if len(cleaned) == 0 {
+		return cleaned, nil
+	}
+	registered := make(map[string]struct{})
+	existing, err := s.DAO.Sticker.TagList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range existing {
+		registered[t.Name] = struct{}{}
+	}
+	for _, t := range cleaned {
+		if _, ok := registered[t]; !ok {
+			return nil, fmt.Errorf("标签尚未创建: %s", t)
+		}
+	}
+	return cleaned, nil
 }
 
 // cleanStickerTags 清洗表情标签：去空白、去重。
