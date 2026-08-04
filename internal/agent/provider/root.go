@@ -25,6 +25,8 @@ type ProviderConfig struct {
 	Token       string    `json:"token"`
 	Model       string    `json:"model"`
 	Temperature float32   `json:"temperature"`
+	// EnableThinking 模型思考开关：true 时请求携带 thinking/enable_thinking 扩展参数
+	EnableThinking bool `json:"enable_thinking"`
 }
 
 // ---------- 请求/响应 ----------

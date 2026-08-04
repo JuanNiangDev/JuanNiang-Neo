@@ -59,23 +59,25 @@ type UpdateAdapterConfigReq struct {
 }
 
 type AddProviderReq struct {
-	Name        string           `json:"name"`
-	Type        models.ModelType `json:"type"`
-	Endpoint    string           `json:"endpoint"`
-	Token       string           `json:"token"`
-	Model       string           `json:"model"`
-	Temperature FlexFloat32      `json:"temperature"`
-	IsActive    bool             `json:"isActive"`
+	Name           string           `json:"name"`
+	Type           models.ModelType `json:"type"`
+	Endpoint       string           `json:"endpoint"`
+	Token          string           `json:"token"`
+	Model          string           `json:"model"`
+	Temperature    FlexFloat32      `json:"temperature"`
+	IsActive       bool             `json:"isActive"`
+	EnableThinking bool             `json:"enable_thinking"` // 模型思考开关
 }
 
 type UpdateProviderReq struct {
-	Name        string           `json:"name"`
-	Type        models.ModelType `json:"type"`
-	Endpoint    string           `json:"endpoint"`
-	Token       string           `json:"token"`
-	Model       string           `json:"model"`
-	Temperature FlexFloat32      `json:"temperature"`
-	IsActive    bool             `json:"isActive"`
+	Name           string           `json:"name"`
+	Type           models.ModelType `json:"type"`
+	Endpoint       string           `json:"endpoint"`
+	Token          string           `json:"token"`
+	Model          string           `json:"model"`
+	Temperature    FlexFloat32      `json:"temperature"`
+	IsActive       bool             `json:"isActive"`
+	EnableThinking bool             `json:"enable_thinking"` // 模型思考开关
 }
 
 type ToggleProviderReq struct {

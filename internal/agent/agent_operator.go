@@ -28,13 +28,14 @@ func (h *HagoCenter) SetProviderActive(ctx context.Context, id string, active bo
 			return err
 		}
 		h.Providers.AddProvider(provider.NewProvider(provider.ProviderConfig{
-			ID:          p.ID,
-			Name:        p.Name,
-			Type:        provider.ModelType(p.Type),
-			Endpoint:    p.Endpoint,
-			Token:       p.Token,
-			Model:       p.Model,
-			Temperature: p.Temperature,
+			ID:             p.ID,
+			Name:           p.Name,
+			Type:           provider.ModelType(p.Type),
+			Endpoint:       p.Endpoint,
+			Token:          p.Token,
+			Model:          p.Model,
+			Temperature:    p.Temperature,
+			EnableThinking: p.EnableThinking,
 		}))
 	} else {
 		h.Providers.DelProvider(id)
@@ -65,13 +66,14 @@ func (h *HagoCenter) SwitchProvider(ctx context.Context, id string) error {
 		return err
 	}
 	h.Providers.AddProvider(provider.NewProvider(provider.ProviderConfig{
-		ID:          p.ID,
-		Name:        p.Name,
-		Type:        provider.ModelType(p.Type),
-		Endpoint:    p.Endpoint,
-		Token:       p.Token,
-		Model:       p.Model,
-		Temperature: p.Temperature,
+		ID:             p.ID,
+		Name:           p.Name,
+		Type:           provider.ModelType(p.Type),
+		Endpoint:       p.Endpoint,
+		Token:          p.Token,
+		Model:          p.Model,
+		Temperature:    p.Temperature,
+		EnableThinking: p.EnableThinking,
 	}))
 	log.Info("Provider 切换完成", "id", id, "type", p.Type)
 	return nil

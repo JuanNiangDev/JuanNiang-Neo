@@ -67,15 +67,16 @@ type AdapterConfig struct {
 }
 
 type ProviderResp struct {
-	ID          string           `json:"id"`
-	CreatedAt   time.Time        `json:"created_at"`
-	Name        string           `json:"name"`
-	Type        models.ModelType `json:"type"`
-	Endpoint    string           `json:"endpoint"`
-	Token       string           `json:"token"`
-	Model       string           `json:"model"`
-	Temperature float32          `json:"temperature"`
-	IsActive    bool             `json:"is_active"`
+	ID             string           `json:"id"`
+	CreatedAt      time.Time        `json:"created_at"`
+	Name           string           `json:"name"`
+	Type           models.ModelType `json:"type"`
+	Endpoint       string           `json:"endpoint"`
+	Token          string           `json:"token"`
+	Model          string           `json:"model"`
+	Temperature    float32          `json:"temperature"`
+	IsActive       bool             `json:"is_active"`
+	EnableThinking bool             `json:"enable_thinking"` // 模型思考开关
 }
 
 type MCPServerResp struct {

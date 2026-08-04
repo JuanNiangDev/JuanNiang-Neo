@@ -19,6 +19,7 @@ func RawProviderList2Resp(raw []models.Provider) []ProviderResp {
 		res[i].Model = item.Model
 		res[i].Temperature = item.Temperature
 		res[i].IsActive = item.IsActive
+		res[i].EnableThinking = item.EnableThinking
 	}
 
 	return res

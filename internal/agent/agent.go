@@ -218,13 +218,14 @@ func (h *HagoCenter) loadProviders(ctx context.Context) error {
 			continue
 		}
 		pr := provider.NewProvider(provider.ProviderConfig{
-			ID:          p.ID,
-			Name:        p.Name,
-			Type:        provider.ModelType(p.Type),
-			Endpoint:    p.Endpoint,
-			Token:       p.Token,
-			Model:       p.Model,
-			Temperature: p.Temperature,
+			ID:             p.ID,
+			Name:           p.Name,
+			Type:           provider.ModelType(p.Type),
+			Endpoint:       p.Endpoint,
+			Token:          p.Token,
+			Model:          p.Model,
+			Temperature:    p.Temperature,
+			EnableThinking: p.EnableThinking,
 		})
 		h.Providers.AddProvider(pr)
 	}

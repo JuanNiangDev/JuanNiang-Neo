@@ -9,6 +9,9 @@
     </div>
     <v-data-table :headers="headers" :items="items" :loading="loading" items-per-page="20">
       <template #item.type="{ item }"><v-chip size="small" variant="tonal">{{ typeLabel(item.type) }}</v-chip></template>
+      <template #item.enable_thinking="{ item }">
+        <v-chip size="small" :color="item.enable_thinking ? 'primary' : 'default'" variant="tonal">{{ item.enable_thinking ? '开' : '关' }}</v-chip>
+      </template>
       <template #item.is_active="{ item }">
         <v-switch :model-value="item.is_active" color="primary" density="compact" hide-details @update:model-value="(v) => toggle(item.id, !!v)" />
       </template>
@@ -30,7 +33,11 @@
             <v-text-field v-model="form.token" label="API Token" class="mb-3" />
             <v-text-field v-model="form.model" label="模型名" class="mb-3" />
             <v-text-field v-model="form.temperature" label="温度" type="number" step="0.1" class="mb-3" />
+            <v-switch v-model="form.enable_thinking" label="模型思考" color="primary" class="mb-3" />
             <v-switch v-model="form.isActive" label="激活" color="primary" />
+            <div class="text-caption text-medium-emphasis mt-2">
+              模型思考开启后，请求会携带 thinking / enable_thinking 扩展参数（DeepSeek、通义千问等思考模式兼容）。
+            </div>
           </v-form>
         </v-card-text>
         <v-card-actions>
@@ -78,6 +85,7 @@ const headers = [
   { title: '模型', key: 'model' },
   { title: '端点', key: 'endpoint' },
   { title: '温度', key: 'temperature' },
+  { title: '思考', key: 'enable_thinking', align: 'center' as const },
   { title: 'Active', key: 'is_active', align: 'center' as const },
   { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
 ]
@@ -90,7 +98,7 @@ const types = [
 
 const typeLabel = (t: string) => ({ text_model: 'Text', image_model: 'Image', embedding_model: 'Embedding' }[t] || t)
 
-const defaultForm = (): AddProviderReq => ({ name: '', type: 'text_model', endpoint: '', token: '', model: '', temperature: 0.7, isActive: false })
+const defaultForm = (): AddProviderReq => ({ name: '', type: 'text_model', endpoint: '', token: '', model: '', temperature: 0.7, isActive: false, enable_thinking: false })
 const form = ref<AddProviderReq>(defaultForm())
 
 async function fetch() {
@@ -101,7 +109,7 @@ async function fetch() {
 function openAdd() { editing.value = null; form.value = defaultForm(); dialog.value = true }
 function openEdit(item: ProviderResp) {
   editing.value = item.id
-  form.value = { name: item.name, type: item.type, endpoint: item.endpoint, token: item.token, model: item.model, temperature: item.temperature, isActive: item.is_active }
+  form.value = { name: item.name, type: item.type, endpoint: item.endpoint, token: item.token, model: item.model, temperature: item.temperature, isActive: item.is_active, enable_thinking: item.enable_thinking }
   dialog.value = true
 }
 

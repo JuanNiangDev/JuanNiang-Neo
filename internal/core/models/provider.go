@@ -24,10 +24,12 @@ type Provider struct {
 	Token       string    `gorm:"not null"`
 	Model       string    `gorm:"not null"`
 	Temperature float32   `gorm:"default:0.7"`
-	IsActive    bool      `gorm:"default:true;index"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	DeletedAt   gorm.DeletedAt `gorm:"index"`
+	// EnableThinking 模型思考开关：请求体携带 thinking/enable_thinking 扩展参数
+	EnableThinking bool `gorm:"default:false"`
+	IsActive       bool `gorm:"default:true;index"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	DeletedAt      gorm.DeletedAt `gorm:"index"`
 }
 
 func (Provider) TableName() string {

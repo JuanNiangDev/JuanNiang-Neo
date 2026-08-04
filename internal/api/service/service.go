@@ -193,15 +193,16 @@ func (s *Service) GetProvider(ctx context.Context, c *app.RequestContext) {
 	}
 
 	data := dto.ProviderResp{
-		ID:          raw.ID,
-		CreatedAt:   raw.CreatedAt,
-		Name:        raw.Name,
-		Type:        raw.Type,
-		Endpoint:    raw.Endpoint,
-		Token:       raw.Token,
-		Model:       raw.Model,
-		Temperature: raw.Temperature,
-		IsActive:    raw.IsActive,
+		ID:             raw.ID,
+		CreatedAt:      raw.CreatedAt,
+		Name:           raw.Name,
+		Type:           raw.Type,
+		Endpoint:       raw.Endpoint,
+		Token:          raw.Token,
+		Model:          raw.Model,
+		Temperature:    raw.Temperature,
+		IsActive:       raw.IsActive,
+		EnableThinking: raw.EnableThinking,
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, data))
@@ -217,14 +218,15 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 
 	id := newUUID()
 	providerConfig := models.Provider{
-		ID:          id,
-		Name:        data.Name,
-		Type:        data.Type,
-		Endpoint:    data.Endpoint,
-		Token:       data.Token,
-		Model:       data.Model,
-		Temperature: float32(data.Temperature),
-		IsActive:    data.IsActive,
+		ID:             id,
+		Name:           data.Name,
+		Type:           data.Type,
+		Endpoint:       data.Endpoint,
+		Token:          data.Token,
+		Model:          data.Model,
+		Temperature:    float32(data.Temperature),
+		IsActive:       data.IsActive,
+		EnableThinking: data.EnableThinking,
 	}
 
 	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
@@ -249,13 +251,14 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 			}
 		}
 		s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfig{
-			ID:          id,
-			Name:        data.Name,
-			Type:        provType,
-			Endpoint:    data.Endpoint,
-			Token:       data.Token,
-			Model:       data.Model,
-			Temperature: float32(data.Temperature),
+			ID:             id,
+			Name:           data.Name,
+			Type:           provType,
+			Endpoint:       data.Endpoint,
+			Token:          data.Token,
+			Model:          data.Model,
+			Temperature:    float32(data.Temperature),
+			EnableThinking: data.EnableThinking,
 		}))
 	}
 
@@ -281,25 +284,27 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 	}
 
 	providerConfig := models.Provider{
-		ID:          id,
-		Name:        data.Name,
-		Type:        data.Type,
-		Endpoint:    data.Endpoint,
-		Token:       data.Token,
-		Model:       data.Model,
-		Temperature: float32(data.Temperature),
-		IsActive:    data.IsActive,
+		ID:             id,
+		Name:           data.Name,
+		Type:           data.Type,
+		Endpoint:       data.Endpoint,
+		Token:          data.Token,
+		Model:          data.Model,
+		Temperature:    float32(data.Temperature),
+		IsActive:       data.IsActive,
+		EnableThinking: data.EnableThinking,
 	}
 
 	provType := provider.ModelType(data.Type)
 	providerConfig_ := provider.ProviderConfig{
-		ID:          id,
-		Name:        data.Name,
-		Type:        provType,
-		Endpoint:    data.Endpoint,
-		Token:       data.Token,
-		Model:       data.Model,
-		Temperature: float32(data.Temperature),
+		ID:             id,
+		Name:           data.Name,
+		Type:           provType,
+		Endpoint:       data.Endpoint,
+		Token:          data.Token,
+		Model:          data.Model,
+		Temperature:    float32(data.Temperature),
+		EnableThinking: data.EnableThinking,
 	}
 
 	// 运行时同步：先移除同类型旧的，再同步新配置
@@ -368,13 +373,14 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 				}
 			}
 			s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfig{
-				ID:          id,
-				Name:        raw.Name,
-				Type:        provType,
-				Endpoint:    raw.Endpoint,
-				Token:       raw.Token,
-				Model:       raw.Model,
-				Temperature: raw.Temperature,
+				ID:             id,
+				Name:           raw.Name,
+				Type:           provType,
+				Endpoint:       raw.Endpoint,
+				Token:          raw.Token,
+				Model:          raw.Model,
+				Temperature:    raw.Temperature,
+				EnableThinking: raw.EnableThinking,
 			}))
 		}
 	} else {
