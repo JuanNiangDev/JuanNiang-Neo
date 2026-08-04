@@ -50,6 +50,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.ImageFolder{},
 		&models.Sticker{},
 		&models.StickerTag{},
+		&models.FishCalendarConfig{},
 	)
 }
 
