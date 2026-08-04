@@ -64,10 +64,35 @@ func RegisterBuiltinTools(
 	getSessionCtx func(ctx context.Context) string,
 	getCurrentMsg func(ctx context.Context) *adapter.MessageEvent,
 	getRecentMsgs func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error),
+	listImages func(ctx context.Context, folder string, limit int) (string, error),
 ) {
 	tools := []Tool{}
 
 	// --- OneBot11 消息 ---
+
+	// list_images 图床查询：Agent 发图前先查图床有哪些图片，拿到 ID 后按
+	// imgs://<ID> 引用（发送层会自动转 base64，无需关心网络互通）。
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "list_images", "查询图床中的图片列表（含 ID/名称/文件夹），用于发消息时引用图床图片 [CQ:image,file=imgs://图片ID]；发图前先调用本工具获取图片 ID",
+			openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"folder": map[string]any{"type": "string", "description": "虚拟文件夹路径（如 /meme），不填默认根目录 /"},
+					"limit":  map[string]any{"type": "integer", "description": "返回条数上限（默认 20，最大 50）"},
+				},
+			}, false, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Folder string `json:"folder"`
+				Limit  int    `json:"limit"`
+			}
+			_ = json.Unmarshal(args, &p)
+			if listImages == nil {
+				return "图床未初始化", nil
+			}
+			return listImages(ctx, p.Folder, p.Limit)
+		},
+	})
 
 	tools = append(tools, &onebotTool{
 		BaseTool: NewTool("", "send_private_msg", "发送私聊消息，支持纯文本或消息段数组",
@@ -77,7 +102,7 @@ func RegisterBuiltinTools(
 					"user_id": map[string]any{"type": "integer", "description": "目标用户 QQ 号"},
 					"message": map[string]any{
 						"oneOf": []map[string]any{
-							{"type": "string", "description": "消息文本，必须是 JSON 字符串（双引号包裹），可含 CQ 码：@某人 [CQ:at,qq=QQ号]、图片 [CQ:image,file=URL]、表情 [CQ:face,id=1]"},
+							{"type": "string", "description": "消息文本，必须是 JSON 字符串（双引号包裹），可含 CQ 码：@某人 [CQ:at,qq=QQ号]、图片 [CQ:image,file=URL]、图床图片 [CQ:image,file=imgs://图床图片ID（用 list_images 查询）]、表情 [CQ:face,id=1]"},
 							{"type": "array", "items": map[string]any{"type": "object"}, "description": "消息段数组：对象数组，每项含 type（text/image/at/face 等）与 data 字段"},
 						},
 						"description": "消息内容：JSON 字符串（含 CQ 码）或消息段数组，二选一",
@@ -133,7 +158,7 @@ func RegisterBuiltinTools(
 					"group_id": map[string]any{"type": "integer", "description": "目标群号"},
 					"message": map[string]any{
 						"oneOf": []map[string]any{
-							{"type": "string", "description": "消息文本，必须是 JSON 字符串（双引号包裹），可含 CQ 码：@某人 [CQ:at,qq=QQ号]、图片 [CQ:image,file=URL]、表情 [CQ:face,id=1]"},
+							{"type": "string", "description": "消息文本，必须是 JSON 字符串（双引号包裹），可含 CQ 码：@某人 [CQ:at,qq=QQ号]、图片 [CQ:image,file=URL]、图床图片 [CQ:image,file=imgs://图床图片ID（用 list_images 查询）]、表情 [CQ:face,id=1]"},
 							{"type": "array", "items": map[string]any{"type": "object"}, "description": "消息段数组：对象数组，每项含 type（text/image/at/face 等）与 data 字段"},
 						},
 						"description": "消息内容：JSON 字符串（含 CQ 码）或消息段数组，二选一",

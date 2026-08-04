@@ -195,6 +195,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error) {
 			return h.getRecentMessagesByMsgType(ctx, msgType, targetID, limit)
 		},
+		func(ctx context.Context, folder string, limit int) (string, error) {
+			return h.listImagesForTool(ctx, folder, limit)
+		},
 	)
 
 	// 内置工具"仅管理员"标志：seed 默认高危名单到 DB（幂等），并加载运行时权限表
