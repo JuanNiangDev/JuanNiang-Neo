@@ -74,12 +74,12 @@
           <v-icon size="48" color="medium-emphasis" class="mb-3">mdi-image-off-outline</v-icon>
           <div class="text-body-2 text-medium-emphasis">当前文件夹还没有图片，点右上角「上传图片」试试</div>
         </v-card>
-
-        <!-- 分页 -->
-        <div class="d-flex justify-center mt-4">
-          <v-pagination v-model="page" :length="pageCount" :total-visible="5" @update:model-value="loadImages" />
-        </div>
       </div>
+    </div>
+
+    <!-- 分页（页面底部） -->
+    <div class="d-flex justify-center mt-4">
+      <v-pagination v-model="page" :length="pageCount" :total-visible="5" @update:model-value="loadImages" />
     </div>
 
     <!-- 上传弹窗 -->
