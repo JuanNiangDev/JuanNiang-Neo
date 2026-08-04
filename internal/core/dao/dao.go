@@ -40,6 +40,7 @@ type Bundle struct {
 	ReplyStrategy   *ReplyStrategyDAO
 	SkillMemory     *SkillMemoryDAO
 	TokenUsageDaily *TokenUsageDailyDAO
+	Knowledge       *KnowledgeDAO
 }
 
 func NewBundle(db *gorm.DB) *Bundle {
@@ -67,5 +68,6 @@ func NewBundle(db *gorm.DB) *Bundle {
 		ReplyStrategy:   NewReplyStrategyDAO(db),
 		SkillMemory:     NewSkillMemoryDAO(db),
 		TokenUsageDaily: NewTokenUsageDailyDAO(db),
+		Knowledge:       NewKnowledgeDAO(db),
 	}
 }
