@@ -2742,7 +2742,7 @@ func (s *Service) AddScheduledMessage(ctx context.Context, c *app.RequestContext
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	segs, err := normalizeScheduledSegments(data.Segments)
+	segs, err := normalizeScheduledBlocks(data.Blocks)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -2757,7 +2757,7 @@ func (s *Service) AddScheduledMessage(ctx context.Context, c *app.RequestContext
 		CronExpr:   strings.TrimSpace(data.CronExpr),
 		TargetType: data.TargetType,
 		TargetID:   data.TargetID,
-		Segments:   segs,
+		Blocks:     segs,
 	}
 	if item.TargetType == "" {
 		item.TargetType = "group"
@@ -2784,7 +2784,7 @@ func (s *Service) UpdateScheduledMessage(ctx context.Context, c *app.RequestCont
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	segs, err := normalizeScheduledSegments(data.Segments)
+	segs, err := normalizeScheduledBlocks(data.Blocks)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -2802,7 +2802,7 @@ func (s *Service) UpdateScheduledMessage(ctx context.Context, c *app.RequestCont
 	if data.TargetID != 0 {
 		item.TargetID = data.TargetID
 	}
-	item.Segments = segs
+	item.Blocks = segs
 	if err := s.DAO.ScheduledMsg.Update(ctx, item); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -2867,22 +2867,16 @@ func (s *Service) TriggerScheduledMessage(ctx context.Context, c *app.RequestCon
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
-// normalizeScheduledSegments 校验并归一化定时消息段。
+// normalizeScheduledSegments 校验并归一化消息块内的段（text / image / face）。
 func normalizeScheduledSegments(segs []dto.ScheduledSegmentReq) (models.ScheduledSegments, error) {
 	if len(segs) == 0 {
-		return nil, errors.New("至少需要一个消息段")
+		return nil, errors.New("消息块至少需要一个段")
 	}
 	out := make(models.ScheduledSegments, 0, len(segs))
 	for _, s := range segs {
 		s.Type = strings.TrimSpace(s.Type)
 		s.Source = strings.TrimSpace(s.Source)
 		s.Content = strings.TrimSpace(s.Content)
-		if s.DelaySeconds < 0 {
-			s.DelaySeconds = 0
-		}
-		if s.DelaySeconds > 3600 {
-			s.DelaySeconds = 3600
-		}
 		if s.Content == "" {
 			return nil, fmt.Errorf("消息段内容不能为空")
 		}
@@ -2898,9 +2892,33 @@ func normalizeScheduledSegments(segs []dto.ScheduledSegmentReq) (models.Schedule
 		default:
 			return nil, fmt.Errorf("消息段 type 必须是 text / image / face")
 		}
-		out = append(out, models.ScheduledMessageSegment{
-			Type: s.Type, Source: s.Source, Content: s.Content, DelaySeconds: s.DelaySeconds,
-		})
+		out = append(out, models.ScheduledMessageSegment{Type: s.Type, Source: s.Source, Content: s.Content})
+	}
+	return out, nil
+}
+
+// normalizeScheduledBlocks 校验并归一化编排块链（message / delay）。
+func normalizeScheduledBlocks(blocks []dto.ScheduledBlockReq) (models.ScheduledBlocks, error) {
+	if len(blocks) == 0 {
+		return nil, errors.New("至少需要一个编排块")
+	}
+	out := make(models.ScheduledBlocks, 0, len(blocks))
+	for i, b := range blocks {
+		switch strings.TrimSpace(b.Type) {
+		case "message":
+			segs, err := normalizeScheduledSegments(b.Segments)
+			if err != nil {
+				return nil, fmt.Errorf("第 %d 块（消息）: %w", i+1, err)
+			}
+			out = append(out, models.ScheduledBlock{Type: "message", Segments: segs})
+		case "delay":
+			if b.DelaySeconds <= 0 || b.DelaySeconds > 3600 {
+				return nil, fmt.Errorf("第 %d 块（延时）: 延迟必须在 1~3600 秒之间", i+1)
+			}
+			out = append(out, models.ScheduledBlock{Type: "delay", DelaySeconds: b.DelaySeconds})
+		default:
+			return nil, fmt.Errorf("第 %d 块类型必须是 message / delay", i+1)
+		}
 	}
 	return out, nil
 }

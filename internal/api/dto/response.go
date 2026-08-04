@@ -317,27 +317,33 @@ type FishCalendarAffairResp struct {
 	Content string `json:"content"`
 }
 
-// ScheduledSegmentResp 定时消息段。
+// ScheduledSegmentResp 消息块内的消息段。
 type ScheduledSegmentResp struct {
-	Type         string `json:"type"`
-	Source       string `json:"source,omitempty"`
-	Content      string `json:"content"`
-	DelaySeconds int    `json:"delay_seconds,omitempty"`
+	Type    string `json:"type"`
+	Source  string `json:"source,omitempty"`
+	Content string `json:"content"`
+}
+
+// ScheduledBlockResp 编排块。
+type ScheduledBlockResp struct {
+	Type         string                 `json:"type"`
+	Segments     []ScheduledSegmentResp `json:"segments,omitempty"`
+	DelaySeconds int                    `json:"delay_seconds,omitempty"`
 }
 
 // ScheduledMessageResp 定时消息任务。
 type ScheduledMessageResp struct {
-	ID         string                 `json:"id"`
-	Name       string                 `json:"name"`
-	Enabled    bool                   `json:"enabled"`
-	CronExpr   string                 `json:"cron_expr"`
-	TargetType string                 `json:"target_type"`
-	TargetID   int64                  `json:"target_id"`
-	Segments   []ScheduledSegmentResp `json:"segments"`
-	LastRunAt  *time.Time             `json:"last_run_at"`
-	LastError  string                 `json:"last_error"`
-	CreatedAt  time.Time              `json:"created_at"`
-	UpdatedAt  time.Time              `json:"updated_at"`
+	ID         string               `json:"id"`
+	Name       string               `json:"name"`
+	Enabled    bool                 `json:"enabled"`
+	CronExpr   string               `json:"cron_expr"`
+	TargetType string               `json:"target_type"`
+	TargetID   int64                `json:"target_id"`
+	Blocks     []ScheduledBlockResp `json:"blocks"`
+	LastRunAt  *time.Time           `json:"last_run_at"`
+	LastError  string               `json:"last_error"`
+	CreatedAt  time.Time            `json:"created_at"`
+	UpdatedAt  time.Time            `json:"updated_at"`
 }
 
 // ScheduledMessageListResp 定时消息分页列表。

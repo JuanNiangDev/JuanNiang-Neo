@@ -237,32 +237,38 @@ type SetFishCalendarAffairReq struct {
 
 // ---------- 定时消息 ----------
 
-// ScheduledSegmentReq 定时消息段。
+// ScheduledSegmentReq 消息块内的消息段。
 type ScheduledSegmentReq struct {
-	Type         string `json:"type"`                    // text / image / face
-	Source       string `json:"source,omitempty"`        // image 段：t2i / url / imgstore
-	Content      string `json:"content"`                 // 文字 / 图片内容 / CQ 码
-	DelaySeconds int    `json:"delay_seconds,omitempty"` // 段间延迟（秒）
+	Type    string `json:"type"`             // text / image / face
+	Source  string `json:"source,omitempty"` // image 段：t2i / url / imgstore
+	Content string `json:"content"`          // 文字 / 图片内容 / CQ 码
+}
+
+// ScheduledBlockReq 编排块（积木式）：message 消息块 / delay 延时块。
+type ScheduledBlockReq struct {
+	Type         string                `json:"type"`                    // message / delay
+	Segments     []ScheduledSegmentReq `json:"segments,omitempty"`      // message 块的段（一条消息）
+	DelaySeconds int                   `json:"delay_seconds,omitempty"` // delay 块的秒数
 }
 
 // AddScheduledMessageReq 新建定时消息任务。
 type AddScheduledMessageReq struct {
-	Name       string                `json:"name"`
-	Enabled    bool                  `json:"enabled"`
-	CronExpr   string                `json:"cron_expr"`
-	TargetType string                `json:"target_type"` // group / private
-	TargetID   int64                 `json:"target_id"`
-	Segments   []ScheduledSegmentReq `json:"segments"`
+	Name       string              `json:"name"`
+	Enabled    bool                `json:"enabled"`
+	CronExpr   string              `json:"cron_expr"` // 触发器
+	TargetType string              `json:"target_type"`
+	TargetID   int64               `json:"target_id"`
+	Blocks     []ScheduledBlockReq `json:"blocks"`
 }
 
 // UpdateScheduledMessageReq 编辑定时消息任务。
 type UpdateScheduledMessageReq struct {
-	Name       string                `json:"name"`
-	Enabled    bool                  `json:"enabled"`
-	CronExpr   string                `json:"cron_expr"`
-	TargetType string                `json:"target_type"`
-	TargetID   int64                 `json:"target_id"`
-	Segments   []ScheduledSegmentReq `json:"segments"`
+	Name       string              `json:"name"`
+	Enabled    bool                `json:"enabled"`
+	CronExpr   string              `json:"cron_expr"`
+	TargetType string              `json:"target_type"`
+	TargetID   int64               `json:"target_id"`
+	Blocks     []ScheduledBlockReq `json:"blocks"`
 }
 
 // ---------- Plugin ----------

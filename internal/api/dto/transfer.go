@@ -167,11 +167,13 @@ func RawSticker2Resp(raw *models.Sticker) StickerResp {
 
 // RawScheduledMsg2Resp 定时消息任务转换。
 func RawScheduledMsg2Resp(raw *models.ScheduledMessage) ScheduledMessageResp {
-	segs := make([]ScheduledSegmentResp, 0, len(raw.Segments))
-	for _, s := range raw.Segments {
-		segs = append(segs, ScheduledSegmentResp{
-			Type: s.Type, Source: s.Source, Content: s.Content, DelaySeconds: s.DelaySeconds,
-		})
+	blocks := make([]ScheduledBlockResp, 0, len(raw.Blocks))
+	for _, b := range raw.Blocks {
+		segs := make([]ScheduledSegmentResp, 0, len(b.Segments))
+		for _, s := range b.Segments {
+			segs = append(segs, ScheduledSegmentResp{Type: s.Type, Source: s.Source, Content: s.Content})
+		}
+		blocks = append(blocks, ScheduledBlockResp{Type: b.Type, Segments: segs, DelaySeconds: b.DelaySeconds})
 	}
 	return ScheduledMessageResp{
 		ID:         raw.ID,
@@ -180,7 +182,7 @@ func RawScheduledMsg2Resp(raw *models.ScheduledMessage) ScheduledMessageResp {
 		CronExpr:   raw.CronExpr,
 		TargetType: raw.TargetType,
 		TargetID:   raw.TargetID,
-		Segments:   segs,
+		Blocks:     blocks,
 		LastRunAt:  raw.LastRunAt,
 		LastError:  raw.LastError,
 		CreatedAt:  raw.CreatedAt,

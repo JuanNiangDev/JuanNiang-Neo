@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,7 +62,7 @@ func (m *Manager) Reload(ctx context.Context) {
 	}
 	for i := range tasks {
 		task := tasks[i]
-		if len(task.Segments) == 0 {
+		if len(task.Blocks) == 0 {
 			continue
 		}
 		eid, err := m.cron.AddFunc(task.CronExpr, func() {
@@ -70,7 +71,7 @@ func (m *Manager) Reload(ctx context.Context) {
 			if err := m.TriggerNow(runCtx, task.ID); err != nil {
 				log.Error("定时消息执行失败", "name", task.Name, "err", err)
 			} else {
-				log.Info("定时消息执行完成", "name", task.Name, "segments", len(task.Segments))
+				log.Info("定时消息执行完成", "name", task.Name, "blocks", len(task.Blocks))
 			}
 		})
 		if err != nil {
@@ -78,7 +79,7 @@ func (m *Manager) Reload(ctx context.Context) {
 			continue
 		}
 		m.entries[task.ID] = eid
-		log.Info("定时消息已调度", "name", task.Name, "cron_expr", task.CronExpr, "target", task.TargetID, "segments", len(task.Segments))
+		log.Info("定时消息已调度", "name", task.Name, "cron_expr", task.CronExpr, "target", task.TargetID, "blocks", len(task.Blocks))
 	}
 }
 
@@ -92,86 +93,100 @@ func (m *Manager) Run(ctx context.Context) {
 	log.Info("定时消息调度器已停止")
 }
 
-// TriggerNow 手动/定时触发单个任务：逐段发送，段间按配置延迟。
+// TriggerNow 手动/定时触发单个任务：沿块链顺序执行（消息块发一条消息，延时块等待）。
 func (m *Manager) TriggerNow(ctx context.Context, id string) error {
 	task, err := m.dao.GetByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("任务不存在: %w", err)
 	}
-	if len(task.Segments) == 0 {
-		return errors.New("任务没有配置消息段")
+	if len(task.Blocks) == 0 {
+		return errors.New("任务没有配置编排块")
 	}
 	recordErr := func(runErr error) error {
 		_ = m.dao.MarkRunResult(ctx, task.ID, time.Now(), runErr.Error())
 		return runErr
 	}
 
-	for i := range task.Segments {
-		seg := &task.Segments[i]
-		msg, err := m.renderSegment(ctx, seg)
-		if err != nil {
-			return recordErr(fmt.Errorf("第 %d 段渲染失败: %w", i+1, err))
-		}
-		if err := m.send(task, msg); err != nil {
-			return recordErr(fmt.Errorf("第 %d 段发送失败: %w", i+1, err))
-		}
-		log.Info("定时消息段已发送", "name", task.Name, "index", i+1, "type", seg.Type, "target", task.TargetID)
-		// 段间延迟（最后一段之后不等待）
-		if i < len(task.Segments)-1 && seg.DelaySeconds > 0 {
+	for i := range task.Blocks {
+		block := &task.Blocks[i]
+		switch block.Type {
+		case "delay":
+			if block.DelaySeconds <= 0 {
+				continue
+			}
+			log.Info("定时消息延时等待", "name", task.Name, "seconds", block.DelaySeconds)
 			select {
-			case <-time.After(time.Duration(seg.DelaySeconds) * time.Second):
+			case <-time.After(time.Duration(block.DelaySeconds) * time.Second):
 			case <-ctx.Done():
 				return recordErr(ctx.Err())
 			}
+		case "message":
+			if len(block.Segments) == 0 {
+				return recordErr(fmt.Errorf("第 %d 块（消息）没有内容", i+1))
+			}
+			msg, err := m.renderMessage(ctx, block.Segments)
+			if err != nil {
+				return recordErr(fmt.Errorf("第 %d 块渲染失败: %w", i+1, err))
+			}
+			if err := m.send(task, msg); err != nil {
+				return recordErr(fmt.Errorf("第 %d 块发送失败: %w", i+1, err))
+			}
+			log.Info("定时消息块已发送", "name", task.Name, "block", i+1, "segments", len(block.Segments), "target", task.TargetID)
+		default:
+			return recordErr(fmt.Errorf("第 %d 块未知类型: %s", i+1, block.Type))
 		}
 	}
 	_ = m.dao.MarkRunResult(ctx, task.ID, time.Now(), "")
 	return nil
 }
 
-// renderSegment 把单个消息段渲染为 CQ 码/纯文本消息。
-func (m *Manager) renderSegment(ctx context.Context, seg *models.ScheduledMessageSegment) (string, error) {
-	switch seg.Type {
-	case "text":
-		if seg.Content == "" {
-			return "", errors.New("文字内容为空")
-		}
-		return seg.Content, nil
-	case "face":
-		if seg.Content == "" {
-			return "", errors.New("表情内容为空")
-		}
-		// Content 直接是 CQ 码文本，如 [CQ:face,id=66]
-		return seg.Content, nil
-	case "image":
-		switch seg.Source {
-		case "url":
-			return fmt.Sprintf("[CQ:image,file=%s]", seg.Content), nil
-		case "imgstore":
-			// imgs:// 引用由 adapter 发送层自动解析为 base64
-			return fmt.Sprintf("[CQ:image,file=%s]", seg.Content), nil
-		case "t2i":
-			t2i := m.getT2I()
-			if t2i == nil {
-				return "", errors.New("T2I 服务未启用，无法渲染图片")
+// renderMessage 把一个消息块的所有段拼成一条富文本消息（CQ 码字符串）。
+func (m *Manager) renderMessage(ctx context.Context, segs models.ScheduledSegments) (string, error) {
+	var sb strings.Builder
+	for i := range segs {
+		seg := &segs[i]
+		switch seg.Type {
+		case "text":
+			if seg.Content == "" {
+				return "", errors.New("文字内容为空")
 			}
-			img, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
-				HTML: seg.Content,
-				Options: &t2icaller.GenerateOptions{
-					Type:    t2icaller.ImageTypeJPEG,
-					Quality: 85,
-				},
-			})
-			if err != nil {
-				return "", fmt.Errorf("T2I 生成失败: %w", err)
+			sb.WriteString(seg.Content)
+		case "face":
+			if seg.Content == "" {
+				return "", errors.New("表情内容为空")
 			}
-			return fmt.Sprintf("[CQ:image,file=base64://%s]", base64.StdEncoding.EncodeToString(img)), nil
+			sb.WriteString(seg.Content) // CQ 码，如 [CQ:face,id=66]
+		case "image":
+			switch seg.Source {
+			case "url":
+				sb.WriteString(fmt.Sprintf("[CQ:image,file=%s]", seg.Content))
+			case "imgstore":
+				// imgs:// 引用由 adapter 发送层自动解析为 base64
+				sb.WriteString(fmt.Sprintf("[CQ:image,file=%s]", seg.Content))
+			case "t2i":
+				t2i := m.getT2I()
+				if t2i == nil {
+					return "", errors.New("T2I 服务未启用，无法渲染图片")
+				}
+				img, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
+					HTML: seg.Content,
+					Options: &t2icaller.GenerateOptions{
+						Type:    t2icaller.ImageTypeJPEG,
+						Quality: 85,
+					},
+				})
+				if err != nil {
+					return "", fmt.Errorf("T2I 生成失败: %w", err)
+				}
+				sb.WriteString(fmt.Sprintf("[CQ:image,file=base64://%s]", base64.StdEncoding.EncodeToString(img)))
+			default:
+				return "", fmt.Errorf("未知图片来源: %s", seg.Source)
+			}
 		default:
-			return "", fmt.Errorf("未知图片来源: %s", seg.Source)
+			return "", fmt.Errorf("未知消息段类型: %s", seg.Type)
 		}
-	default:
-		return "", fmt.Errorf("未知消息段类型: %s", seg.Type)
 	}
+	return sb.String(), nil
 }
 
 // send 按任务目标发送单段消息。
