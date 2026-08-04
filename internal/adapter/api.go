@@ -323,6 +323,8 @@ func (p *Adapter) SendGroupForwardMsg(groupID int64, nodes []ForwardNode) (int64
 func normalizeMessage(msg any) any {
 	switch v := msg.(type) {
 	case string:
+		// 先修复 LLM 生成的 CQ 码格式瑕疵（如 "[ CQ:face,id=66]"），再解析
+		v = NormalizeCQCodes(v)
 		if HasCQCode(v) {
 			return ParseCQCodes(v)
 		}

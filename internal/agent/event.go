@@ -739,6 +739,8 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs Rep
 // 纯文本部分 → {Type: "text", Data: {"text": "..."}}
 // CQ 码部分 → {Type: "image", Data: {"file": "..."}} 等
 func parseCQToSegments(content string) []adapter.Segment {
+	// 先修复 CQ 码格式瑕疵（如 "[ CQ:face,id=66]"），否则解析不到会原样显示
+	content = adapter.NormalizeCQCodes(content)
 	var segments []adapter.Segment
 	lastIdx := 0
 	for _, loc := range cqCodeRegexp.FindAllStringIndex(content, -1) {
