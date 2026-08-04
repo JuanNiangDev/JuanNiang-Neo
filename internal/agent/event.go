@@ -168,6 +168,32 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 // 避免多条消息同时到达时各自触发完整 ReAct 循环（重复执行任务 + 回复串味）。
 const batchWindow = time.Second
 
+// 热聊检测（L2.2/L4.1）：1s 滑动窗口内消息数 ≥ floodThreshold 视为刷屏。
+// 刷屏时：批窗口拉长到 hotBatchWindow（合并更多消息），且相关性判断直接降级
+// 为只回 @/命令/提及名字（不调 LLM）。
+const (
+	hotWindow      = time.Second
+	floodThreshold = 5
+	hotBatchWindow = 3 * time.Second
+)
+
+// 相关性判断结果缓存（L2.3/L4.2，Redis）：
+//   - related   → 对话轮次内放宽判断（机器人刚参与过，短时间不再重复判断）
+//   - unrelated → 冷却期（热聊无关消息不反复触发 LLM 判断）
+const (
+	relevanceVerdictKey = "relevance:verdict:" // + areaID
+	verdictRelated      = "related"
+	verdictUnrelated    = "unrelated"
+	relatedVerdictTTL   = 15 * time.Second
+	unrelatedVerdictTTL = 30 * time.Second
+)
+
+// hotStat 单个 ChatArea 的 1s 滑动窗口消息计数（热聊检测用）。
+type hotStat struct {
+	count       int
+	windowStart time.Time
+}
+
 // pendingBatch 同一 ChatArea 在批处理窗口内收集的消息。
 type pendingBatch struct {
 	events []adapter.Event
@@ -190,6 +216,9 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 // enqueueBatch 将消息加入对应 ChatArea 的待处理批次；窗口结束后统一派发。
 // 若窗口内又来新消息，直接追加到同一批次，保证同一时间每个 ChatArea 只有一个待处理批次。
 func (h *HagoCenter) enqueueBatch(ctx context.Context, ev adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+	// L2.2 热聊统计：每条消息到达都计数（决定批窗口与刷屏降级）
+	count := h.recordMessage(chatArea.ID, time.Now())
+
 	h.batchMu.Lock()
 	if b, ok := h.batches[chatArea.ID]; ok {
 		b.events = append(b.events, ev)
@@ -200,8 +229,14 @@ func (h *HagoCenter) enqueueBatch(ctx context.Context, ev adapter.Event, chatAre
 	h.batches[chatArea.ID] = b
 	h.batchMu.Unlock()
 
+	// L2.2 动态批窗口：刷屏时拉长窗口，合并更多消息为一次判断/处理
+	window := batchWindow
+	if count >= floodThreshold {
+		window = hotBatchWindow
+	}
+
 	// 窗口结束后派发整个批次（复制事件，避免与后续追加竞争）
-	b.timer = time.AfterFunc(batchWindow, func() {
+	b.timer = time.AfterFunc(window, func() {
 		h.batchMu.Lock()
 		delete(h.batches, chatArea.ID)
 		events := append([]adapter.Event(nil), b.events...)
@@ -211,6 +246,64 @@ func (h *HagoCenter) enqueueBatch(ctx context.Context, ev adapter.Event, chatAre
 		}
 		h.spawnBatch(ctx, events, b.rs, chatArea)
 	})
+}
+
+// recordMessage 记录 ChatArea 的消息到达，返回当前 1s 窗口内的消息数。
+func (h *HagoCenter) recordMessage(areaID string, now time.Time) int {
+	h.hotMu.Lock()
+	defer h.hotMu.Unlock()
+	st, ok := h.hotStats[areaID]
+	if !ok || now.Sub(st.windowStart) >= hotWindow {
+		// 新窗口或窗口已过期：重建（防无界增长，超上限整体清空）
+		if !ok && len(h.hotStats) >= 2048 {
+			h.hotStats = make(map[string]*hotStat)
+		}
+		h.hotStats[areaID] = &hotStat{count: 1, windowStart: now}
+		return 1
+	}
+	st.count++
+	return st.count
+}
+
+// isChatFlooding 判断 ChatArea 是否处于刷屏状态（1s 窗口内消息数 ≥ floodThreshold）。
+func (h *HagoCenter) isChatFlooding(areaID string) bool {
+	if areaID == "" {
+		return false
+	}
+	h.hotMu.Lock()
+	defer h.hotMu.Unlock()
+	st, ok := h.hotStats[areaID]
+	if !ok || time.Since(st.windowStart) >= hotWindow {
+		return false
+	}
+	return st.count >= floodThreshold
+}
+
+// getRelevanceVerdict 读取 ChatArea 的相关性判断缓存（Redis）。
+// 返回 "" 表示无缓存；verdictRelated / verdictUnrelated 表示命中。
+func (h *HagoCenter) getRelevanceVerdict(ctx context.Context, areaID string) string {
+	if h.Cache == nil || areaID == "" {
+		return ""
+	}
+	var v string
+	if err := h.Cache.Get(ctx, relevanceVerdictKey+areaID, &v); err != nil {
+		return ""
+	}
+	return v
+}
+
+// setRelevanceVerdict 写入 ChatArea 的相关性判断缓存（Redis，带 TTL）。
+func (h *HagoCenter) setRelevanceVerdict(ctx context.Context, areaID string, verdict string) {
+	if h.Cache == nil || areaID == "" {
+		return
+	}
+	ttl := relatedVerdictTTL
+	if verdict == verdictUnrelated {
+		ttl = unrelatedVerdictTTL
+	}
+	if err := h.Cache.Set(ctx, relevanceVerdictKey+areaID, verdict, ttl); err != nil {
+		log.Warn("相关性判断缓存写入失败", "area", areaID, "err", err)
+	}
 }
 
 // spawnBatch 启动一个批次的 Agent 处理（relevance 检查与并发控制都在 goroutine 内，不阻塞事件循环）。
@@ -280,11 +373,29 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 		areaID = area.ID
 	}
 
+	// L4.1 热度降级：刷屏时跳过 LLM 判断，只回必回消息（@/命令/提及名字）
+	if h.isChatFlooding(areaID) {
+		log.Debug("相关性: 群聊刷屏，降级为仅回@/命令/提及名字", "area", areaID)
+		return mustKeep
+	}
+
+	// L2.3/L4.2 判断结果缓存：related=对话轮次内放宽；unrelated=冷却期内不再判断
+	if v := h.getRelevanceVerdict(ctx, areaID); v != "" {
+		if v == verdictRelated {
+			log.Debug("相关性: 命中 related 缓存，保留候选", "area", areaID)
+			return append(mustKeep, candidates...)
+		}
+		log.Debug("相关性: 命中 unrelated 冷却缓存，丢弃候选", "area", areaID)
+		return mustKeep
+	}
+
 	// L2.1 批量合并判断：一次 LLM 调用决定整批候选去留
 	if h.relevanceBatchEvaluate(ctx, candidates, rs, areaID) {
+		h.setRelevanceVerdict(ctx, areaID, verdictRelated)
 		log.Debug("相关性: 批量判断通过，保留候选", "count", len(candidates))
 		return append(mustKeep, candidates...)
 	}
+	h.setRelevanceVerdict(ctx, areaID, verdictUnrelated)
 	log.Debug("相关性: 批量判断不相关，丢弃候选", "count", len(candidates))
 	return mustKeep
 }

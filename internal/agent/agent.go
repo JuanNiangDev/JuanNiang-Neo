@@ -66,6 +66,13 @@ type HagoCenter struct {
 	batchMu sync.Mutex
 	batches map[string]*pendingBatch
 
+	// 相关性判断结果缓存（Redis，L2.3/L4.2）
+	Cache *cache.Cache
+
+	// 热聊统计（内存，L2.2/L4.1）：1s 滑动窗口消息计数，用于动态批窗口与刷屏降级
+	hotMu    sync.Mutex
+	hotStats map[string]*hotStat
+
 	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
 	EinoAgent *adk.ChatModelAgent
 }
@@ -103,6 +110,7 @@ func NewHagoCenter() *HagoCenter {
 		Loops:           NewLoopTracker(),
 		memberInfoCache: make(map[string]memberInfoEntry),
 		batches:         make(map[string]*pendingBatch),
+		hotStats:        make(map[string]*hotStat),
 	}
 }
 
@@ -114,6 +122,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.ACL = cfg.ACL
 	h.Providers = cfg.Providers
 	h.MCP = cfg.MCPGroup
+	h.Cache = cfg.Cache
 
 	// 缓存机器人自己的 QQ 号和昵称
 	h.SelfQQ = h.Adapter.SelfID()
