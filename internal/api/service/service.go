@@ -1856,6 +1856,7 @@ func (s *Service) GetReplyStrategy(ctx context.Context, c *app.RequestContext) {
 		AgentLite:          cfg.AgentLite,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}))
 }
 
@@ -1889,6 +1890,15 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		}
 	}
 
+	// 验证判断失败策略
+	if data.JudgeFailPolicy == "" {
+		data.JudgeFailPolicy = "drop"
+	}
+	if data.JudgeFailPolicy != "drop" && data.JudgeFailPolicy != "reply" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: "判断失败策略只能是 drop 或 reply"}, nil))
+		return
+	}
+
 	cfg, err := s.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -1902,6 +1912,7 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 	cfg.AgentLite = data.AgentLite
 	cfg.RelevancePrompt = data.RelevancePrompt
 	cfg.RelevanceModel = data.RelevanceModel
+	cfg.JudgeFailPolicy = data.JudgeFailPolicy
 
 	if err := s.DAO.ReplyStrategy.Update(ctx, cfg); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -1916,6 +1927,7 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		AgentLite:          cfg.AgentLite,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}))
 }
 

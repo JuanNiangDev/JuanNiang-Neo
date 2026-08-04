@@ -31,6 +31,7 @@ type ReplySettings struct {
 	RelevanceThreshold float64
 	RelevancePrompt    string // 相关性检测自定义提示词（空则用默认）
 	RelevanceModel     string // 相关性检测使用的 Text Provider ID（空则用默认）
+	JudgeFailPolicy    string // 判断失败策略: drop=不回复（默认）, reply=照常回复
 }
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
@@ -155,6 +156,7 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		RelevanceThreshold: cfg.RelevanceThreshold,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}
 }
 

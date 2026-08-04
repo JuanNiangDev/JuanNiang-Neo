@@ -233,7 +233,9 @@ export interface ReplyStrategyResp {
   agent_lite: boolean
   relevance_prompt: string
   relevance_model: string
+  judge_fail_policy: string
 }
+
 export interface UpdateReplyStrategyReq {
   strategy: string
   relevance_threshold: number
@@ -242,6 +244,7 @@ export interface UpdateReplyStrategyReq {
   agent_lite: boolean
   relevance_prompt?: string
   relevance_model?: string
+  judge_fail_policy?: string
 }
 
 export const replyStrategyApi = {

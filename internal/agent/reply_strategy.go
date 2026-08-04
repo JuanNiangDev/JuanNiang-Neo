@@ -71,7 +71,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 					resp, err := visionModel.Vision(ctx, nil, prompt) // Vision expects raw image bytes
 					if err != nil {
 						log.Warn("Vision 调用失败", "err", err)
-						return 0, "Vision 调用失败"
+						return judgeFailVerdict(rs, "Vision 调用失败")
 					}
 					// 解析 JSON
 					var result RelevanceCheckResult
@@ -150,7 +150,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 	resp, err := llm.Chat(ctx, req)
 	if err != nil {
 		log.Warn("相关性检查 LLM 调用失败", "err", err)
-		return 0, "LLM 调用失败"
+		return judgeFailVerdict(rs, "LLM 调用失败")
 	}
 
 	content := strings.TrimSpace(resp.Message.Content)
@@ -162,6 +162,16 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 
 	log.Info("相关性检查结果", "relevance", result.Relevance, "reason", result.Reason, "raw", content)
 	return result.Relevance, result.Reason
+}
+
+// judgeFailVerdict 相关性判断失败（LLM/Vision 调用出错）时的降级策略。
+//   - rs.JudgeFailPolicy == "reply" → 返回 1.0（照常回复，避免机器人"装死"）
+//   - 默认（drop）→ 返回 0（不回复）
+func judgeFailVerdict(rs ReplySettings, reason string) (float64, string) {
+	if rs.JudgeFailPolicy == "reply" {
+		return 1.0, reason + "（按配置 reply 照常回复）"
+	}
+	return 0, reason
 }
 
 // extractRelevanceJSON 从 LLM 响应中提取 JSON，处理 reason 中可能包含未转义引号的情况。
