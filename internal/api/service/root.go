@@ -55,6 +55,8 @@ type Service struct {
 	OnKnowledgeChanged func()
 	// OnExtractKnowledge 知识新增/编辑后触发异步关键词提取。
 	OnExtractKnowledge func(id string)
+	// OnKnowledgeStats 获取知识库检索 LRU 缓存统计（Web 知识库页面展示）。
+	OnKnowledgeStats func() []agent.KnowledgeLRUEntryInfo
 	// LoopTracker 当前活跃的 Agent ReAct 循环（监控展示）。
 	LoopTracker *agent.LoopTracker
 	// PromptMgr 提示词管理器（缓存失效用）。

@@ -231,6 +231,7 @@ func main() {
 	svc.OnUpdateToolAdminOnly = func() { hago.RefreshToolAdminOnly(ctx) }
 	svc.OnKnowledgeChanged = func() { hago.InvalidateKnowledgeLRU() }
 	svc.OnExtractKnowledge = func(id string) { hago.ExtractKeywordsAsync(ctx, id) }
+	svc.OnKnowledgeStats = func() []agent.KnowledgeLRUEntryInfo { return hago.KnowledgeLRUStats() }
 	svc.CronJobManager = hago.CronJobManager
 	svc.LoopTracker = hago.Loops
 	svc.PromptMgr = hago.Prompt

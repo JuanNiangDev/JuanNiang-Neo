@@ -30,6 +30,14 @@ type knowledgeLRU struct {
 type knowledgeLRUEntry struct {
 	key   string
 	value []models.KnowledgeItem
+	hits  int // 命中次数（Web 统计展示）
+}
+
+// KnowledgeLRUEntryInfo LRU 缓存条目统计（Web 知识库页面展示）。
+type KnowledgeLRUEntryInfo struct {
+	Key       string `json:"key"`
+	Hits      int    `json:"hits"`
+	ItemCount int    `json:"item_count"`
 }
 
 func newKnowledgeLRU(capacity int) *knowledgeLRU {
@@ -46,6 +54,7 @@ func (c *knowledgeLRU) Get(key string) ([]models.KnowledgeItem, bool) {
 	if !ok {
 		return nil, false
 	}
+	el.Value.(*knowledgeLRUEntry).hits++
 	c.ll.MoveToFront(el)
 	return el.Value.(*knowledgeLRUEntry).value, true
 }
@@ -80,6 +89,18 @@ func (c *knowledgeLRU) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.ll.Len()
+}
+
+// Stats 返回 LRU 缓存条目统计（最近优先，用于 Web 展示）。
+func (c *knowledgeLRU) Stats() []KnowledgeLRUEntryInfo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]KnowledgeLRUEntryInfo, 0, c.ll.Len())
+	for e := c.ll.Front(); e != nil; e = e.Next() {
+		ent := e.Value.(*knowledgeLRUEntry)
+		out = append(out, KnowledgeLRUEntryInfo{Key: ent.key, Hits: ent.hits, ItemCount: len(ent.value)})
+	}
+	return out
 }
 
 // ---------- 异步关键词提取 ----------
@@ -170,7 +191,7 @@ func parseKeywordsFromLLM(content string) []string {
 // ---------- 对话前检索注入 ----------
 
 // buildKnowledgeContext 对话前模糊匹配知识库，命中内容拼入系统提示词。
-// LRU 命中直接返回；未命中走 DB 检索并回写缓存。
+// LRU 命中直接返回；未命中走 DB 检索并回写缓存。命中时同步累计关键词命中统计。
 func (h *HagoCenter) buildKnowledgeContext(ctx context.Context, msg string) string {
 	if h.DAO == nil || h.DAO.Knowledge == nil {
 		return ""
@@ -181,6 +202,7 @@ func (h *HagoCenter) buildKnowledgeContext(ctx context.Context, msg string) stri
 	}
 	key := knowledgeQueryKey(query)
 	if items, ok := h.knowledgeLRU.Get(key); ok {
+		h.recordKeywordHits(ctx, items) // LRU 命中也算一次关键词命中
 		return formatKnowledgeContext(items)
 	}
 	items, err := h.DAO.Knowledge.Match(ctx, query, knowledgeMatchLimit)
@@ -188,8 +210,42 @@ func (h *HagoCenter) buildKnowledgeContext(ctx context.Context, msg string) stri
 		log.Warn("知识库检索失败", "err", err)
 		return ""
 	}
+	h.recordKeywordHits(ctx, items)
 	h.knowledgeLRU.Put(key, items)
 	return formatKnowledgeContext(items)
+}
+
+// recordKeywordHits 把本次命中条目实际命中的关键词（去重）批量 upsert 到命中统计表。
+func (h *HagoCenter) recordKeywordHits(ctx context.Context, items []models.KnowledgeItem) {
+	seen := make(map[string]struct{})
+	var kws []string
+	for i := range items {
+		for _, kw := range items[i].HitKeywords {
+			kw = strings.TrimSpace(kw)
+			if kw == "" {
+				continue
+			}
+			if _, ok := seen[kw]; ok {
+				continue
+			}
+			seen[kw] = struct{}{}
+			kws = append(kws, kw)
+		}
+	}
+	if len(kws) == 0 {
+		return
+	}
+	if err := h.DAO.Knowledge.RecordKeywordHits(ctx, kws); err != nil {
+		log.Warn("关键词命中统计失败", "err", err)
+	}
+}
+
+// KnowledgeLRUStats 返回知识库检索 LRU 缓存统计（Web 知识库页面展示）。
+func (h *HagoCenter) KnowledgeLRUStats() []KnowledgeLRUEntryInfo {
+	if h.knowledgeLRU == nil {
+		return nil
+	}
+	return h.knowledgeLRU.Stats()
 }
 
 // InvalidateKnowledgeLRU 知识库条目变更后失效缓存。

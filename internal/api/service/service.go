@@ -2,6 +2,7 @@ package service
 
 import (
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
 	"JuanNiang-Neo/internal/agent/provider"
@@ -2002,6 +2003,25 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 }
 
 // ---------- 知识库 ----------
+
+// KnowledgeStats 知识库统计：LRU 检索缓存 + 关键词词云 + 关键词命中排行。
+func (s *Service) KnowledgeStats(ctx context.Context, c *app.RequestContext) {
+	var lru []agent.KnowledgeLRUEntryInfo
+	if s.OnKnowledgeStats != nil {
+		lru = s.OnKnowledgeStats()
+	}
+	cloud, err := s.DAO.Knowledge.KeywordCloud(ctx, 50)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	rank, err := s.DAO.Knowledge.KeywordHitRank(ctx, 20)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.KnowledgeStatsResp{LRU: lru, Cloud: cloud, HitRank: rank}))
+}
 
 // ListKnowledge 分页列出知识库条目。
 func (s *Service) ListKnowledge(ctx context.Context, c *app.RequestContext) {

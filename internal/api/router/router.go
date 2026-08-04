@@ -133,6 +133,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 
 	// Knowledge 知识库
 	api.GET("/knowledge", auth, svc.ListKnowledge)
+	api.GET("/knowledge/stats", auth, svc.KnowledgeStats)
 	api.GET("/knowledge/:id", auth, svc.GetKnowledge)
 	api.POST("/knowledge", auth, svc.AddKnowledge)
 	api.PUT("/knowledge/:id", auth, svc.UpdateKnowledge)
