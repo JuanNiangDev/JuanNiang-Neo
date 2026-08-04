@@ -91,9 +91,17 @@ const navGroups = [
       { title: 'Prompts', icon: 'mdi-text-box-edit-outline', to: '/prompts' },
       { title: 'Skills', icon: 'mdi-lightning-bolt', to: '/skills' },
       { title: 'Tools', icon: 'mdi-tools', to: '/tools' },
-      { title: 'Plugins', icon: 'mdi-puzzle', to: '/plugins' },
       { title: 'Sessions', icon: 'mdi-chat-processing-outline', to: '/sessions' },
       { title: 'Memory', icon: 'mdi-memory', to: '/memory' },
+      { title: 'Agent 循环', icon: 'mdi-brain', to: '/agent-loops' },
+    ],
+  },
+  {
+    title: 'Plugin 管理',
+    icon: 'mdi-puzzle',
+    items: [
+      { title: 'Plugins', icon: 'mdi-puzzle', to: '/plugins' },
+      { title: 'Plugin 商店', icon: 'mdi-storefront-outline', to: '/plugin-store' },
     ],
   },
   {
@@ -103,7 +111,6 @@ const navGroups = [
       { title: 'Chat Areas', icon: 'mdi-forum-outline', to: '/chat-areas' },
       { title: 'Chat Records', icon: 'mdi-message-text-outline', to: '/chat-records' },
       { title: '黑名单', icon: 'mdi-shield-account-outline', to: '/acl' },
-      { title: 'Agent 循环', icon: 'mdi-brain', to: '/agent-loops' },
     ],
   },
   {

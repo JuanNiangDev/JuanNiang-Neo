@@ -22,6 +22,7 @@ const router = createRouter({
         { path: 'providers', name: 'Providers', component: () => import('@/views/ProvidersPage.vue') },
         { path: 'mcp', name: 'MCP', component: () => import('@/views/MCPPage.vue') },
         { path: 'plugins', name: 'Plugins', component: () => import('@/views/PluginsPage.vue') },
+        { path: 'plugin-store', name: 'PluginStore', component: () => import('@/views/PluginStorePage.vue') },
         { path: 'prompts', name: 'Prompts', component: () => import('@/views/PromptsPage.vue') },
         { path: 'skills', name: 'Skills', component: () => import('@/views/SkillsPage.vue') },
         { path: 'sessions', name: 'Sessions', component: () => import('@/views/SessionsPage.vue') },
