@@ -77,7 +77,8 @@ func (d *KnowledgeDAO) SetKeywordStatus(ctx context.Context, id, status string) 
 //   - 消息与知识内容前缀（前 20 字）ILIKE 模糊匹配（兜底）
 //
 // 只匹配 keyword_status='ready' 的条目；结果按关键词命中数降序。
-// 使用 Postgres 专有语法（unnest），不兼容 SQLite。
+// 使用 Postgres 专有语法（jsonb_array_elements_text），不兼容 SQLite。
+// 注意：keywords 是 jsonb 列，不能用 unnest（它只接受数组），必须用 jsonb_array_elements_text。
 func (d *KnowledgeDAO) Match(ctx context.Context, msg string, limit int) ([]models.KnowledgeItem, error) {
 	if limit <= 0 || limit > 20 {
 		limit = 5
@@ -87,10 +88,10 @@ func (d *KnowledgeDAO) Match(ctx context.Context, msg string, limit int) ([]mode
 		SELECT * FROM knowledge_items
 		WHERE deleted_at IS NULL AND keyword_status = ?
 		  AND (
-			EXISTS (SELECT 1 FROM unnest(keywords) k WHERE position(k IN ?) > 0)
+			EXISTS (SELECT 1 FROM jsonb_array_elements_text(keywords) k WHERE position(k IN ?) > 0)
 			OR ? ILIKE '%' || SUBSTRING(content, 1, 20) || '%'
 		  )
-		ORDER BY (SELECT count(*) FROM unnest(keywords) k WHERE position(k IN ?) > 0) DESC, updated_at DESC
+		ORDER BY (SELECT count(*) FROM jsonb_array_elements_text(keywords) k WHERE position(k IN ?) > 0) DESC, updated_at DESC
 		LIMIT ?`,
 		models.KeywordStatusReady, msg, msg, msg, limit,
 	).Scan(&items).Error
