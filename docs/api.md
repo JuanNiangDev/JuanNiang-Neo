@@ -391,15 +391,20 @@ Skill = 关键词/正则触发的 Prompt+Tool 组合配置。`priority` 越大�
 
 工具配置查看与启停。
 
-> `GET /tools` 合并两份数据源：运行时 `ToolRegistry.List()` 中的内置工具（ID 形如 `builtin:<name>`，`is_builtin=true`，常驻不可启停）+ DB 中 `ToolConfig` 表（自定义工具与历史条目）。同名条目用 DB 的 ID/`is_active`/`created_at`，但 `is_builtin` 与 `parameters` 以运行时注册表为准。
+> `GET /tools` 合并两份数据源：运行时 `ToolRegistry.List()` 中的内置工具（ID 形如 `builtin:<name>`，`is_builtin=true`，常驻不可启停）+ DB 中 `ToolConfig` 表（自定义工具与历史条目）。同名条目用 DB 的 ID/`is_active`/`admin_only`/`created_at`，但 `is_builtin` 与 `parameters` 以运行时注册表为准。
 
 ### GET /tools
-**data** `ToolConfigResp[]`: `id`、`name`、`description`、`parameters` JSONMap、`timeout` int、`is_active`、`is_builtin`、`created_at`。
+**data** `ToolConfigResp[]`: `id`、`name`、`description`、`parameters` JSONMap、`timeout` int、`is_active`、`is_builtin`、`admin_only`（仅管理员可调用）、`created_at`。
 
 ### PUT /tools/:id/toggle
 启停 Tool。**内置工具（`id` 以 `builtin:` 开头）运行时常驻，不支持启停**，返回 40030。
 
 **Body** `ToggleToolReq`: `is_active` bool。**data** `null`。
+
+### PUT /tools/:id/admin-only
+更新工具"仅管理员"标志（内置/自定义工具均可）。开启后该工具只能由 Admins 列表内用户触发，防止提示词注入诱导 Agent 执行敏感操作；内置群管理工具（踢人/禁言/全员禁言/群名片/好友与加群请求/撤回）默认开启。
+
+**Body** `UpdateToolAdminOnlyReq`: `admin_only` bool。**data** `null`。
 
 ---
 

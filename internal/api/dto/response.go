@@ -125,6 +125,7 @@ type ToolConfigResp struct {
 	Timeout     int            `json:"timeout"`
 	IsActive    bool           `json:"is_active"`
 	IsBuiltin   bool           `json:"is_builtin"`
+	AdminOnly   bool           `json:"admin_only"` // 仅管理员可调用
 	CreatedAt   time.Time      `json:"created_at"`
 }
 

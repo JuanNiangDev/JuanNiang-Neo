@@ -102,10 +102,10 @@ func GetMsgSessionCtx(ctx context.Context) *MsgSessionCtx {
 	return v
 }
 
-// adminOnlyToolNames 高危工具名单：仅管理员（Admins 列表内）可调用。
+// adminOnlyToolNames 内置工具默认"仅管理员"名单：启动时 seed 到 ToolConfig 表
+// （首次创建时生效），Web Tools 页可对任意工具单独开关。
 // 这些工具对应 OneBot11 群管理/请求处理/撤回等敏感 API，一旦被提示词注入
 // 诱导调用会引发严重后果（踢人/禁言/全员禁言/改群名片/通过加群等）。
-// 非管理员调用一律拒绝，坚决不执行。
 var adminOnlyToolNames = map[string]bool{
 	"kick_group_member":     true, // 踢出群成员
 	"ban_group_member":      true, // 禁言群成员
@@ -116,22 +116,22 @@ var adminOnlyToolNames = map[string]bool{
 	"delete_msg":            true, // 撤回消息（含他人消息）
 }
 
-// isAdminOnlyToolAllowed 高危工具权限判定：群管理/请求处理/撤回类工具
-// 仅允许 Admins 列表内的用户调用，其余一律拒绝（防提示词注入诱导）。
-// 非高危工具不受限制。
-func isAdminOnlyToolAllowed(toolName string, userID int64, admins []string) bool {
-	if !adminOnlyToolNames[toolName] {
+// isAdminOnlyToolAllowed 工具管理员校验判定：adminOnly=true 时仅 Admins 列表内
+// 用户可调用，否则一律拒绝（防提示词注入诱导执行敏感操作）。
+func isAdminOnlyToolAllowed(adminOnly bool, userID int64, admins []string) bool {
+	if !adminOnly {
 		return true
 	}
 	return isAdmin(userID, admins)
 }
 
 // WrapInvokableToolCall 包装每个工具的同步调用：
-//   - 高危工具（adminOnlyToolNames）执行前校验调用者是否为管理员，非管理员直接拒绝
+//   - 标记为"仅管理员"的工具（ToolConfig.admin_only，DB 可配）执行前校验调用者
+//     是否为管理员，非管理员直接拒绝
 //   - 更新活跃循环的当前工具（供 Web 监控页展示）
 //   - 所有工具前台同步执行并记录日志
 //
-// 注：ACL 只管理聊天黑名单，工具调用不再受 ACL 限制；高危工具的权限由
+// 注：ACL 只管理聊天黑名单，工具调用不再受 ACL 限制；"仅管理员"工具的权限由
 // 本处基于当前消息发送者 + Admins 列表做强制校验（防提示词注入）。
 func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 	ctx context.Context,
@@ -143,9 +143,9 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 	wrapped := func(ctx context.Context, argsJSON string, opts ...einotool.Option) (string, error) {
 		log.Info("Eino tool call", "tool", toolName, "call_id", tCtx.CallID, "args_len", len(argsJSON))
 
-		// 高危工具权限校验：仅管理员可调用（防提示词注入诱导执行群管理操作）
-		if !isAdminOnlyToolAllowed(toolName, msgUserID(ctx), msgAdmins(ctx)) {
-			log.Warn("高危工具被非管理员调用，已拒绝", "tool", toolName, "user_id", msgUserID(ctx))
+		// 仅管理员工具权限校验：admin_only 开启的工具只允许 Admins 内用户调用
+		if !isAdminOnlyToolAllowed(m.h.isToolAdminOnly(toolName), msgUserID(ctx), msgAdmins(ctx)) {
+			log.Warn("仅管理员工具被非管理员调用，已拒绝", "tool", toolName, "user_id", msgUserID(ctx))
 			return "该操作仅限管理员执行，已拒绝执行。", nil
 		}
 

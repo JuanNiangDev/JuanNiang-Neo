@@ -228,6 +228,7 @@ func main() {
 	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
 	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
 	svc.OnRebuildAgent = func() { hago.RebuildEinoAgent(ctx) }
+	svc.OnUpdateToolAdminOnly = func() { hago.RefreshToolAdminOnly(ctx) }
 	svc.CronJobManager = hago.CronJobManager
 	svc.LoopTracker = hago.Loops
 	svc.PromptMgr = hago.Prompt

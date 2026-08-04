@@ -110,6 +110,7 @@ func RawToolConfig2Resp(raw *models.ToolConfig) ToolConfigResp {
 		Timeout:     raw.Timeout,
 		IsActive:    raw.IsActive,
 		IsBuiltin:   raw.IsBuiltin,
+		AdminOnly:   raw.AdminOnly,
 		CreatedAt:   raw.CreatedAt,
 	}
 }

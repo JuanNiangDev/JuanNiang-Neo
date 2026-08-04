@@ -26,7 +26,7 @@ export interface SessionResp { id: string; chat_area_id: string; model: string; 
 export interface SkillResp { id: string; name: string; description: string; keywords: string[]; regex_pattern: string; prompt_refs: string[]; tool_refs: string[]; mcp_refs: string[]; is_active: boolean; is_system: boolean; priority: number; created_at: string }
 export interface AddSkillReq { name: string; description?: string; keywords?: string[]; regex_pattern?: string; prompt_refs?: string[]; tool_refs?: string[]; mcp_refs?: string[]; is_active: boolean; is_system?: boolean; priority?: number }
 
-export interface ToolConfigResp { id: string; name: string; description: string; parameters: Record<string, any>; timeout: number; is_active: boolean; is_builtin: boolean; created_at: string }
+export interface ToolConfigResp { id: string; name: string; description: string; parameters: Record<string, any>; timeout: number; is_active: boolean; is_builtin: boolean; admin_only: boolean; created_at: string }
 
 export interface PluginResp { id: string; name: string; version: string; path: string; config: Record<string, any>; is_active: boolean; created_at: string }
 
@@ -124,6 +124,7 @@ export const skillApi = {
 export const toolApi = {
   list: () => client.get('/tools'),
   toggle: (id: string, is_active: boolean) => client.put(`/tools/${id}/toggle`, { is_active }),
+  updateAdminOnly: (id: string, admin_only: boolean) => client.put(`/tools/${id}/admin-only`, { admin_only }),
 }
 
 // ======== Plugins ========

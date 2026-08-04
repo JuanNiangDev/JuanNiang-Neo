@@ -49,6 +49,8 @@ type Service struct {
 	CronJobManager *cronjobmgr.Manager
 	// OnRebuildAgent MCP/Provider/Tool 热变更后重建 Eino Agent 工具列表。
 	OnRebuildAgent func()
+	// OnUpdateToolAdminOnly 工具的"仅管理员"标志变更后刷新 Agent 运行时权限表。
+	OnUpdateToolAdminOnly func()
 	// LoopTracker 当前活跃的 Agent ReAct 循环（监控展示）。
 	LoopTracker *agent.LoopTracker
 	// PromptMgr 提示词管理器（缓存失效用）。

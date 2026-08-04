@@ -79,7 +79,7 @@ classDiagram
   class Provider { string ID; ModelType Type; string Endpoint; string Token; string Model; float32 Temperature; bool IsActive }
   class MCPServer { string ID; string ServerURL; JSONMap Headers; int Timeout; JSONSlice ToolFilter; bool IsActive }
   class Skill { string ID; JSONSlice Keywords; string RegexPattern; string PromptRef; JSONSlice ToolRefs; JSONSlice McpRefs; int Priority }
-  class ToolConfig { string ID; string Name; JSONMap Parameters; bool IsBuiltin; bool IsActive }
+  class ToolConfig { string ID; string Name; JSONMap Parameters; bool IsBuiltin; bool IsActive; bool AdminOnly }
   class Prompt { string ID; PromptType Type; string Content; bool IsSystem; bool IsActive }
   class Onebot11Adapter { uint ID; string Addr; int Port; string Token; JSONSlice AdminQQNumbers; bool Enabled }
   class WebhookConfig { uint ID; string Addr; int Port; string Token; bool Enabled }
@@ -361,11 +361,12 @@ Eino ADK ReAct 循环 (MaxIterations=20)
       ├─ 工具来源: buildEinoAgent 时合并的 Eino 工具列表
       │   (builtin 在前 + MCP 追加在后, 见 tool/eino_tool.go::BuildEinoTools)
       ├─ 由 JuanNiangMiddleware.WrapInvokableToolCall 包装后同步执行
-      │   (记录日志 + 更新 LoopTracker 当前工具 + 高危工具管理员校验)
+      │   (记录日志 + 更新 LoopTracker 当前工具 + 仅管理员工具校验)
       ├─ 执行结果回填 tool-role msg → 继续下一轮 ReAct 迭代
-      └─ 权限: ACL 仅聊天黑名单(handleMessage 阶段); 高危工具(踢人/禁言/全员禁言/
-         群名片/好友与加群请求/撤回)在 WrapInvokableToolCall 强制校验调用者为
-         Admins 列表内, 否则拒绝执行(防提示词注入)
+      └─ 权限: ACL 仅聊天黑名单(handleMessage 阶段); 标记 admin_only 的工具
+         (ToolConfig 表, Tools 页可逐工具开关)在 WrapInvokableToolCall 强制校验
+         调用者为 Admins 列表内, 否则拒绝执行(防提示词注入); 内置群管理工具
+         首次启动 seed 默认开启
 ```
 
 > **已移除**：BgTaskExecutor 和 DrainerAgent 已完全移除。所有工具调用（包括长时间运行的操作）均在 Eino ADK 的 ReAct 循环内同步完成。

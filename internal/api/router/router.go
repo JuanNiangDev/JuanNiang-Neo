@@ -68,6 +68,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	// Tools
 	api.GET("/tools", auth, svc.ListTools)
 	api.PUT("/tools/:id/toggle", auth, svc.ToggleTool)
+	api.PUT("/tools/:id/admin-only", auth, svc.UpdateToolAdminOnly)
 
 	// Plugins
 	api.GET("/plugins", auth, svc.ListPlugins)

@@ -2,44 +2,44 @@ package agent
 
 import "testing"
 
-// TestAdminOnlyToolAllowed 验证高危工具权限判定：
-// 群管理/请求处理/撤回类工具仅 Admins 列表内用户可调用，其余一律拒绝；
-// 非高危工具不受限制。
+// TestAdminOnlyToolAllowed 验证工具管理员校验判定：
+// adminOnly=true 的工具仅 Admins 列表内用户可调用，其余一律拒绝；
+// adminOnly=false 的工具不受限制。
 func TestAdminOnlyToolAllowed(t *testing.T) {
 	cases := []struct {
-		name     string
-		tool     string
-		userID   int64
-		admins   []string
-		expected bool
+		name      string
+		adminOnly bool
+		userID    int64
+		admins    []string
+		expected  bool
 	}{
-		// 高危工具：非管理员 / 无管理员配置 → 拒绝
-		{"高危-踢人-非管理员", "kick_group_member", 10001, []string{"10002"}, false},
-		{"高危-禁言-非管理员", "ban_group_member", 10001, []string{"10002"}, false},
-		{"高危-全员禁言-无admin配置", "set_group_whole_ban", 10001, nil, false},
-		{"高危-群名片-非管理员", "set_group_card", 10001, []string{}, false},
-		{"高危-好友请求-非管理员", "handle_friend_request", 10001, []string{"10002"}, false},
-		{"高危-群请求-非管理员", "handle_group_request", 10001, []string{"10002"}, false},
-		{"高危-撤回-非管理员", "delete_msg", 10001, []string{"10002"}, false},
+		// admin_only 开启：非管理员 / 无管理员配置 → 拒绝
+		{"仅管理员-踢人-非管理员", true, 10001, []string{"10002"}, false},
+		{"仅管理员-禁言-非管理员", true, 10001, []string{"10002"}, false},
+		{"仅管理员-全员禁言-无admin配置", true, 10001, nil, false},
+		{"仅管理员-群名片-非管理员", true, 10001, []string{}, false},
+		{"仅管理员-好友请求-非管理员", true, 10001, []string{"10002"}, false},
+		{"仅管理员-群请求-非管理员", true, 10001, []string{"10002"}, false},
+		{"仅管理员-撤回-非管理员", true, 10001, []string{"10002"}, false},
 
-		// 高危工具：管理员 → 放行
-		{"高危-踢人-管理员", "kick_group_member", 10002, []string{"10002"}, true},
-		{"高危-禁言-管理员", "ban_group_member", 10002, []string{"10002", "10003"}, true},
-		{"高危-撤回-管理员", "delete_msg", 10003, []string{"10002", "10003"}, true},
+		// admin_only 开启：管理员 → 放行
+		{"仅管理员-踢人-管理员", true, 10002, []string{"10002"}, true},
+		{"仅管理员-禁言-管理员", true, 10002, []string{"10002", "10003"}, true},
+		{"仅管理员-撤回-管理员", true, 10003, []string{"10002", "10003"}, true},
 
-		// 非高危工具：不受限制
-		{"低危-发群消息", "send_group_msg", 99999, nil, true},
-		{"低危-发私聊", "send_private_msg", 99999, nil, true},
-		{"低危-查群信息", "get_group_info", 99999, nil, true},
-		{"低危-沙箱", "code_exec", 99999, nil, true},
-		{"低危-未知工具", "some_future_tool", 99999, nil, true},
+		// admin_only 关闭：不受限制
+		{"非仅管理员-发群消息", false, 99999, nil, true},
+		{"非仅管理员-发私聊", false, 99999, nil, true},
+		{"非仅管理员-查群信息", false, 99999, nil, true},
+		{"非仅管理员-沙箱", false, 99999, nil, true},
+		{"非仅管理员-未知工具", false, 99999, nil, true},
 	}
 
 	for _, c := range cases {
-		got := isAdminOnlyToolAllowed(c.tool, c.userID, c.admins)
+		got := isAdminOnlyToolAllowed(c.adminOnly, c.userID, c.admins)
 		if got != c.expected {
-			t.Errorf("%s: isAdminOnlyToolAllowed(%q, %d, %v) = %v, want %v",
-				c.name, c.tool, c.userID, c.admins, got, c.expected)
+			t.Errorf("%s: isAdminOnlyToolAllowed(%v, %d, %v) = %v, want %v",
+				c.name, c.adminOnly, c.userID, c.admins, got, c.expected)
 		}
 	}
 }

@@ -166,6 +166,11 @@ type ToggleToolReq struct {
 	IsActive bool `json:"is_active"`
 }
 
+// UpdateToolAdminOnlyReq 更新工具"仅管理员"标志。
+type UpdateToolAdminOnlyReq struct {
+	AdminOnly bool `json:"admin_only"` // true=仅管理员可调用
+}
+
 // ---------- Plugin ----------
 
 type TogglePluginReq struct {

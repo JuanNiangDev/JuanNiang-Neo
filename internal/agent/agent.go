@@ -69,6 +69,11 @@ type HagoCenter struct {
 	// 相关性判断结果缓存（Redis，L2.3/L4.2）
 	Cache *cache.Cache
 
+	// 工具"仅管理员"名单（DB 驱动，Tools 页可切换）：admin_only=true 的工具
+	// 只能由 Admins 列表内用户调用（防提示词注入诱导敏感操作）
+	toolAdminOnlyMu sync.RWMutex
+	toolAdminOnly   map[string]bool
+
 	// 相关性判断并发闸门（L3.1）：限制全局并发，避免热聊时打爆 provider
 	relevanceSem chan struct{}
 
@@ -115,6 +120,7 @@ func NewHagoCenter() *HagoCenter {
 		batches:         make(map[string]*pendingBatch),
 		hotStats:        make(map[string]*hotStat),
 		relevanceSem:    make(chan struct{}, relevanceSemLimit),
+		toolAdminOnly:   make(map[string]bool),
 	}
 }
 
@@ -186,6 +192,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 			return h.getRecentMessagesByMsgType(ctx, msgType, targetID, limit)
 		},
 	)
+
+	// 内置工具"仅管理员"标志：seed 默认高危名单到 DB（幂等），并加载运行时权限表
+	h.seedBuiltinToolGuard(ctx)
 
 	if err := h.loadProviders(ctx); err != nil {
 		return err
@@ -398,6 +407,55 @@ func (h *HagoCenter) getGroupMemberInfoCached(groupID, userID int64) (*adapter.G
 	}
 	h.memberInfoMu.Unlock()
 	return info, nil
+}
+
+// seedBuiltinToolGuard 为内置工具幂等创建 ToolConfig 行（首次创建时写入默认
+// "仅管理员"标志），并从 DB 加载运行时权限表。
+func (h *HagoCenter) seedBuiltinToolGuard(ctx context.Context) {
+	if h.DAO == nil {
+		return
+	}
+	for _, t := range h.Tools.List() {
+		if !t.IsBuiltin() {
+			continue
+		}
+		if err := h.DAO.ToolConfig.EnsureBuiltin(ctx, t.Name(), t.Description(), adminOnlyToolNames[t.Name()]); err != nil {
+			log.Warn("内置工具配置 seed 失败", "tool", t.Name(), "err", err)
+		}
+	}
+	if err := h.loadToolAdminOnly(ctx); err != nil {
+		log.Warn("工具管理员名单加载失败", "err", err)
+	}
+}
+
+// loadToolAdminOnly 从 DB 加载"仅管理员"工具名单。
+func (h *HagoCenter) loadToolAdminOnly(ctx context.Context) error {
+	m, err := h.DAO.ToolConfig.ListAdminOnly(ctx)
+	if err != nil {
+		return err
+	}
+	h.toolAdminOnlyMu.Lock()
+	h.toolAdminOnly = m
+	h.toolAdminOnlyMu.Unlock()
+	return nil
+}
+
+// RefreshToolAdminOnly 从 DB 重载"仅管理员"工具名单（Web 配置变更后调用）。
+func (h *HagoCenter) RefreshToolAdminOnly(ctx context.Context) {
+	if err := h.loadToolAdminOnly(ctx); err != nil {
+		log.Error("刷新工具管理员名单失败", "err", err)
+		return
+	}
+	h.toolAdminOnlyMu.RLock()
+	defer h.toolAdminOnlyMu.RUnlock()
+	log.Info("工具管理员名单已刷新", "count", len(h.toolAdminOnly))
+}
+
+// isToolAdminOnly 查询工具是否标记为"仅管理员"。
+func (h *HagoCenter) isToolAdminOnly(name string) bool {
+	h.toolAdminOnlyMu.RLock()
+	defer h.toolAdminOnlyMu.RUnlock()
+	return h.toolAdminOnly[name]
 }
 
 // Stop 停止 Agent 系统。

@@ -848,6 +848,7 @@ func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
 			if db, ok := byName[name]; ok {
 				resp.ID = db.ID
 				resp.IsActive = db.IsActive
+				resp.AdminOnly = db.AdminOnly
 				resp.CreatedAt = db.CreatedAt
 			}
 			out = append(out, resp)
@@ -891,6 +892,49 @@ func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
 	if err := s.DAO.ToolConfig.SetActive(ctx, id, data.IsActive); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// UpdateToolAdminOnly 更新工具的"仅管理员"标志（内置/自定义工具均可）。
+// 更新成功后回调 OnUpdateToolAdminOnly 刷新 Agent 运行时权限表，立即生效。
+func (s *Service) UpdateToolAdminOnly(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateToolAdminOnlyReq
+	id := c.Param("id")
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 内置工具 ID 形如 builtin:<name>：按 name 查找/创建对应 ToolConfig 行
+	name := id
+	if strings.HasPrefix(id, "builtin:") {
+		name = strings.TrimPrefix(id, "builtin:")
+	}
+
+	tc, err := s.DAO.ToolConfig.GetByName(ctx, name)
+	if err == nil {
+		if err := s.DAO.ToolConfig.SetAdminOnly(ctx, tc.ID, data.AdminOnly); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	} else {
+		// 无对应行（内置工具首次设置）：幂等创建并写入标志
+		desc := ""
+		if s.ToolRegistry != nil {
+			if t, ok := s.ToolRegistry.Get(name); ok {
+				desc = t.Description()
+			}
+		}
+		if err := s.DAO.ToolConfig.EnsureBuiltin(ctx, name, desc, data.AdminOnly); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	}
+
+	// 刷新 Agent 运行时名单，立即生效
+	if s.OnUpdateToolAdminOnly != nil {
+		s.OnUpdateToolAdminOnly()
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
