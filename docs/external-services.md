@@ -27,7 +27,7 @@
 
 ### 模型选取
 
-唯一调用点：`HagoCenter.handleMessage` 用 `Providers.SelectModel(ModelTypeText)` 得到对话 Provider；`relevanceAgentEvaluate` 在含图消息时用 `HasImageModel` + Vision 模型判定相关性（`reply_strategy.go:70`）。
+唯一调用点：`HagoCenter.handleMessage` 用 `Providers.SelectModel(ModelTypeText)` 得到对话 Provider；相关性判断由 `filterRelevant` 规则快路径过滤后，候选消息经 `relevanceBatchEvaluate` 批量合并为一次 LLM 判断（含图消息在有 Vision Provider 时走 Vision 判定）。
 
 ### 接入指南
 

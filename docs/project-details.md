@@ -308,7 +308,7 @@ processEvent 三阶段                                  event.go:81
 │   getReplySettings(ctx) → checkReplyStrategy
 │   never_reply → skip
 │   at_only → 仅 isAtSelf 通过
-│   relevance → relevanceAgentEvaluate (LLM/Vision 判定) >= threshold 通过
+│   relevance → filterRelevant (L1 规则快路径 + L2 批量判断/缓存 + L4 降级)
 │   always → 通过
 └─ dispatchToAgent(ctx, ev, rs)                      event.go:104
     goroutine + ConcurrencyManager.Acquire(chatAreaID)
@@ -493,7 +493,7 @@ flowchart TD
   P3C -->|否| STR{"ReplyStrategy?"}
   STR --> never_reply["skip"]
   STR --> at_only["仅 isAtSelf 通过"]
-  STR --> relevance["relevanceAgentEvaluate ≥ threshold 通过"]
+  STR --> relevance["filterRelevant: 规则快路径 + 批量判断/缓存/降级"]
   STR --> always["通过"]
   at_only --> DA
   relevance --> DA
@@ -504,7 +504,7 @@ flowchart TD
 ```
 
 > `isAtSelf`（`reply_strategy.go`）做的是精确 `[CQ:at,qq=<self>]` 匹配；优先用当前 `Adapter.SelfID()` 而非缓存 `SelfQQ`，支持机器人换号后立即生效。
-> `relevanceAgentEvaluate`（`reply_strategy.go`）：消息含图片段且有 Vision Provider → 走 Vision 判定；否则 text 模型 temp 0.3 判定，解析 `{relevance, reason}` JSON。
+> relevance 判断优化管线（`filterRelevant` → `relevanceBatchEvaluate`）：@/命令/提及名字 → 必回（0 次 LLM）；噪音消息（纯表情/过短/仅 URL）→ 规则丢弃；其余候选合并为**一次** LLM 批量判断（含图消息标注 `[图片]`，单条候选走原分数判断）。判断结果写 Redis（related=15s 对话轮次放宽 / unrelated=30s 冷却），判断并发全局上限 4、单次 5s 超时，失败按 `judge_fail_policy`（drop/reply）降级；群聊刷屏（1s≥5 条）时批窗口拉长到 3s 并降级为只回必回消息。
 
 ## 一条消息的全程（OneBot11 → 回执）
 

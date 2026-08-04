@@ -89,6 +89,7 @@ docs/                   本文档树
 | Web API 69 路由 (+`/health`) + JWT + SSE 日志 | ✅ |
 | 前端 22 页 (Vue 3 + Vuetify 3) | ✅ |
 | AgentLite 模式 / StripMarkdown / 分消息段 | ✅ |
+| relevance 判断优化（L1 规则快路径 / L2 批量判断+结果缓存+冷却 / L3 并发限流+超时 / L4 刷屏降级+失败策略） | ✅ |
 | `internal/agent/memory/root.go::Memory` 接口 | ⚠ 空 stub (无方法) |
 | `internal/agent/skill/root.go`、`prompt/root.go` | ⚠ 占位 (实现在 .go) |
 | `HagoCenter.Stop()` | ⚠ 空实现（仅打日志），事件循环/CronJob 退出依赖外层 ctx 取消 |

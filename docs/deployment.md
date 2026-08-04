@@ -237,7 +237,7 @@ WantedBy=multi-user.target
 
 **Q: 为什么 LLM 拒绝调用某个工具？** A: ACL 规则把它拒绝了，或它在 MCP 但 MCP 断连；可在"ACL"页或"日志"流查看。
 
-**Q: Agent 在群里不回我？** A: 检查回复策略 + `isAtSelf` 是否精确匹配 `[CQ:at,qq=<bot>]`；`relevance` 模式下不会回复相关性低的消息。
+**Q: Agent 在群里不回我？** A: 检查回复策略 + `isAtSelf` 是否精确匹配 `[CQ:at,qq=<bot>]`；`relevance` 模式下不会回复相关性低的消息。相关性判断有批量合并/冷却缓存/刷屏降级等优化——判断失败时默认不回复，可在回复策略页把"判断失败策略"改为 `reply` 照常回复。
 
 **Q: 想只换前端不重编 Go？** A: 可以——前端是磁盘文件，`WEB_DIR` 指向新 `web/dist` 即可；二进制不嵌入它。
 

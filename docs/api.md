@@ -669,17 +669,17 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 | `never_reply` | 完全不回复 |
 | `at_only` | 仅被 @ 时回复 |
 | `always` | 始终回复（默认） |
-| `relevance` | LLM 评估相关性后决定是否回复（受 `relevance_threshold` 影响） |
+| `relevance` | 按相关性回复：@/命令/提及名字必回；噪音消息规则过滤；其余候选批量合并为一次 LLM 判断（受 `relevance_threshold` 影响），带结果缓存/冷却与刷屏降级 |
 
 ### GET /reply-strategy
 获取配置。首次 GET 不存在时自动创建（`strategy=always, relevance_threshold=0.5`）。
 
-**data** `ReplyStrategyResp`: `id`、`strategy`、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`created_at`、`updated_at`。
+**data** `ReplyStrategyResp`: `strategy`、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`judge_fail_policy` string（`drop`=判断失败不回复（默认）/ `reply`=照常回复）。
 
 ### PUT /reply-strategy
 更新。
 
-**Body** `UpdateReplyStrategyReq`: `strategy`、`relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）。
+**Body** `UpdateReplyStrategyReq`: `strategy`、`relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）、`judge_fail_policy`（`drop`/`reply`，空=默认 `drop`）。
 
 **data** `ReplyStrategyResp`。
 
