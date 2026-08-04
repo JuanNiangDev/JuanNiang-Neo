@@ -370,6 +370,10 @@ export interface ScheduledSegment {
   type: string // text / image / face
   source?: string // image: t2i / url / imgstore
   content: string
+}
+export interface ScheduledBlock {
+  type: string // message / delay
+  segments?: ScheduledSegment[]
   delay_seconds?: number
 }
 export interface ScheduledMessageResp {
@@ -379,7 +383,7 @@ export interface ScheduledMessageResp {
   cron_expr: string
   target_type: string // group / private
   target_id: number
-  segments: ScheduledSegment[]
+  blocks: ScheduledBlock[]
   last_run_at?: string | null
   last_error: string
   created_at: string
@@ -391,7 +395,7 @@ export interface AddScheduledMessageReq {
   cron_expr: string
   target_type: string
   target_id: number
-  segments: ScheduledSegment[]
+  blocks: ScheduledBlock[]
 }
 
 export const scheduledMessageApi = {

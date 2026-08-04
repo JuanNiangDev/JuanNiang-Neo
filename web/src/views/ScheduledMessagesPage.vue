@@ -2,7 +2,7 @@
   <div>
     <div class="page-header">
       <div class="page-title"><v-icon class="me-2" color="primary">mdi-message-text-clock-outline</v-icon>定时消息</div>
-      <div class="page-subtitle">定时发送多段消息：每段支持文字 / 图片（T2I / URL / 图床）/ CQ 码表情，段间可自定义延迟</div>
+      <div class="page-subtitle">积木式编排：触发器 → 消息块（一条消息多段）→ 延时块，按序执行</div>
     </div>
 
     <div class="d-flex justify-end mb-4">
@@ -12,7 +12,7 @@
     <v-data-table :headers="headers" :items="tasks" :loading="loading" :items-per-page="pageSize" @update:options="onPageChange">
       <template #item.name="{ item }">
         <div class="font-weight-medium">{{ item.name }}</div>
-        <div class="text-caption text-medium-emphasis">{{ item.segments?.length || 0 }} 段消息</div>
+        <div class="text-caption text-medium-emphasis">{{ (item.blocks?.length || 0) }} 个编排块</div>
       </template>
       <template #item.cron_expr="{ item }">
         <code class="text-caption">{{ item.cron_expr }}</code>
@@ -36,20 +36,14 @@
       </template>
     </v-data-table>
 
-    <!-- 新建/编辑弹窗 -->
-    <v-dialog v-model="dialog" max-width="860" scrollable>
+    <!-- 新建/编辑弹窗：积木式编排 -->
+    <v-dialog v-model="dialog" max-width="900" scrollable>
       <v-card v-if="dialog" rounded="lg">
         <v-card-title>{{ editingId ? '编辑定时任务' : '新建定时任务' }}</v-card-title>
         <v-card-text>
-          <v-row dense>
+          <v-row dense class="mb-2">
             <v-col cols="12" md="4">
               <v-text-field v-model="form.name" label="任务名称" class="mb-2" />
-            </v-col>
-            <v-col cols="12" md="3">
-              <v-text-field v-model="timeStr" label="发送时间" type="time" @change="timeToCron" />
-            </v-col>
-            <v-col cols="12" md="5">
-              <v-text-field v-model="form.cron_expr" label="cron 表达式（秒 分 时 日 月 周）" hint="改时间自动生成" persistent-hint />
             </v-col>
             <v-col cols="12" md="4">
               <v-select v-model="form.target_type" :items="[{ title: '群聊', value: 'group' }, { title: '私聊', value: 'private' }]" label="目标类型" class="mb-2" />
@@ -57,115 +51,118 @@
             <v-col cols="12" md="4">
               <v-text-field v-model="targetIDText" :label="form.target_type === 'group' ? '目标群号' : '目标 QQ'" type="number" class="mb-2" />
             </v-col>
-            <v-col cols="12" md="4" class="d-flex align-center">
+            <v-col cols="12" class="d-flex align-center">
               <v-switch v-model="form.enabled" label="启用任务" color="primary" hide-details />
             </v-col>
           </v-row>
 
-          <!-- 消息段编辑器 -->
-          <div class="d-flex align-center justify-space-between mt-2 mb-2">
-            <span class="text-subtitle-2 font-weight-bold">消息段（按顺序发送）</span>
-            <v-btn size="small" variant="tonal" prepend-icon="mdi-plus" @click="addSegment">添加段</v-btn>
-          </div>
-
-          <div v-for="(seg, idx) in form.segments" :key="idx" class="segment-card">
-            <div class="d-flex align-center">
-              <span class="text-caption text-medium-emphasis me-2" style="min-width: 30px">#{{ idx + 1 }}</span>
-              <v-select
-                v-model="seg.type"
-                :items="segmentTypeOptions"
-                item-title="title"
-                item-value="value"
-                label="类型"
-                density="compact"
-                class="me-2"
-                style="max-width: 130px"
-                hide-details
-                @update:model-value="onSegmentTypeChange(seg)"
-              />
-              <v-text-field
-                v-model.number="seg.delay_seconds"
-                label="延迟（秒，到下一段）"
-                type="number"
-                density="compact"
-                hide-details
-                class="me-2"
-                style="max-width: 150px"
-              />
-              <v-spacer />
-              <v-btn icon="mdi-arrow-up" size="small" variant="text" :disabled="idx === 0" @click="moveSegment(idx, -1)" />
-              <v-btn icon="mdi-arrow-down" size="small" variant="text" :disabled="idx === form.segments.length - 1" @click="moveSegment(idx, 1)" />
-              <v-btn icon="mdi-delete" size="small" variant="text" color="error" @click="form.segments.splice(idx, 1)" />
-            </div>
-            <div class="mt-2">
-              <!-- text -->
-              <v-textarea
-                v-if="seg.type === 'text'"
-                v-model="seg.content"
-                label="文字内容"
-                rows="2"
-                auto-grow
-                hide-details
-              />
-              <!-- face：表情选择器 -->
-              <div v-else-if="seg.type === 'face'">
-                <div class="text-caption text-medium-emphasis mb-1">
-                  CQ 码表情：{{ seg.content || '（未选择）' }}
-                  <v-btn v-if="seg.content" size="x-small" variant="text" @click="seg.content = ''">清除</v-btn>
-                </div>
-                <div class="face-grid">
-                  <div
-                    v-for="f in faces"
-                    :key="f.id"
-                    class="face-item"
-                    :class="{ 'face-selected': seg.content === `[CQ:face,id=${f.id}]` }"
-                    :title="`id=${f.id}`"
-                    @click="seg.content = `[CQ:face,id=${f.id}]`"
-                  >
-                    <img :src="f.url" :alt="f.id" />
-                  </div>
-                </div>
-              </div>
-              <!-- image -->
-              <div v-else-if="seg.type === 'image'">
-                <v-select
-                  v-model="seg.source"
-                  :items="imageSourceOptions"
-                  item-title="title"
-                  item-value="value"
-                  label="图片来源"
-                  density="compact"
-                  hide-details
-                  class="mb-2"
-                  style="max-width: 220px"
-                />
-                <v-textarea
-                  v-if="seg.source === 't2i'"
-                  v-model="seg.content"
-                  label="HTML 模板（T2I 渲染成图片）"
-                  rows="3"
-                  auto-grow
-                  hide-details
-                />
-                <v-text-field
-                  v-else-if="seg.source === 'url'"
-                  v-model="seg.content"
-                  label="图片 URL"
-                  hide-details
-                  placeholder="https://..."
-                />
-                <div v-else-if="seg.source === 'imgstore'">
-                  <div class="d-flex align-center">
-                    <span class="text-body-2 me-2">{{ seg.content || '未选择图床图片' }}</span>
-                    <v-btn size="small" variant="tonal" prepend-icon="mdi-image-multiple-outline" @click="openPickerFor(idx)">选择图床图片</v-btn>
-                    <v-btn v-if="seg.content" size="small" variant="text" @click="seg.content = ''">清除</v-btn>
-                  </div>
-                </div>
+          <!-- 积木编排 -->
+          <div class="orchestration">
+            <!-- 触发器块 -->
+            <div class="trigger-block">
+              <div class="block-header">
+                <v-icon size="18" class="me-1">mdi-flash</v-icon>
+                <span class="font-weight-bold">触发器</span>
+                <span class="text-caption text-medium-emphasis ms-2">任务从这里开始</span>
+                <v-spacer />
+                <v-text-field v-model="timeStr" label="发送时间" type="time" density="compact" hide-details style="max-width: 150px" class="me-2" @change="timeToCron" />
+                <v-text-field v-model="form.cron_expr" label="cron（秒 分 时 日 月 周）" density="compact" hide-details style="max-width: 220px" />
               </div>
             </div>
-          </div>
 
-          <div v-if="!form.segments.length" class="text-body-2 text-medium-emphasis pa-4 text-center">还没有消息段，点「添加段」开始</div>
+            <template v-for="(block, bi) in form.blocks" :key="bi">
+              <!-- 连接线 -->
+              <div class="block-connector"><v-icon size="22">mdi-arrow-down</v-icon></div>
+
+              <!-- 消息块 -->
+              <div v-if="block.type === 'message'" class="block message-block">
+                <div class="block-header">
+                  <v-icon size="18" class="me-1" color="primary">mdi-message-text</v-icon>
+                  <span class="font-weight-bold">消息块</span>
+                  <span class="text-caption text-medium-emphasis ms-2">一条消息（含 {{ block.segments?.length || 0 }} 段）</span>
+                  <v-spacer />
+                  <v-btn size="x-small" variant="tonal" prepend-icon="mdi-plus" @click="addSegment(bi)">加段</v-btn>
+                  <v-btn icon="mdi-arrow-up" size="x-small" variant="text" :disabled="bi === 0" @click="moveBlock(bi, -1)" />
+                  <v-btn icon="mdi-arrow-down" size="x-small" variant="text" :disabled="bi === form.blocks.length - 1" @click="moveBlock(bi, 1)" />
+                  <v-btn icon="mdi-delete" size="x-small" variant="text" color="error" @click="form.blocks.splice(bi, 1)" />
+                </div>
+                <div v-if="!block.segments?.length" class="text-caption text-medium-emphasis pa-2 text-center">（空消息块，点击「加段」添加内容）</div>
+                <div v-for="(seg, si) in block.segments" :key="si" class="segment-row">
+                  <span class="text-caption text-medium-emphasis me-1" style="min-width: 22px">{{ si + 1 }}</span>
+                  <v-select
+                    v-model="seg.type"
+                    :items="segmentTypeOptions"
+                    item-title="title"
+                    item-value="value"
+                    density="compact"
+                    hide-details
+                    style="max-width: 120px"
+                    class="me-2"
+                    @update:model-value="() => onSegmentTypeChange(seg)"
+                  />
+                  <!-- text -->
+                  <v-text-field v-if="seg.type === 'text'" v-model="seg.content" label="文字" density="compact" hide-details class="flex-grow-1" />
+                  <!-- face -->
+                  <template v-else-if="seg.type === 'face'">
+                    <v-btn size="small" variant="tonal" prepend-icon="mdi-emoticon-outline" class="me-2" @click="facePickerFor = { bi, si }">
+                      {{ seg.content ? `表情 ${seg.content.match(/id=(\d+)/)?.[1] || ''}` : '选择表情' }}
+                    </v-btn>
+                    <span v-if="seg.content" class="text-caption">{{ seg.content }}</span>
+                  </template>
+                  <!-- image -->
+                  <template v-else-if="seg.type === 'image'">
+                    <v-select
+                      v-model="seg.source"
+                      :items="imageSourceOptions"
+                      item-title="title"
+                      item-value="value"
+                      label="来源"
+                      density="compact"
+                      hide-details
+                      style="max-width: 140px"
+                      class="me-2"
+                      @update:model-value="() => onImageSourceChange(seg)"
+                    />
+                    <v-text-field v-if="seg.source === 'url'" v-model="seg.content" label="图片 URL" density="compact" hide-details class="flex-grow-1" />
+                    <v-textarea v-else-if="seg.source === 't2i'" v-model="seg.content" label="HTML 模板（T2I 渲染）" density="compact" hide-details rows="1" auto-grow class="flex-grow-1" />
+                    <template v-else-if="seg.source === 'imgstore'">
+                      <span class="text-caption me-2 text-truncate" style="max-width: 240px">{{ seg.content || '未选择图床图片' }}</span>
+                      <v-btn size="small" variant="tonal" prepend-icon="mdi-image-multiple-outline" @click="pickerTarget = { bi, si }">选择图床图片</v-btn>
+                    </template>
+                  </template>
+                  <v-btn icon="mdi-delete" size="x-small" variant="text" color="error" class="ms-1" @click="block.segments?.splice(si, 1)" />
+                </div>
+              </div>
+
+              <!-- 延时块 -->
+              <div v-else-if="block.type === 'delay'" class="block delay-block">
+                <div class="block-header">
+                  <v-icon size="18" class="me-1" color="warning">mdi-timer</v-icon>
+                  <span class="font-weight-bold">延时块</span>
+                  <v-spacer />
+                  <v-text-field v-model.number="block.delay_seconds" label="延时（秒）" type="number" density="compact" hide-details style="max-width: 140px" class="me-2" />
+                  <v-btn icon="mdi-arrow-up" size="x-small" variant="text" :disabled="bi === 0" @click="moveBlock(bi, -1)" />
+                  <v-btn icon="mdi-arrow-down" size="x-small" variant="text" :disabled="bi === form.blocks.length - 1" @click="moveBlock(bi, 1)" />
+                  <v-btn icon="mdi-delete" size="x-small" variant="text" color="error" @click="form.blocks.splice(bi, 1)" />
+                </div>
+                <div class="text-caption text-medium-emphasis pa-2">等待 {{ block.delay_seconds || 0 }} 秒后继续下一个块</div>
+              </div>
+
+              <!-- 块后添加按钮 -->
+              <div class="add-block">
+                <v-btn size="x-small" variant="tonal" prepend-icon="mdi-message-text" class="me-1" @click="insertBlock(bi + 1, 'message')">消息块</v-btn>
+                <v-btn size="x-small" variant="tonal" prepend-icon="mdi-timer" @click="insertBlock(bi + 1, 'delay')">延时块</v-btn>
+              </div>
+            </template>
+
+            <template v-if="!form.blocks.length">
+              <div class="block-connector"><v-icon size="22">mdi-arrow-down</v-icon></div>
+              <div class="add-block">
+                <v-btn size="small" variant="tonal" prepend-icon="mdi-message-text" class="me-1" @click="insertBlock(0, 'message')">添加消息块</v-btn>
+                <v-btn size="small" variant="tonal" prepend-icon="mdi-timer" @click="insertBlock(0, 'delay')">添加延时块</v-btn>
+              </div>
+            </template>
+          </div>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -175,8 +172,28 @@
       </v-card>
     </v-dialog>
 
+    <!-- 表情选择器弹窗 -->
+    <v-dialog v-model="facePickerOpen" max-width="640">
+      <v-card rounded="lg">
+        <v-card-title>选择 CQ 码表情</v-card-title>
+        <v-card-text>
+          <div class="face-grid">
+            <div
+              v-for="f in faces"
+              :key="f.id"
+              class="face-item"
+              :title="`id=${f.id}`"
+              @click="pickFace(f.id)"
+            >
+              <img :src="f.url" :alt="f.id" />
+            </div>
+          </div>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
+
     <!-- 图床图片选择器 -->
-    <v-dialog v-model="pickerDialog" max-width="760">
+    <v-dialog v-model="pickerOpen" max-width="760">
       <v-card rounded="lg">
         <v-card-title>选择图床图片</v-card-title>
         <v-card-text>
@@ -197,7 +214,7 @@
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="pickerDialog = false">取消</v-btn>
+          <v-btn variant="text" @click="pickerOpen = false">取消</v-btn>
           <v-btn color="primary" variant="tonal" :disabled="!pickerSelectedId" @click="confirmPicker">确定</v-btn>
         </v-card-actions>
       </v-card>
@@ -220,7 +237,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { scheduledMessageApi, imageApi, imageFileUrl, type ScheduledMessageResp, type ScheduledSegment, type ImageResp } from '@/api'
+import { scheduledMessageApi, imageApi, imageFileUrl, type ScheduledMessageResp, type ScheduledBlock, type ScheduledSegment, type ImageResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
@@ -249,7 +266,7 @@ const imageSourceOptions = [
 
 const headers = [
   { title: '任务', key: 'name' },
-  { title: 'cron', key: 'cron_expr' },
+  { title: '触发器 cron', key: 'cron_expr' },
   { title: '目标', key: 'target' },
   { title: '启用', key: 'enabled', align: 'center' as const },
   { title: '上次执行', key: 'last_run_at' },
@@ -260,7 +277,6 @@ const loading = ref(false)
 const tasks = ref<ScheduledMessageResp[]>([])
 const page = ref(1)
 const pageSize = 20
-const total = ref(0)
 
 const dialog = ref(false)
 const editingId = ref<string | null>(null)
@@ -270,18 +286,28 @@ const form = ref({
   cron_expr: '0 0 9 * * *',
   target_type: 'group',
   target_id: 0,
-  segments: [] as ScheduledSegment[],
+  blocks: [] as ScheduledBlock[],
 })
 const timeStr = ref('09:00')
 const targetIDText = ref('')
 const saving = ref(false)
 const triggeringId = ref<string | null>(null)
 
+// 表情选择器
+const facePickerFor = ref<{ bi: number; si: number } | null>(null)
+const facePickerOpen = computed({
+  get: () => !!facePickerFor.value,
+  set: (v: boolean) => { if (!v) facePickerFor.value = null },
+})
+
 // 图床选择器
-const pickerDialog = ref(false)
+const pickerTarget = ref<{ bi: number; si: number } | null>(null)
+const pickerOpen = computed({
+  get: () => !!pickerTarget.value,
+  set: (v: boolean) => { if (!v) pickerTarget.value = null },
+})
 const pickerImages = ref<ImageResp[]>([])
 const pickerSelectedId = ref('')
-const pickerTargetIdx = ref(-1)
 
 const deleteDialog = ref(false)
 const deleteTarget = ref<ScheduledMessageResp | null>(null)
@@ -292,7 +318,6 @@ async function fetchTasks() {
   try {
     const res = (await scheduledMessageApi.list({ page: page.value, page_size: pageSize })).data.data
     tasks.value = res.list || []
-    total.value = res.total || 0
   } catch (e: any) {
     toastStore.error(e?.message || '加载任务失败')
   } finally {
@@ -325,11 +350,24 @@ function cronToTime(expr: string) {
 }
 
 function emptySegment(): ScheduledSegment {
-  return { type: 'text', content: '', delay_seconds: 0 }
+  return { type: 'text', content: '' }
 }
 
-function addSegment() {
-  form.value.segments.push(emptySegment())
+function emptyBlock(type: string): ScheduledBlock {
+  if (type === 'delay') return { type: 'delay', delay_seconds: 60 }
+  return { type: 'message', segments: [emptySegment()] }
+}
+
+function insertBlock(index: number, type: string) {
+  form.value.blocks.splice(index, 0, emptyBlock(type))
+}
+
+function addSegment(bi: number) {
+  const block = form.value.blocks[bi]
+  if (block.type === 'message') {
+    if (!block.segments) block.segments = []
+    block.segments.push(emptySegment())
+  }
 }
 
 function onSegmentTypeChange(seg: ScheduledSegment) {
@@ -337,13 +375,26 @@ function onSegmentTypeChange(seg: ScheduledSegment) {
   if (seg.type === 'image' && !seg.source) seg.source = 't2i'
 }
 
-function moveSegment(idx: number, delta: number) {
-  const arr = form.value.segments
+function onImageSourceChange(seg: ScheduledSegment) {
+  seg.content = ''
+}
+
+function moveBlock(idx: number, delta: number) {
+  const arr = form.value.blocks
   const target = idx + delta
   if (target < 0 || target >= arr.length) return
   const tmp = arr[idx]
   arr[idx] = arr[target]
   arr[target] = tmp
+}
+
+function pickFace(id: string) {
+  if (facePickerFor.value) {
+    const { bi, si } = facePickerFor.value
+    const seg = form.value.blocks[bi]?.segments?.[si]
+    if (seg) seg.content = `[CQ:face,id=${id}]`
+    facePickerFor.value = null
+  }
 }
 
 async function loadPickerImages() {
@@ -355,18 +406,13 @@ async function loadPickerImages() {
   }
 }
 
-function openPickerFor(idx: number) {
-  pickerTargetIdx.value = idx
-  pickerSelectedId.value = ''
-  pickerDialog.value = true
-  loadPickerImages()
-}
-
-function confirmPicker() {
+async function confirmPicker() {
   const img = pickerImages.value.find(i => i.id === pickerSelectedId.value)
-  if (img && pickerTargetIdx.value >= 0) {
-    form.value.segments[pickerTargetIdx.value].content = `imgs://${img.id}`
-    pickerDialog.value = false
+  const t = pickerTarget.value
+  if (img && t) {
+    const seg = form.value.blocks[t.bi]?.segments?.[t.si]
+    if (seg) seg.content = `imgs://${img.id}`
+    pickerTarget.value = null
   }
 }
 
@@ -375,7 +421,7 @@ function openCreate() {
   form.value = {
     name: '', enabled: true, cron_expr: '0 0 9 * * *',
     target_type: 'group', target_id: 0,
-    segments: [emptySegment()],
+    blocks: [emptyBlock('message')],
   }
   timeStr.value = '09:00'
   targetIDText.value = ''
@@ -390,7 +436,11 @@ function openEdit(t: ScheduledMessageResp) {
     cron_expr: t.cron_expr,
     target_type: t.target_type,
     target_id: t.target_id,
-    segments: t.segments.map(s => ({ ...s, delay_seconds: s.delay_seconds || 0 })),
+    blocks: (t.blocks || []).map(b => ({
+      type: b.type,
+      segments: b.type === 'message' ? (b.segments || []).map(s => ({ ...s })) : undefined,
+      delay_seconds: b.type === 'delay' ? b.delay_seconds : undefined,
+    })),
   }
   targetIDText.value = String(t.target_id || '')
   cronToTime(t.cron_expr)
@@ -407,9 +457,8 @@ async function handleSave() {
     toastStore.error('请填写目标群号 / QQ')
     return
   }
-  const segments = form.value.segments.filter(s => s.type && s.content.trim())
-  if (!segments.length) {
-    toastStore.error('至少需要一个有内容的消息段')
+  if (!form.value.blocks.length) {
+    toastStore.error('请至少添加一个编排块')
     return
   }
   saving.value = true
@@ -420,7 +469,7 @@ async function handleSave() {
       cron_expr: form.value.cron_expr.trim(),
       target_type: form.value.target_type,
       target_id: gid,
-      segments,
+      blocks: form.value.blocks,
     }
     if (editingId.value) {
       await scheduledMessageApi.update(editingId.value, payload)
@@ -485,17 +534,67 @@ onMounted(fetchTasks)
 </script>
 
 <style scoped>
-.segment-card {
-  border: 1px solid rgba(128, 128, 128, 0.2);
-  border-radius: 10px;
-  padding: 12px;
-  margin-bottom: 10px;
+.orchestration {
+  padding: 4px 0;
+}
+/* 触发器块 */
+.trigger-block {
+  background: rgba(var(--v-theme-primary), 0.1);
+  border: 2px solid var(--v-theme-primary);
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+.block-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* 连接线 */
+.block-connector {
+  display: flex;
+  justify-content: center;
+  padding: 2px 0;
+  color: rgba(128, 128, 128, 0.5);
+}
+/* 消息块 */
+.message-block {
+  border: 1.5px solid rgba(var(--v-theme-primary), 0.55);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: rgba(var(--v-theme-primary), 0.04);
+}
+/* 延时块 */
+.delay-block {
+  border: 1.5px dashed rgba(255, 152, 0, 0.6);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: rgba(255, 152, 0, 0.05);
+}
+.segment-row {
+  display: flex;
+  align-items: center;
+  padding: 6px 4px;
+  border-top: 1px dashed rgba(128, 128, 128, 0.25);
+  gap: 6px;
+}
+.segment-row:first-of-type {
+  border-top: none;
+}
+/* 块后添加按钮 */
+.add-block {
+  display: flex;
+  justify-content: center;
+  padding: 2px 0 8px;
+  opacity: 0.75;
+}
+.add-block:hover {
+  opacity: 1;
 }
 .face-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
   gap: 6px;
-  max-height: 180px;
+  max-height: 360px;
   overflow-y: auto;
   padding: 4px;
 }
@@ -513,10 +612,6 @@ onMounted(fetchTasks)
 }
 .face-item:hover {
   border-color: rgba(128, 128, 128, 0.4);
-}
-.face-item.face-selected {
-  border-color: var(--v-theme-primary);
-  background: rgba(var(--v-theme-primary), 0.08);
 }
 .picker-grid {
   display: grid;
