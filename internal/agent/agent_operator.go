@@ -235,6 +235,9 @@ func (h *HagoCenter) SetT2IActive(ctx context.Context, active bool) error {
 		h.T2IClient = nil
 		log.Info("T2I 服务已停用")
 	}
+
+	// T2I 状态变化影响工具可用性（text_to_image），重建 Eino Agent 自动注册/卸载
+	h.RebuildEinoAgent(ctx)
 	return nil
 }
 
@@ -267,6 +270,9 @@ func (h *HagoCenter) SetSandboxActive(ctx context.Context, active bool) error {
 		h.SandboxClient = nil
 		log.Info("Sandbox 服务已停用")
 	}
+
+	// Sandbox 状态变化影响工具可用性（create_sandbox/code_exec 等），重建 Eino Agent
+	h.RebuildEinoAgent(ctx)
 	return nil
 }
 

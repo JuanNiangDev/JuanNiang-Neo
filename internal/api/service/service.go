@@ -1534,6 +1534,10 @@ func (s *Service) UpdateT2IConfig(ctx context.Context, c *app.RequestContext) {
 	if s.T2IClient != nil {
 		healthy = s.T2IClient.HealthCheck() == nil
 	}
+
+	// T2I 状态变化影响 text_to_image 工具可用性，重建 Eino Agent 自动注册/卸载
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawT2IConfig2Resp(cfg, healthy)))
 }
 
@@ -1598,6 +1602,10 @@ func (s *Service) UpdateSandboxConfig(ctx context.Context, c *app.RequestContext
 	if s.SandboxClient != nil {
 		healthy = s.SandboxClient.HealthCheck() == nil
 	}
+
+	// Sandbox 状态变化影响 sandbox 系列工具可用性，重建 Eino Agent 自动注册/卸载
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSandboxConfig2Resp(cfg, healthy)))
 }
 

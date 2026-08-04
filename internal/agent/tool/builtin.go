@@ -780,6 +780,29 @@ except Exception as e:
 		},
 	})
 
+	// T2I/Sandbox 相关工具绑定服务可用性回调：对应服务停用/未配置时返回 false，
+	// BuildEinoTools 会将其过滤，实现自动卸载（LLM 不再看到这些工具）。
+	// 服务重新启用后触发 RebuildEinoAgent 即可恢复。
+	sandboxToolNames := map[string]bool{
+		"create_sandbox": true,
+		"list_sandboxes": true,
+		"browser_search": true,
+		"command_exec":   true,
+		"code_exec":      true,
+	}
+	for _, t := range tools {
+		bt, ok := t.(*onebotTool)
+		if !ok {
+			continue
+		}
+		switch {
+		case sandboxToolNames[bt.Name()]:
+			bt.SetAvailable(func() bool { return getSandbox() != nil })
+		case bt.Name() == "text_to_image":
+			bt.SetAvailable(func() bool { return getT2I() != nil })
+		}
+	}
+
 	for _, t := range tools {
 		registry.Register(t)
 	}

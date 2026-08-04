@@ -374,6 +374,9 @@ func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, 
 	svc.T2IClient = client
 	hago.T2IClient = client
 	log.Info("T2I 客户端已就绪", "base_url", cfg.BaseURL)
+
+	// T2I 客户端晚于 buildEinoAgent 就绪，重建 Agent 注册 text_to_image 工具
+	hago.RebuildEinoAgent(ctx)
 }
 
 func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
@@ -406,6 +409,9 @@ func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bund
 	svc.SandboxClient = client
 	hago.SandboxClient = client
 	log.Info("Sandbox 客户端已就绪", "base_url", cfg.BaseURL)
+
+	// Sandbox 客户端晚于 buildEinoAgent 就绪，重建 Agent 注册 sandbox 系列工具
+	hago.RebuildEinoAgent(ctx)
 }
 
 // loadWebhookConfig 从 DB 加载 Webhook 配置；若不存在则使用默认值并初始化 DB。
