@@ -314,3 +314,30 @@ export const imageFolderApi = {
   create: (name: string) => client.post('/image-folders', { name }),
   remove: (id: string) => client.delete(`/image-folders/${id}`),
 }
+
+// ======== 表情包库 ========
+export interface StickerResp {
+  id: string // 短 UUID（发送时用）
+  image_id: string // 图床图片长 UUID
+  name: string
+  desc: string
+  tags: string[]
+  created_at: string
+  updated_at: string
+}
+export interface StickerTagResp { id: string; name: string; created_at: string }
+export interface StickerListResp { total: number; list: StickerResp[] }
+
+export const stickerApi = {
+  list: (params?: { tag?: string; keyword?: string; page?: number; page_size?: number }) => client.get('/stickers', { params }),
+  get: (id: string) => client.get(`/stickers/${id}`),
+  create: (data: { image_id: string; name: string; desc?: string; tags?: string[] }) => client.post('/stickers', data),
+  update: (id: string, data: { name?: string; desc?: string; tags?: string[] }) => client.put(`/stickers/${id}`, data),
+  remove: (id: string) => client.delete(`/stickers/${id}`),
+}
+
+export const stickerTagApi = {
+  list: () => client.get('/sticker-tags'),
+  create: (name: string) => client.post('/sticker-tags', { name }),
+  remove: (id: string) => client.delete(`/sticker-tags/${id}`),
+}
