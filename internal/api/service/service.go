@@ -262,6 +262,9 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 		}))
 	}
 
+	// Provider 变更影响 Eino Agent 的 model adapter（构建时持有实例引用），必须重建
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, data))
 }
 
@@ -324,6 +327,9 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// Provider 变更影响 Eino Agent 的 model adapter，必须重建
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
@@ -336,6 +342,9 @@ func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
 	}
 
 	s.ProviderGroup.DelProvider(id)
+
+	// Provider 变更影响 Eino Agent 的 model adapter，必须重建
+	s.notifyRebuild()
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
@@ -393,6 +402,9 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// Provider 变更影响 Eino Agent 的 model adapter，必须重建
+	s.notifyRebuild()
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }

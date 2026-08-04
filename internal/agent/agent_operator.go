@@ -40,6 +40,9 @@ func (h *HagoCenter) SetProviderActive(ctx context.Context, id string, active bo
 	} else {
 		h.Providers.DelProvider(id)
 	}
+
+	// Provider 变更影响 Eino Agent 的 model adapter（构建时持有实例引用），必须重建
+	h.RebuildEinoAgent(ctx)
 	return nil
 }
 
@@ -75,6 +78,9 @@ func (h *HagoCenter) SwitchProvider(ctx context.Context, id string) error {
 		Temperature:    p.Temperature,
 		EnableThinking: p.EnableThinking,
 	}))
+
+	// Provider 切换影响 Eino Agent 的 model adapter，必须重建
+	h.RebuildEinoAgent(ctx)
 	log.Info("Provider 切换完成", "id", id, "type", p.Type)
 	return nil
 }
