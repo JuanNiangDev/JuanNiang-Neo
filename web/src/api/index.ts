@@ -364,3 +364,42 @@ export const fishCalendarApi = {
   affairs: (month: string) => client.get('/fish-calendar/affairs', { params: { month } }),
   setAffair: (date: string, content: string) => client.put('/fish-calendar/affairs', { date, content }),
 }
+
+// ======== 定时消息 ========
+export interface ScheduledSegment {
+  type: string // text / image / face
+  source?: string // image: t2i / url / imgstore
+  content: string
+  delay_seconds?: number
+}
+export interface ScheduledMessageResp {
+  id: string
+  name: string
+  enabled: boolean
+  cron_expr: string
+  target_type: string // group / private
+  target_id: number
+  segments: ScheduledSegment[]
+  last_run_at?: string | null
+  last_error: string
+  created_at: string
+  updated_at: string
+}
+export interface AddScheduledMessageReq {
+  name: string
+  enabled: boolean
+  cron_expr: string
+  target_type: string
+  target_id: number
+  segments: ScheduledSegment[]
+}
+
+export const scheduledMessageApi = {
+  list: (params?: { page?: number; page_size?: number }) => client.get('/scheduled-messages', { params }),
+  get: (id: string) => client.get(`/scheduled-messages/${id}`),
+  create: (data: AddScheduledMessageReq) => client.post('/scheduled-messages', data),
+  update: (id: string, data: AddScheduledMessageReq) => client.put(`/scheduled-messages/${id}`, data),
+  remove: (id: string) => client.delete(`/scheduled-messages/${id}`),
+  toggle: (id: string, enabled: boolean) => client.put(`/scheduled-messages/${id}/toggle`, { enabled }),
+  trigger: (id: string) => client.post(`/scheduled-messages/${id}/trigger`),
+}
