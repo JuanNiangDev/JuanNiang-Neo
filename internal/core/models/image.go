@@ -24,9 +24,11 @@ type ImageAsset struct {
 func (ImageAsset) TableName() string { return "image_assets" }
 
 // ImageFolder 图床虚拟文件夹（仅一层，位于根 / 下，其下不能再建文件夹）。
+// Name 使用部分唯一索引（WHERE deleted_at IS NULL）：软删除的文件夹不占用名字，
+// 删除后可重建同名文件夹，否则旧软删行会阻塞唯一索引（SQLSTATE 23505）。
 type ImageFolder struct {
 	ID        string         `gorm:"primaryKey;type:uuid"`
-	Name      string         `gorm:"not null;uniqueIndex"` // 文件夹名（隐含路径 /<name>）
+	Name      string         `gorm:"not null;uniqueIndex:uk_image_folders_name,where:deleted_at IS NULL"` // 文件夹名（隐含路径 /<name>）
 	CreatedAt time.Time      `json:"created_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index"`
 }

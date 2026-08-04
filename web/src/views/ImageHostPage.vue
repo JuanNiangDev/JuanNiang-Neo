@@ -2,7 +2,7 @@
   <div>
     <div class="page-header">
       <div class="page-title"><v-icon class="me-2" color="primary">mdi-image-multiple-outline</v-icon>图床</div>
-      <div class="page-subtitle">图片托管：上传后可用 <code class="text-caption">imgs://&lt;id&gt;</code> 在消息中引用（Plugin / Agent 自动解析）</div>
+      <div class="page-subtitle">机器人图床服务</div>
     </div>
 
     <div class="d-flex img-body">
@@ -13,7 +13,7 @@
           <span class="text-subtitle-2 font-weight-bold">文件夹</span>
         </div>
         <v-list nav density="compact">
-          <!-- 根目录（顶级） -->
+          <!-- 根目录（树顶级） -->
           <v-list-item
             prepend-icon="mdi-folder-home-outline"
             title="根目录 /"
@@ -21,23 +21,24 @@
             active-color="primary"
             @click="selectFolder('/')"
           />
-          <!-- 子文件夹（缩进，体现层级） -->
-          <v-list-item
-            v-for="f in folders"
-            :key="f.id"
-            prepend-icon="mdi-folder-outline"
-            :title="f.name"
-            class="sub-folder"
-            :active="currentFolder === '/' + f.name"
-            active-color="primary"
-            @click="selectFolder('/' + f.name)"
-          >
-            <template #append>
-              <v-btn icon="mdi-close" size="x-small" variant="text" density="compact" title="删除文件夹（图片移到根）" @click.stop="confirmDeleteFolder(f)" />
-            </template>
-          </v-list-item>
+          <!-- 子文件夹：树状缩进 + 连接线 -->
+          <div v-if="folders.length" class="tree-children">
+            <v-list-item
+              v-for="f in folders"
+              :key="f.id"
+              prepend-icon="mdi-folder-outline"
+              :title="f.name"
+              class="tree-leaf"
+              :active="currentFolder === '/' + f.name"
+              active-color="primary"
+              @click="selectFolder('/' + f.name)"
+            >
+              <template #append>
+                <v-btn icon="mdi-close" size="x-small" variant="text" density="compact" title="删除文件夹（图片移到根）" @click.stop="confirmDeleteFolder(f)" />
+              </template>
+            </v-list-item>
+          </div>
         </v-list>
-        <div class="text-caption px-4 py-2 text-medium-emphasis folder-hint">仅支持一层文件夹，图片默认在根目录 /</div>
       </v-card>
 
       <!-- 右侧：工具栏 + 网格 -->
@@ -428,12 +429,23 @@ onMounted(() => {
 .folder-panel :deep(.v-list) {
   flex-grow: 1;
 }
-/* 子文件夹缩进，体现层级 */
-.folder-panel :deep(.sub-folder .v-list-item__content) {
-  margin-left: 14px;
+/* 树状视图：子文件夹缩进 + 左侧连接线 */
+.folder-panel :deep(.tree-children) {
+  margin-left: 22px;
+  border-left: 1px solid rgba(128, 128, 128, 0.3);
+  padding-left: 8px;
 }
-.folder-hint {
-  flex-shrink: 0;
+.folder-panel :deep(.tree-leaf) {
+  position: relative;
+}
+.folder-panel :deep(.tree-leaf::before) {
+  content: '';
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  width: 10px;
+  height: 1px;
+  background: rgba(128, 128, 128, 0.3);
 }
 
 .image-grid {
