@@ -1265,6 +1265,28 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			}()
 			return pushOk(L)
 		},
+		"send_group_msg": func(L *lua.LState) int {
+			groupID := int64(L.CheckNumber(1))
+			arg := L.Get(2)
+			var msg any
+			if arg.Type() == lua.LTTable {
+				msg = buildSegments(arg.(*lua.LTable))
+			} else if arg.Type() == lua.LTString {
+				msg = string(arg.(lua.LString))
+			} else {
+				msg = arg.String()
+			}
+			// 插件发消息异步，不阻塞命令 handler 返回
+			go func() {
+				t0 := time.Now()
+				if _, err := sendAdp.SendGroupMsg(groupID, msg); err != nil {
+					log.Warn("插件异步发送群消息失败", "plugin", pluginName, "group_id", groupID, "err", err)
+				} else {
+					log.Debug("插件异步发送群消息完成", "plugin", pluginName, "group_id", groupID, "dur_ms", time.Since(t0).Milliseconds())
+				}
+			}()
+			return pushOk(L)
+		},
 		// send_group_sticker / send_private_sticker 发送表情包库表情（短 UUID）。
 		// 底层由 adapter 把 stk://<短UUID> 解析为 base64（subType=1），插件只接触表情 ID。
 		"send_group_sticker": func(L *lua.LState) int {
