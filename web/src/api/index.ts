@@ -265,14 +265,8 @@ export interface KnowledgeResp {
 export interface AddKnowledgeReq { title: string; content: string }
 export interface KnowledgeListResp { total: number; list: KnowledgeResp[] }
 
-export interface KnowledgeLRUEntry { key: string; hits: number; item_count: number }
-export interface KeywordCount { keyword: string; count: number }
-export interface KeywordHit { keyword: string; hit_count: number; updated_at?: string }
-export interface KnowledgeStatsResp { lru: KnowledgeLRUEntry[]; cloud: KeywordCount[]; hit_rank: KeywordHit[] }
-
 export const knowledgeApi = {
   list: (page = 1, page_size = 20) => client.get('/knowledge', { params: { page, page_size } }),
-  stats: () => client.get('/knowledge/stats'),
   get: (id: string) => client.get(`/knowledge/${id}`),
   create: (data: AddKnowledgeReq) => client.post('/knowledge', data),
   update: (id: string, data: AddKnowledgeReq) => client.put(`/knowledge/${id}`, data),
