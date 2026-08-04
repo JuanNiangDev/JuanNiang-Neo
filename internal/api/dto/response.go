@@ -39,6 +39,7 @@ var (
 	PluginIsSystem          = Response{Status: 40028, Info: "系统插件不允许删除或停用"}
 	PromptIsSystem          = Response{Status: 40029, Info: "系统提示词不允许修改或删除"}
 	ToolIsBuiltin           = Response{Status: 40030, Info: "内置工具运行时常驻, 不支持启停"}
+	KnowledgeContentEmpty   = Response{Status: 40033, Info: "知识内容不能为空"}
 )
 
 type TokenResp struct {
@@ -127,6 +128,17 @@ type ToolConfigResp struct {
 	IsBuiltin   bool           `json:"is_builtin"`
 	AdminOnly   bool           `json:"admin_only"` // 仅管理员可调用
 	CreatedAt   time.Time      `json:"created_at"`
+}
+
+// KnowledgeResp 知识库条目。
+type KnowledgeResp struct {
+	ID            string           `json:"id"`
+	Title         string           `json:"title"`
+	Content       string           `json:"content"`
+	Keywords      models.JSONSlice `json:"keywords"`
+	KeywordStatus string           `json:"keyword_status"` // pending / ready / failed
+	CreatedAt     time.Time        `json:"created_at"`
+	UpdatedAt     time.Time        `json:"updated_at"`
 }
 
 type PluginResp struct {

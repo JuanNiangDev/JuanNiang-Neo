@@ -51,6 +51,10 @@ type Service struct {
 	OnRebuildAgent func()
 	// OnUpdateToolAdminOnly 工具的"仅管理员"标志变更后刷新 Agent 运行时权限表。
 	OnUpdateToolAdminOnly func()
+	// OnKnowledgeChanged 知识库条目变更后失效 Agent 侧 LRU 缓存。
+	OnKnowledgeChanged func()
+	// OnExtractKnowledge 知识新增/编辑后触发异步关键词提取。
+	OnExtractKnowledge func(id string)
 	// LoopTracker 当前活跃的 Agent ReAct 循环（监控展示）。
 	LoopTracker *agent.LoopTracker
 	// PromptMgr 提示词管理器（缓存失效用）。

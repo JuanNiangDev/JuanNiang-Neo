@@ -229,6 +229,8 @@ func main() {
 	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
 	svc.OnRebuildAgent = func() { hago.RebuildEinoAgent(ctx) }
 	svc.OnUpdateToolAdminOnly = func() { hago.RefreshToolAdminOnly(ctx) }
+	svc.OnKnowledgeChanged = func() { hago.InvalidateKnowledgeLRU() }
+	svc.OnExtractKnowledge = func(id string) { hago.ExtractKeywordsAsync(ctx, id) }
 	svc.CronJobManager = hago.CronJobManager
 	svc.LoopTracker = hago.Loops
 	svc.PromptMgr = hago.Prompt

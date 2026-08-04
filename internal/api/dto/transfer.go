@@ -115,6 +115,18 @@ func RawToolConfig2Resp(raw *models.ToolConfig) ToolConfigResp {
 	}
 }
 
+func RawKnowledge2Resp(raw *models.KnowledgeItem) KnowledgeResp {
+	return KnowledgeResp{
+		ID:            raw.ID,
+		Title:         raw.Title,
+		Content:       raw.Content,
+		Keywords:      raw.Keywords,
+		KeywordStatus: raw.KeywordStatus,
+		CreatedAt:     raw.CreatedAt,
+		UpdatedAt:     raw.UpdatedAt,
+	}
+}
+
 func RawPlugin2Resp(raw *models.Plugin) PluginResp {
 	return PluginResp{
 		ID:        raw.ID,

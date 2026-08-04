@@ -171,6 +171,20 @@ type UpdateToolAdminOnlyReq struct {
 	AdminOnly bool `json:"admin_only"` // true=仅管理员可调用
 }
 
+// ---------- Knowledge ----------
+
+// AddKnowledgeReq 新增知识库条目。
+type AddKnowledgeReq struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
+// UpdateKnowledgeReq 编辑知识库条目。
+type UpdateKnowledgeReq struct {
+	Title   string `json:"title"`
+	Content string `json:"content"`
+}
+
 // ---------- Plugin ----------
 
 type TogglePluginReq struct {

@@ -2001,6 +2001,138 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 	}))
 }
 
+// ---------- 知识库 ----------
+
+// ListKnowledge 分页列出知识库条目。
+func (s *Service) ListKnowledge(ctx context.Context, c *app.RequestContext) {
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	list, err := s.DAO.Knowledge.List(ctx, pageSize, (page-1)*pageSize)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	total, _ := s.DAO.Knowledge.Count(ctx)
+	resp := make([]dto.KnowledgeResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.RawKnowledge2Resp(&list[i]))
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{"total": total, "list": resp}))
+}
+
+// GetKnowledge 知识库条目详情。
+func (s *Service) GetKnowledge(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Knowledge.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawKnowledge2Resp(item)))
+}
+
+// AddKnowledge 新增知识库条目（触发异步关键词提取）。
+func (s *Service) AddKnowledge(ctx context.Context, c *app.RequestContext) {
+	var data dto.AddKnowledgeReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Content) == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.KnowledgeContentEmpty, nil))
+		return
+	}
+
+	item := &models.KnowledgeItem{
+		ID:            newUUID(),
+		Title:         data.Title,
+		Content:       data.Content,
+		KeywordStatus: models.KeywordStatusPending,
+	}
+	if err := s.DAO.Knowledge.Create(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 异步提取关键词 + 失效 LRU
+	if s.OnExtractKnowledge != nil {
+		s.OnExtractKnowledge(item.ID)
+	}
+	if s.OnKnowledgeChanged != nil {
+		s.OnKnowledgeChanged()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawKnowledge2Resp(item)))
+}
+
+// UpdateKnowledge 编辑知识库条目（重新触发关键词提取）。
+func (s *Service) UpdateKnowledge(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateKnowledgeReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Content) == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.KnowledgeContentEmpty, nil))
+		return
+	}
+
+	item, err := s.DAO.Knowledge.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	item.Title = data.Title
+	item.Content = data.Content
+	item.KeywordStatus = models.KeywordStatusPending
+	if err := s.DAO.Knowledge.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	if s.OnExtractKnowledge != nil {
+		s.OnExtractKnowledge(item.ID)
+	}
+	if s.OnKnowledgeChanged != nil {
+		s.OnKnowledgeChanged()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawKnowledge2Resp(item)))
+}
+
+// DeleteKnowledge 删除知识库条目。
+func (s *Service) DeleteKnowledge(ctx context.Context, c *app.RequestContext) {
+	if err := s.DAO.Knowledge.Delete(ctx, c.Param("id")); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnKnowledgeChanged != nil {
+		s.OnKnowledgeChanged()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ReExtractKnowledge 手动重试关键词提取（failed 状态时用）。
+func (s *Service) ReExtractKnowledge(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Knowledge.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.DAO.Knowledge.SetKeywordStatus(ctx, item.ID, models.KeywordStatusPending); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnExtractKnowledge != nil {
+		s.OnExtractKnowledge(item.ID)
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
 // ---------- helpers ----------
 
 func newUUID() string {
