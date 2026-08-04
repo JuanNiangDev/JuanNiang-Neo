@@ -42,3 +42,4 @@ dev.yaml
 
 # 运行时生成的插件文件
 data/pluggins/
+data/imgs/
