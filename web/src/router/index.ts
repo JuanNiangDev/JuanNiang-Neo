@@ -38,7 +38,12 @@ const router = createRouter({
         { path: 'logs', name: 'Logs', component: () => import('@/views/LogsPage.vue') },
         { path: 'settings', name: 'Settings', component: () => import('@/views/SettingsPage.vue') },
 		{ path: 'agent-loops', name: 'AgentLoops', component: () => import('@/views/AgentLoopsPage.vue') },
-        { path: 'cronjobs', name: 'CronJobs', component: () => import('@/views/CronJobsPage.vue') },
+		{ path: 'cronjobs', name: 'CronJobs', component: () => import('@/views/CronJobsPage.vue') },
+		// 高级功能（占位）
+		{ path: 'advanced/image-host', name: 'ImageHost', component: () => import('@/views/ImageHostPage.vue') },
+		{ path: 'advanced/stickers', name: 'StickerLibrary', component: () => import('@/views/StickerLibraryPage.vue') },
+		{ path: 'advanced/fish-calendar', name: 'FishCalendar', component: () => import('@/views/FishCalendarPage.vue') },
+		{ path: 'advanced/scheduled-messages', name: 'ScheduledMessages', component: () => import('@/views/ScheduledMessagesPage.vue') },
       ],
     },
   ],

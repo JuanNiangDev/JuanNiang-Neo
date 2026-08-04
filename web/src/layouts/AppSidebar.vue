@@ -114,14 +114,24 @@ const navGroups = [
       { title: '黑名单', icon: 'mdi-shield-account-outline', to: '/acl' },
     ],
   },
-  {
-    title: '服务',
-    icon: 'mdi-cog-outline',
-    items: [
-      { title: 'T2I', icon: 'mdi-image-auto-adjust', to: '/t2i' },
-      { title: 'Sandbox', icon: 'mdi-code-braces-box', to: '/sandbox' },
-      { title: '修改密码', icon: 'mdi-key-change', to: '/settings' },
-    ],
-  },
-]
+  	{
+  		title: '服务',
+  		icon: 'mdi-cog-outline',
+  		items: [
+  			{ title: 'T2I', icon: 'mdi-image-auto-adjust', to: '/t2i' },
+  			{ title: 'Sandbox', icon: 'mdi-code-braces-box', to: '/sandbox' },
+  			{ title: '修改密码', icon: 'mdi-key-change', to: '/settings' },
+  		],
+  	},
+  	{
+  		title: '高级功能',
+  		icon: 'mdi-rocket-launch-outline',
+  		items: [
+  			{ title: '图床', icon: 'mdi-image-multiple-outline', to: '/advanced/image-host' },
+  			{ title: '表情包库', icon: 'mdi-emoticon-outline', to: '/advanced/stickers' },
+  			{ title: '摸鱼人日历', icon: 'mdi-calendar-month-outline', to: '/advanced/fish-calendar' },
+  			{ title: '定时消息', icon: 'mdi-message-clock-outline', to: '/advanced/scheduled-messages' },
+  		],
+  	},
+  ]
 </script>
