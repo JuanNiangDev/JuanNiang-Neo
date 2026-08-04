@@ -74,6 +74,8 @@
                       { label: '不回复 — 判断失败时保持沉默（默认）', value: 'drop' },
                       { label: '照常回复 — 判断失败时交给 Agent 回复', value: 'reply' },
                     ]"
+                    item-title="label"
+                    item-value="value"
                     label="相关性判断 LLM 调用失败时的处理"
                     density="comfortable" variant="outlined" hide-details
                   />
