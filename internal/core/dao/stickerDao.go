@@ -48,6 +48,7 @@ func (d *StickerDAO) GetByID(ctx context.Context, id string) (*models.Sticker, e
 }
 
 // List 分页列出表情，支持按标签过滤（tags jsonb ? 操作符）与名称/简介模糊匹配。
+// 注意：PG 的 jsonb "?" 操作符在 GORM 中必须写成 "??"（GORM 用 ?? 转义字面 ?）。
 func (d *StickerDAO) List(ctx context.Context, tag, keyword string, limit, offset int) ([]models.Sticker, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -58,7 +59,7 @@ func (d *StickerDAO) List(ctx context.Context, tag, keyword string, limit, offse
 	var list []models.Sticker
 	q := d.db.WithContext(ctx).Model(&models.Sticker{})
 	if tag != "" {
-		q = q.Where("tags ? ?", tag)
+		q = q.Where("tags ?? ?", tag)
 	}
 	if keyword != "" {
 		like := "%" + keyword + "%"
@@ -73,7 +74,7 @@ func (d *StickerDAO) Count(ctx context.Context, tag, keyword string) (int64, err
 	var n int64
 	q := d.db.WithContext(ctx).Model(&models.Sticker{})
 	if tag != "" {
-		q = q.Where("tags ? ?", tag)
+		q = q.Where("tags ?? ?", tag)
 	}
 	if keyword != "" {
 		like := "%" + keyword + "%"
