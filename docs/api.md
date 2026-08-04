@@ -67,6 +67,7 @@
 | 40041 | 标签不存在 |
 | 40042 | 该图床图片已被其他表情引用 |
 | 40043 | 摸鱼日历配置不存在 |
+| 40044 | 定时消息任务不存在 |
 | 50000 | 服务器内部错误 |
 
 ## 认证
@@ -110,7 +111,7 @@
 6. [Plugins](#11-plugins) · [ACL](#15-acl)
 7. [T2I](#18-t2i) · [Sandbox](#19-sandbox)
 8. [Logs](#16-日志) · [Agent 活跃循环](#20-agent-活跃循环) · [CronJob](#21-cronjob) · [回复策略](#22-回复策略) · [知识库](#23-知识库)
-9. [图床](#24-图床) · [表情包库](#25-表情包库) · [摸鱼人日历](#26-摸鱼人日历)
+9. [图床](#24-图床) · [表情包库](#25-表情包库) · [摸鱼人日历](#26-摸鱼人日历) · [定时消息](#27-定时消息)
 
 ---
 
@@ -870,6 +871,48 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 `FishCalendarAffairResp`: `date`、`content`。
 
 发送消息为富文本：`[CQ:at,qq=all] 今日份摸鱼人日历来了~` + 日历图片（800×720，黑白纸张质感模板，内容铺满）。
+
+---
+
+## 27. 定时消息
+
+独立于 CronJob 系统的定时任务（`internal/agent/scheduledmsg`）：一个任务含**多段消息**，
+按配置的 cron 表达式触发后逐段发送，段间可自定义延迟。
+
+消息段类型（`ScheduledSegmentReq`）：
+
+| type | source | content |
+|------|--------|---------|
+| `text` | - | 文字内容 |
+| `image` | `t2i` | HTML 模板（T2I 服务渲染成图片） |
+| `image` | `url` | 图片直链 |
+| `image` | `imgstore` | 图床引用（`imgs://<图片ID>`，发送层自动转 base64） |
+| `face` | - | CQ 码表情（如 `[CQ:face,id=66]`） |
+
+`delay_seconds`：本段发送完成后到下一段开始前的延迟（0~3600 秒）。
+
+### GET /scheduled-messages
+分页列出。**Query** `page`、`page_size`（默认 20）。**data** `{total, list ScheduledMessageResp[]}`。
+
+### GET /scheduled-messages/:id
+任务详情。**data** `ScheduledMessageResp`。
+
+### POST /scheduled-messages
+新建任务。**Body** `AddScheduledMessageReq`: `name`、`enabled`、`cron_expr`（6 字段秒级）、`target_type`（group/private）、`target_id`、`segments` ScheduledSegmentReq[]。**data** `ScheduledMessageResp`。
+
+### PUT /scheduled-messages/:id
+编辑任务。**Body** `UpdateScheduledMessageReq`（同 Add）。**data** `ScheduledMessageResp`。
+
+### DELETE /scheduled-messages/:id
+删除任务。**data** `null`。
+
+### PUT /scheduled-messages/:id/toggle
+启停任务。**Body** `{enabled bool}`。**data** `ScheduledMessageResp`。
+
+### POST /scheduled-messages/:id/trigger
+手动触发立即执行（逐段发送，段间按延迟等待）。**data** `null`。
+
+`ScheduledMessageResp`: `id`、`name`、`enabled`、`cron_expr`、`target_type`、`target_id`、`segments`、`last_run_at`、`last_error`、`created_at`、`updated_at`。
 
 ---
 
