@@ -224,10 +224,15 @@ type CreateStickerTagReq struct {
 
 // UpdateFishCalendarConfigReq 更新摸鱼日历配置。
 type UpdateFishCalendarConfigReq struct {
-	Enabled       bool   `json:"enabled"`         // 总开关
-	CronExpr      string `json:"cron_expr"`       // 发送时间（6 字段秒级 cron）
-	TargetGroupID int64  `json:"target_group_id"` // 目标群号
-	GroupAffairs  string `json:"group_affairs"`   // 今日群务文本
+	Enabled      bool     `json:"enabled"`       // 总开关
+	CronExpr     string   `json:"cron_expr"`     // 发送时间（6 字段秒级 cron）
+	TargetGroups []string `json:"target_groups"` // 目标群号列表
+}
+
+// SetFishCalendarAffairReq 设置某天群务（content 为空则清除）。
+type SetFishCalendarAffairReq struct {
+	Date    string `json:"date"`    // YYYY-MM-DD
+	Content string `json:"content"` // 当天群务内容
 }
 
 // ---------- Plugin ----------

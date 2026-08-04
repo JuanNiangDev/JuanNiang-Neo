@@ -303,12 +303,17 @@ type StickerListResp struct {
 
 // FishCalendarConfigResp 摸鱼人日历配置。
 type FishCalendarConfigResp struct {
-	Enabled       bool       `json:"enabled"`
-	CronExpr      string     `json:"cron_expr"`
-	TargetGroupID int64      `json:"target_group_id"`
-	GroupAffairs  string     `json:"group_affairs"`
-	LastRunAt     *time.Time `json:"last_run_at"`
-	LastError     string     `json:"last_error"`
+	Enabled      bool       `json:"enabled"`
+	CronExpr     string     `json:"cron_expr"`
+	TargetGroups []string   `json:"target_groups"`
+	LastRunAt    *time.Time `json:"last_run_at"`
+	LastError    string     `json:"last_error"`
+}
+
+// FishCalendarAffairResp 某天的群务。
+type FishCalendarAffairResp struct {
+	Date    string `json:"date"`
+	Content string `json:"content"`
 }
 
 type PluginUploadResp struct {

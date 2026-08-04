@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,7 +71,7 @@ func (s *Scheduler) Reload(ctx context.Context) {
 		if err := s.TriggerNow(runCtx); err != nil {
 			log.Error("摸鱼日历执行失败", "err", err)
 		} else {
-			log.Info("摸鱼日历发送成功", "group", cfg.TargetGroupID)
+			log.Info("摸鱼日历发送成功", "groups", strings.Join(cfg.TargetGroups, ","))
 		}
 	})
 	if err != nil {
@@ -78,7 +79,7 @@ func (s *Scheduler) Reload(ctx context.Context) {
 		return
 	}
 	s.entryID = eid
-	log.Info("摸鱼日历已调度", "expr", cfg.CronExpr, "group", cfg.TargetGroupID)
+	log.Info("摸鱼日历已调度", "expr", cfg.CronExpr, "groups", strings.Join(cfg.TargetGroups, ","))
 }
 
 // Run 启动调度器并阻塞直到 ctx 结束（启动前先加载一次配置）。
@@ -91,7 +92,7 @@ func (s *Scheduler) Run(ctx context.Context) {
 	log.Info("摸鱼日历调度器已停止")
 }
 
-// TriggerNow 立即执行一次：生成日历图片并发送到目标群（Web 手动触发与 cron 共用）。
+// TriggerNow 立即执行一次：生成日历图片并发送到所有目标群（Web 手动触发与 cron 共用）。
 func (s *Scheduler) TriggerNow(ctx context.Context) error {
 	cfg, err := s.dao.GetConfig(ctx)
 	if err != nil {
@@ -101,15 +102,23 @@ func (s *Scheduler) TriggerNow(ctx context.Context) error {
 		_ = s.dao.MarkRunResult(ctx, time.Now(), runErr.Error())
 		return runErr
 	}
-	if cfg.TargetGroupID == 0 {
-		return recordErr(errors.New("未配置目标群号"))
+	groups := parseGroups(cfg.TargetGroups)
+	if len(groups) == 0 {
+		return recordErr(errors.New("未配置目标群"))
 	}
 	t2i := s.getT2I()
 	if t2i == nil {
 		return recordErr(errors.New("T2I 服务未启用，无法生成图片"))
 	}
 
-	html := buildCalendarHTML(time.Now(), cfg.GroupAffairs)
+	// 当天群务（无配置时用默认提示）
+	now := time.Now()
+	affair := "今日无群务安排，安心摸鱼～"
+	if a, err := s.dao.AffairGet(ctx, now.Format("2006-01-02")); err == nil && a != nil {
+		affair = a.Content
+	}
+
+	html := buildCalendarHTML(now, affair)
 	img, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
 		HTML: html,
 		Options: &t2icaller.GenerateOptions{
@@ -121,13 +130,36 @@ func (s *Scheduler) TriggerNow(ctx context.Context) error {
 		return recordErr(fmt.Errorf("T2I 生成失败: %w", err))
 	}
 
+	// 富文本消息：@全体成员 + 文案 + 图片
 	b64 := "base64://" + base64.StdEncoding.EncodeToString(img)
-	msg := fmt.Sprintf("[CQ:image,file=%s]", b64)
-	if _, err := s.adapter.SendGroupMsg(cfg.TargetGroupID, msg); err != nil {
-		return recordErr(fmt.Errorf("发送群消息失败: %w", err))
+	msg := fmt.Sprintf("[CQ:at,qq=all] 今日份摸鱼人日历来了~\n[CQ:image,file=%s]", b64)
+	for _, gid := range groups {
+		if _, err := s.adapter.SendGroupMsg(gid, msg); err != nil {
+			log.Error("摸鱼日历发送群失败", "group", gid, "err", err)
+			return recordErr(fmt.Errorf("发送群 %d 失败: %w", gid, err))
+		}
+		log.Info("摸鱼日历已发送到群", "group", gid)
 	}
-	_ = s.dao.MarkRunResult(ctx, time.Now(), "")
+	_ = s.dao.MarkRunResult(ctx, now, "")
 	return nil
+}
+
+// parseGroups 把 JSONSlice（字符串群号）解析为 int64 列表。
+func parseGroups(groups []string) []int64 {
+	out := make([]int64, 0, len(groups))
+	seen := make(map[int64]struct{})
+	for _, g := range groups {
+		gid, err := strconv.ParseInt(strings.TrimSpace(g), 10, 64)
+		if err != nil || gid == 0 {
+			continue
+		}
+		if _, ok := seen[gid]; ok {
+			continue
+		}
+		seen[gid] = struct{}{}
+		out = append(out, gid)
+	}
+	return out
 }
 
 // ---------- 日历内容 ----------
@@ -152,8 +184,8 @@ var holidaysByYear = map[int][]holiday{
 
 var weekdayCN = []string{"日", "一", "二", "三", "四", "五", "六"}
 
-// buildCalendarHTML 组装摸鱼日历 HTML 模板（T2I 渲染成图片）。
-func buildCalendarHTML(t time.Time, groupAffairs string) string {
+// buildCalendarHTML 组装摸鱼日历 HTML 模板（800×720，黑白纸张质感，T2I 渲染成图片）。
+func buildCalendarHTML(t time.Time, affair string) string {
 	// 农历
 	lunarStr := ""
 	if solar := calendar.NewSolarFromYmd(t.Year(), int(t.Month()), t.Day()); solar != nil {
@@ -184,28 +216,36 @@ func buildCalendarHTML(t time.Time, groupAffairs string) string {
 	// 金句
 	quote := fetchHitokoto(context.Background())
 
-	affairs := strings.TrimSpace(groupAffairs)
-	if affairs != "" {
-		affairs = "✨ " + affairs + " ✨"
-	} else {
-		affairs = "（今日群务未设置，请管理员在 Web 面板配置）"
+	affair = strings.TrimSpace(affair)
+	if affair == "" {
+		affair = "今日无群务安排，安心摸鱼～"
 	}
 
-	return fmt.Sprintf(`<div style="font-family:'Microsoft YaHei',sans-serif;background:linear-gradient(135deg,#5b6ee1 0%%,#8e5bd4 100%%);padding:28px;width:620px;color:#fff;border-radius:18px;box-sizing:border-box;">
-<h2 style="text-align:center;margin:0 0 6px;font-size:26px;letter-spacing:4px;">🐟 摸鱼人日历 🐟</h2>
-<p style="text-align:center;color:#ffd86e;margin:0 0 18px;font-size:16px;">今日宜划水 · 忌内卷</p>
-<div style="background:rgba(255,255,255,0.14);border-radius:14px;padding:18px 20px;font-size:15px;line-height:1.9;">
+	// 黑白纸张质感：米白底 + 深灰字 + 衬线字体 + 细边框虚线分隔 + 顶部粗线装饰。
+	// 内容纵向 flex 铺满固定 720px 高度。
+	return fmt.Sprintf(`<div style="font-family:'KaiTi','STKaiti','SimSun',serif;width:800px;height:720px;box-sizing:border-box;margin:0;padding:44px 56px 36px;background:#f7f4ec;color:#2b2b2b;display:flex;flex-direction:column;position:relative;">
+<div style="position:absolute;top:0;left:0;right:0;height:10px;background:#2b2b2b;"></div>
+<div style="position:absolute;bottom:0;left:0;right:0;height:10px;background:#2b2b2b;"></div>
+<div style="text-align:center;border-bottom:2px solid #2b2b2b;padding-bottom:14px;">
+<h1 style="margin:0;font-size:46px;letter-spacing:14px;font-weight:700;">摸鱼人日历</h1>
+<div style="margin-top:8px;font-size:20px;letter-spacing:6px;color:#555;">今日宜划水 · 忌内卷</div>
+</div>
+<div style="flex:1;display:flex;flex-direction:column;justify-content:space-evenly;padding:18px 8px;font-size:21px;line-height:1.8;">
 <p style="margin:0;">📅 今天是 %d年%d月%d日，星期%s</p>
 <p style="margin:0;">🌙 农历 %s</p>
 <p style="margin:0;">%s</p>
 <p style="margin:0;">%s</p>
-<p style="margin:0;">🔥 今日金句：<br/>&nbsp;&nbsp;“%s”</p>
-<p style="margin:10px 0 0;">🚩 今日群务：<br/>&nbsp;&nbsp;%s</p>
+<div style="border-top:1px dashed #9a937f;margin:6px 0;"></div>
+<p style="margin:0;">🔥 今日金句</p>
+<p style="margin:2px 0 0 18px;font-size:19px;color:#333;">“%s”</p>
+<div style="border-top:1px dashed #9a937f;margin:6px 0;"></div>
+<p style="margin:0;">🚩 今日群务</p>
+<p style="margin:2px 0 0 18px;font-size:19px;color:#333;">%s</p>
 </div>
-<p style="text-align:center;color:rgba(255,255,255,0.75);margin:14px 0 0;font-size:13px;">🤖 想我了？随时 @卷娘 🤖</p>
+<div style="text-align:center;border-top:2px solid #2b2b2b;padding-top:14px;font-size:16px;color:#666;letter-spacing:3px;">🤖 想我了？随时 @卷娘 🤖</div>
 </div>`,
 		t.Year(), int(t.Month()), t.Day(), weekdayCN[int(t.Weekday())],
-		lunarStr, weekLine, holidayLine, quote, affairs)
+		lunarStr, weekLine, holidayLine, quote, affair)
 }
 
 // nextStatutoryHoliday 返回距离今天最近的未来法定假日名称与天数。

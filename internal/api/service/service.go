@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -2606,12 +2607,11 @@ func (s *Service) GetFishCalendarConfig(ctx context.Context, c *app.RequestConte
 		}
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.FishCalendarConfigResp{
-		Enabled:       cfg.Enabled,
-		CronExpr:      cfg.CronExpr,
-		TargetGroupID: cfg.TargetGroupID,
-		GroupAffairs:  cfg.GroupAffairs,
-		LastRunAt:     cfg.LastRunAt,
-		LastError:     cfg.LastError,
+		Enabled:      cfg.Enabled,
+		CronExpr:     cfg.CronExpr,
+		TargetGroups: cfg.TargetGroups,
+		LastRunAt:    cfg.LastRunAt,
+		LastError:    cfg.LastError,
 	}))
 }
 
@@ -2635,10 +2635,9 @@ func (s *Service) UpdateFishCalendarConfig(ctx context.Context, c *app.RequestCo
 		cfg.CronExpr = strings.TrimSpace(data.CronExpr)
 	}
 	cfg.Enabled = data.Enabled
-	if data.TargetGroupID != 0 {
-		cfg.TargetGroupID = data.TargetGroupID
+	if len(data.TargetGroups) > 0 {
+		cfg.TargetGroups = models.JSONSlice(cleanStickerTags(data.TargetGroups))
 	}
-	cfg.GroupAffairs = strings.TrimSpace(data.GroupAffairs)
 	if err := s.DAO.FishCalendar.UpdateConfig(ctx, cfg); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -2662,7 +2661,51 @@ func (s *Service) TriggerFishCalendar(ctx context.Context, c *app.RequestContext
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+// ListFishCalendarAffairs 列出某月（?month=YYYY-MM）已配置的群务。
+func (s *Service) ListFishCalendarAffairs(ctx context.Context, c *app.RequestContext) {
+	month := strings.TrimSpace(c.Query("month"))
+	if !regexpFishCalMonth.MatchString(month) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "month 格式应为 YYYY-MM"}))
+		return
+	}
+	list, err := s.DAO.FishCalendar.AffairListMonth(ctx, month)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	resp := make([]dto.FishCalendarAffairResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.FishCalendarAffairResp{Date: list[i].Date, Content: list[i].Content})
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
+}
+
+// SetFishCalendarAffair 设置某天群务（content 为空则清除当天配置）。
+func (s *Service) SetFishCalendarAffair(ctx context.Context, c *app.RequestContext) {
+	var data dto.SetFishCalendarAffairReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	data.Date = strings.TrimSpace(data.Date)
+	if !regexpFishCalDate.MatchString(data.Date) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "date 格式应为 YYYY-MM-DD"}))
+		return
+	}
+	if err := s.DAO.FishCalendar.AffairUpsert(ctx, data.Date, data.Content); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
 // cleanStickerTags 清洗表情标签：去空白、去重。
+// regexpFishCalMonth 月份格式 YYYY-MM。
+var regexpFishCalMonth = regexp.MustCompile(`^\d{4}-\d{2}$`)
+
+// regexpFishCalDate 日期格式 YYYY-MM-DD。
+var regexpFishCalDate = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
 // validateStickerTags 校验标签均已提前创建（标签先建后选），返回去重清洗后的标签。
 func (s *Service) validateStickerTags(ctx context.Context, tags []string) ([]string, error) {
 	cleaned := cleanStickerTags(tags)

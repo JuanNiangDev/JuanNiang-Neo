@@ -28,8 +28,12 @@ func TestBuildCalendarHTML(t *testing.T) {
 	}
 	// 群务为空时应有提示
 	html2 := buildCalendarHTML(now, "")
-	if !strings.Contains(html2, "今日群务未设置") {
+	if !strings.Contains(html2, "今日无群务安排") {
 		t.Errorf("空群务时缺少提示")
+	}
+	// 模板尺寸 800×720
+	if !strings.Contains(html2, "width:800px") || !strings.Contains(html2, "height:720px") {
+		t.Errorf("模板尺寸应为 800×720")
 	}
 }
 

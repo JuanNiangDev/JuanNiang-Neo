@@ -51,6 +51,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.Sticker{},
 		&models.StickerTag{},
 		&models.FishCalendarConfig{},
+		&models.FishCalendarAffair{},
 	)
 }
 

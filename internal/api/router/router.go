@@ -164,4 +164,6 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.GET("/fish-calendar/config", auth, svc.GetFishCalendarConfig)
 	api.PUT("/fish-calendar/config", auth, svc.UpdateFishCalendarConfig)
 	api.POST("/fish-calendar/trigger", auth, svc.TriggerFishCalendar)
+	api.GET("/fish-calendar/affairs", auth, svc.ListFishCalendarAffairs)
+	api.PUT("/fish-calendar/affairs", auth, svc.SetFishCalendarAffair)
 }
