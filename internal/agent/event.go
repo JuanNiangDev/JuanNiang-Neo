@@ -160,44 +160,9 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 	}
 }
 
-// checkReplyStrategy 根据回复策略配置决定是否继续处理消息。
-func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event, rs ReplySettings) bool {
-	msg := ev.Message
-	switch rs.Strategy {
-	case models.StrategyNeverReply:
-		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
-		return false
-	case models.StrategyAtOnly:
-		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage) {
-			log.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
-			return false
-		}
-		return true
-	case models.StrategyRelevance:
-		// 仅对群聊 message 做相关性判断
-		if msg.MessageType != "group" {
-			return true
-		}
-		if h.isAtSelf(msg.RawMessage) || h.isPluginCommand(msg.RawMessage) {
-			return true
-		}
-		chatAreaID := ""
-		area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, msg.GroupID)
-		if err == nil {
-			chatAreaID = area.ID
-		}
-		recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
-		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs)
-		if score < rs.RelevanceThreshold {
-			log.Debug("回复策略: 相关性不足", "score", score, "threshold", rs.RelevanceThreshold, "reason", reason)
-			return false
-		}
-		log.Debug("回复策略: 相关性通过", "score", score, "reason", reason)
-		return true
-	default: // StrategyAlways
-		return true
-	}
-}
+// checkReplyStrategy 已废弃：相关性判断统一在 filterRelevant 中按批次执行
+// （规则快路径 + relevanceBatchEvaluate），逐条模式不再使用。
+// 原实现见 git history（L1/L2 优化前）。
 
 // batchWindow 同一 ChatArea 消息的批处理窗口：窗口内的消息合并为一次 Agent 处理，
 // 避免多条消息同时到达时各自触发完整 ReAct 循环（重复执行任务 + 回复串味）。
@@ -272,17 +237,56 @@ func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs 
 }
 
 // filterRelevant 对批次内消息做相关性策略过滤（relevance 策略需要 LLM 判断，在此统一执行）。
+// 流程（L1/L2.1）：规则快路径（@/命令/提及名字 → 必回；噪音 → 丢弃）→
+// 剩余候选消息合并为一次批量判断（含图消息标注 [图片]）。
 func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event, rs ReplySettings) []adapter.Event {
 	if rs.Strategy != models.StrategyRelevance {
 		return events
 	}
-	out := make([]adapter.Event, 0, len(events))
+	var mustKeep, candidates []adapter.Event
 	for _, ev := range events {
-		if ev.SkipReplyCheck || h.checkReplyStrategy(ctx, ev, rs) {
-			out = append(out, ev)
+		if ev.SkipReplyCheck {
+			mustKeep = append(mustKeep, ev)
+			continue
 		}
+		msg := ev.Message
+		if msg == nil {
+			continue
+		}
+		// 非群聊（私聊）不参与相关性判断，直接保留
+		if msg.MessageType != "group" {
+			mustKeep = append(mustKeep, ev)
+			continue
+		}
+		// L1 规则快路径：@ 自己 / 插件命令 / 提及名字 → 必回，无需 LLM
+		if h.isAtSelf(msg.RawMessage) || h.isPluginCommand(msg.RawMessage) || isDefinitelyRelevant(msg, rs) {
+			mustKeep = append(mustKeep, ev)
+			continue
+		}
+		// L1 规则快路径：明显噪音 → 直接丢弃
+		if isDefinitelyIrrelevant(msg) {
+			log.Debug("相关性: 规则判定无关，丢弃", "user_id", msg.UserID, "group_id", msg.GroupID)
+			continue
+		}
+		candidates = append(candidates, ev)
 	}
-	return out
+	if len(candidates) == 0 {
+		return mustKeep
+	}
+
+	// 取 ChatArea ID（批量判断的上下文/后续缓存用）
+	areaID := ""
+	if area := h.getChatArea(ctx, candidates[0].Message); area != nil {
+		areaID = area.ID
+	}
+
+	// L2.1 批量合并判断：一次 LLM 调用决定整批候选去留
+	if h.relevanceBatchEvaluate(ctx, candidates, rs, areaID) {
+		log.Debug("相关性: 批量判断通过，保留候选", "count", len(candidates))
+		return append(mustKeep, candidates...)
+	}
+	log.Debug("相关性: 批量判断不相关，丢弃候选", "count", len(candidates))
+	return mustKeep
 }
 
 // getChatArea 根据消息类型获取或创建 ChatArea，失败返回 nil。
