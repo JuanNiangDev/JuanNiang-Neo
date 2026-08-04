@@ -18,6 +18,12 @@ func Image(file string) Segment {
 	return Segment{Type: "image", Data: map[string]any{"file": file}}
 }
 
+// Sticker 表情段。与普通图片的区别是 subType=1（OneBot11 用它区分表情与图片）。
+// file 传图床表情引用（stk://<短UUID>），发送层会自动解析为 base64。
+func Sticker(file string) Segment {
+	return Segment{Type: "image", Data: map[string]any{"file": file, "subType": 1}}
+}
+
 // FileMsg 文件 (群文件上传)。
 func FileMsg(file string) Segment {
 	return Segment{Type: "file", Data: map[string]any{"file": file}}

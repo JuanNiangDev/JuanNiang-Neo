@@ -3,6 +3,7 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ============================================================
@@ -341,25 +342,32 @@ func normalizeMessage(msg any) any {
 	}
 }
 
-// resolveImageAssets 把消息中的图床图片引用（file="imgs://<id>"）替换为 base64。
-// 纯文本消息（不含 CQ 码）原样返回；只处理 []Segment。
+// resolveImageAssets 把消息中的图床图片引用（file="imgs://<id>"）与表情引用（file="stk://<短UUID>"）
+// 替换为 base64。纯文本消息（不含 CQ 码）原样返回；只处理 []Segment。
 func (p *Adapter) resolveImageAssets(msg any) any {
 	segs, ok := msg.([]Segment)
 	if !ok || len(segs) == 0 {
 		return msg
 	}
 	p.mu.RLock()
-	resolver := p.imageResolver
+	imageResolver := p.imageResolver
+	stickerResolver := p.stickerResolver
 	p.mu.RUnlock()
-	if resolver == nil {
-		return msg
-	}
 	out := make([]Segment, len(segs))
 	for i, seg := range segs {
 		if seg.Type == "image" {
 			if f, ok := seg.Data["file"].(string); ok && f != "" {
-				if b64, resolved := resolver(f); resolved {
-					seg.Data["file"] = b64
+				// 表情引用：stk://<短UUID> → 短 UUID 查表情 → 图床长 UUID → base64，强制 subType=1
+				if strings.HasPrefix(f, "stk://") && stickerResolver != nil {
+					if b64, resolved := stickerResolver(strings.TrimPrefix(f, "stk://")); resolved {
+						seg.Data["file"] = b64
+						seg.Data["subType"] = 1
+					}
+				} else if imageResolver != nil {
+					// 图床图片引用：imgs://<id>（含普通图片/富文本内嵌表情场景）
+					if b64, resolved := imageResolver(f); resolved {
+						seg.Data["file"] = b64
+					}
 				}
 			}
 		}
