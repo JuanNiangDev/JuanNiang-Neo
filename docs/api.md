@@ -57,6 +57,11 @@
 | 40031 | CronJob 不存在 |
 | 40032 | 回复策略配置不存在 |
 | 40033 | 知识内容不能为空 |
+| 40034 | 图片大小不能超过 1.5MB |
+| 40035 | 不支持的图片格式（仅支持 jpg/png/gif/webp） |
+| 40036 | 图片不存在 |
+| 40037 | 文件夹已存在 |
+| 40038 | 文件夹不存在 |
 | 50000 | 服务器内部错误 |
 
 ## 认证
@@ -100,6 +105,7 @@
 6. [Plugins](#11-plugins) · [ACL](#15-acl)
 7. [T2I](#18-t2i) · [Sandbox](#19-sandbox)
 8. [Logs](#16-日志) · [Agent 活跃循环](#20-agent-活跃循环) · [CronJob](#21-cronjob) · [回复策略](#22-回复策略) · [知识库](#23-知识库)
+9. [图床](#24-图床)
 
 ---
 
@@ -726,6 +732,58 @@ SQL 驱动知识库：Web 存入知识条目，Agent 异步提取关键词；对
 手动重试关键词提取（`failed` 状态时用）。**data** `null`。
 
 `KnowledgeResp`: `id`、`title`、`content`、`keywords` string[]、`keyword_status`、`created_at`、`updated_at`。
+
+---
+
+## 24. 图床
+
+图片二进制存储在 `data/imgs`（`IMG_DIR` 可覆盖），元数据在 Postgres `image_assets` / `image_folders` 表。
+虚拟文件夹仅一层：图片默认在根 `/`，根下可创建文件夹（如 `/meme`），文件夹下不能再建文件夹。
+
+### 上传约束
+
+- 大小 ≤ **1.5MB**（超出返回 40034）
+- MIME 白名单：`image/jpeg` / `image/png` / `image/gif` / `image/webp`（以文件内容嗅探为准，不信任扩展名；不支持返回 40035）
+
+### 消息引用（imgs://）
+
+Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图床图片。发送层（`internal/adapter`）
+检测到 `imgs://` 前缀后自动从图床加载图片并转成 `base64://` 再发给 OneBot11 客户端——
+对 Plugin / Agent 无感，无需关心 Onebot11 与机器人之间的网络互通。
+
+### GET /images
+分页列出。**Query** `folder`（默认 `/`）、`page`（默认 1）、`page_size`（默认 48，上限 100）。
+
+**data** `{total int64, list ImageResp[]}`。
+
+### GET /images/:id
+图片元数据详情。**data** `ImageResp`。
+
+### GET /images/:id/file
+图片文件流（Web 预览用，响应 `Content-Type` 为该图片 MIME）。
+
+### POST /images
+上传图片。**multipart/form-data**：`file`（必填）、`name`（可选，默认文件名）、`folder`（可选，默认 `/`）。
+
+**data** `ImageResp`。
+
+### PUT /images/:id
+编辑（重命名 / 移动文件夹）。**Body** `UpdateImageReq`: `name` string（可选）、`folder` string（可选，`/` 或 `/<name>`，目标文件夹需存在）。**data** `ImageResp`。
+
+### DELETE /images/:id
+删除（DB 软删 + 删除磁盘文件）。**data** `null`。
+
+### GET /image-folders
+列出全部虚拟文件夹。**data** `ImageFolderResp[]`。
+
+### POST /image-folders
+创建虚拟文件夹。**Body** `CreateImageFolderReq`: `name` string（必填，不能含 `/`，重名返回 40037）。**data** `ImageFolderResp`。
+
+### DELETE /image-folders/:id
+删除文件夹（其下图片自动移到根 `/`，不存在返回 40038）。**data** `null`。
+
+`ImageResp`: `id`、`name`、`folder`（虚拟路径，`/` 为根）、`mime_type`、`size_bytes`、`created_at`、`updated_at`。
+`ImageFolderResp`: `id`、`name`、`created_at`。
 
 ---
 

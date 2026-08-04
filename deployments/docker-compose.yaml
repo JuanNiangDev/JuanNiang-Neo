@@ -85,6 +85,8 @@ services:
       # 用户则必须赋权）：
       #   mkdir -p data/pluggins && chmod 777 data/pluggins
       - ../data/pluggins:/app/data/pluggins
+      # 图床图片目录（data/imgs，容器内 CWD=/app -> /app/data/imgs），跨升级保留
+      - ../data/imgs:/app/data/imgs
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
       interval: 30s
