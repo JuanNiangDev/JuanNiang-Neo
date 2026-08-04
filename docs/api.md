@@ -855,12 +855,21 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 读取配置（未初始化时写入默认配置）。**data** `FishCalendarConfigResp`。
 
 ### PUT /fish-calendar/config
-更新配置并重新调度。**Body** `UpdateFishCalendarConfigReq`: `enabled` bool、`cron_expr` string（6 字段秒级 cron）、`target_group_id` int64、`group_affairs` string。**data** `null`。
+更新配置并重新调度。**Body** `UpdateFishCalendarConfigReq`: `enabled` bool、`cron_expr` string（6 字段秒级 cron）、`target_groups` string[]（目标群号列表）。**data** `null`。
 
 ### POST /fish-calendar/trigger
 手动触发一次立即生成并发送（测试用），失败返回 50000 + `error_detail`。**data** `null`。
 
-`FishCalendarConfigResp`: `enabled`、`cron_expr`、`target_group_id`、`group_affairs`、`last_run_at`（可空）、`last_error`。
+### GET /fish-calendar/affairs
+列出某月已配置的群务。**Query** `month`（必填，YYYY-MM）。**data** `FishCalendarAffairResp[]`。
+
+### PUT /fish-calendar/affairs
+设置某天群务（content 为空则清除当天）。**Body** `SetFishCalendarAffairReq`: `date` string（YYYY-MM-DD）、`content` string。**data** `null`。
+
+`FishCalendarConfigResp`: `enabled`、`cron_expr`、`target_groups` string[]、`last_run_at`（可空）、`last_error`。
+`FishCalendarAffairResp`: `date`、`content`。
+
+发送消息为富文本：`[CQ:at,qq=all] 今日份摸鱼人日历来了~` + 日历图片（800×720，黑白纸张质感模板，内容铺满）。
 
 ---
 
