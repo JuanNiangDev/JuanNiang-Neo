@@ -35,6 +35,9 @@ type DevConfig struct {
 	JWT struct {
 		Secret string `yaml:"secret"`
 	} `yaml:"jwt"`
+	Images struct {
+		Dir string `yaml:"dir"`
+	} `yaml:"images"`
 	Debug struct {
 		Enabled   bool   `yaml:"enabled"`
 		PprofAddr string `yaml:"pprof_addr"`

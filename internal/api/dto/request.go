@@ -185,6 +185,19 @@ type UpdateKnowledgeReq struct {
 	Content string `json:"content"`
 }
 
+// ---------- 图床 ----------
+
+// UpdateImageReq 编辑图床图片（重命名/移动虚拟文件夹）。
+type UpdateImageReq struct {
+	Name   string `json:"name"`
+	Folder string `json:"folder"` // 虚拟文件夹路径，/ 或 /<name>
+}
+
+// CreateImageFolderReq 创建图床虚拟文件夹。
+type CreateImageFolderReq struct {
+	Name string `json:"name"`
+}
+
 // ---------- Plugin ----------
 
 type TogglePluginReq struct {

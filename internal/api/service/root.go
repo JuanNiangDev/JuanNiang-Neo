@@ -19,6 +19,7 @@ import (
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/acl"
 	"JuanNiang-Neo/internal/core/dao"
+	"JuanNiang-Neo/internal/core/imgstore"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
 )
@@ -59,6 +60,8 @@ type Service struct {
 	LoopTracker *agent.LoopTracker
 	// PromptMgr 提示词管理器（缓存失效用）。
 	PromptMgr *prompt.PromptManager
+	// ImageStore 图床文件存储（data/imgs，二进制文件读写）。
+	ImageStore *imgstore.Store
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {

@@ -40,6 +40,11 @@ var (
 	PromptIsSystem          = Response{Status: 40029, Info: "系统提示词不允许修改或删除"}
 	ToolIsBuiltin           = Response{Status: 40030, Info: "内置工具运行时常驻, 不支持启停"}
 	KnowledgeContentEmpty   = Response{Status: 40033, Info: "知识内容不能为空"}
+	ImageTooLarge           = Response{Status: 40034, Info: "图片大小不能超过 1.5MB"}
+	ImageTypeNotAllowed     = Response{Status: 40035, Info: "不支持的图片格式（仅支持 jpg/png/gif/webp）"}
+	ImageNotExist           = Response{Status: 40036, Info: "图片不存在"}
+	ImageFolderExist        = Response{Status: 40037, Info: "文件夹已存在"}
+	ImageFolderNotExist     = Response{Status: 40038, Info: "文件夹不存在"}
 )
 
 type TokenResp struct {
@@ -241,6 +246,30 @@ type DailyTokenUsageResp struct {
 type ChatRecordListResp struct {
 	Total int64            `json:"total"`
 	List  []ChatRecordResp `json:"list"`
+}
+
+// ImageResp 图床图片元数据。
+type ImageResp struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Folder    string    `json:"folder"` // 虚拟文件夹路径，/ 表示根
+	MimeType  string    `json:"mime_type"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ImageFolderResp 图床虚拟文件夹。
+type ImageFolderResp struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ImageListResp 图床图片分页列表。
+type ImageListResp struct {
+	Total int64       `json:"total"`
+	List  []ImageResp `json:"list"`
 }
 
 type PluginUploadResp struct {

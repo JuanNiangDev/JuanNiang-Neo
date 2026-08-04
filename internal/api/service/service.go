@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -2129,6 +2130,279 @@ func (s *Service) ReExtractKnowledge(ctx context.Context, c *app.RequestContext)
 	}
 	if s.OnExtractKnowledge != nil {
 		s.OnExtractKnowledge(item.ID)
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- 图床 ----------
+
+// maxImageSize 上传图片大小上限：1.5MB。
+const maxImageSize = 1536 * 1024
+
+// allowedImageMimes 允许的图片 MIME 白名单。
+var allowedImageMimes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// normalizeImageFolder 归一化虚拟文件夹路径（空 → 根 /）。
+func normalizeImageFolder(f string) string {
+	if strings.TrimSpace(f) == "" || strings.TrimSpace(f) == "/" {
+		return "/"
+	}
+	f = "/" + strings.Trim(strings.TrimSpace(f), "/")
+	return f
+}
+
+// ListImages 按虚拟文件夹分页列出图床图片。
+func (s *Service) ListImages(ctx context.Context, c *app.RequestContext) {
+	folder := normalizeImageFolder(c.Query("folder"))
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 48
+	}
+	list, err := s.DAO.Image.List(ctx, folder, pageSize, (page-1)*pageSize)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	total, _ := s.DAO.Image.Count(ctx, folder)
+	resp := make([]dto.ImageResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.RawImage2Resp(&list[i]))
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ImageListResp{Total: total, List: resp}))
+}
+
+// GetImage 获取单张图片元数据。
+func (s *Service) GetImage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Image.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawImage2Resp(item)))
+}
+
+// GetImageFile 返回图片文件字节流（Web 预览用）。
+func (s *Service) GetImageFile(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Image.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	if s.ImageStore == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "图床存储未初始化"}))
+		return
+	}
+	data, err := s.ImageStore.Read(item.ID)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "图片文件读取失败"}))
+		return
+	}
+	c.Data(consts.StatusOK, item.MimeType, data)
+}
+
+// UploadImage 上传图片到图床（multipart：file + name + folder）。
+// 校验：大小 ≤ 1.5MB、MIME 白名单（jpg/png/gif/webp）。
+func (s *Service) UploadImage(ctx context.Context, c *app.RequestContext) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.EmptyFileToUpload, nil))
+		return
+	}
+	if file.Size > maxImageSize {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageTooLarge,
+			dto.ErrorDetail{ErrorDetail: fmt.Sprintf("当前 %.1fMB", float64(file.Size)/1024/1024)}))
+		return
+	}
+	src, err := file.Open()
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "无法打开文件"}))
+		return
+	}
+	defer src.Close()
+	data, err := io.ReadAll(src)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "文件读取失败"}))
+		return
+	}
+
+	// MIME 校验：以文件内容嗅探为准，不信任文件名/Content-Type
+	mime := http.DetectContentType(data)
+	if !allowedImageMimes[mime] {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageTypeNotAllowed, dto.ErrorDetail{ErrorDetail: mime}))
+		return
+	}
+
+	name := strings.TrimSpace(c.PostForm("name"))
+	if name == "" {
+		name = filepath.Base(file.Filename)
+		if name == "" || name == "." {
+			name = "未命名图片"
+		}
+	}
+	folder := normalizeImageFolder(c.PostForm("folder"))
+
+	// 目标文件夹必须存在（根 / 除外）
+	if folder != "/" {
+		folders, _ := s.DAO.Image.FolderList(ctx)
+		found := false
+		for _, f := range folders {
+			if "/"+f.Name == folder {
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageFolderNotExist, nil))
+			return
+		}
+	}
+
+	id := newUUID()
+	item := &models.ImageAsset{
+		ID:        id,
+		Name:      name,
+		FileName:  id + ".img",
+		Folder:    folder,
+		MimeType:  mime,
+		SizeBytes: int64(len(data)),
+	}
+	if s.ImageStore == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "图床存储未初始化"}))
+		return
+	}
+	if err := s.ImageStore.Save(id, data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "图片保存失败"}))
+		return
+	}
+	if err := s.DAO.Image.Create(ctx, item); err != nil {
+		_ = s.ImageStore.Delete(id) // 回滚文件
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawImage2Resp(item)))
+}
+
+// UpdateImage 编辑图床图片（重命名 / 移动虚拟文件夹）。
+func (s *Service) UpdateImage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Image.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	var data dto.UpdateImageReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if data.Name != "" {
+		item.Name = strings.TrimSpace(data.Name)
+	}
+	if data.Folder != "" {
+		folder := normalizeImageFolder(data.Folder)
+		if folder != "/" {
+			folders, _ := s.DAO.Image.FolderList(ctx)
+			found := false
+			for _, f := range folders {
+				if "/"+f.Name == folder {
+					found = true
+					break
+				}
+			}
+			if !found {
+				c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageFolderNotExist, nil))
+				return
+			}
+		}
+		item.Folder = folder
+	}
+	if err := s.DAO.Image.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawImage2Resp(item)))
+}
+
+// DeleteImage 删除图床图片（DB 软删 + 删除磁盘文件）。
+func (s *Service) DeleteImage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Image.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	if err := s.DAO.Image.Delete(ctx, item.ID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.ImageStore != nil {
+		_ = s.ImageStore.Delete(item.ID)
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ListImageFolders 列出图床虚拟文件夹。
+func (s *Service) ListImageFolders(ctx context.Context, c *app.RequestContext) {
+	folders, err := s.DAO.Image.FolderList(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	resp := make([]dto.ImageFolderResp, 0, len(folders))
+	for i := range folders {
+		resp = append(resp, dto.ImageFolderResp{ID: folders[i].ID, Name: folders[i].Name, CreatedAt: folders[i].CreatedAt})
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
+}
+
+// CreateImageFolder 创建图床虚拟文件夹（仅一层，name 不能含 /）。
+func (s *Service) CreateImageFolder(ctx context.Context, c *app.RequestContext) {
+	var data dto.CreateImageFolderReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	name := strings.TrimSpace(data.Name)
+	if name == "" || strings.Contains(name, "/") {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "文件夹名不能为空且不能包含 /"}))
+		return
+	}
+	folders, _ := s.DAO.Image.FolderList(ctx)
+	for _, f := range folders {
+		if f.Name == name {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageFolderExist, nil))
+			return
+		}
+	}
+	f, err := s.DAO.Image.FolderCreate(ctx, name)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ImageFolderResp{ID: f.ID, Name: f.Name, CreatedAt: f.CreatedAt}))
+}
+
+// DeleteImageFolder 删除图床虚拟文件夹（其下图片自动移到根 /）。
+func (s *Service) DeleteImageFolder(ctx context.Context, c *app.RequestContext) {
+	f, err := s.DAO.Image.FolderGetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageFolderNotExist, nil))
+		return
+	}
+	if err := s.DAO.Image.MoveFolderToRoot(ctx, "/"+f.Name); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.DAO.Image.FolderDelete(ctx, f.ID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }

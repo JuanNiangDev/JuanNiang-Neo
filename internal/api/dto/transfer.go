@@ -139,6 +139,19 @@ func RawPlugin2Resp(raw *models.Plugin) PluginResp {
 	}
 }
 
+// RawImage2Resp 图床图片元数据转换。
+func RawImage2Resp(raw *models.ImageAsset) ImageResp {
+	return ImageResp{
+		ID:        raw.ID,
+		Name:      raw.Name,
+		Folder:    raw.Folder,
+		MimeType:  raw.MimeType,
+		SizeBytes: raw.SizeBytes,
+		CreatedAt: raw.CreatedAt,
+		UpdatedAt: raw.UpdatedAt,
+	}
+}
+
 func RawPluginList2Resp(raw []models.Plugin) []PluginResp {
 	res := make([]PluginResp, len(raw))
 	for i, item := range raw {

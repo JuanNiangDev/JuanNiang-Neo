@@ -138,4 +138,15 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/knowledge/:id", auth, svc.UpdateKnowledge)
 	api.DELETE("/knowledge/:id", auth, svc.DeleteKnowledge)
 	api.POST("/knowledge/:id/re-extract", auth, svc.ReExtractKnowledge)
+
+	// 图床
+	api.GET("/images", auth, svc.ListImages)
+	api.GET("/images/:id", auth, svc.GetImage)
+	api.GET("/images/:id/file", auth, svc.GetImageFile)
+	api.POST("/images", auth, svc.UploadImage)
+	api.PUT("/images/:id", auth, svc.UpdateImage)
+	api.DELETE("/images/:id", auth, svc.DeleteImage)
+	api.GET("/image-folders", auth, svc.ListImageFolders)
+	api.POST("/image-folders", auth, svc.CreateImageFolder)
+	api.DELETE("/image-folders/:id", auth, svc.DeleteImageFolder)
 }

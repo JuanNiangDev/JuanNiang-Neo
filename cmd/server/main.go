@@ -28,6 +28,7 @@ import (
 	"JuanNiang-Neo/internal/api/service"
 	"JuanNiang-Neo/internal/core"
 	"JuanNiang-Neo/internal/core/dao"
+	"JuanNiang-Neo/internal/core/imgstore"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
@@ -132,6 +133,27 @@ func main() {
 
 	adapterCfg := loadAdapterConfig(ctx, coreInst.DAO)
 	adapterProv := adapter.New(adapterCfg)
+
+	// ---------- 图床 ----------
+	// 图片二进制存 data/imgs（IMG_DIR 可覆盖）；元数据在 Postgres。
+	imgDir := devEnv("IMG_DIR", devCfg.Images.Dir, "data/imgs")
+	imgStore := imgstore.New(imgDir)
+	if err := imgStore.EnsureDir(); err != nil {
+		log.Warn("图床目录创建失败", "dir", imgDir, "err", err)
+	}
+	// 发送消息时把 imgs://<id> 图床引用解析为 base64（Onebot11 与机器人网络可能不互通）。
+	adapterProv.SetImageResolver(func(raw string) (string, bool) {
+		if !strings.HasPrefix(raw, "imgs://") {
+			return "", false
+		}
+		id := strings.TrimPrefix(raw, "imgs://")
+		b64, err := imgStore.LoadBase64(id)
+		if err != nil {
+			log.Warn("图床图片加载失败", "id", id, "err", err)
+			return "", false
+		}
+		return "base64://" + b64, true
+	})
 	if adapterCfg.Enable {
 		if err := adapterProv.Start(ctx); err != nil {
 			log.Error("Adapter 启动失败", "err", err)
@@ -234,6 +256,7 @@ func main() {
 	svc.CronJobManager = hago.CronJobManager
 	svc.LoopTracker = hago.Loops
 	svc.PromptMgr = hago.Prompt
+	svc.ImageStore = imgStore
 
 	// 前端静态资源目录: 默认 web/dist (构建产物), 可通过 WEB_DIR 覆盖。
 	//   - 开发模式: 前端走 Vite (:3000) 代理 /api 到 :8090, 后端无需服务前端。
