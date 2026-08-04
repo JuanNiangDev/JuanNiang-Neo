@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
@@ -65,6 +66,9 @@ func RegisterBuiltinTools(
 	getCurrentMsg func(ctx context.Context) *adapter.MessageEvent,
 	getRecentMsgs func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error),
 	listImages func(ctx context.Context, folder string, limit int) (string, error),
+	listStickerTags func(ctx context.Context) (string, error),
+	listStickers func(ctx context.Context, tag string, page, pageSize int) (string, error),
+	searchStickers func(ctx context.Context, keyword string, limit int) (string, error),
 ) {
 	tools := []Tool{}
 
@@ -91,6 +95,128 @@ func RegisterBuiltinTools(
 				return "图床未初始化", nil
 			}
 			return listImages(ctx, p.Folder, p.Limit)
+		},
+	})
+
+	// --- 表情包库 ---
+
+	// send_sticker 单独发表情（subType=1）。富文本消息中请用图片方式 [CQ:image,file=imgs://图片ID]。
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "send_sticker", "发送表情包库中的表情（OneBot11 表情段 subType=1）。先调用 list_stickers / search_stickers 获取表情 ID；适合单独发表情，富文本消息中的图片请用 [CQ:image,file=imgs://图片ID] 方式",
+			openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"sticker_id":   map[string]any{"type": "string", "description": "表情 ID（短 UUID）"},
+					"message_type": map[string]any{"type": "string", "description": "发送目标：group 群聊 / private 私聊，不填默认当前会话"},
+					"target_id":    map[string]any{"type": "integer", "description": "目标群号或 QQ 号，不填默认当前会话"},
+				},
+				"required": []string{"sticker_id"},
+			}, true, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				StickerID   string    `json:"sticker_id"`
+				MessageType string    `json:"message_type"`
+				TargetID    FlexInt64 `json:"target_id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("参数解析失败: %w", err)
+			}
+			if strings.TrimSpace(p.StickerID) == "" {
+				return "", fmt.Errorf("缺少 sticker_id 参数")
+			}
+			// 用 CQ 码字符串构造表情段（subType=1），发送层自动把 stk:// 解析为 base64
+			msg := fmt.Sprintf("[CQ:image,file=stk://%s,subType=1]", p.StickerID)
+			msgType := p.MessageType
+			targetID := int64(p.TargetID)
+			if targetID == 0 {
+				if cur := getCurrentMsg(ctx); cur != nil {
+					msgType = cur.MessageType
+					if cur.MessageType == "private" {
+						targetID = cur.UserID
+					} else {
+						targetID = cur.GroupID
+					}
+				}
+			}
+			if targetID == 0 {
+				return "", fmt.Errorf("缺少目标，且无法从当前会话推断")
+			}
+			if q := GetDeferredSendQueue(ctx); q != nil {
+				q.Add(DeferredSend{MessageType: msgType, TargetID: targetID, Message: msg, Delivery: true})
+				return "表情已加入发送队列，将在任务执行完成后统一发送", nil
+			}
+			var id int64
+			var err error
+			if msgType == "private" {
+				id, err = adapter.SendPrivateMsg(targetID, msg)
+			} else {
+				id, err = adapter.SendGroupMsg(targetID, msg)
+			}
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("表情已发送，message_id: %d", id), nil
+		},
+	})
+
+	// list_sticker_tags 获取全部表情标签。
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "list_sticker_tags", "获取表情包库的全部标签（表情 ID 查询时可按标签过滤）",
+			openai.FunctionParameters{"type": "object", "properties": map[string]any{}}, false, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			if listStickerTags == nil {
+				return "表情包库未初始化", nil
+			}
+			return listStickerTags(ctx)
+		},
+	})
+
+	// list_stickers 分页获取表情（按标签过滤）。
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "list_stickers", "分页获取表情包库的表情（可按标签过滤），返回表情 ID/名称/简介，发送时用 send_sticker + 表情 ID",
+			openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"tag":       map[string]any{"type": "string", "description": "标签名（可选），只列出该标签下的表情"},
+					"page":      map[string]any{"type": "integer", "description": "页码，从 1 开始"},
+					"page_size": map[string]any{"type": "integer", "description": "每页条数（默认 20，最大 50）"},
+				},
+			}, false, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Tag      string `json:"tag"`
+				Page     int    `json:"page"`
+				PageSize int    `json:"page_size"`
+			}
+			_ = json.Unmarshal(args, &p)
+			if listStickers == nil {
+				return "表情包库未初始化", nil
+			}
+			return listStickers(ctx, p.Tag, p.Page, p.PageSize)
+		},
+	})
+
+	// search_stickers 模糊匹配表情简介。
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "search_stickers", "按关键词模糊匹配表情的名称与简介，返回表情 ID/名称/简介，发送时用 send_sticker + 表情 ID",
+			openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"keyword": map[string]any{"type": "string", "description": "搜索关键词（匹配名称或简介）"},
+					"limit":   map[string]any{"type": "integer", "description": "返回条数上限（默认 20，最大 50）"},
+				},
+				"required": []string{"keyword"},
+			}, false, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Keyword string `json:"keyword"`
+				Limit   int    `json:"limit"`
+			}
+			_ = json.Unmarshal(args, &p)
+			if searchStickers == nil {
+				return "表情包库未初始化", nil
+			}
+			return searchStickers(ctx, p.Keyword, p.Limit)
 		},
 	})
 

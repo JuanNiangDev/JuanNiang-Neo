@@ -198,6 +198,15 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		func(ctx context.Context, folder string, limit int) (string, error) {
 			return h.listImagesForTool(ctx, folder, limit)
 		},
+		func(ctx context.Context) (string, error) {
+			return h.listStickerTagsForTool(ctx)
+		},
+		func(ctx context.Context, tag string, page, pageSize int) (string, error) {
+			return h.listStickersForTool(ctx, tag, page, pageSize)
+		},
+		func(ctx context.Context, keyword string, limit int) (string, error) {
+			return h.searchStickersForTool(ctx, keyword, limit)
+		},
 	)
 
 	// 内置工具"仅管理员"标志：seed 默认高危名单到 DB（幂等），并加载运行时权限表
