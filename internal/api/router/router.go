@@ -166,4 +166,13 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.POST("/fish-calendar/trigger", auth, svc.TriggerFishCalendar)
 	api.GET("/fish-calendar/affairs", auth, svc.ListFishCalendarAffairs)
 	api.PUT("/fish-calendar/affairs", auth, svc.SetFishCalendarAffair)
+
+	// 定时消息（独立调度器）
+	api.GET("/scheduled-messages", auth, svc.ListScheduledMessages)
+	api.GET("/scheduled-messages/:id", auth, svc.GetScheduledMessage)
+	api.POST("/scheduled-messages", auth, svc.AddScheduledMessage)
+	api.PUT("/scheduled-messages/:id", auth, svc.UpdateScheduledMessage)
+	api.DELETE("/scheduled-messages/:id", auth, svc.DeleteScheduledMessage)
+	api.PUT("/scheduled-messages/:id/toggle", auth, svc.ToggleScheduledMessage)
+	api.POST("/scheduled-messages/:id/trigger", auth, svc.TriggerScheduledMessage)
 }

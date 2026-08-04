@@ -50,6 +50,7 @@ var (
 	StickerTagNotExist      = Response{Status: 40041, Info: "标签不存在"}
 	StickerImageExist       = Response{Status: 40042, Info: "该图床图片已被其他表情引用"}
 	FishCalConfigNotExist   = Response{Status: 40043, Info: "摸鱼日历配置不存在"}
+	ScheduledMsgNotExist    = Response{Status: 40044, Info: "定时消息任务不存在"}
 )
 
 type TokenResp struct {
@@ -314,6 +315,35 @@ type FishCalendarConfigResp struct {
 type FishCalendarAffairResp struct {
 	Date    string `json:"date"`
 	Content string `json:"content"`
+}
+
+// ScheduledSegmentResp 定时消息段。
+type ScheduledSegmentResp struct {
+	Type         string `json:"type"`
+	Source       string `json:"source,omitempty"`
+	Content      string `json:"content"`
+	DelaySeconds int    `json:"delay_seconds,omitempty"`
+}
+
+// ScheduledMessageResp 定时消息任务。
+type ScheduledMessageResp struct {
+	ID         string                 `json:"id"`
+	Name       string                 `json:"name"`
+	Enabled    bool                   `json:"enabled"`
+	CronExpr   string                 `json:"cron_expr"`
+	TargetType string                 `json:"target_type"`
+	TargetID   int64                  `json:"target_id"`
+	Segments   []ScheduledSegmentResp `json:"segments"`
+	LastRunAt  *time.Time             `json:"last_run_at"`
+	LastError  string                 `json:"last_error"`
+	CreatedAt  time.Time              `json:"created_at"`
+	UpdatedAt  time.Time              `json:"updated_at"`
+}
+
+// ScheduledMessageListResp 定时消息分页列表。
+type ScheduledMessageListResp struct {
+	Total int64                  `json:"total"`
+	List  []ScheduledMessageResp `json:"list"`
 }
 
 type PluginUploadResp struct {

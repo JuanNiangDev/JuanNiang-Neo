@@ -165,6 +165,29 @@ func RawSticker2Resp(raw *models.Sticker) StickerResp {
 	}
 }
 
+// RawScheduledMsg2Resp 定时消息任务转换。
+func RawScheduledMsg2Resp(raw *models.ScheduledMessage) ScheduledMessageResp {
+	segs := make([]ScheduledSegmentResp, 0, len(raw.Segments))
+	for _, s := range raw.Segments {
+		segs = append(segs, ScheduledSegmentResp{
+			Type: s.Type, Source: s.Source, Content: s.Content, DelaySeconds: s.DelaySeconds,
+		})
+	}
+	return ScheduledMessageResp{
+		ID:         raw.ID,
+		Name:       raw.Name,
+		Enabled:    raw.Enabled,
+		CronExpr:   raw.CronExpr,
+		TargetType: raw.TargetType,
+		TargetID:   raw.TargetID,
+		Segments:   segs,
+		LastRunAt:  raw.LastRunAt,
+		LastError:  raw.LastError,
+		CreatedAt:  raw.CreatedAt,
+		UpdatedAt:  raw.UpdatedAt,
+	}
+}
+
 func RawPluginList2Resp(raw []models.Plugin) []PluginResp {
 	res := make([]PluginResp, len(raw))
 	for i, item := range raw {

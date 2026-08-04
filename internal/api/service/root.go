@@ -67,6 +67,10 @@ type Service struct {
 	OnFishCalReload func()
 	// OnFishCalTrigger 手动触发摸鱼日历立即执行一次。
 	OnFishCalTrigger func(ctx context.Context) error
+	// OnSchedMsgReload 定时消息任务变更后重新调度。
+	OnSchedMsgReload func()
+	// OnSchedMsgTrigger 手动触发定时消息任务立即执行。
+	OnSchedMsgTrigger func(ctx context.Context, id string) error
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {

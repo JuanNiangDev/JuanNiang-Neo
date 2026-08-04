@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -2697,6 +2698,211 @@ func (s *Service) SetFishCalendarAffair(ctx context.Context, c *app.RequestConte
 		return
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- 定时消息 ----------
+
+// ListScheduledMessages 分页列出定时消息任务。
+func (s *Service) ListScheduledMessages(ctx context.Context, c *app.RequestContext) {
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	list, err := s.DAO.ScheduledMsg.List(ctx, pageSize, (page-1)*pageSize)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	total, _ := s.DAO.ScheduledMsg.Count(ctx)
+	resp := make([]dto.ScheduledMessageResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.RawScheduledMsg2Resp(&list[i]))
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ScheduledMessageListResp{Total: total, List: resp}))
+}
+
+// GetScheduledMessage 定时消息任务详情。
+func (s *Service) GetScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.ScheduledMsg.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ScheduledMsgNotExist, nil))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawScheduledMsg2Resp(item)))
+}
+
+// AddScheduledMessage 新建定时消息任务。
+func (s *Service) AddScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	var data dto.AddScheduledMessageReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	segs, err := normalizeScheduledSegments(data.Segments)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Name) == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "任务名不能为空"}))
+		return
+	}
+	item := &models.ScheduledMessage{
+		Name:       strings.TrimSpace(data.Name),
+		Enabled:    data.Enabled,
+		CronExpr:   strings.TrimSpace(data.CronExpr),
+		TargetType: data.TargetType,
+		TargetID:   data.TargetID,
+		Segments:   segs,
+	}
+	if item.TargetType == "" {
+		item.TargetType = "group"
+	}
+	if err := s.DAO.ScheduledMsg.Create(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnSchedMsgReload != nil {
+		s.OnSchedMsgReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawScheduledMsg2Resp(item)))
+}
+
+// UpdateScheduledMessage 编辑定时消息任务。
+func (s *Service) UpdateScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.ScheduledMsg.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ScheduledMsgNotExist, nil))
+		return
+	}
+	var data dto.UpdateScheduledMessageReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	segs, err := normalizeScheduledSegments(data.Segments)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Name) != "" {
+		item.Name = strings.TrimSpace(data.Name)
+	}
+	item.Enabled = data.Enabled
+	if strings.TrimSpace(data.CronExpr) != "" {
+		item.CronExpr = strings.TrimSpace(data.CronExpr)
+	}
+	if data.TargetType != "" {
+		item.TargetType = data.TargetType
+	}
+	if data.TargetID != 0 {
+		item.TargetID = data.TargetID
+	}
+	item.Segments = segs
+	if err := s.DAO.ScheduledMsg.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnSchedMsgReload != nil {
+		s.OnSchedMsgReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawScheduledMsg2Resp(item)))
+}
+
+// DeleteScheduledMessage 删除定时消息任务。
+func (s *Service) DeleteScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	if _, err := s.DAO.ScheduledMsg.GetByID(ctx, c.Param("id")); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ScheduledMsgNotExist, nil))
+		return
+	}
+	if err := s.DAO.ScheduledMsg.Delete(ctx, c.Param("id")); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnSchedMsgReload != nil {
+		s.OnSchedMsgReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ToggleScheduledMessage 启停定时消息任务。
+func (s *Service) ToggleScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.ScheduledMsg.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ScheduledMsgNotExist, nil))
+		return
+	}
+	var data struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	item.Enabled = data.Enabled
+	if err := s.DAO.ScheduledMsg.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnSchedMsgReload != nil {
+		s.OnSchedMsgReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawScheduledMsg2Resp(item)))
+}
+
+// TriggerScheduledMessage 手动触发定时消息任务立即执行。
+func (s *Service) TriggerScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	if s.OnSchedMsgTrigger == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "定时消息未初始化"}))
+		return
+	}
+	if err := s.OnSchedMsgTrigger(ctx, c.Param("id")); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// normalizeScheduledSegments 校验并归一化定时消息段。
+func normalizeScheduledSegments(segs []dto.ScheduledSegmentReq) (models.ScheduledSegments, error) {
+	if len(segs) == 0 {
+		return nil, errors.New("至少需要一个消息段")
+	}
+	out := make(models.ScheduledSegments, 0, len(segs))
+	for _, s := range segs {
+		s.Type = strings.TrimSpace(s.Type)
+		s.Source = strings.TrimSpace(s.Source)
+		s.Content = strings.TrimSpace(s.Content)
+		if s.DelaySeconds < 0 {
+			s.DelaySeconds = 0
+		}
+		if s.DelaySeconds > 3600 {
+			s.DelaySeconds = 3600
+		}
+		if s.Content == "" {
+			return nil, fmt.Errorf("消息段内容不能为空")
+		}
+		switch s.Type {
+		case "text", "face":
+			// 内容即文本/CQ 码
+		case "image":
+			switch s.Source {
+			case "url", "t2i", "imgstore":
+			default:
+				return nil, fmt.Errorf("图片段 source 必须是 t2i / url / imgstore")
+			}
+		default:
+			return nil, fmt.Errorf("消息段 type 必须是 text / image / face")
+		}
+		out = append(out, models.ScheduledMessageSegment{
+			Type: s.Type, Source: s.Source, Content: s.Content, DelaySeconds: s.DelaySeconds,
+		})
+	}
+	return out, nil
 }
 
 // cleanStickerTags 清洗表情标签：去空白、去重。

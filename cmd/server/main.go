@@ -24,6 +24,7 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
 	"JuanNiang-Neo/internal/agent/fishcal"
+	"JuanNiang-Neo/internal/agent/scheduledmsg"
 	"JuanNiang-Neo/internal/api/engine"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/api/service"
@@ -280,6 +281,14 @@ func main() {
 	go fishCal.Run(ctx)
 	svc.OnFishCalReload = func() { fishCal.Reload(context.Background()) }
 	svc.OnFishCalTrigger = func(triggerCtx context.Context) error { return fishCal.TriggerNow(triggerCtx) }
+
+	// ---------- 定时消息（独立调度器） ----------
+	schedMgr := scheduledmsg.New(coreInst.DAO.ScheduledMsg,
+		func() *t2icaller.Client { return hago.T2IClient },
+		adapterProv)
+	go schedMgr.Run(ctx)
+	svc.OnSchedMsgReload = func() { schedMgr.Reload(context.Background()) }
+	svc.OnSchedMsgTrigger = func(triggerCtx context.Context, id string) error { return schedMgr.TriggerNow(triggerCtx, id) }
 
 	// 前端静态资源目录: 默认 web/dist (构建产物), 可通过 WEB_DIR 覆盖。
 	//   - 开发模式: 前端走 Vite (:3000) 代理 /api 到 :8090, 后端无需服务前端。

@@ -235,6 +235,36 @@ type SetFishCalendarAffairReq struct {
 	Content string `json:"content"` // 当天群务内容
 }
 
+// ---------- 定时消息 ----------
+
+// ScheduledSegmentReq 定时消息段。
+type ScheduledSegmentReq struct {
+	Type         string `json:"type"`                    // text / image / face
+	Source       string `json:"source,omitempty"`        // image 段：t2i / url / imgstore
+	Content      string `json:"content"`                 // 文字 / 图片内容 / CQ 码
+	DelaySeconds int    `json:"delay_seconds,omitempty"` // 段间延迟（秒）
+}
+
+// AddScheduledMessageReq 新建定时消息任务。
+type AddScheduledMessageReq struct {
+	Name       string                `json:"name"`
+	Enabled    bool                  `json:"enabled"`
+	CronExpr   string                `json:"cron_expr"`
+	TargetType string                `json:"target_type"` // group / private
+	TargetID   int64                 `json:"target_id"`
+	Segments   []ScheduledSegmentReq `json:"segments"`
+}
+
+// UpdateScheduledMessageReq 编辑定时消息任务。
+type UpdateScheduledMessageReq struct {
+	Name       string                `json:"name"`
+	Enabled    bool                  `json:"enabled"`
+	CronExpr   string                `json:"cron_expr"`
+	TargetType string                `json:"target_type"`
+	TargetID   int64                 `json:"target_id"`
+	Segments   []ScheduledSegmentReq `json:"segments"`
+}
+
 // ---------- Plugin ----------
 
 type TogglePluginReq struct {
