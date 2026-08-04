@@ -48,6 +48,8 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.KnowledgeItem{},
 		&models.ImageAsset{},
 		&models.ImageFolder{},
+		&models.Sticker{},
+		&models.StickerTag{},
 	)
 }
 
