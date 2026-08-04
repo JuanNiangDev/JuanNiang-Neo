@@ -686,7 +686,7 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 ```bash
 curl -X PUT http://localhost:8090/api/v1/reply-strategy \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
-  -d '{"strategy":"relevance","relevance_threshold":0.6,"bot_name":"小卷"}'
+  -d '{"strategy":"relevance","relevance_threshold":0.6,"bot_name":"小卷","judge_fail_policy":"reply"}'
 ```
 
 ---

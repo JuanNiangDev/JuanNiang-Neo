@@ -30,6 +30,7 @@
 | 加记忆类型 | `internal/agent/memory/` 子包：`shortterm/`（Redis 滑窗，默认 100 条 + AutoCompact）、`longterm/`（PG + HotArea）、`skillmem/`（技能记忆） |
 | 加日志模块 | `internal/logging/`（`github.com/fatih/color` 彩色 stdout + JSON + WARN+ 调用栈 + Hub/SSE + GORM SQL + Web UI） |
 | 调整 Agent 并发限制 | `internal/agent/concurrency.go`（默认 8/ChatArea） |
+| 调整相关性判断优化 | `internal/agent/reply_strategy.go`（规则快路径/批量判断/超时/失败策略）+ `event.go::filterRelevant`（缓存/冷却/刷屏降级编排）+ `agent.go`（判断信号量/热聊统计） |
 | 修改分段回复算法 | `internal/agent/event.go::splitMessages`（Maibot 式自然断句） |
 | 加 ACL 维度 | `internal/core/acl/acl.go::Check` + `models.ACLRule` |
 | 写 Lua 插件 | 读 [plugin-development.md](plugin-development.md) |

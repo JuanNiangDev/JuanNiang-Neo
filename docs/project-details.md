@@ -93,7 +93,7 @@ classDiagram
   class ChatRecord { int64 ID; int64 UserID; string Role; string Content; int TokenCount; JSONMap ToolCalls }
   class ACLRule { int64 ID; ACLScope Scope; ACLPermission Permission; ACLTargetType TargetType; JSONSlice UserIDs }
   class CronJob { string ID; string CronExpr; string Message; string MessageType; int64 TargetID; bool IsActive; time Time LastRunAt }
-  class ReplyStrategyConfig { string ID; ReplyStrategy Strategy; float64 RelevanceThreshold; string BotName; bool StripMarkdown; bool AgentLite }
+  class ReplyStrategyConfig { string ID; ReplyStrategy Strategy; float64 RelevanceThreshold; string BotName; bool StripMarkdown; bool AgentLite; string RelevancePrompt; string RelevanceModel; string JudgeFailPolicy }
   class Plugin { string ID; string Name; string Version; string Path; JSONMap Config; bool IsActive }
   class SkillMemory { string ID; string Content }
 
@@ -110,7 +110,7 @@ classDiagram
 - **`ChatArea`**：私聊/群聊最小隔离单元，是 Session / Memory / ChatRecord / ACLRule 的父级。由首条消息自动 `GetOrCreate` 创建，无手动创建接口。
 - **`ChatRecord`**：`id` 为自增 int64（其他模型多为 UUID）。`Session.AppendRecord` 写 Postgres 与短期记忆 Redis 写入**解耦**——前者为审计/检索，后者为 Agent 上下文窗口。
 - **单行配置**：`Onebot11Adapter`/`WebhookConfig`/`T2IConfig`/`SandboxConfig` 固定 `id=1`，首次访问 DB 不存在时 `InitConfig` 用 `OnConflict DoNothing` 创建默认行。
-- **`ReplyStrategyConfig`**：无 `DeletedAt` 的单例，默认 `strategy=always, relevance_threshold=0.5`。
+- **`ReplyStrategyConfig`**：无 `DeletedAt` 的单例，默认 `strategy=always, relevance_threshold=0.5, judge_fail_policy=drop`。
 - **Prompt `IsSystem`**：启动时 `EnsureSystemPrompt` 幂等播种 `__system_locked__`，强制拼接（顺序 SystemLocked → system → personality → custom）。
 - **Plugin `Manifest.System`**：系统插件三层守卫（Manifest.System + `PluginEngine.IsSystem()` + Service 层 Toggle/Delete）禁删/禁停。
 - **`CronJob`**：不与 ChatArea 建外键；触发时由 `cronjob.Manager` 构造合成 `adapter.Event{PostType:"cronjob", IsCronJob:true}` 经 `CronJobEvents` channel 注入事件循环。
@@ -305,10 +305,10 @@ processEvent 三阶段                                  event.go:81
 │   PostType!="message" || Message==nil → return
 ├─ Phase 3: 回复策略检查                             event.go:94-103
 │   skip_reply 标记时跳过检查
-│   getReplySettings(ctx) → checkReplyStrategy
+│   getReplySettings(ctx) → checkReplyStrategyFast 廉价检查
 │   never_reply → skip
 │   at_only → 仅 isAtSelf 通过
-│   relevance → filterRelevant (L1 规则快路径 + L2 批量判断/缓存 + L4 降级)
+│   relevance → 延迟到 dispatchToAgent 后 filterRelevant 批量判断
 │   always → 通过
 └─ dispatchToAgent(ctx, ev, rs)                      event.go:104
     goroutine + ConcurrencyManager.Acquire(chatAreaID)
