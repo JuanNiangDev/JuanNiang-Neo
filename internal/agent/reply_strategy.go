@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
@@ -17,6 +18,38 @@ import (
 type RelevanceCheckResult struct {
 	Relevance float64 `json:"relevance"`
 	Reason    string  `json:"reason"`
+}
+
+// 相关性判断限流（L3.1）：全局并发信号量上限与单次判断超时。
+// 并发上限防止热聊时相关性 LLM 请求打爆 provider；超时与信号量等待共享预算，
+// 超时/等待超时均按 JudgeFailPolicy 降级。
+const (
+	relevanceSemLimit     = 4
+	relevanceJudgeTimeout = 5 * time.Second
+)
+
+// acquireRelevanceSem 获取相关性判断并发令牌（L3.1）。ctx 取消/超时即返回错误。
+func (h *HagoCenter) acquireRelevanceSem(ctx context.Context) error {
+	if h.relevanceSem == nil {
+		return nil
+	}
+	select {
+	case h.relevanceSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseRelevanceSem 释放相关性判断并发令牌。
+func (h *HagoCenter) releaseRelevanceSem() {
+	if h.relevanceSem == nil {
+		return
+	}
+	select {
+	case <-h.relevanceSem:
+	default:
+	}
 }
 
 // isDefinitelyRelevant 规则快路径（L1）：消息明显指向机器人，无需 LLM 判断直接视为相关。
@@ -90,6 +123,16 @@ func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapte
 	}
 
 	// 多条候选 → 一次 LLM 调用判断整批
+	// L3.1 并发闸门 + 判断超时（信号量等待与 LLM 调用共享 5s 总预算）
+	judgeCtx, cancel := context.WithTimeout(ctx, relevanceJudgeTimeout)
+	defer cancel()
+	if err := h.acquireRelevanceSem(judgeCtx); err != nil {
+		log.Warn("相关性批量判断: 并发限制等待超时", "err", err)
+		score, _ := judgeFailVerdict(rs, "相关性判断并发限制等待超时")
+		return score >= 0.5
+	}
+	defer h.releaseRelevanceSem()
+
 	botName := rs.BotName
 	selfQQ := h.SelfQQ
 	if h.Adapter != nil {
@@ -176,7 +219,7 @@ func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapte
 		return false
 	}
 
-	resp, err := llm.Chat(ctx, req)
+	resp, err := llm.Chat(judgeCtx, req)
 	if err != nil {
 		log.Warn("相关性批量判断 LLM 调用失败", "err", err)
 		score, _ := judgeFailVerdict(rs, "批量相关性判断 LLM 调用失败")
@@ -202,6 +245,14 @@ func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapte
 // 支持自定义提示词（rs.RelevancePrompt）与指定 Text 模型（rs.RelevanceModel）。
 // 返回 0-1 之间的相关性分数，以及原因。
 func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.MessageEvent, recentMessages []string, rs ReplySettings) (float64, string) {
+	// L3.1 并发闸门 + 判断超时（信号量等待与 LLM/Vision 调用共享 5s 总预算）
+	judgeCtx, cancel := context.WithTimeout(ctx, relevanceJudgeTimeout)
+	defer cancel()
+	if err := h.acquireRelevanceSem(judgeCtx); err != nil {
+		return judgeFailVerdict(rs, "相关性判断并发限制等待超时")
+	}
+	defer h.releaseRelevanceSem()
+
 	botName := rs.BotName
 	// 获取机器人 QQ，优先 Adapter 实时值（防止缓存为 0）
 	selfQQ := h.SelfQQ
@@ -247,7 +298,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 
 请以 JSON 格式回复: {"relevance": 0.0-1.0, "reason": "简短原因"}`, h.SelfNickname, selfQQ, msg.Sender.Nickname, msg.UserID, h.SelfNickname)
 					// 下载图片并调用 Vision
-					resp, err := visionModel.Vision(ctx, nil, prompt) // Vision expects raw image bytes
+					resp, err := visionModel.Vision(judgeCtx, nil, prompt) // Vision expects raw image bytes
 					if err != nil {
 						log.Warn("Vision 调用失败", "err", err)
 						return judgeFailVerdict(rs, "Vision 调用失败")
@@ -326,7 +377,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 		Temperature: 0.3,
 	}
 
-	resp, err := llm.Chat(ctx, req)
+	resp, err := llm.Chat(judgeCtx, req)
 	if err != nil {
 		log.Warn("相关性检查 LLM 调用失败", "err", err)
 		return judgeFailVerdict(rs, "LLM 调用失败")

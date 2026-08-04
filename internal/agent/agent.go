@@ -69,6 +69,9 @@ type HagoCenter struct {
 	// 相关性判断结果缓存（Redis，L2.3/L4.2）
 	Cache *cache.Cache
 
+	// 相关性判断并发闸门（L3.1）：限制全局并发，避免热聊时打爆 provider
+	relevanceSem chan struct{}
+
 	// 热聊统计（内存，L2.2/L4.1）：1s 滑动窗口消息计数，用于动态批窗口与刷屏降级
 	hotMu    sync.Mutex
 	hotStats map[string]*hotStat
@@ -111,6 +114,7 @@ func NewHagoCenter() *HagoCenter {
 		memberInfoCache: make(map[string]memberInfoEntry),
 		batches:         make(map[string]*pendingBatch),
 		hotStats:        make(map[string]*hotStat),
+		relevanceSem:    make(chan struct{}, relevanceSemLimit),
 	}
 }
 
