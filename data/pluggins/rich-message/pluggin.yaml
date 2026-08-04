@@ -1,10 +1,11 @@
+ppid: 19a479ac-4a13-4f31-b598-c354f80dd8eb
 name: rich-message
-version: "1.0.0"
+version: 1.0.0
 author: JuanNiang-Neo
-description: "富文本消息示例：消息段（文字/@/图片/表情）+ 群信息查询 + 图床表情发送"
+description: 富文本消息示例：消息段（文字/@/图片/表情）+ 群信息查询 + 图床表情发送
 entry: main.lua
+permissions:
+    - onebot11
+    - http
 system: false
 enabled: true
-permissions:
-  - onebot11
-  - http

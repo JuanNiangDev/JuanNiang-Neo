@@ -1,11 +1,12 @@
+ppid: 72b4112b-105b-4164-97d3-518868319e9b
 name: data-store
-version: "1.0.0"
+version: 1.0.0
 author: JuanNiang-Neo
-description: "数据持久化示例：Redis 缓存计数器 + Postgres 笔记 CRUD"
+description: 数据持久化示例：Redis 缓存计数器 + Postgres 笔记 CRUD
 entry: main.lua
+permissions:
+    - database
+    - cache
+    - onebot11
 system: false
 enabled: true
-permissions:
-  - database
-  - cache
-  - onebot11

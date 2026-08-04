@@ -1,10 +1,11 @@
+ppid: 2be55ef3-2e1c-454a-9f1b-7308d7cdfc57
 name: http-tools
-version: "1.0.0"
+version: 1.0.0
 author: JuanNiang-Neo
-description: "HTTP 请求示例：一言金句 / 天气查询 / POST 演示"
+description: HTTP 请求示例：一言金句 / 天气查询 / POST 演示
 entry: main.lua
+permissions:
+    - http
+    - onebot11
 system: false
 enabled: true
-permissions:
-  - http
-  - onebot11
