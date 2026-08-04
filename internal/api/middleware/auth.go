@@ -38,24 +38,27 @@ func GenerateToken(userID uint, username, role string) (string, error) {
 
 func JWTAuth() app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
-		authHeader := string(c.GetHeader("Authorization"))
-		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, map[string]any{
-				"code": 401, "msg": "missing authorization header",
-			})
-			return
+		// 优先取 Authorization: Bearer <token>
+		tokenStr := ""
+		if authHeader := string(c.GetHeader("Authorization")); authHeader != "" {
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) == 2 && parts[0] == "Bearer" {
+				tokenStr = parts[1]
+			}
 		}
-
-		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
+		// <img> 等静态资源无法携带 header，回退到 ?token= 查询参数
+		if tokenStr == "" {
+			tokenStr = string(c.Query("token"))
+		}
+		if tokenStr == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, map[string]any{
-				"code": 401, "msg": "invalid authorization format",
+				"code": 401, "msg": "missing authorization",
 			})
 			return
 		}
 
 		claims := &Claims{}
-		token, err := jwt.ParseWithClaims(parts[1], claims, func(t *jwt.Token) (any, error) {
+		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
 			return JWTSecret, nil
 		})
 		if err != nil || !token.Valid {

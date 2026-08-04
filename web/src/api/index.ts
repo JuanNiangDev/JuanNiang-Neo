@@ -287,8 +287,13 @@ export interface ImageResp {
 export interface ImageFolderResp { id: string; name: string; created_at: string }
 export interface ImageListResp { total: number; list: ImageResp[] }
 
-// 图片文件访问（Web 预览，不走 axios 以便直接作为 <img> src）
-export const imageFileUrl = (id: string) => `/api/v1/images/${id}/file`
+// 图片文件访问（Web 预览，不走 axios 以便直接作为 <img> src）。
+// <img> 无法携带 Authorization header，通过 ?token= 查询参数传递 JWT。
+export const imageFileUrl = (id: string) => {
+  const token = localStorage.getItem('token')
+  const q = token ? `?token=${encodeURIComponent(token)}` : ''
+  return `/api/v1/images/${id}/file${q}`
+}
 
 export const imageApi = {
   list: (params?: { folder?: string; page?: number; page_size?: number }) => client.get('/images', { params }),

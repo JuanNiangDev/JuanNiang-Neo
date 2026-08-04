@@ -5,10 +5,15 @@
       <div class="page-subtitle">图片托管：上传后可用 <code class="text-caption">imgs://&lt;id&gt;</code> 在消息中引用（Plugin / Agent 自动解析）</div>
     </div>
 
-    <div class="d-flex align-start">
-      <!-- 左侧：虚拟文件夹 -->
-      <v-card width="210" rounded="lg" class="me-4 flex-shrink-0 folder-panel">
+    <div class="d-flex img-body">
+      <!-- 左侧：虚拟文件夹（层级视图，仅一层） -->
+      <v-card width="220" rounded="lg" class="me-4 folder-panel flex-shrink-0">
+        <div class="d-flex align-center px-4 pt-3 pb-1">
+          <v-icon size="16" class="me-2" color="primary">mdi-folder-multiple-outline</v-icon>
+          <span class="text-subtitle-2 font-weight-bold">文件夹</span>
+        </div>
         <v-list nav density="compact">
+          <!-- 根目录（顶级） -->
           <v-list-item
             prepend-icon="mdi-folder-home-outline"
             title="根目录 /"
@@ -16,12 +21,13 @@
             active-color="primary"
             @click="selectFolder('/')"
           />
-          <v-divider class="mx-2 my-1" />
+          <!-- 子文件夹（缩进，体现层级） -->
           <v-list-item
             v-for="f in folders"
             :key="f.id"
             prepend-icon="mdi-folder-outline"
             :title="f.name"
+            class="sub-folder"
             :active="currentFolder === '/' + f.name"
             active-color="primary"
             @click="selectFolder('/' + f.name)"
@@ -30,9 +36,8 @@
               <v-btn icon="mdi-close" size="x-small" variant="text" density="compact" title="删除文件夹（图片移到根）" @click.stop="confirmDeleteFolder(f)" />
             </template>
           </v-list-item>
-          <v-list-item prepend-icon="mdi-folder-plus-outline" title="新建文件夹" @click="folderDialog = true" />
         </v-list>
-        <div class="text-caption px-4 py-2 text-medium-emphasis">仅支持一层文件夹，图片默认在根目录 /</div>
+        <div class="text-caption px-4 py-2 text-medium-emphasis folder-hint">仅支持一层文件夹，图片默认在根目录 /</div>
       </v-card>
 
       <!-- 右侧：工具栏 + 网格 -->
@@ -45,6 +50,7 @@
           </div>
           <div>
             <v-btn variant="tonal" prepend-icon="mdi-refresh" class="me-2" :loading="loading" @click="loadImages">刷新</v-btn>
+            <v-btn variant="tonal" prepend-icon="mdi-folder-plus-outline" class="me-2" @click="folderDialog = true">新建文件夹</v-btn>
             <v-btn color="primary" prepend-icon="mdi-upload" @click="uploadDialog = true">上传图片</v-btn>
           </div>
         </div>
@@ -410,6 +416,26 @@ onMounted(() => {
 </script>
 
 <style scoped>
+/* 左侧面板撑满可用高度 */
+.img-body {
+  min-height: calc(100vh - 220px);
+  align-items: stretch;
+}
+.folder-panel {
+  display: flex;
+  flex-direction: column;
+}
+.folder-panel :deep(.v-list) {
+  flex-grow: 1;
+}
+/* 子文件夹缩进，体现层级 */
+.folder-panel :deep(.sub-folder .v-list-item__content) {
+  margin-left: 14px;
+}
+.folder-hint {
+  flex-shrink: 0;
+}
+
 .image-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
