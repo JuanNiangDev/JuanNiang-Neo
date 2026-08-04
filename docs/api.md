@@ -66,6 +66,7 @@
 | 40040 | 标签已存在 |
 | 40041 | 标签不存在 |
 | 40042 | 该图床图片已被其他表情引用 |
+| 40043 | 摸鱼日历配置不存在 |
 | 50000 | 服务器内部错误 |
 
 ## 认证
@@ -109,7 +110,7 @@
 6. [Plugins](#11-plugins) · [ACL](#15-acl)
 7. [T2I](#18-t2i) · [Sandbox](#19-sandbox)
 8. [Logs](#16-日志) · [Agent 活跃循环](#20-agent-活跃循环) · [CronJob](#21-cronjob) · [回复策略](#22-回复策略) · [知识库](#23-知识库)
-9. [图床](#24-图床) · [表情包库](#25-表情包库)
+9. [图床](#24-图床) · [表情包库](#25-表情包库) · [摸鱼人日历](#26-摸鱼人日历)
 
 ---
 
@@ -839,6 +840,27 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 
 `StickerResp`: `id`（短 UUID）、`image_id`（图床长 UUID）、`name`、`desc`、`tags` string[]、`created_at`、`updated_at`。
 `StickerTagResp`: `id`、`name`、`created_at`。
+
+---
+
+## 26. 摸鱼人日历
+
+独立于 CronJob 系统的每日定时任务（`internal/agent/fishcal`）：按配置的 cron 表达式触发，
+用模板组装日历内容 → 通过 T2I 服务渲染成 JPEG 图片 → 发送到目标群。
+
+日历图片内容：标题 / 今日宜划水·忌内卷 / 日期与星期 / 农历（lunar-go）/ 本周进度 /
+距下一个法定假日倒计时（内置 2025-2026 节假日表）/ 今日金句（[一言 API](https://v1.hitokoto.cn/)，失败回退内置句子）/ 今日群务 / 落款。
+
+### GET /fish-calendar/config
+读取配置（未初始化时写入默认配置）。**data** `FishCalendarConfigResp`。
+
+### PUT /fish-calendar/config
+更新配置并重新调度。**Body** `UpdateFishCalendarConfigReq`: `enabled` bool、`cron_expr` string（6 字段秒级 cron）、`target_group_id` int64、`group_affairs` string。**data** `null`。
+
+### POST /fish-calendar/trigger
+手动触发一次立即生成并发送（测试用），失败返回 50000 + `error_detail`。**data** `null`。
+
+`FishCalendarConfigResp`: `enabled`、`cron_expr`、`target_group_id`、`group_affairs`、`last_run_at`（可空）、`last_error`。
 
 ---
 
