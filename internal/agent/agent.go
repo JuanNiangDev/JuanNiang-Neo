@@ -81,6 +81,9 @@ type HagoCenter struct {
 	hotMu    sync.Mutex
 	hotStats map[string]*hotStat
 
+	// 知识库 LRU（50 条，缓存对话前检索结果，加速匹配）
+	knowledgeLRU *knowledgeLRU
+
 	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
 	EinoAgent *adk.ChatModelAgent
 }
@@ -121,6 +124,7 @@ func NewHagoCenter() *HagoCenter {
 		hotStats:        make(map[string]*hotStat),
 		relevanceSem:    make(chan struct{}, relevanceSemLimit),
 		toolAdminOnly:   make(map[string]bool),
+		knowledgeLRU:    newKnowledgeLRU(50),
 	}
 }
 

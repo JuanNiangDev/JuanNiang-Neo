@@ -526,6 +526,11 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, skillMem)
 
+	// 知识库检索注入：对话前模糊匹配，命中内容拼入系统提示词（LRU 加速）
+	if kc := h.buildKnowledgeContext(ctx, combinedUserMsg); kc != "" {
+		systemCtx += "\n\n" + kc
+	}
+
 	// ---------- 构建 Eino 消息列表 ----------
 	einoMsgs := []*einoschema.Message{
 		{Role: einoschema.System, Content: systemCtx},
