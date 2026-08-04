@@ -77,10 +77,10 @@ func RegisterBuiltinTools(
 					"user_id": map[string]any{"type": "integer", "description": "目标用户 QQ 号"},
 					"message": map[string]any{
 						"oneOf": []map[string]any{
-							{"type": "string", "description": "纯文本消息"},
-							{"type": "array", "items": map[string]any{"type": "object"}, "description": "富文本消息段数组"},
+							{"type": "string", "description": "消息文本，必须是 JSON 字符串（双引号包裹），可含 CQ 码：@某人 [CQ:at,qq=QQ号]、图片 [CQ:image,file=URL]、表情 [CQ:face,id=1]"},
+							{"type": "array", "items": map[string]any{"type": "object"}, "description": "消息段数组：对象数组，每项含 type（text/image/at/face 等）与 data 字段"},
 						},
-						"description": "消息内容",
+						"description": "消息内容：JSON 字符串（含 CQ 码）或消息段数组，二选一",
 					},
 				},
 				"required": []string{"user_id", "message"},
@@ -131,7 +131,13 @@ func RegisterBuiltinTools(
 				"type": "object",
 				"properties": map[string]any{
 					"group_id": map[string]any{"type": "integer", "description": "目标群号"},
-					"message":  map[string]any{"oneOf": []map[string]any{{"type": "string"}, {"type": "array"}}, "description": "消息内容"},
+					"message": map[string]any{
+						"oneOf": []map[string]any{
+							{"type": "string", "description": "消息文本，必须是 JSON 字符串（双引号包裹），可含 CQ 码：@某人 [CQ:at,qq=QQ号]、图片 [CQ:image,file=URL]、表情 [CQ:face,id=1]"},
+							{"type": "array", "items": map[string]any{"type": "object"}, "description": "消息段数组：对象数组，每项含 type（text/image/at/face 等）与 data 字段"},
+						},
+						"description": "消息内容：JSON 字符串（含 CQ 码）或消息段数组，二选一",
+					},
 				},
 				"required": []string{"group_id", "message"},
 			}, true, false),
