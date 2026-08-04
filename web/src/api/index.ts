@@ -273,3 +273,39 @@ export const knowledgeApi = {
   delete: (id: string) => client.delete(`/knowledge/${id}`),
   reExtract: (id: string) => client.post(`/knowledge/${id}/re-extract`),
 }
+
+// ======== 图床 ========
+export interface ImageResp {
+  id: string
+  name: string
+  folder: string // 虚拟文件夹路径，/ 表示根
+  mime_type: string
+  size_bytes: number
+  created_at: string
+  updated_at: string
+}
+export interface ImageFolderResp { id: string; name: string; created_at: string }
+export interface ImageListResp { total: number; list: ImageResp[] }
+
+// 图片文件访问（Web 预览，不走 axios 以便直接作为 <img> src）
+export const imageFileUrl = (id: string) => `/api/v1/images/${id}/file`
+
+export const imageApi = {
+  list: (params?: { folder?: string; page?: number; page_size?: number }) => client.get('/images', { params }),
+  get: (id: string) => client.get(`/images/${id}`),
+  upload: (file: File, name: string, folder: string) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (name.trim()) fd.append('name', name.trim())
+    fd.append('folder', folder)
+    return client.post('/images', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
+  update: (id: string, data: { name?: string; folder?: string }) => client.put(`/images/${id}`, data),
+  remove: (id: string) => client.delete(`/images/${id}`),
+}
+
+export const imageFolderApi = {
+  list: () => client.get('/image-folders'),
+  create: (name: string) => client.post('/image-folders', { name }),
+  remove: (id: string) => client.delete(`/image-folders/${id}`),
+}
