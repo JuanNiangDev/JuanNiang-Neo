@@ -346,20 +346,21 @@ export const stickerTagApi = {
 export interface FishCalendarConfigResp {
   enabled: boolean
   cron_expr: string
-  target_group_id: number
-  group_affairs: string
+  target_groups: string[]
   last_run_at?: string | null
   last_error: string
 }
 export interface UpdateFishCalendarConfigReq {
   enabled: boolean
   cron_expr: string
-  target_group_id: number
-  group_affairs: string
+  target_groups: string[]
 }
+export interface FishCalendarAffairResp { date: string; content: string }
 
 export const fishCalendarApi = {
   get: () => client.get('/fish-calendar/config'),
   update: (data: UpdateFishCalendarConfigReq) => client.put('/fish-calendar/config', data),
   trigger: () => client.post('/fish-calendar/trigger'),
+  affairs: (month: string) => client.get('/fish-calendar/affairs', { params: { month } }),
+  setAffair: (date: string, content: string) => client.put('/fish-calendar/affairs', { date, content }),
 }
