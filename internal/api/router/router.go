@@ -149,4 +149,14 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.GET("/image-folders", auth, svc.ListImageFolders)
 	api.POST("/image-folders", auth, svc.CreateImageFolder)
 	api.DELETE("/image-folders/:id", auth, svc.DeleteImageFolder)
+
+	// 表情包库
+	api.GET("/stickers", auth, svc.ListStickers)
+	api.GET("/stickers/:id", auth, svc.GetSticker)
+	api.POST("/stickers", auth, svc.CreateSticker)
+	api.PUT("/stickers/:id", auth, svc.UpdateSticker)
+	api.DELETE("/stickers/:id", auth, svc.DeleteSticker)
+	api.GET("/sticker-tags", auth, svc.ListStickerTags)
+	api.POST("/sticker-tags", auth, svc.CreateStickerTag)
+	api.DELETE("/sticker-tags/:id", auth, svc.DeleteStickerTag)
 }

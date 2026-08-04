@@ -2407,6 +2407,196 @@ func (s *Service) DeleteImageFolder(ctx context.Context, c *app.RequestContext) 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+// ---------- 表情包库 ----------
+
+// ListStickers 分页列出表情，支持标签过滤（tag）与名称/简介模糊匹配（keyword）。
+func (s *Service) ListStickers(ctx context.Context, c *app.RequestContext) {
+	tag := strings.TrimSpace(c.Query("tag"))
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 24
+	}
+	list, err := s.DAO.Sticker.List(ctx, tag, keyword, pageSize, (page-1)*pageSize)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	total, _ := s.DAO.Sticker.Count(ctx, tag, keyword)
+	resp := make([]dto.StickerResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.RawSticker2Resp(&list[i]))
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.StickerListResp{Total: total, List: resp}))
+}
+
+// GetSticker 获取表情详情。
+func (s *Service) GetSticker(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Sticker.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerNotExist, nil))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSticker2Resp(item)))
+}
+
+// CreateSticker 新建表情（引用图床图片，需校验图片存在且未被其他表情引用）。
+func (s *Service) CreateSticker(ctx context.Context, c *app.RequestContext) {
+	var data dto.CreateStickerReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	data.Name = strings.TrimSpace(data.Name)
+	data.ImageID = strings.TrimSpace(data.ImageID)
+	if data.Name == "" || data.ImageID == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "名称与图床图片均不能为空"}))
+		return
+	}
+	// 图床图片必须存在
+	if _, err := s.DAO.Image.GetByID(ctx, data.ImageID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	// 同一张图不能重复引用
+	if _, err := s.DAO.Sticker.GetByImageID(ctx, data.ImageID); err == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerImageExist, nil))
+		return
+	}
+	item := &models.Sticker{
+		ImageID: data.ImageID,
+		Name:    data.Name,
+		Desc:    strings.TrimSpace(data.Desc),
+		Tags:    models.JSONSlice(cleanStickerTags(data.Tags)),
+	}
+	if err := s.DAO.Sticker.Create(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSticker2Resp(item)))
+}
+
+// UpdateSticker 编辑表情（名称/简介/标签）。
+func (s *Service) UpdateSticker(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Sticker.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerNotExist, nil))
+		return
+	}
+	var data dto.UpdateStickerReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Name) != "" {
+		item.Name = strings.TrimSpace(data.Name)
+	}
+	if data.Desc != "" {
+		item.Desc = strings.TrimSpace(data.Desc)
+	}
+	item.Tags = models.JSONSlice(cleanStickerTags(data.Tags))
+	if err := s.DAO.Sticker.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSticker2Resp(item)))
+}
+
+// DeleteSticker 删除表情（软删）。
+func (s *Service) DeleteSticker(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Sticker.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerNotExist, nil))
+		return
+	}
+	if err := s.DAO.Sticker.Delete(ctx, item.ID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ListStickerTags 列出全部表情标签。
+func (s *Service) ListStickerTags(ctx context.Context, c *app.RequestContext) {
+	tags, err := s.DAO.Sticker.TagList(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	resp := make([]dto.StickerTagResp, 0, len(tags))
+	for i := range tags {
+		resp = append(resp, dto.StickerTagResp{ID: tags[i].ID, Name: tags[i].Name, CreatedAt: tags[i].CreatedAt})
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
+}
+
+// CreateStickerTag 创建表情标签（重名返回 40040）。
+func (s *Service) CreateStickerTag(ctx context.Context, c *app.RequestContext) {
+	var data dto.CreateStickerTagReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	name := strings.TrimSpace(data.Name)
+	if name == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "标签名不能为空"}))
+		return
+	}
+	tags, _ := s.DAO.Sticker.TagList(ctx)
+	for _, t := range tags {
+		if t.Name == name {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagExist, nil))
+			return
+		}
+	}
+	t, err := s.DAO.Sticker.TagCreate(ctx, name)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.StickerTagResp{ID: t.ID, Name: t.Name, CreatedAt: t.CreatedAt}))
+}
+
+// DeleteStickerTag 删除标签（所有表情中的该标签一并移除）。
+func (s *Service) DeleteStickerTag(ctx context.Context, c *app.RequestContext) {
+	t, err := s.DAO.Sticker.TagGetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagNotExist, nil))
+		return
+	}
+	if err := s.DAO.Sticker.RemoveTagFromAll(ctx, t.Name); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.DAO.Sticker.TagDelete(ctx, t.ID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// cleanStickerTags 清洗表情标签：去空白、去重。
+func cleanStickerTags(tags []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
 // ---------- helpers ----------
 
 func newUUID() string {

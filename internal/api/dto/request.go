@@ -198,6 +198,28 @@ type CreateImageFolderReq struct {
 	Name string `json:"name"`
 }
 
+// ---------- 表情包库 ----------
+
+// CreateStickerReq 新建表情（引用图床图片）。
+type CreateStickerReq struct {
+	ImageID string   `json:"image_id"` // 图床图片长 UUID（必填）
+	Name    string   `json:"name"`     // 表情名称（必填）
+	Desc    string   `json:"desc"`     // 简介（可选，支持模糊匹配）
+	Tags    []string `json:"tags"`     // 标签名数组（可选）
+}
+
+// UpdateStickerReq 编辑表情。
+type UpdateStickerReq struct {
+	Name string   `json:"name"`
+	Desc string   `json:"desc"`
+	Tags []string `json:"tags"`
+}
+
+// CreateStickerTagReq 创建表情标签。
+type CreateStickerTagReq struct {
+	Name string `json:"name"`
+}
+
 // ---------- Plugin ----------
 
 type TogglePluginReq struct {

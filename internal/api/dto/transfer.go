@@ -152,6 +152,19 @@ func RawImage2Resp(raw *models.ImageAsset) ImageResp {
 	}
 }
 
+// RawSticker2Resp 表情转换。
+func RawSticker2Resp(raw *models.Sticker) StickerResp {
+	return StickerResp{
+		ID:        raw.ID,
+		ImageID:   raw.ImageID,
+		Name:      raw.Name,
+		Desc:      raw.Desc,
+		Tags:      raw.Tags,
+		CreatedAt: raw.CreatedAt,
+		UpdatedAt: raw.UpdatedAt,
+	}
+}
+
 func RawPluginList2Resp(raw []models.Plugin) []PluginResp {
 	res := make([]PluginResp, len(raw))
 	for i, item := range raw {

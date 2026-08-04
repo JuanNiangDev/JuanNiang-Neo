@@ -154,6 +154,20 @@ func main() {
 		}
 		return "base64://" + b64, true
 	})
+	// 发送表情时把 stk://<短UUID> 解析为 base64：短 UUID → 表情 → 图床长 UUID → base64。
+	adapterProv.SetStickerResolver(func(stickerID string) (string, bool) {
+		st, err := coreInst.DAO.Sticker.GetByID(ctx, stickerID)
+		if err != nil {
+			log.Warn("表情不存在", "id", stickerID, "err", err)
+			return "", false
+		}
+		b64, err := imgStore.LoadBase64(st.ImageID)
+		if err != nil {
+			log.Warn("表情图片加载失败", "sticker", stickerID, "img", st.ImageID, "err", err)
+			return "", false
+		}
+		return "base64://" + b64, true
+	})
 	if adapterCfg.Enable {
 		if err := adapterProv.Start(ctx); err != nil {
 			log.Error("Adapter 启动失败", "err", err)

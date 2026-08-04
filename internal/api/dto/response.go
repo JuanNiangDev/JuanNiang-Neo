@@ -45,6 +45,10 @@ var (
 	ImageNotExist           = Response{Status: 40036, Info: "图片不存在"}
 	ImageFolderExist        = Response{Status: 40037, Info: "文件夹已存在"}
 	ImageFolderNotExist     = Response{Status: 40038, Info: "文件夹不存在"}
+	StickerNotExist         = Response{Status: 40039, Info: "表情不存在"}
+	StickerTagExist         = Response{Status: 40040, Info: "标签已存在"}
+	StickerTagNotExist      = Response{Status: 40041, Info: "标签不存在"}
+	StickerImageExist       = Response{Status: 40042, Info: "该图床图片已被其他表情引用"}
 )
 
 type TokenResp struct {
@@ -270,6 +274,30 @@ type ImageFolderResp struct {
 type ImageListResp struct {
 	Total int64       `json:"total"`
 	List  []ImageResp `json:"list"`
+}
+
+// StickerResp 表情包（引用图床图片，ID 为发送用的短 UUID）。
+type StickerResp struct {
+	ID        string           `json:"id"`
+	ImageID   string           `json:"image_id"`
+	Name      string           `json:"name"`
+	Desc      string           `json:"desc"`
+	Tags      models.JSONSlice `json:"tags"`
+	CreatedAt time.Time        `json:"created_at"`
+	UpdatedAt time.Time        `json:"updated_at"`
+}
+
+// StickerTagResp 表情标签。
+type StickerTagResp struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// StickerListResp 表情分页列表。
+type StickerListResp struct {
+	Total int64         `json:"total"`
+	List  []StickerResp `json:"list"`
 }
 
 type PluginUploadResp struct {
