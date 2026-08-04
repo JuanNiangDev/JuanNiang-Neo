@@ -73,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { knowledgeApi, type KnowledgeResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
@@ -105,16 +105,18 @@ const form = ref(defaultForm())
 const statusLabel = (s: string) => ({ pending: '提取中', ready: '已就绪', failed: '失败' }[s] || s)
 const statusColor = (s: string) => ({ pending: 'warning', ready: 'success', failed: 'error' }[s] || 'default')
 
-async function fetch() {
-  loading.value = true
+async function fetch(silent = false) {
+  if (!silent) loading.value = true
   try {
     const res = (await knowledgeApi.list(page.value, pageSize.value)).data.data
     items.value = res.list || []
     total.value = res.total || 0
+    if (hasPending()) startPolling()
+    else stopPolling()
   } catch (e: any) {
     toastStore.error(e?.message || '获取列表失败')
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -182,6 +184,7 @@ async function reExtract(item: KnowledgeResp) {
     await knowledgeApi.reExtract(item.id)
     toastStore.success('已重新提交关键词提取')
     item.keyword_status = 'pending'
+    startPolling()
   } catch (e: any) {
     toastStore.error(e?.message || '操作失败')
   } finally {
@@ -189,5 +192,28 @@ async function reExtract(item: KnowledgeResp) {
   }
 }
 
-onMounted(fetch)
+// ---------- 提取状态轮询 ----------
+// 异步提取不阻塞消息处理，前端定时拉取列表直到没有 pending 条目。
+let pollTimer: ReturnType<typeof setInterval> | null = null
+
+function hasPending() {
+  return items.value.some(i => i.keyword_status === 'pending')
+}
+
+function startPolling() {
+  if (pollTimer) return
+  pollTimer = setInterval(async () => {
+    await fetch(true)
+  }, 3000)
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+onMounted(() => fetch())
+onUnmounted(stopPolling)
 </script>
