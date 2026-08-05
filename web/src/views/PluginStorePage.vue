@@ -242,6 +242,9 @@ const canAddMirror = computed(() => {
 
 async function fetchStore() {
   loading.value = true
+  // 清空头像缓存（释放旧 blob URL），确保仓库更新图片后点刷新可见
+  for (const k in avatarSrc.value) URL.revokeObjectURL(avatarSrc.value[k])
+  avatarSrc.value = {}
   try {
     const list = (await storeApi.list()).data.data || []
     storeItems.value = list

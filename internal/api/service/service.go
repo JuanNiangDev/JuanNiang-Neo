@@ -1308,7 +1308,8 @@ func (s *Service) StoreAvatar(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginNotExist, dto.ErrorDetail{ErrorDetail: "无头像"}))
 		return
 	}
-	c.Header("Cache-Control", "public, max-age=86400")
+	// 头像每次实时拉取，禁止浏览器缓存，保证仓库更新图片后刷新立即可见
+	c.Header("Cache-Control", "no-store")
 	c.Data(consts.StatusOK, "image/png", data)
 }
 
