@@ -2245,6 +2245,9 @@ var systemPluginManifest string
 //go:embed systemplugin/main.lua
 var systemPluginMain string
 
+//go:embed systemplugin/avatar.png
+var systemPluginAvatar []byte
+
 // ensureEmbeddedAssets 在启动时把内嵌的 SDK 与 system 插件落盘到 data/pluggins/。
 // SDK 与 system 插件始终覆盖写入，确保 Docker 挂载卷中的版本与二进制一致。
 func (pe *PluginEngine) ensureEmbeddedAssets() {
@@ -2278,6 +2281,9 @@ func (pe *PluginEngine) ensureEmbeddedAssets() {
 	}
 	if err := os.WriteFile(filepath.Join(sysDir, "main.lua"), []byte(systemPluginMain), 0o644); err != nil {
 		log.Warn("写入 system main.lua 失败", "err", err)
+	}
+	if err := os.WriteFile(filepath.Join(sysDir, "avatar.png"), systemPluginAvatar, 0o644); err != nil {
+		log.Warn("写入 system avatar.png 失败", "err", err)
 	}
 	log.Info("system 插件已同步到磁盘")
 }
