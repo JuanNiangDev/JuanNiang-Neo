@@ -246,6 +246,8 @@ const detail = ref<PluginItem | null>(null)
 const detailId = computed(() => detail.value?.id || detail.value?.name || '')
 const detailAvatar = computed(() => avatarSrc.value[detailId.value])
 const tab = ref('readme')
+// 请求序号：防止快速切换插件时旧请求覆盖新内容
+let detailSeq = 0
 
 // README
 const readmeLoading = ref(false)
@@ -313,31 +315,34 @@ async function toggle(id: string, v: boolean) {
 }
 
 async function openDetail(item: PluginItem) {
+  const seq = ++detailSeq
   detail.value = item
   detailDialog.value = true
   tab.value = 'readme'
   readmeContent.value = ''
   configItems.value = []
   configForm.value = {}
-  loadDetailReadme(item)
-  loadDetailConfig(item)
+  loadDetailReadme(item, seq)
+  loadDetailConfig(item, seq)
 }
 
-async function loadDetailReadme(item: PluginItem) {
+async function loadDetailReadme(item: PluginItem, seq?: number) {
   const id = item.id || item.name
   readmeLoading.value = true
   try {
     const res = await pluginApi.readme(id)
+    if (seq !== undefined && seq !== detailSeq) return // 已切换插件，丢弃过期响应
     readmeContent.value = res.data?.data?.content || ''
-  } catch { readmeContent.value = '' }
-  finally { readmeLoading.value = false }
+  } catch { if (seq === undefined || seq === detailSeq) readmeContent.value = '' }
+  finally { if (seq === undefined || seq === detailSeq) readmeLoading.value = false }
 }
 
-async function loadDetailConfig(item: PluginItem) {
+async function loadDetailConfig(item: PluginItem, seq?: number) {
   const id = item.id || item.name
   configLoading.value = true
   try {
     const res = await pluginApi.config(id)
+    if (seq !== undefined && seq !== detailSeq) return // 已切换插件，丢弃过期响应
     const schema: ConfigItem[] = res.data?.data?.schema || []
     const values: Record<string, any> = res.data?.data?.values || {}
     configItems.value = schema
@@ -345,8 +350,8 @@ async function loadDetailConfig(item: PluginItem) {
     for (const cfg of schema) {
       configForm.value[cfg.key] = values[cfg.key] ?? cfg.default ?? normalizeDefault(cfg.type)
     }
-  } catch { configItems.value = [] }
-  finally { configLoading.value = false }
+  } catch { if (seq === undefined || seq === detailSeq) configItems.value = [] }
+  finally { if (seq === undefined || seq === detailSeq) configLoading.value = false }
 }
 
 function normalizeDefault(type: string) {
