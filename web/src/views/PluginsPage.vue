@@ -37,17 +37,16 @@
                 <div class="d-flex align-center" style="gap:6px">
                   <div class="text-subtitle-1 font-weight-bold card-title text-truncate">{{ item.name }}</div>
                   <v-chip v-if="item.is_system" size="x-small" color="error" variant="tonal">系统</v-chip>
+                  <v-chip size="x-small" variant="tonal" color="grey">v{{ item.version }}</v-chip>
                 </div>
                 <div class="text-caption text-medium-emphasis card-desc">{{ item.description || '无描述' }}</div>
-                <div class="d-flex align-center justify-end card-actions" style="gap:8px">
-                  <v-chip size="x-small" variant="tonal" color="grey">v{{ item.version }}</v-chip>
+                <div class="d-flex align-center justify-end card-actions">
                   <v-switch
                     :model-value="item.is_active"
                     :disabled="item.is_system"
                     color="primary"
                     density="compact"
                     hide-details
-                    :label="item.is_active ? '已启用' : '已停用'"
                     @update:model-value="(v) => toggle(item.id || item.name, !!v)"
                     @click.stop
                   />
