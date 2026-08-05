@@ -76,6 +76,23 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.POST("/plugins/reload", auth, svc.ReloadAllPlugins)
 	api.PUT("/plugins/:id/toggle", auth, svc.TogglePlugin)
 	api.DELETE("/plugins/:id", auth, svc.DeletePlugin)
+	api.POST("/plugins/:id/reload", auth, svc.ReloadPlugin)
+	api.GET("/plugins/:id/config", auth, svc.GetPluginConfig)
+	api.PUT("/plugins/:id/config", auth, svc.SavePluginConfig)
+	api.GET("/plugins/:id/readme", auth, svc.GetPluginReadme)
+	api.GET("/plugins/:id/avatar", auth, svc.GetPluginAvatar)
+
+	// Plugin Store（商店浏览 / 安装 / 镜像源管理）
+	api.GET("/plugin-store", auth, svc.StoreList)
+	api.GET("/plugin-store/readme", auth, svc.StoreReadme)
+	api.GET("/plugin-store/avatar", auth, svc.StoreAvatar)
+	api.POST("/plugin-store/install", auth, svc.StoreInstall)
+	api.GET("/plugin-store/config", auth, svc.StoreConfigGet)
+	api.PUT("/plugin-store/config", auth, svc.StoreConfigUpdate)
+	api.POST("/plugin-store/mirror", auth, svc.StoreMirrorAdd)
+	api.POST("/plugin-store/mirror/test", auth, svc.StoreMirrorTest)
+	api.POST("/plugin-store/mirror/select", auth, svc.StoreMirrorSelect)
+	api.DELETE("/plugin-store/mirror", auth, svc.StoreMirrorRemove)
 
 	// ACL
 	api.GET("/acl", auth, svc.ListACLRules)

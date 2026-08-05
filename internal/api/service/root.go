@@ -71,6 +71,8 @@ type Service struct {
 	OnSchedMsgReload func()
 	// OnSchedMsgTrigger 手动触发定时消息任务立即执行。
 	OnSchedMsgTrigger func(ctx context.Context, id string) error
+	// StoreClient 插件商店客户端（拉取元数据 / 安装 / 镜像源管理）。
+	StoreClient *pluggin.StoreClient
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {

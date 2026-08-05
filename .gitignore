@@ -40,7 +40,10 @@ web/.DS_Store
 bin/*
 dev.yaml
 
-# 运行时生成的插件文件（sdk/system 由二进制启动时写入；data/pluggins 下示例插件保留在仓库）
-data/pluggins/sdk/
-data/pluggins/system/
+# 运行时生成的插件文件（sdk/system 由二进制启动时写入；商店安装的插件也会写入 data/pluggins）
+# 例：data/pluggins/*/ 匹配所有插件目录；已跟踪的示例插件不受影响
+# data/pluggins/sdk/
+# data/pluggins/system/
+data/pluggins/*/
 data/imgs/
+data/plugin_store.json

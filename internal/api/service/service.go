@@ -10,6 +10,7 @@ import (
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
+	"JuanNiang-Neo/internal/pluggin"
 	"archive/zip"
 	"context"
 	"crypto/rand"
@@ -1176,6 +1177,287 @@ func (s *Service) ReloadAllPlugins(ctx context.Context, c *app.RequestContext) {
 	if err := s.PluginEngine.ReloadAll(); err != nil {
 		log.Error("重载所有插件失败", "err", err)
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ReloadPlugin 重载单个插件。
+func (s *Service) ReloadPlugin(ctx context.Context, c *app.RequestContext) {
+	name := c.Param("id")
+	if s.PluginEngine == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "PluginEngine 未初始化"}))
+		return
+	}
+	if err := s.PluginEngine.Reload(name); err != nil {
+		log.Error("重载插件失败", "name", name, "err", err)
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// GetPluginConfig 返回插件的配置 schema + 当前值（供 Web 动态渲染）。
+func (s *Service) GetPluginConfig(ctx context.Context, c *app.RequestContext) {
+	name := c.Param("id")
+	if s.PluginEngine == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "PluginEngine 未初始化"}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, s.PluginEngine.ConfigSchemaMap(name)))
+}
+
+// SavePluginConfig 保存插件的配置值（写入 config.yaml）。
+func (s *Service) SavePluginConfig(ctx context.Context, c *app.RequestContext) {
+	name := c.Param("id")
+	if s.PluginEngine == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "PluginEngine 未初始化"}))
+		return
+	}
+	var req map[string]any
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	// 兼容 { values: {...} } 与直接 { key: value } 两种请求体
+	values := req
+	if v, ok := req["values"].(map[string]any); ok {
+		values = v
+	}
+	if err := s.PluginEngine.SaveConfig(name, values); err != nil {
+		log.Error("保存插件配置失败", "name", name, "err", err)
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// GetPluginReadme 返回插件的 README.md 内容（markdown）。
+func (s *Service) GetPluginReadme(ctx context.Context, c *app.RequestContext) {
+	name := c.Param("id")
+	if s.PluginEngine == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "PluginEngine 未初始化"}))
+		return
+	}
+	content, err := s.PluginEngine.GetReadme(name)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginNotExist, dto.ErrorDetail{ErrorDetail: "该插件没有 README.md"}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]string{"content": content}))
+}
+
+// GetPluginAvatar 返回插件的 avatar.png。
+func (s *Service) GetPluginAvatar(ctx context.Context, c *app.RequestContext) {
+	name := c.Param("id")
+	if s.PluginEngine == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "PluginEngine 未初始化"}))
+		return
+	}
+	data, err := s.PluginEngine.GetAvatar(name)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginNotExist, dto.ErrorDetail{ErrorDetail: "该插件没有 avatar.png"}))
+		return
+	}
+	c.Header("Cache-Control", "public, max-age=86400")
+	c.Data(consts.StatusOK, "image/png", data)
+}
+
+// ====================================================================
+// Plugin Store（商店浏览 / 安装 / 镜像源管理）
+// ====================================================================
+
+// StoreList 拉取商店插件列表。
+func (s *Service) StoreList(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	list, err := s.StoreClient.List()
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, list))
+}
+
+// StoreReadme 拉取商店中某插件的 README.md。
+func (s *Service) StoreReadme(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	path := string(c.Query("path"))
+	content, err := s.StoreClient.GetReadmeRaw(path)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]string{"content": content}))
+}
+
+// StoreAvatar 拉取商店中某插件的 avatar.png。
+func (s *Service) StoreAvatar(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	path := string(c.Query("path"))
+	data, err := s.StoreClient.GetAvatarRaw(path)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginNotExist, dto.ErrorDetail{ErrorDetail: "无头像"}))
+		return
+	}
+	// 头像每次实时拉取，禁止浏览器缓存，保证仓库更新图片后刷新立即可见
+	c.Header("Cache-Control", "no-store")
+	c.Data(consts.StatusOK, "image/png", data)
+}
+
+// StoreInstall 从商店下载并安装插件。
+func (s *Service) StoreInstall(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil || s.PluginEngine == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient/PluginEngine 未初始化"}))
+		return
+	}
+	path := string(c.Query("path"))
+	zipData, err := s.StoreClient.DownloadPlugin(path)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	name, err := pluggin.InstallPluginZip(s.PluginEngine, path, zipData)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.PluginUploadResp{Name: name, Status: "loaded"}))
+}
+
+// StoreConfigGet 返回商店配置与镜像源列表。
+func (s *Service) StoreConfigGet(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+		"config":  s.StoreClient.GetConfig(),
+		"mirrors": s.StoreClient.ListMirrors(),
+	}))
+}
+
+// StoreConfigUpdate 更新商店配置（repo 信息 + 镜像列表）。
+func (s *Service) StoreConfigUpdate(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	var req struct {
+		RepoOwner string   `json:"repo_owner"`
+		RepoName  string   `json:"repo_name"`
+		Branch    string   `json:"branch"`
+		Mirrors   []string `json:"mirrors"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	// 若传了 mirrors 则整体覆盖自定义镜像列表（内置镜像始终前置）。
+	var mirrors []string
+	if req.Mirrors != nil {
+		mirrors = req.Mirrors
+	}
+	if err := s.StoreClient.SetConfig(pluggin.StoreConfig{
+		RepoOwner: req.RepoOwner,
+		RepoName:  req.RepoName,
+		Branch:    req.Branch,
+		Mirrors:   mirrors,
+	}); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// StoreMirrorAdd 添加一个自定义镜像源。
+func (s *Service) StoreMirrorAdd(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	var req struct {
+		Mirror string `json:"mirror"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.StoreClient.AddMirror(req.Mirror); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// StoreMirrorTest 测试指定镜像源是否可用（拉取 plugins.json 验证）。
+func (s *Service) StoreMirrorTest(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	var req struct {
+		Mirror string `json:"mirror"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if req.Mirror == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "镜像地址不能为空"}))
+		return
+	}
+	latency, err := s.StoreClient.TestMirror(req.Mirror)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{"latency_ms": latency.Milliseconds()}))
+}
+
+// StoreMirrorSelect 手动指定生效镜像源（mirror 为空恢复默认自动选择）。
+func (s *Service) StoreMirrorSelect(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	var req struct {
+		Mirror string `json:"mirror"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.StoreClient.SelectMirror(req.Mirror); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// StoreMirrorRemove 删除一个自定义镜像源。
+func (s *Service) StoreMirrorRemove(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	var req struct {
+		Mirror string `json:"mirror"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.StoreClient.RemoveMirror(req.Mirror); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))

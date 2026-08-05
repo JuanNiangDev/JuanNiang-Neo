@@ -24,7 +24,7 @@ end
 -- /hello [name] —— 简单命令
 -- --------------------------------------------------------------------
 jn.command.register("hello", function(args, event)
-    local name = args[1] or "朋友"
+    local name = args[1] or config.get("default_name") or "朋友"
     local hour = tonumber(os.date("%H")) or 12
     local greeting
     if hour < 6 then

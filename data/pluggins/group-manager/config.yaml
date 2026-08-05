@@ -1,0 +1,29 @@
+# ====================================================================
+# group-manager 插件配置
+# ====================================================================
+# 每个配置项由 key / type / label / description / default 声明。
+# type 支持三种：
+#   bool   → Web 面板开关
+#   string → Web 面板单行输入框
+#   list   → Web 面板可增删的多项输入框
+# 插件通过 jn.config.get("key") / jn.config.all() 读取。
+# ====================================================================
+
+configs:
+  - key: welcome_message
+    type: string
+    label: 入群欢迎语
+    description: 新人入群时发送的欢迎消息（留空则不发送）
+    default: "[CQ:at,qq={user}] 欢迎加入本群！请查看群公告~"
+
+  - key: friend_code
+    type: string
+    label: 好友申请暗号
+    description: 好友申请备注包含该暗号时自动同意
+    default: "卷娘"
+
+  - key: poke_reply
+    type: bool
+    label: 戳一戳自动回应
+    description: 群内被戳时是否自动回应
+    default: true

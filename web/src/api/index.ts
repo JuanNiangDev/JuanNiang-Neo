@@ -132,8 +132,26 @@ export const pluginApi = {
   list: () => client.get('/plugins'),
   upload: (file: File) => { const fd = new FormData(); fd.append('file', file); return client.post('/plugins/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } }) },
   reloadAll: () => client.post('/plugins/reload'),
+  reload: (id: string) => client.post(`/plugins/${id}/reload`),
   toggle: (id: string, is_active: boolean) => client.put(`/plugins/${id}/toggle`, { is_active }),
   delete: (id: string) => client.delete(`/plugins/${id}`),
+  config: (id: string) => client.get(`/plugins/${id}/config`),
+  saveConfig: (id: string, values: Record<string, any>) => client.put(`/plugins/${id}/config`, { values }),
+  readme: (id: string) => client.get(`/plugins/${id}/readme`),
+  avatar: (id: string) => client.get(`/plugins/${id}/avatar`, { responseType: 'blob' }),
+}
+
+export const storeApi = {
+  list: () => client.get('/plugin-store'),
+  readme: (path: string) => client.get('/plugin-store/readme', { params: { path } }),
+  avatar: (path: string) => client.get('/plugin-store/avatar', { params: { path }, responseType: 'blob' }),
+  install: (path: string) => client.post('/plugin-store/install', null, { params: { path } }),
+  config: () => client.get('/plugin-store/config'),
+  saveConfig: (cfg: any) => client.put('/plugin-store/config', cfg),
+  addMirror: (mirror: string) => client.post('/plugin-store/mirror', { mirror }),
+  testMirror: (mirror: string) => client.post('/plugin-store/mirror/test', { mirror }),
+  selectMirror: (mirror: string) => client.post('/plugin-store/mirror/select', { mirror }),
+  removeMirror: (mirror: string) => client.delete('/plugin-store/mirror', { data: { mirror } }),
 }
 
 // ======== ACL ========

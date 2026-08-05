@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -377,6 +378,16 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 			})
 		}
 	}
+
+	// 稳定排序（按名称），避免 map 随机遍历导致每次刷新顺序乱跳
+	sort.Slice(out, func(i, j int) bool {
+		ni := strings.ToLower(fmt.Sprintf("%v", out[i]["name"]))
+		nj := strings.ToLower(fmt.Sprintf("%v", out[j]["name"]))
+		if ni == nj {
+			return strings.ToLower(fmt.Sprintf("%v", out[i]["id"])) < strings.ToLower(fmt.Sprintf("%v", out[j]["id"]))
+		}
+		return ni < nj
+	})
 
 	return out
 }
@@ -1035,6 +1046,14 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 	if hasPerm("agent") && pe.dao != nil {
 		pe.injectAgent(L)
 	}
+
+	// File：插件目录内文本文件读写（需要 file 权限）
+	if hasPerm("file") {
+		pe.injectFileAPI(L, pluginName)
+	}
+
+	// Config：动态配置（无需权限，默认注入）
+	pe.injectConfigAPI(L, pluginName)
 }
 
 // injectSDK 将 jn.lua 内容写入 package.preload["jn"]，
@@ -2165,6 +2184,12 @@ func goToLuaValue(L *lua.LState, v any) lua.LValue {
 			L.SetTable(arr, lua.LNumber(i+1), goToLuaValue(L, item))
 		}
 		return arr
+	case []string:
+		arr := L.NewTable()
+		for i, item := range val {
+			L.SetTable(arr, lua.LNumber(i+1), lua.LString(item))
+		}
+		return arr
 	case []map[string]any:
 		arr := L.NewTable()
 		for i, item := range val {
@@ -2220,6 +2245,9 @@ var systemPluginManifest string
 //go:embed systemplugin/main.lua
 var systemPluginMain string
 
+//go:embed systemplugin/avatar.png
+var systemPluginAvatar []byte
+
 // ensureEmbeddedAssets 在启动时把内嵌的 SDK 与 system 插件落盘到 data/pluggins/。
 // SDK 与 system 插件始终覆盖写入，确保 Docker 挂载卷中的版本与二进制一致。
 func (pe *PluginEngine) ensureEmbeddedAssets() {
@@ -2253,6 +2281,9 @@ func (pe *PluginEngine) ensureEmbeddedAssets() {
 	}
 	if err := os.WriteFile(filepath.Join(sysDir, "main.lua"), []byte(systemPluginMain), 0o644); err != nil {
 		log.Warn("写入 system main.lua 失败", "err", err)
+	}
+	if err := os.WriteFile(filepath.Join(sysDir, "avatar.png"), systemPluginAvatar, 0o644); err != nil {
+		log.Warn("写入 system avatar.png 失败", "err", err)
 	}
 	log.Info("system 插件已同步到磁盘")
 }
