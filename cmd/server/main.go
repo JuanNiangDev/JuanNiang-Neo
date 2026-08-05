@@ -252,6 +252,8 @@ func main() {
 	// ---------- 7. Web API ----------
 
 	svc := service.New(coreInst.DAO, adapterProv, webhookAdapter, pluginEngine)
+	// 插件商店客户端（拉取元数据 / 安装 / 镜像源管理），数据目录持久化配置。
+	svc.StoreClient = pluggin.NewStoreClient("data")
 	svc.ProviderGroup = hago.Providers
 	svc.MCPGroup = hago.MCP
 	svc.MemoryGroup = hago.Memory

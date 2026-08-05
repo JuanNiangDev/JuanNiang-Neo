@@ -1035,6 +1035,9 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 	if hasPerm("agent") && pe.dao != nil {
 		pe.injectAgent(L)
 	}
+
+	// Config：动态配置（无需权限，默认注入）
+	pe.injectConfigAPI(L, pluginName)
 }
 
 // injectSDK 将 jn.lua 内容写入 package.preload["jn"]，

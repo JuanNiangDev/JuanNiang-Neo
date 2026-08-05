@@ -220,6 +220,24 @@ M.sandbox = sandbox
 M.agent = agent
 
 -- ====================================================================
+-- config 动态配置 (无需权限，默认注入)
+-- ====================================================================
+
+---@class jn.ConfigItem
+---@field key string 配置键
+---@field type string "bool" | "string" | "list"
+---@field label string 展示名
+---@field description string? 说明
+---@field default any 默认值
+---@field value any 当前值
+
+---@class jn.Config
+---@field get fun(key: string): any 读取配置值（value 优先，回退 default）
+---@field all fun(): table<string, any> 读取全部配置键值
+---@field schema fun(): jn.ConfigItem[] 读取完整 schema
+M.config = config
+
+-- ====================================================================
 -- command 多级命令注册
 -- ====================================================================
 
