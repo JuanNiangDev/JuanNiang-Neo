@@ -2184,6 +2184,12 @@ func goToLuaValue(L *lua.LState, v any) lua.LValue {
 			L.SetTable(arr, lua.LNumber(i+1), goToLuaValue(L, item))
 		}
 		return arr
+	case []string:
+		arr := L.NewTable()
+		for i, item := range val {
+			L.SetTable(arr, lua.LNumber(i+1), lua.LString(item))
+		}
+		return arr
 	case []map[string]any:
 		arr := L.NewTable()
 		for i, item := range val {
