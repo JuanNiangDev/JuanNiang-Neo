@@ -38,6 +38,10 @@
 | 改 Plugin SDK | `internal/pluggin/sdk/jn.lua`（`//go:embed`，带 LuaCATS 注解） |
 | 加数据模型 | `internal/core/models/` 加 GORM model + `core.go::AutoMigrate` 注册 + `internal/core/dao/` DAO + `dao.NewBundle` 接入 |
 | 加知识库内容/调匹配策略 | `internal/core/dao/knowledgeDao.go::Match`（关键词+ILIKE 匹配）；`internal/agent/knowledge.go`（LRU/异步提取/注入） |
+| 改图床（存储/API/引用解析） | `internal/core/imgstore/`（文件存储）+ `internal/core/dao/imageDao.go`（元数据）+ `internal/api/service/service.go`（上传/校验）+ `internal/adapter/api.go::resolveImageAssets`（imgs:// 解析） |
+| 改表情包库 | `internal/core/dao/stickerDao.go` + `internal/agent/sticker.go`（Agent 工具）+ `internal/pluggin/pluggin.go::injectOneBot11`（send_*_sticker） |
+| 改摸鱼人日历 | `internal/agent/fishcal/fishcal.go`（独立调度器/模板/农历/节假日）+ `internal/core/dao/fishCalDao.go`（配置+按天群务） |
+| 改定时消息（积木编排） | `internal/agent/scheduledmsg/scheduledmsg.go`（块链调度/段渲染）+ `internal/core/dao/scheduledMsgDao.go` + 前端 `web/src/views/ScheduledMessagesPage.vue` |
 
 ## 项目目录速查
 
@@ -54,6 +58,8 @@ internal/
     skill/      关键词/正则技能匹配
     tool/       ToolRegistry + 内置工具 + Eino InvokableTool 适配 (BuildEinoTools)
     cronjob/    robfig/cron 调度器 (on_cronjob 事件注入)
+    fishcal/    摸鱼人日历 (独立 cron + T2I 渲染 + 模板/农历/节假日/金句)
+    scheduledmsg/ 定时消息 (独立 cron + 积木式块链调度)
     agent.go            HagoCenter 聚合 (Init/Stop/buildEinoAgent)
     agent_operator.go   插件 Agent 操作 (SetProviderActive/SwitchProvider/SetMCPActive/SetToolActive/CompactMemory…)
     concurrency.go      每 ChatArea 并发控制 (默认 8 goroutine)
@@ -61,15 +67,15 @@ internal/
     event.go            三阶段事件循环 (Plugin.Dispatch → ReplyStrategy → dispatchToAgent)
     reply_strategy.go   回复策略 (NeverReply/AtOnly/Always/Relevance)
   api/          Hertz Web (engine + middleware + router + service)
-  core/         Init / dao.Bundle / models (23 表) / acl / cache
+  core/         Init / dao.Bundle / models (31 表) / acl / cache / imgstore(图床文件存储)
   pluggin/      Lua 引擎 + 命令树 + 内嵌 SDK + 系统插件
   web/          SPAHandler (NoRoute 兜底)
   logging/      fatih/color 彩色 stdout + JSON 格式化 + 调用栈 + Hub(SSE)
 infrastructure/
   postgres/ redis/      基础客户端 (功能选项)
   sandbox/ t2i/         含 /handler (caller 子包, 真正 Client)
-web/                    Vue 3 SPA (22 views)
-data/pluggins/          Lua 插件 (配置 pluggin.yaml, 非入库)
+web/                    Vue 3 SPA (28 views)
+data/pluggins/          Lua 插件 (示例插件入仓, sdk/system 运行时生成)
 deployments/            Dockerfile (3 段) + docker-compose.yaml
 docs/                   本文档树
 ```
@@ -94,6 +100,11 @@ docs/                   本文档树
 | relevance 判断优化（L1 规则快路径 / L2 批量判断+结果缓存+冷却 / L3 并发限流+超时 / L4 刷屏降级+失败策略） | ✅ |
 | 工具"仅管理员"开关（admin_only，Tools 页逐工具切换，防提示词注入） | ✅ |
 | SQL 知识库（Web CRUD + Agent 异步提取关键词 + 对话前 LRU/模糊匹配注入提示词） | ✅ |
+| 图床（data/imgs 存储 + 1.5MB/MIME 校验 + 虚拟文件夹 + imgs:// 发送层解析） | ✅ |
+| 表情包库（短 UUID 表情 + 标签 + send_sticker 工具 + Plugin send_*_sticker + subType=1） | ✅ |
+| 摸鱼人日历（独立 cron + T2I 渲染 + 多群 + 按天群务 + 农历/节假日/金句） | ✅ |
+| 定时消息（积木式编排：触发器/消息块/延时块 + 独立调度器） | ✅ |
+| 示例插件（data/pluggins 下 8 个，覆盖命令/事件/HTTP/存储/媒体/Agent/Webhook/Cron） | ✅ |
 | `internal/agent/memory/root.go::Memory` 接口 | ⚠ 空 stub (无方法) |
 | `internal/agent/skill/root.go`、`prompt/root.go` | ⚠ 占位 (实现在 .go) |
 | `HagoCenter.Stop()` | ⚠ 空实现（仅打日志），事件循环/CronJob 退出依赖外层 ctx 取消 |

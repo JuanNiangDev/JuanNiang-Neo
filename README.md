@@ -6,7 +6,7 @@
 
 ***JuanNiang-Neo 是一个以 Go 1.25 构建的 QQ 机器人项目，红岩网校的吉祥物卷娘。***
 
-核心由 LLM 驱动的对话 Agent（`HagoCenter` 聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成，基于 [Eino ADK](https://github.com/cloudwego/eino) 框架构建 `ChatModelAgent`，工具调用在 ReAct 循环内同步执行，每个聊天区域最多 8 个 Agent goroutine 并发处理（由 `ConcurrencyManager` 控制）。事件流经三阶段管线：Plugin 拦截 → 回复策略检查 → 异步派发 Agent。项目同时包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
+核心由 LLM 驱动的对话 Agent（`HagoCenter` 聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成，基于 [Eino ADK](https://github.com/cloudwego/eino) 框架构建 `ChatModelAgent`，工具调用在 ReAct 循环内同步执行，每个聊天区域最多 8 个 Agent goroutine 并发处理（由 `ConcurrencyManager` 控制）。事件流经三阶段管线：Plugin 拦截 → 回复策略检查 → 异步派发 Agent。项目同时包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施，并内置知识库、图床、表情包库、摸鱼人日历、定时消息（积木式编排）等开箱即用的功能模块。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
 
 ## 主要特性
 
@@ -19,6 +19,12 @@
 - **Web 管理后台**：Vue 3 + Vuetify 3，JWT 鉴权（可选 OIDC SSO），管理全部配置与运行时状态
 - **基础设施**：Postgres 持久化 + Redis 缓存 + Sandbox 代码沙箱 + T2I 文生图，未配置时自动返回未启用提示
 - **彩色日志系统**：基于 `fatih/color` 的自定义日志，彩色输出、JSON 自动格式化、WARN+ 调用栈、模块日志器、GORM SQL 日志集成
+- **SQL 驱动知识库**：Web 存知识 → Agent 异步提取关键词 → 对话前模糊匹配注入提示词；50 条 LRU 加速检索
+- **图床服务**：`data/imgs` 存储 + MIME/大小校验 + 虚拟文件夹；`imgs://<ID>` 引用由发送层自动转 base64（Plugin / Agent 无感）
+- **表情包库**：图床二次封装（名称/简介/标签）；短 UUID 对外，`stk://` 引用自动映射图床长 UUID（表情段 subType=1）；Agent 工具 + Plugin API 齐备
+- **摸鱼人日历**：独立每日定时任务，模板 → T2I 渲染 800×720 黑白纸张质感图片 → @全体成员 + 富文本发送；多群、按天群务、一言金句、农历/法定假日倒计时
+- **定时消息（积木式编排）**：触发器 → 消息块（一条消息多段：文字 / 图片[T2I·URL·图床] / CQ 表情）→ 延时块链；Web 可视化编排 + 325 个 CQ 表情缩略图
+- **示例插件库**：`data/pluggins/` 下 8 个示例插件覆盖全部插件功能，每个含 README.md
 - **开发配置**：`dev.yaml` 本地开发配置文件（数据库、Redis、OneBot11 等），`make run` 自动读取
 
 ## 效果图
@@ -39,10 +45,10 @@
 
 | 分类 | 文档 | 说明 |
 |------|------|------|
-| Web API | [api.md](docs/api.md) | Web API 全路由文档（响应信封、错误码、各资源 CRUD、SSE 日志流、SPA 静态服务） |
+| Web API | [api.md](docs/api.md) | Web API 全路由文档（响应信封、错误码、各资源 CRUD、SSE 日志流、SPA 静态服务）；含知识库(§23)/图床(§24)/表情包库(§25)/摸鱼人日历(§26)/定时消息(§27) 各功能章节 |
 | 项目细节 | [project-details.md](docs/project-details.md) | Eino ADK Agent 架构 / 三阶段事件循环 / 数据模型 / HagoCenter 运行时拓扑（mermaid）；关键调用栈（ASCII）；processEvent 决策树、CronJob/Webhook 注入时序图（mermaid）；Lua 插件系统架构生命周期与命令树（mermaid） |
 | 日志系统 | `internal/logging/` | fatih/color 彩色终端输出 / JSON 结构化格式化 / 完整调用栈追踪 / Hub SSE 实时推送至前端 |
-| 插件开发 | [plugin-development.md](docs/plugin-development.md) | 快速开始 + 完整 Lua API 参考（log/json/onebot11/http/database/cache/t2i/sandbox/agent/command）+ 引擎实现细节 + 常见坑 |
+| 插件开发 | [plugin-development.md](docs/plugin-development.md) | 快速开始 + 完整 Lua API 参考（log/json/onebot11/http/database/cache/t2i/sandbox/agent/command）+ 引擎实现细节 + 常见坑；示例插件见 `data/pluggins/`（8 个，覆盖全部功能） |
 | 部署 | [deployment.md](docs/deployment.md) | 部署模式、环境变量、构建流程、健康检查、日志排查、反向代理、systemd、FAQ |
 | 二次开发 | [development.md](docs/development.md) | 该读什么 / 该改什么 / 不该动什么、当前实现状态、约定、写 Agent 工具与 Web API 的最小范式 |
 | 外部服务 | [external-services.md](docs/external-services.md) | 各外部服务的客户端构造、热更新机制、HagoCenter 与 Service 共享指针、鉴权与健康检查 |
@@ -113,6 +119,7 @@ services:
       redis:    { condition: service_healthy }
     volumes:
       - ./data/pluggins:/app/data/pluggins   # Lua 插件跨升级保留
+      - ./data/imgs:/app/data/imgs           # 图床图片跨升级保留
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/health || exit 1"]
       interval: 30s
@@ -132,7 +139,7 @@ networks:
 同目录放 `.env`（按需修改）。**首次启动前**需创建插件目录并赋权：
 
 ```bash
-mkdir -p data/pluggins && chmod 777 data/pluggins
+mkdir -p data/pluggins data/imgs && chmod 777 data/pluggins data/imgs
 docker compose up -d
 # 仪表板  http://localhost:8090   初始账号 admin / Admin123（首次启动务必改密码）
 # OneBot11 反向 WS  ws://localhost:8081/   带头 Authorization: Bearer <OB_TOKEN>

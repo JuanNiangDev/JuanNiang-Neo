@@ -32,6 +32,7 @@
 | `REDIS_PASSWORD` | `root` | |
 | `REDIS_DB` | `0` | Redis 逻辑库索引|
 | `REDIS_PREFIX` | `juan:` | ⚠ 未在 `.env.example` 但 `cache.NewCache` 实际读取|
+| `IMG_DIR` | `data/imgs` | 图床图片存储目录（`imgstore`；元数据在 DB `image_assets`）|
 | `T2I_BASE_URL` | (空/注释) | ⚠ 仅文档；运行时实际从 DB `t2i_configs` 读取|
 | `SANDBOX_BASE_URL` | (空/注释) | ⚠ 同上，从 DB `sandbox_configs` 读取|
 | `SANDBOX_API_KEY` | (空/注释) | ⚠ 同上|
