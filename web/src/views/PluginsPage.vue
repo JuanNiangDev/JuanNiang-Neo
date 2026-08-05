@@ -17,7 +17,7 @@
     </div>
     <v-container fluid class="pa-0">
       <v-row class="d-flex flex-wrap">
-        <v-col v-for="item in filteredItems" :key="item.id || item.name" cols="12" sm="6" md="4" lg="3">
+        <v-col v-for="item in pagedItems" :key="item.id || item.name" cols="12" sm="6" md="4" lg="3">
           <v-card rounded="lg" elevation="1" class="plugin-card" @click="openDetail(item)">
             <div class="d-flex card-body">
               <!-- 左侧矩形图片区 -->
@@ -53,6 +53,21 @@
         </v-col>
       </v-row>
     </v-container>
+
+    <!-- 分页 -->
+    <div v-if="filteredItems.length > 0" class="d-flex align-center justify-space-between mt-4 flex-wrap" style="gap:12px">
+      <div class="text-caption text-medium-emphasis">共 {{ filteredItems.length }} 个插件</div>
+      <v-pagination v-if="totalPages > 1" v-model="page" :length="totalPages" :total-visible="7" density="comfortable" />
+      <v-select
+        v-model="pageSize"
+        :items="[12, 24, 48]"
+        label="每页"
+        variant="outlined"
+        density="compact"
+        hide-details
+        style="max-width:110px"
+      />
+    </div>
 
     <!-- 详情弹窗: README / 元数据+命令 / 配置 三页签 -->
     <!-- 注意：必须显式传 max-width，否则全局默认 VDialog.maxWidth=600 会把宽度压到 600 -->
@@ -235,6 +250,15 @@ const reloading = ref(false)
 const reloadingOne = ref(false)
 const items = ref<PluginItem[]>([])
 const filteredItems = computed(() => items.value)
+
+// 分页
+const page = ref(1)
+const pageSize = ref(12)
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredItems.value.length / pageSize.value)))
+const pagedItems = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return filteredItems.value.slice(start, start + pageSize.value)
+})
 const fileInput = ref<HTMLInputElement | null>(null)
 const deleteDialog = ref(false)
 const deleting = ref(false)
@@ -428,6 +452,12 @@ watch(() => detailDialog.value, (open) => {
     deleteTarget.value = null
   }
 })
+
+// 列表变化后页码可能越界（删除/停用/重载导致条数变化），自动修正；切换每页条数时回到第一页
+watch(filteredItems, () => {
+  if (page.value > totalPages.value) page.value = totalPages.value
+})
+watch(pageSize, () => { page.value = 1 })
 
 onMounted(fetch)
 </script>

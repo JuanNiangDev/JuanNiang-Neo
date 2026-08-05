@@ -14,7 +14,7 @@
     <!-- 网格卡片 -->
     <v-container fluid class="pa-0">
       <v-row>
-        <v-col v-for="item in storeItems" :key="item.path" cols="12" sm="6" md="4" lg="3">
+        <v-col v-for="item in pagedItems" :key="item.path" cols="12" sm="6" md="4" lg="3">
           <v-card rounded="lg" elevation="1" class="store-card" @click="openDetail(item)">
             <div class="d-flex card-body">
               <!-- 左侧矩形图片区 -->
@@ -50,6 +50,21 @@
         商店为空或无法连接，请检查镜像源设置
       </div>
     </v-container>
+
+    <!-- 分页 -->
+    <div v-if="storeItems.length > 0" class="d-flex align-center justify-space-between mt-4 flex-wrap" style="gap:12px">
+      <div class="text-caption text-medium-emphasis">共 {{ storeItems.length }} 个插件</div>
+      <v-pagination v-if="totalPages > 1" v-model="page" :length="totalPages" :total-visible="7" density="comfortable" />
+      <v-select
+        v-model="pageSize"
+        :items="[12, 24, 48]"
+        label="每页"
+        variant="outlined"
+        density="compact"
+        hide-details
+        style="max-width:110px"
+      />
+    </div>
 
     <!-- 详情弹窗 -->
     <v-dialog v-model="detailDialog" max-width="800" scrollable>
@@ -154,7 +169,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { marked } from 'marked'
 import { storeApi } from '@/api'
 import { useToastStore } from '@/stores/toast'
@@ -173,6 +188,15 @@ interface StoreItem {
 const toastStore = useToastStore()
 const loading = ref(false)
 const storeItems = ref<StoreItem[]>([])
+
+// 分页
+const page = ref(1)
+const pageSize = ref(12)
+const totalPages = computed(() => Math.max(1, Math.ceil(storeItems.value.length / pageSize.value)))
+const pagedItems = computed(() => {
+  const start = (page.value - 1) * pageSize.value
+  return storeItems.value.slice(start, start + pageSize.value)
+})
 const avatarSrc = ref<Record<string, string>>({})
 const installing = ref('')
 
@@ -338,6 +362,12 @@ onMounted(() => {
   fetchStore()
   fetchConfig()
 })
+
+// 列表变化后页码可能越界（刷新/安装导致条数变化），自动修正；切换每页条数时回到第一页
+watch(storeItems, () => {
+  if (page.value > totalPages.value) page.value = totalPages.value
+})
+watch(pageSize, () => { page.value = 1 })
 </script>
 
 <style scoped>
