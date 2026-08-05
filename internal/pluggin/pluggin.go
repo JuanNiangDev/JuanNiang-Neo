@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -377,6 +378,16 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 			})
 		}
 	}
+
+	// 稳定排序（按名称），避免 map 随机遍历导致每次刷新顺序乱跳
+	sort.Slice(out, func(i, j int) bool {
+		ni := strings.ToLower(fmt.Sprintf("%v", out[i]["name"]))
+		nj := strings.ToLower(fmt.Sprintf("%v", out[j]["name"]))
+		if ni == nj {
+			return strings.ToLower(fmt.Sprintf("%v", out[i]["id"])) < strings.ToLower(fmt.Sprintf("%v", out[j]["id"]))
+		}
+		return ni < nj
+	})
 
 	return out
 }
