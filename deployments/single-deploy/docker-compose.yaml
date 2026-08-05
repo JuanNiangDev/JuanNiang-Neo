@@ -1,0 +1,102 @@
+# JuanNiang-Neo Docker Compose 编排
+#
+# 启动整套: docker compose up -d --build
+# 停止:    docker compose down
+# 日志:    docker compose logs -f juan-niang-neo
+#
+# 默认账号: admin / Admin123 (首次登录后请立即在 Web 面板修改)。
+# 暴露端口:
+#   8081 -> OneBot11 反向 WebSocket 服务端
+#   8090 -> Web 管理面板 + API
+
+name: juanniang-neo
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-juan}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - juanniang-net
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD:-root}
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-root}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - juanniang-net
+
+  juan-niang-neo:
+    image: ghcr.io/juanniangdev/juan:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      - "8081:8081"
+      - "8090:8090"
+    environment:
+      WEB_DIR: /app/web/dist
+      OB_PORT: "8081"
+      API_ADDR: ":8090"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      DB_NAME: ${DB_NAME:-juan}
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-root}
+      REDIS_DB: "0"
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      OB_TOKEN: ${OB_TOKEN:-}
+      OB_ADMINS: ${OB_ADMINS:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      # 整个 data 目录挂载，跨升级/重建保留（容器内 CWD=/app -> /app/data）：
+      #   data/pluggins           Lua 插件（启动时自动写入内嵌 SDK 与 system 插件）
+      #   data/imgs                图床图片
+      #   data/plugin_store.json   插件商店配置（镜像源选择/自定义镜像/仓库地址）
+      #
+      # ⚠️ 首次启动前建议先在宿主机创建 data 目录并赋写权限（app 启动时会把
+      # 内嵌的 SDK 与 system 插件写入 data/pluggins；当前镜像以 root 运行，
+      # 若后续改为非 root 用户则必须赋权）：
+      #   mkdir -p data && chmod 777 data
+      - ../data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - juanniang-net
+
+volumes:
+  pgdata:
+
+networks:
+  juanniang-net:
+    driver: bridge
