@@ -285,6 +285,8 @@ async function fetch() {
 async function loadAvatar(id: string) {
   try {
     const res = await pluginApi.avatar(id)
+    // 无头像时后端返回 JSON blob，需过滤，仅接受图片
+    if (!res.data || typeof res.data !== 'object' || !res.data.type || !String(res.data.type).startsWith('image/')) return
     const url = URL.createObjectURL(res.data)
     avatarSrc.value[id] = url
   } catch { /* 无头像 */ }

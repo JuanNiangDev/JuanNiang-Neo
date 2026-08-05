@@ -1259,7 +1259,8 @@ func (s *Service) GetPluginAvatar(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginNotExist, dto.ErrorDetail{ErrorDetail: "该插件没有 avatar.png"}))
 		return
 	}
-	c.Data(consts.StatusOK, "image/png; charset=utf-8", data)
+	c.Header("Cache-Control", "public, max-age=86400")
+	c.Data(consts.StatusOK, "image/png", data)
 }
 
 // ====================================================================
@@ -1307,7 +1308,8 @@ func (s *Service) StoreAvatar(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginNotExist, dto.ErrorDetail{ErrorDetail: "无头像"}))
 		return
 	}
-	c.Data(consts.StatusOK, "image/png; charset=utf-8", data)
+	c.Header("Cache-Control", "public, max-age=86400")
+	c.Data(consts.StatusOK, "image/png", data)
 }
 
 // StoreInstall 从商店下载并安装插件。

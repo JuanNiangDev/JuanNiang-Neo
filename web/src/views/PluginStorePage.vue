@@ -198,6 +198,8 @@ async function fetchStore() {
 async function loadAvatar(path: string) {
   try {
     const res = await storeApi.avatar(path)
+    // 无头像时后端返回 JSON blob，需过滤，仅接受图片
+    if (!res.data || typeof res.data !== 'object' || !res.data.type || !String(res.data.type).startsWith('image/')) return
     avatarSrc.value[path] = URL.createObjectURL(res.data)
   } catch { /* 无头像 */ }
 }
