@@ -41,14 +41,10 @@
                 </div>
                 <div class="text-caption text-medium-emphasis card-desc">{{ item.description || '无描述' }}</div>
                 <div class="d-flex align-center justify-end card-actions">
-                  <v-switch
-                    :model-value="item.is_active"
-                    :disabled="item.is_system"
-                    color="primary"
-                    density="compact"
-                    hide-details
-                    @update:model-value="(v) => toggle(item.id || item.name, !!v)"
-                    @click.stop
+                  <PluginEnableToggle
+                    :model-value="!!item.is_active"
+                    :disabled="!!item.is_system"
+                    @update:model-value="(v) => toggle(item.id || item.name, v)"
                   />
                 </div>
               </div>
@@ -59,7 +55,7 @@
     </v-container>
 
     <!-- 详情弹窗: README / 元数据+命令 / 配置 三页签 -->
-    <v-dialog v-model="detailDialog" max-width="900" scrollable>
+    <v-dialog v-model="detailDialog" width="900" scrollable>
       <v-card rounded="lg" class="detail-card">
         <v-card-title class="d-flex align-center pa-4">
           <v-avatar size="40" rounded="lg" class="me-3">
@@ -74,13 +70,13 @@
           <v-btn icon="mdi-close" size="small" variant="text" @click="detailDialog = false" />
         </v-card-title>
         <v-divider />
-        <v-tabs v-model="tab" color="primary" class="px-2">
+        <v-tabs v-model="tab" color="primary" class="px-3 detail-tabs">
           <v-tab value="readme"><v-icon start>mdi-text-box-outline</v-icon>说明</v-tab>
           <v-tab value="meta"><v-icon start>mdi-code-json</v-icon>元数据 / 命令</v-tab>
           <v-tab value="config"><v-icon start>mdi-tune-variant</v-icon>配置</v-tab>
         </v-tabs>
         <v-divider />
-        <v-card-text class="pa-4 detail-body">
+        <v-card-text class="px-4 pb-4 pt-4 detail-body">
           <!-- README -->
           <v-window v-model="tab">
             <v-window-item value="readme">
@@ -179,14 +175,10 @@
         </v-card-text>
         <v-divider />
         <v-card-actions class="pa-4">
-          <v-switch
-            :model-value="detail?.is_active"
-            :disabled="detail?.is_system"
-            color="primary"
-            density="compact"
-            hide-details
-            :label="detail?.is_active ? '已启用' : '已停用'"
-            @update:model-value="(v) => toggle(detailId, !!v)"
+          <PluginEnableToggle
+            :model-value="!!detail?.is_active"
+            :disabled="!!detail?.is_system"
+            @update:model-value="(v) => toggle(detailId, v)"
           />
           <v-spacer />
           <v-btn color="info" variant="tonal" prepend-icon="mdi-refresh" :loading="reloadingOne" @click="handleReloadOne">重载</v-btn>
@@ -207,6 +199,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { marked } from 'marked'
 import { pluginApi } from '@/api'
 import { useToastStore } from '@/stores/toast'
+import PluginEnableToggle from '@/components/shared/PluginEnableToggle.vue'
 
 interface PluginItem {
   id?: string
@@ -479,8 +472,16 @@ onMounted(fetch)
 .markdown-body :deep(code) { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; }
 .markdown-body :deep(img) { max-width: 100%; }
 .cmd-code { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; padding: 2px 6px; background: rgba(var(--v-theme-on-surface), 0.06); border-radius: 4px; }
-/* 弹窗内容超高时仅内容区内部滚动，固定顶部标题/tab/底部按钮 */
-.detail-card { max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+/* 弹窗内容超高时仅内容区内部滚动，固定顶部标题/tab/底部按钮；窗口尺寸固定 */
+.detail-card {
+  width: 100%;
+  height: 78vh;
+  min-height: 420px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .detail-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -491,5 +492,11 @@ onMounted(fetch)
 .detail-body :deep(.v-window) { flex: 1 1 auto; min-height: 0; }
 .detail-body :deep(.v-window__container) { height: 100%; }
 .detail-body :deep(.v-window-item) { height: 100%; overflow-y: auto; }
+
+/* 第一个 Tab 页内容与 tab 栏的间距：首元素去掉自带 margin，仅保留内容区 padding */
+.markdown-body :deep(h1:first-child),
+.markdown-body :deep(h2:first-child),
+.markdown-body :deep(h3:first-child),
+.markdown-body :deep(p:first-child) { margin-top: 0; }
 .config-item { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08); padding-bottom: 12px; }
 </style>
