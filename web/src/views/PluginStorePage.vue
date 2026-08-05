@@ -16,23 +16,33 @@
       <v-row>
         <v-col v-for="item in storeItems" :key="item.path" cols="12" sm="6" md="4" lg="3">
           <v-card rounded="lg" elevation="1" class="store-card" @click="openDetail(item)">
-            <div class="d-flex flex-column align-center pa-4">
-              <v-avatar size="72" rounded="lg" class="mb-3" style="background: rgba(var(--v-theme-primary), 0.08)">
-                <v-img v-if="avatarSrc[item.path]" :src="avatarSrc[item.path]" contain />
-                <v-icon v-else size="40" color="primary">mdi-puzzle</v-icon>
-              </v-avatar>
-              <div class="text-subtitle-1 font-weight-bold text-center">{{ item.name }}</div>
-              <div class="text-caption text-medium-emphasis text-center store-desc">{{ item.description || '无描述' }}</div>
-              <div class="d-flex align-center mt-2" style="gap:6px">
-                <v-chip size="x-small" variant="tonal" color="grey">v{{ item.version }}</v-chip>
-                <v-chip size="x-small" variant="tonal" color="info">{{ item.author }}</v-chip>
+            <div class="d-flex card-body">
+              <!-- 左侧矩形图片区 -->
+              <div class="card-thumb">
+                <v-img
+                  v-if="avatarSrc[item.path]"
+                  :src="avatarSrc[item.path]"
+                  cover
+                  class="card-thumb-img"
+                />
+                <div v-else class="card-thumb-ph">
+                  <v-icon size="32" color="primary">mdi-puzzle</v-icon>
+                </div>
+              </div>
+              <!-- 右侧信息区 -->
+              <div class="d-flex flex-column card-info flex-grow-1">
+                <div class="d-flex align-center" style="gap:6px">
+                  <div class="text-subtitle-1 font-weight-bold card-title text-truncate">{{ item.name }}</div>
+                  <v-chip size="x-small" variant="tonal" color="grey">v{{ item.version }}</v-chip>
+                </div>
+                <div class="text-caption text-medium-emphasis card-desc">{{ item.description || '无描述' }}</div>
+                <div class="d-flex align-center justify-end card-actions" style="gap:6px">
+                  <v-chip size="x-small" variant="tonal" color="info" class="text-truncate" style="max-width: 45%">{{ item.author }}</v-chip>
+                  <v-spacer />
+                  <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-download" :loading="installing === item.path" @click.stop="install(item)">安装</v-btn>
+                </div>
               </div>
             </div>
-            <v-divider />
-            <v-card-actions>
-              <v-spacer />
-              <v-btn size="small" color="primary" variant="tonal" prepend-icon="mdi-download" :loading="installing === item.path" @click.stop="install(item)">安装</v-btn>
-            </v-card-actions>
           </v-card>
         </v-col>
       </v-row>
@@ -333,17 +343,47 @@ onMounted(() => {
 <style scoped>
 .store-card { cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; }
 .store-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.12) !important; }
-/* 弹窗内容超高时内部滚动，避免内容溢出 */
+
+/* 横向卡片：左图右文 */
+.card-body { display: flex; min-height: 124px; }
+.card-thumb {
+  width: 124px;
+  min-width: 124px;
+  border-radius: 12px 0 0 12px;
+  overflow: hidden;
+  display: flex;
+}
+.card-thumb :deep(.v-img) { width: 100%; height: 100%; }
+.card-thumb-ph {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--v-theme-primary), 0.08);
+}
+.card-info { padding: 10px 12px; min-width: 0; }
+.card-title { line-height: 1.3; }
+.card-desc {
+  flex: 1 1 auto;
+  margin-top: 4px;
+  min-height: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+.card-actions { margin-top: 8px; }
+
+/* 弹窗内容超高时仅内容区内部滚动，固定头部与底部按钮 */
 .detail-card { max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }
 .detail-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
-.store-desc {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  min-height: 32px;
-}
-.markdown-body { word-break: break-word; }
+
+.markdown-body { word-break: break-word; overflow-x: auto; }
+.markdown-body :deep(table) { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+.markdown-body :deep(th), .markdown-body :deep(td) { border: 1px solid rgba(var(--v-theme-on-surface), 0.15); padding: 6px 10px; text-align: left; vertical-align: top; }
+.markdown-body :deep(th) { background: rgba(var(--v-theme-on-surface), 0.05); font-weight: 600; white-space: nowrap; }
+.markdown-body :deep(tr:nth-child(even)) { background: rgba(var(--v-theme-on-surface), 0.03); }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin-top: 0.8em; margin-bottom: 0.4em; }
 .markdown-body :deep(pre) { background: rgba(var(--v-theme-on-surface), 0.06); padding: 12px; border-radius: 6px; overflow: auto; }
 .markdown-body :deep(code) { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; }

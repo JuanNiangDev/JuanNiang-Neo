@@ -19,35 +19,41 @@
       <v-row class="d-flex flex-wrap">
         <v-col v-for="item in filteredItems" :key="item.id || item.name" cols="12" sm="6" md="4" lg="3">
           <v-card rounded="lg" elevation="1" class="plugin-card" @click="openDetail(item)">
-            <div class="d-flex flex-column align-center pa-4">
-              <v-avatar size="72" rounded="lg" class="mb-3 plugin-avatar">
+            <div class="d-flex card-body">
+              <!-- 左侧矩形图片区 -->
+              <div class="card-thumb">
                 <v-img
                   v-if="avatarSrc[item.id || item.name]"
                   :src="avatarSrc[item.id || item.name]"
-                  contain
+                  cover
+                  class="card-thumb-img"
                 />
-                <v-icon v-else size="40" color="primary">mdi-puzzle</v-icon>
-              </v-avatar>
-              <div class="text-subtitle-1 font-weight-bold text-center plugin-name">{{ item.name }}</div>
-              <div class="text-caption text-medium-emphasis text-center plugin-desc">{{ item.description || '无描述' }}</div>
-              <div class="d-flex align-center mt-2" style="gap:6px">
-                <v-chip v-if="item.is_system" size="x-small" color="error" variant="tonal">系统</v-chip>
-                <v-chip size="x-small" variant="tonal" color="grey">v{{ item.version }}</v-chip>
+                <div v-else class="card-thumb-ph">
+                  <v-icon size="32" color="primary">mdi-puzzle</v-icon>
+                </div>
+              </div>
+              <!-- 右侧信息区 -->
+              <div class="d-flex flex-column card-info flex-grow-1">
+                <div class="d-flex align-center" style="gap:6px">
+                  <div class="text-subtitle-1 font-weight-bold card-title text-truncate">{{ item.name }}</div>
+                  <v-chip v-if="item.is_system" size="x-small" color="error" variant="tonal">系统</v-chip>
+                </div>
+                <div class="text-caption text-medium-emphasis card-desc">{{ item.description || '无描述' }}</div>
+                <div class="d-flex align-center justify-end card-actions" style="gap:8px">
+                  <v-chip size="x-small" variant="tonal" color="grey">v{{ item.version }}</v-chip>
+                  <v-switch
+                    :model-value="item.is_active"
+                    :disabled="item.is_system"
+                    color="primary"
+                    density="compact"
+                    hide-details
+                    :label="item.is_active ? '已启用' : '已停用'"
+                    @update:model-value="(v) => toggle(item.id || item.name, !!v)"
+                    @click.stop
+                  />
+                </div>
               </div>
             </div>
-            <v-divider />
-            <v-card-actions>
-              <v-switch
-                :model-value="item.is_active"
-                :disabled="item.is_system"
-                color="primary"
-                density="compact"
-                hide-details
-                :label="item.is_active ? '已启用' : '已停用'"
-                @update:model-value="(v) => toggle(item.id || item.name, !!v)"
-                @click.stop
-              />
-            </v-card-actions>
           </v-card>
         </v-col>
       </v-row>
@@ -432,23 +438,59 @@ onMounted(fetch)
 <style scoped>
 .plugin-card { cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; }
 .plugin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.12) !important; }
-.plugin-avatar { background: rgba(var(--v-theme-primary), 0.08); }
-.plugin-name { word-break: break-all; }
-.plugin-desc {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+
+/* 横向卡片：左图右文 */
+.card-body { display: flex; min-height: 124px; }
+.card-thumb {
+  width: 124px;
+  min-width: 124px;
+  border-radius: 12px 0 0 12px;
   overflow: hidden;
-  min-height: 32px;
+  display: flex;
 }
-.markdown-body { word-break: break-word; }
+.card-thumb :deep(.v-img) { width: 100%; height: 100%; }
+.card-thumb-ph {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(var(--v-theme-primary), 0.08);
+}
+.card-info { padding: 10px 12px; min-width: 0; }
+.card-title { line-height: 1.3; }
+.card-desc {
+  flex: 1 1 auto;
+  margin-top: 4px;
+  min-height: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+.card-actions { margin-top: 8px; }
+
+.markdown-body { word-break: break-word; overflow-x: auto; }
+.markdown-body :deep(table) { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+.markdown-body :deep(th), .markdown-body :deep(td) { border: 1px solid rgba(var(--v-theme-on-surface), 0.15); padding: 6px 10px; text-align: left; vertical-align: top; }
+.markdown-body :deep(th) { background: rgba(var(--v-theme-on-surface), 0.05); font-weight: 600; white-space: nowrap; }
+.markdown-body :deep(tr:nth-child(even)) { background: rgba(var(--v-theme-on-surface), 0.03); }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin-top: 0.8em; margin-bottom: 0.4em; }
 .markdown-body :deep(pre) { background: rgba(var(--v-theme-on-surface), 0.06); padding: 12px; border-radius: 6px; overflow: auto; }
 .markdown-body :deep(code) { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; }
 .markdown-body :deep(img) { max-width: 100%; }
 .cmd-code { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; padding: 2px 6px; background: rgba(var(--v-theme-on-surface), 0.06); border-radius: 4px; }
-/* 弹窗内容超高时内部滚动，避免内容盖住顶部 tab 栏 */
+/* 弹窗内容超高时仅内容区内部滚动，固定顶部标题/tab/底部按钮 */
 .detail-card { max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
-.detail-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.detail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.detail-body :deep(.v-window) { flex: 1 1 auto; min-height: 0; }
+.detail-body :deep(.v-window__container) { height: 100%; }
+.detail-body :deep(.v-window-item) { height: 100%; overflow-y: auto; }
 .config-item { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08); padding-bottom: 12px; }
 </style>
