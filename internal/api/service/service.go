@@ -1422,6 +1422,26 @@ func (s *Service) StoreMirrorTest(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{"latency_ms": latency.Milliseconds()}))
 }
 
+// StoreMirrorSelect 手动指定生效镜像源（mirror 为空恢复默认自动选择）。
+func (s *Service) StoreMirrorSelect(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	var req struct {
+		Mirror string `json:"mirror"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.StoreClient.SelectMirror(req.Mirror); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
 // StoreMirrorRemove 删除一个自定义镜像源。
 func (s *Service) StoreMirrorRemove(ctx context.Context, c *app.RequestContext) {
 	if s.StoreClient == nil {

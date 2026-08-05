@@ -112,6 +112,7 @@ jn.config.schema()       -- 完整 schema
 | PUT | `/api/v1/plugin-store/config` | 更新商店配置 |
 | POST | `/api/v1/plugin-store/mirror` | 添加自定义镜像 |
 | POST | `/api/v1/plugin-store/mirror/test` | 测试镜像源连通性（拉取 `plugins.json` 验证并返回延迟） |
+| POST | `/api/v1/plugin-store/mirror/select` | 手动指定生效镜像源（`mirror` 为空恢复默认自动选择） |
 | DELETE | `/api/v1/plugin-store/mirror` | 删除自定义镜像 |
 
 ## 5. 镜像源与国内加速
@@ -126,7 +127,7 @@ https://raw.gitmirror.com/{owner}/{repo}/{branch}/{path}
 https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}
 ```
 
-镜像模板支持占位符：`{owner}` `{repo}` `{branch}` `{path}`。Web 「镜像源设置」中镜像源以**下拉选择列表**展示（可手动输入新地址添加），每个镜像可点击「测试」验证连通性（拉取 `plugins.json` 并返回延迟）。自定义镜像持久化到 `data/plugin_store.json`。
+镜像模板支持占位符：`{owner}` `{repo}` `{branch}` `{path}`。Web 「镜像源设置」中可在**下拉框中手动选择生效镜像源**（不做自动切换：选择后只使用该镜像，恢复「自动选择」后才按列表顺序尝试），并可对所选镜像点击「测试」验证连通性（拉取 `plugins.json` 并返回延迟）；自定义镜像通过下拉输入框手动添加。配置持久化到 `data/plugin_store.json`。
 
 ## 6. 插件仓库（JuanNiang-Plugins）
 

@@ -90,7 +90,26 @@
             </v-row>
           </v-form>
 
-          <div class="text-caption text-medium-emphasis mb-2 mt-4">镜像源（下拉选择或手动输入新地址，需包含 {path} 占位符）</div>
+          <div class="text-caption text-medium-emphasis mb-2 mt-4">生效镜像源（手动选择，不做自动切换）</div>
+          <div class="d-flex align-center" style="gap:8px">
+            <v-select
+              v-model="selectedMirror"
+              :items="mirrorSelectItems"
+              label="选择生效镜像（空 = 自动按顺序尝试）"
+              variant="outlined"
+              density="compact"
+              hide-details
+              clearable
+              @update:model-value="(v) => selectMirror(v || '')"
+            />
+            <v-btn color="success" variant="tonal" prepend-icon="mdi-access-point" :loading="testingMirror" @click="testMirror">测试</v-btn>
+          </div>
+          <div v-if="mirrorTestResult" class="mt-2" :class="mirrorTestOk ? 'text-success' : 'text-error'">
+            <v-icon size="small" class="me-1">{{ mirrorTestOk ? 'mdi-check-circle' : 'mdi-alert-circle' }}</v-icon>
+            {{ mirrorTestResult }}
+          </div>
+
+          <div class="text-caption text-medium-emphasis mb-2 mt-4">添加自定义镜像（下拉选择或手动输入新地址，需包含 {path} 占位符）</div>
           <div class="d-flex align-center" style="gap:8px">
             <v-combobox
               v-model="mirrorInput"
@@ -101,19 +120,16 @@
               hide-details
               clearable
             />
-            <v-btn color="success" variant="tonal" prepend-icon="mdi-access-point" :loading="testingMirror" @click="testMirror">测试</v-btn>
             <v-btn color="primary" variant="tonal" prepend-icon="mdi-plus" :disabled="!canAddMirror" @click="addMirror">添加</v-btn>
           </div>
-          <div v-if="mirrorTestResult" class="mt-2" :class="mirrorTestOk ? 'text-success' : 'text-error'">
-            <v-icon size="small" class="me-1">{{ mirrorTestOk ? 'mdi-check-circle' : 'mdi-alert-circle' }}</v-icon>
-            {{ mirrorTestResult }}
-          </div>
 
-          <div class="text-caption text-medium-emphasis mb-2 mt-4">已添加的自定义镜像源（内置镜像始终优先）</div>
-          <div v-if="customMirrors.length === 0" class="text-caption text-medium-emphasis">暂无自定义镜像源</div>
-          <div v-for="m in customMirrors" :key="m" class="d-flex align-center mb-2" style="gap:8px">
+          <div class="text-caption text-medium-emphasis mb-2 mt-4">可用镜像列表</div>
+          <div v-for="m in allMirrors" :key="m" class="d-flex align-center mb-2" style="gap:8px">
+            <v-icon size="small" :color="selectedMirror === m ? 'success' : 'grey'" class="me-1">
+              {{ selectedMirror === m ? 'mdi-check-circle' : 'mdi-circle-outline' }}
+            </v-icon>
             <code class="mirror-code flex-grow-1">{{ m }}</code>
-            <v-btn icon="mdi-delete" size="small" variant="text" color="error" @click="removeMirror(m)" />
+            <v-btn v-if="isCustomMirror(m)" icon="mdi-delete" size="small" variant="text" color="error" @click="removeMirror(m)" />
           </div>
         </v-card-text>
         <v-divider />
@@ -162,6 +178,7 @@ const configForm = ref({ repo_owner: '', repo_name: '', branch: 'main' })
 const allMirrors = ref<string[]>([])
 const customMirrors = ref<string[]>([])
 const mirrorInput = ref('')
+const selectedMirror = ref('')
 const testingMirror = ref(false)
 const mirrorTestResult = ref('')
 const mirrorTestOk = ref(false)
@@ -175,6 +192,14 @@ const builtinMirrorPrefixes = [
   'https://raw.gitmirror',
   'https://cdn.jsdelivr',
 ]
+
+// 生效镜像下拉选项：空值 = 自动按顺序尝试
+const mirrorSelectItems = computed(() => [
+  { title: '自动选择（默认）', value: '' },
+  ...allMirrors.value.map((m) => ({ title: m, value: m })),
+])
+
+const isCustomMirror = (m: string) => customMirrors.value.includes(m)
 
 const canAddMirror = computed(() => {
   const m = (mirrorInput.value || '').trim()
@@ -239,11 +264,24 @@ async function fetchConfig() {
     }
     allMirrors.value = (data.mirrors || []).slice()
     customMirrors.value = (data.mirrors || []).filter((m: string) => !builtinMirrorPrefixes.some((p) => m.startsWith(p)))
+    selectedMirror.value = cfg.selected_mirror || ''
   } catch { /* ignore */ }
 }
 
+async function selectMirror(m: string) {
+  try {
+    await storeApi.selectMirror(m)
+    selectedMirror.value = m
+    toastStore.success(m ? '已切换到指定镜像源' : '已恢复默认自动选择')
+    mirrorTestResult.value = ''
+  } catch (e: any) {
+    toastStore.error(e?.response?.data?.info || e?.response?.data?.data?.error_detail || '切换失败')
+  }
+}
+
 async function testMirror() {
-  const m = (mirrorInput.value || '').trim()
+  // 优先测试下拉中选中的生效镜像，否则测试输入框中的地址
+  const m = (selectedMirror.value || mirrorInput.value || '').trim()
   if (!m) return
   testingMirror.value = true
   mirrorTestResult.value = ''

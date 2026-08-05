@@ -31,10 +31,11 @@ var defaultStoreMirrors = []string{
 
 // StoreConfig 存储配置（持久化到 data/plugin_store.json）。
 type StoreConfig struct {
-	RepoOwner string   `json:"repo_owner"`
-	RepoName  string   `json:"repo_name"`
-	Branch    string   `json:"branch"`
-	Mirrors   []string `json:"mirrors"`
+	RepoOwner      string   `json:"repo_owner"`
+	RepoName       string   `json:"repo_name"`
+	Branch         string   `json:"branch"`
+	Mirrors        []string `json:"mirrors"`
+	SelectedMirror string   `json:"selected_mirror,omitempty"` // 手动选择的镜像源（空 = 默认自动按顺序尝试）
 }
 
 // StoreClient 插件商店客户端。
@@ -99,7 +100,29 @@ func (sc *StoreClient) SetConfig(cfg StoreConfig) error {
 	if cfg.Branch == "" {
 		cfg.Branch = "main"
 	}
+	// 未指定手动镜像时保留当前选择，避免保存仓库配置时被清空
+	if cfg.SelectedMirror == "" {
+		cfg.SelectedMirror = sc.config.SelectedMirror
+	}
 	sc.config = cfg
+	return sc.saveConfig()
+}
+
+// SelectMirror 手动指定生效镜像源（mirror 为空表示恢复默认自动选择）。
+func (sc *StoreClient) SelectMirror(mirror string) error {
+	if mirror != "" {
+		found := false
+		for _, m := range sc.ListMirrors() {
+			if m == mirror {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("镜像不存在于可用列表")
+		}
+	}
+	sc.config.SelectedMirror = mirror
 	return sc.saveConfig()
 }
 
@@ -164,6 +187,15 @@ func (sc *StoreClient) resolveURL(template, path string) string {
 }
 
 func (sc *StoreClient) fetch(path string) ([]byte, error) {
+	// 手动选择了镜像源时只使用该镜像，不做自动切换
+	if sc.config.SelectedMirror != "" {
+		u := sc.resolveURL(sc.config.SelectedMirror, path)
+		data, err := sc.fetchOne(u)
+		if err != nil {
+			return nil, fmt.Errorf("镜像源 %s 不可用: %w", sc.config.SelectedMirror, err)
+		}
+		return data, nil
+	}
 	mirrors := sc.ListMirrors()
 	var lastErr error
 	for _, m := range mirrors {
