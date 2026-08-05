@@ -57,7 +57,8 @@
     <!-- 详情弹窗: README / 元数据+命令 / 配置 三页签 -->
     <!-- 注意：必须显式传 max-width，否则全局默认 VDialog.maxWidth=600 会把宽度压到 600 -->
     <v-dialog v-model="detailDialog" width="1100" max-width="calc(100vw - 32px)">
-      <v-card rounded="lg" class="detail-card">
+      <!-- 必须用 v-card 的 height prop：Vuetify 弹窗内卡片是 flex 子项，flex-basis(var(--v-card-height,100%)) 会覆盖 CSS height -->
+      <v-card rounded="lg" class="detail-card" height="80vh">
         <v-card-title class="d-flex align-center pa-4">
           <v-avatar size="40" rounded="lg" class="me-3">
             <v-img v-if="detailAvatar" :src="detailAvatar" contain />
@@ -476,10 +477,9 @@ onMounted(fetch)
 .markdown-body :deep(code) { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; }
 .markdown-body :deep(img) { max-width: 100%; }
 .cmd-code { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; padding: 2px 6px; background: rgba(var(--v-theme-on-surface), 0.06); border-radius: 4px; }
-/* 弹窗尺寸固定：宽 1100（小屏自适应），高 80vh，不随内容变化；整体居中 */
+/* 弹窗尺寸固定：宽 1100（小屏自适应），高 80vh（配合 v-card height prop），不随内容变化；整体居中 */
 .detail-card {
   width: 100%;
-  height: 80vh;
   min-height: 420px;
   margin: 0 auto;
   display: flex;
