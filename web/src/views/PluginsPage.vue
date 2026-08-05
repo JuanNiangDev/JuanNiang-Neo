@@ -55,7 +55,7 @@
     </v-container>
 
     <!-- 详情弹窗: README / 元数据+命令 / 配置 三页签 -->
-    <v-dialog v-model="detailDialog" width="1000" scrollable>
+    <v-dialog v-model="detailDialog" scrollable>
       <v-card rounded="lg" class="detail-card">
         <v-card-title class="d-flex align-center pa-4">
           <v-avatar size="40" rounded="lg" class="me-3">
@@ -475,12 +475,11 @@ onMounted(fetch)
 .markdown-body :deep(code) { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; }
 .markdown-body :deep(img) { max-width: 100%; }
 .cmd-code { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; padding: 2px 6px; background: rgba(var(--v-theme-on-surface), 0.06); border-radius: 4px; }
-/* 弹窗内容超高时仅内容区内部滚动，固定顶部标题/底部按钮；窗口尺寸固定 */
+/* 弹窗尺寸固定：宽 1100（小屏自适应），高 80vh，不随内容变化 */
 .detail-card {
-  width: 100%;
+  width: min(1100px, calc(100vw - 32px));
   height: 80vh;
   min-height: 420px;
-  max-width: calc(100vw - 32px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -492,13 +491,14 @@ onMounted(fetch)
   min-height: 0;
 }
 .detail-tabs {
-  width: 128px;
-  min-width: 128px;
+  width: 120px;
+  min-width: 120px;
+  flex-shrink: 0;
   padding: 8px 0;
 }
 .detail-tabs :deep(.v-slide-group__container) { overflow-y: auto; }
 .detail-body {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   overflow: hidden;
   display: flex;
