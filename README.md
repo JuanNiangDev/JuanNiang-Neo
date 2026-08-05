@@ -15,7 +15,8 @@
 - **相关性回复优化**：`relevance` 策略下 @/命令/提及名字必回、噪音消息规则过滤、候选消息批量合并为一次 LLM 判断，带 Redis 结果缓存/冷却、并发限流与刷屏自动降级，热聊场景判断开销降至原来的 ~1/10
 - **四层记忆体系**：短期记忆（Redis 滑动窗口，默认 100 条，自动 Compact）/ 长期记忆（Postgres + 内存 LRU）/ 技能记忆（SkillMemory，Compact 时自动提取）/ 会话记录（Postgres 审计）
 - **OneBot11 反向 WebSocket 适配器**：与 QQ 机器人框架对接，OneBot11 API 作为 Agent 工具注册
-- **Lua 插件系统**：gopher-lua 驱动，支持多级命令、Lua SDK（带 LuaCATS 注解）、系统插件保护
+- **Lua 插件系统**：gopher-lua 驱动，支持多级命令、Lua SDK（带 LuaCATS 注解）、插件目录文本文件读写（`jn.file`）、系统插件保护
+- **插件商店**：从 GitHub 仓库浏览/安装社区插件（统一 5 件套格式），国内镜像源手动选择 + 连通性测试，每晚自动更新元数据；插件动态配置（bool/string/list）由 Web 面板按 `config.yaml` 动态渲染
 - **Web 管理后台**：Vue 3 + Vuetify 3，JWT 鉴权（可选 OIDC SSO），管理全部配置与运行时状态
 - **基础设施**：Postgres 持久化 + Redis 缓存 + Sandbox 代码沙箱 + T2I 文生图，未配置时自动返回未启用提示
 - **彩色日志系统**：基于 `fatih/color` 的自定义日志，彩色输出、JSON 自动格式化、WARN+ 调用栈、模块日志器、GORM SQL 日志集成
@@ -24,7 +25,7 @@
 - **表情包库**：图床二次封装（名称/简介/标签）；短 UUID 对外，`stk://` 引用自动映射图床长 UUID（表情段 subType=1）；Agent 工具 + Plugin API 齐备
 - **摸鱼人日历**：独立每日定时任务，模板 → T2I 渲染 800×720 黑白纸张质感图片 → @全体成员 + 富文本发送；多群、按天群务、一言金句、农历/法定假日倒计时
 - **定时消息（积木式编排）**：触发器 → 消息块（一条消息多段：文字 / 图片[T2I·URL·图床] / CQ 表情）→ 延时块链；Web 可视化编排 + 325 个 CQ 表情缩略图
-- **示例插件库**：`data/pluggins/` 下 8 个示例插件覆盖全部插件功能，每个含 README.md
+- **示例插件库**：`data/pluggins/` 下 9 个示例插件覆盖全部插件功能，每个含 README.md
 - **开发配置**：`dev.yaml` 本地开发配置文件（数据库、Redis、OneBot11 等），`make run` 自动读取
 
 ## 效果图
@@ -48,7 +49,8 @@
 | Web API | [api.md](docs/api.md) | Web API 全路由文档（响应信封、错误码、各资源 CRUD、SSE 日志流、SPA 静态服务）；含知识库(§23)/图床(§24)/表情包库(§25)/摸鱼人日历(§26)/定时消息(§27) 各功能章节 |
 | 项目细节 | [project-details.md](docs/project-details.md) | Eino ADK Agent 架构 / 三阶段事件循环 / 数据模型 / HagoCenter 运行时拓扑（mermaid）；关键调用栈（ASCII）；processEvent 决策树、CronJob/Webhook 注入时序图（mermaid）；Lua 插件系统架构生命周期与命令树（mermaid） |
 | 日志系统 | `internal/logging/` | fatih/color 彩色终端输出 / JSON 结构化格式化 / 完整调用栈追踪 / Hub SSE 实时推送至前端 |
-| 插件开发 | [plugin-development.md](docs/plugin-development.md) | 快速开始 + 完整 Lua API 参考（log/json/onebot11/http/database/cache/t2i/sandbox/agent/command）+ 引擎实现细节 + 常见坑；示例插件见 `data/pluggins/`（8 个，覆盖全部功能） |
+| 插件开发 | [plugin-development.md](docs/plugin-development.md) | 快速开始 + 完整 Lua API 参考（log/json/onebot11/http/database/cache/t2i/sandbox/agent/file/command）+ 引擎实现细节 + 常见坑；示例插件见 `data/pluggins/`（9 个，覆盖全部功能） |
+| 插件商店 | [plugin-store.md](docs/plugin-store.md) | 统一插件格式（5 件套）/ 动态配置（config.yaml + jn.config）/ 商店与管理页 Web 界面与 API / 镜像源与国内加速 / 插件仓库元数据每晚自动更新 / PR 审核流程 |
 | 部署 | [deployment.md](docs/deployment.md) | 部署模式、环境变量、构建流程、健康检查、日志排查、反向代理、systemd、FAQ |
 | 二次开发 | [development.md](docs/development.md) | 该读什么 / 该改什么 / 不该动什么、当前实现状态、约定、写 Agent 工具与 Web API 的最小范式 |
 | 外部服务 | [external-services.md](docs/external-services.md) | 各外部服务的客户端构造、热更新机制、HagoCenter 与 Service 共享指针、鉴权与健康检查 |
@@ -118,8 +120,7 @@ services:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
     volumes:
-      - ./data/pluggins:/app/data/pluggins   # Lua 插件跨升级保留
-      - ./data/imgs:/app/data/imgs           # 图床图片跨升级保留
+      - ./data:/app/data                     # 插件/图床/商店配置跨升级保留
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/health || exit 1"]
       interval: 30s
@@ -139,7 +140,7 @@ networks:
 同目录放 `.env`（按需修改）。**首次启动前**需创建插件目录并赋权：
 
 ```bash
-mkdir -p data/pluggins data/imgs && chmod 777 data/pluggins data/imgs
+mkdir -p data && chmod 777 data
 docker compose up -d
 # 仪表板  http://localhost:8090   初始账号 admin / Admin123（首次启动务必改密码）
 # OneBot11 反向 WS  ws://localhost:8081/   带头 Authorization: Bearer <OB_TOKEN>

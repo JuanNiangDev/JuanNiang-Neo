@@ -467,6 +467,23 @@ curl -X POST http://localhost:8090/api/v1/plugins/upload \
 适用于：新增/修改 `on_cronjob` 或注册了新命令后无需重启进程即可生效。
 **Body** 无。**data** `null`。
 
+### 插件商店（/plugin-store）
+
+> 商店从 GitHub 仓库（默认 `JuanNiangDev/JuanNiang-Plugins`）经镜像源实时拉取元数据与插件文件；列表元数据每晚由仓库 workflow 自动更新。详见 [plugin-store.md](plugin-store.md)。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/plugin-store` | 商店插件列表（合并元数据分片，按名称排序） |
+| GET | `/api/v1/plugin-store/readme?path=` | 仓库内 `plugins/<name>/README.md` |
+| GET | `/api/v1/plugin-store/avatar?path=` | 仓库内 `plugins/<name>/avatar.png`（`Cache-Control: no-store`，每次实时拉取，仓库更新后刷新可见） |
+| POST | `/api/v1/plugin-store/install?path=` | 下载 `dist/<name>.zip` 并安装到 `data/pluggins/<name>/` |
+| GET | `/api/v1/plugin-store/config` | 商店配置 + 镜像列表（`config`/`mirrors`） |
+| PUT | `/api/v1/plugin-store/config` | 更新仓库配置（`repo_owner`/`repo_name`/`branch`） |
+| POST | `/api/v1/plugin-store/mirror` | 添加自定义镜像（需含 `{path}` 占位符） |
+| POST | `/api/v1/plugin-store/mirror/test` | 测试镜像连通性，返回 `latency_ms` |
+| POST | `/api/v1/plugin-store/mirror/select` | 手动指定生效镜像源（空 = 恢复自动按序尝试） |
+| DELETE | `/api/v1/plugin-store/mirror` | 删除自定义镜像 |
+
 ---
 
 ## 12. 聊天记录

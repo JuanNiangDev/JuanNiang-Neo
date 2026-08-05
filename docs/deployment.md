@@ -100,6 +100,18 @@ make lint
 
 另有 `Dockerfile.cn` 使用国内镜像加速。
 
+### 运行时数据持久化（Docker）
+
+容器内 `/app/data` 整体由 compose bind-mount 到仓库 `data/` 目录，跨升级/重建保留：
+
+| 路径 | 内容 | 丢失影响 |
+|------|------|----------|
+| `data/pluggins/` | Lua 插件（含启动时自动写入的 SDK 与 system 插件） | 插件丢失 |
+| `data/imgs/` | 图床图片 | 图片丢失 |
+| `data/plugin_store.json` | 插件商店配置（镜像源选择 / 自定义镜像 / 仓库地址） | 商店配置重置为默认 |
+
+> ⚠️ 首次启动前 `mkdir -p data && chmod 777 data`（当前镜像以 root 运行；改为非 root 用户后需按用户赋权）。
+
 ## 健康检查
 
 - `GET /health` 二级域名/api 均可：`{"status":"ok"}`，无需鉴权
