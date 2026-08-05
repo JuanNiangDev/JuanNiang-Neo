@@ -1,0 +1,30 @@
+# ====================================================================
+# memo 插件配置
+# ====================================================================
+# 每个配置项由 key / type / label / description / default 声明。
+# type 支持三种：
+#   bool   → Web 面板开关
+#   string → Web 面板单行输入框
+#   list   → Web 面板可增删的多项输入框
+# value 为用户当前生效值（缺省时回退 default）。插件通过
+# jn.config.get("key") / jn.config.all() 读取。
+# ====================================================================
+
+configs:
+  - key: max_notes
+    type: string
+    label: 每人最大便签数
+    description: 每个用户最多可保存的便签条数（超出后需先删除）
+    default: "50"
+
+  - key: max_len
+    type: string
+    label: 单条便签最大长度
+    description: 单条便签允许的最大字符数（超出自动截断）
+    default: "200"
+
+  - key: group_whitelist
+    type: list
+    label: 允许使用的群号
+    description: 仅这些群可使用本插件（留空表示所有群都允许）；私聊不受限制
+    default: []
