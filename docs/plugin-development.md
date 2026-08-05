@@ -104,6 +104,7 @@ SDK 仅是 Go 注入全局表的再导出（`jn.log = log` 等），不引入额
 | `jn.t2i` | `t2i` | 文生图 |
 | `jn.sandbox` | `sandbox` | 代码沙箱 |
 | `jn.agent` | `agent` | Agent 操作接口 |
+| `jn.file` | `file` | 插件目录内文本文件读写 |
 | `jn.command` | — | 命令注册 |
 
 ## 注册命令
@@ -189,6 +190,43 @@ log.error("操作失败: " .. err)
 |------|
 | `json.encode(value) → string` Lua 值→JSON |
 | `json.decode(str) → table` JSON→Lua table |
+
+## 全局表: `file`
+
+权限：`file`。插件读写**自身目录**（`data/pluggins/<name>/`）下的文本文件（txt/json/log/csv 等）。
+
+> **安全边界**：`path` 必须为相对路径，禁止绝对路径与 `..` 越界；越权访问返回错误。目录自动创建，行号均从 1 开始。
+
+| 函数 | 返回 | 说明 |
+|------|------|------|
+| `file.read(path) → string [, err]` | string | 读取整个文件内容（文件不存在返回 err） |
+| `file.read_lines(path) → []string [, err]` | string[] | 读取全部行，自动去除行尾 `\n`/`\r` |
+| `file.read_line(path, n) → string [, err]` | string | 读取第 n 行；**越界返回 nil**（非错误，便于循环读取） |
+| `file.write(path, content) → bool [, err]` | bool | 覆盖写入整个文件（自动创建父目录） |
+| `file.write_lines(path, lines) → bool [, err]` | bool | 覆盖写入多行（每行自动补 `\n`） |
+| `file.write_line(path, n, content) → bool [, err]` | bool | 改写第 n 行；文件不足自动补空行 |
+| `file.append(path, content) → bool [, err]` | bool | 追加内容到文件末尾（**不自动补换行**） |
+| `file.append_line(path, content) → bool [, err]` | bool | 追加一行（末尾无换行时自动补） |
+| `file.exists(path) → bool` | bool | 判断文件是否存在 |
+| `file.remove(path) → bool [, err]` | bool | 删除文件 |
+
+```lua
+-- 逐行读取（read_line 越界返回 nil，可用作循环终止条件）
+local i = 1
+while true do
+    local line = jn.file.read_line("data/notes.txt", i)
+    if line == nil then break end
+    log.info(line)
+    i = i + 1
+end
+
+-- 整体读写
+jn.file.write("data/state.txt", "hello")
+local content = jn.file.read("data/state.txt")
+
+-- 追加一行
+jn.file.append_line("data/log.txt", "事件发生于 " .. os.date())
+```
 
 ## 全局表: `onebot11`
 

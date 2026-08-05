@@ -238,6 +238,26 @@ M.agent = agent
 M.config = config
 
 -- ====================================================================
+-- file 插件目录内文本文件读写 (需要 file 权限)
+-- ====================================================================
+-- 所有路径均相对于插件自身目录 (data/pluggins/<插件名>/)，禁止绝对路径
+-- 与 .. 越权访问。适用于 txt/json/log/csv 等文本文件。
+-- 行号均为 1 起；read_line 越界返回 nil（非错误，可用于循环读取）。
+
+---@class jn.File
+---@field read fun(path: string): string?, string? 读取整个文件内容
+---@field read_lines fun(path: string): string[]?, string? 读取全部行（自动去除行尾换行符）
+---@field read_line fun(path: string, line: number): string?, string? 读取第 N 行；越界返回 nil
+---@field write fun(path: string, content: string): boolean, string? 覆盖写入整个文件（自动创建目录）
+---@field write_lines fun(path: string, lines: string[]): boolean, string? 覆盖写入多行（每行自动补 \n）
+---@field write_line fun(path: string, line: number, content: string): boolean, string? 改写第 N 行（不足补空行）
+---@field append fun(path: string, content: string): boolean, string? 追加内容到文件末尾（不自动补换行）
+---@field append_line fun(path: string, content: string): boolean, string? 追加一行（末尾无换行时自动补）
+---@field exists fun(path: string): boolean 判断文件是否存在
+---@field remove fun(path: string): boolean, string? 删除文件
+M.file = file
+
+-- ====================================================================
 -- command 多级命令注册
 -- ====================================================================
 

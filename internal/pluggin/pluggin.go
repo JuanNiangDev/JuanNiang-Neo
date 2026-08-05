@@ -1047,6 +1047,11 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 		pe.injectAgent(L)
 	}
 
+	// File：插件目录内文本文件读写（需要 file 权限）
+	if hasPerm("file") {
+		pe.injectFileAPI(L, pluginName)
+	}
+
 	// Config：动态配置（无需权限，默认注入）
 	pe.injectConfigAPI(L, pluginName)
 }
