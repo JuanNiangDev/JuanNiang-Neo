@@ -3,6 +3,7 @@ package dao
 import (
 	"crypto/rand"
 	"fmt"
+	"strings"
 
 	"gorm.io/gorm"
 )
@@ -11,6 +12,17 @@ func newUUID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// isDupKeyErr 判断是否为唯一约束/主键冲突错误（Postgres 23505 / SQLite / 通用 duplicate 文案）。
+func isDupKeyErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "unique index")
 }
 
 // ---------- DAO Bundle ----------
@@ -40,6 +52,11 @@ type Bundle struct {
 	ReplyStrategy   *ReplyStrategyDAO
 	SkillMemory     *SkillMemoryDAO
 	TokenUsageDaily *TokenUsageDailyDAO
+	Knowledge       *KnowledgeDAO
+	Image           *ImageDAO
+	Sticker         *StickerDAO
+	FishCalendar    *FishCalendarDAO
+	ScheduledMsg    *ScheduledMessageDAO
 }
 
 func NewBundle(db *gorm.DB) *Bundle {
@@ -67,5 +84,10 @@ func NewBundle(db *gorm.DB) *Bundle {
 		ReplyStrategy:   NewReplyStrategyDAO(db),
 		SkillMemory:     NewSkillMemoryDAO(db),
 		TokenUsageDaily: NewTokenUsageDailyDAO(db),
+		Knowledge:       NewKnowledgeDAO(db),
+		Image:           NewImageDAO(db),
+		Sticker:         NewStickerDAO(db),
+		FishCalendar:    NewFishCalendarDAO(db),
+		ScheduledMsg:    NewScheduledMessageDAO(db),
 	}
 }

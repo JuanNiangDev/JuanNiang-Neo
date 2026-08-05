@@ -3,6 +3,7 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ============================================================
@@ -24,7 +25,7 @@ func (p *Adapter) SendGroupMsg(groupID int64, message any) (int64, error) {
 func (p *Adapter) sendMsg(msgType string, id int64, message any) (int64, error) {
 	params := map[string]any{
 		"message_type": msgType,
-		"message":      normalizeMessage(message),
+		"message":      p.resolveImageAssets(normalizeMessage(message)),
 	}
 	switch msgType {
 	case "private":
@@ -323,6 +324,8 @@ func (p *Adapter) SendGroupForwardMsg(groupID int64, nodes []ForwardNode) (int64
 func normalizeMessage(msg any) any {
 	switch v := msg.(type) {
 	case string:
+		// 先修复 LLM 生成的 CQ 码格式瑕疵（如 "[ CQ:face,id=66]"），再解析
+		v = NormalizeCQCodes(v)
 		if HasCQCode(v) {
 			return ParseCQCodes(v)
 		}
@@ -337,6 +340,40 @@ func normalizeMessage(msg any) any {
 		log.Warn("未知消息类型", "type", fmt.Sprintf("%T", msg))
 		return fmt.Sprint(v)
 	}
+}
+
+// resolveImageAssets 把消息中的图床图片引用（file="imgs://<id>"）与表情引用（file="stk://<短UUID>"）
+// 替换为 base64。纯文本消息（不含 CQ 码）原样返回；只处理 []Segment。
+func (p *Adapter) resolveImageAssets(msg any) any {
+	segs, ok := msg.([]Segment)
+	if !ok || len(segs) == 0 {
+		return msg
+	}
+	p.mu.RLock()
+	imageResolver := p.imageResolver
+	stickerResolver := p.stickerResolver
+	p.mu.RUnlock()
+	out := make([]Segment, len(segs))
+	for i, seg := range segs {
+		if seg.Type == "image" {
+			if f, ok := seg.Data["file"].(string); ok && f != "" {
+				// 表情引用：stk://<短UUID> → 短 UUID 查表情 → 图床长 UUID → base64，强制 subType=1
+				if strings.HasPrefix(f, "stk://") && stickerResolver != nil {
+					if b64, resolved := stickerResolver(strings.TrimPrefix(f, "stk://")); resolved {
+						seg.Data["file"] = b64
+						seg.Data["subType"] = 1
+					}
+				} else if imageResolver != nil {
+					// 图床图片引用：imgs://<id>（含普通图片/富文本内嵌表情场景）
+					if b64, resolved := imageResolver(f); resolved {
+						seg.Data["file"] = b64
+					}
+				}
+			}
+		}
+		out[i] = seg
+	}
+	return out
 }
 
 // callAndParse 调用 API 并解析单个对象响应。

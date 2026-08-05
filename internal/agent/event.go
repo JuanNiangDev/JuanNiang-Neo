@@ -31,6 +31,7 @@ type ReplySettings struct {
 	RelevanceThreshold float64
 	RelevancePrompt    string // 相关性检测自定义提示词（空则用默认）
 	RelevanceModel     string // 相关性检测使用的 Text Provider ID（空则用默认）
+	JudgeFailPolicy    string // 判断失败策略: drop=不回复（默认）, reply=照常回复
 }
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
@@ -155,51 +156,43 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		RelevanceThreshold: cfg.RelevanceThreshold,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}
 }
 
-// checkReplyStrategy 根据回复策略配置决定是否继续处理消息。
-func (h *HagoCenter) checkReplyStrategy(ctx context.Context, ev adapter.Event, rs ReplySettings) bool {
-	msg := ev.Message
-	switch rs.Strategy {
-	case models.StrategyNeverReply:
-		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
-		return false
-	case models.StrategyAtOnly:
-		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage) {
-			log.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
-			return false
-		}
-		return true
-	case models.StrategyRelevance:
-		// 仅对群聊 message 做相关性判断
-		if msg.MessageType != "group" {
-			return true
-		}
-		if h.isAtSelf(msg.RawMessage) || h.isPluginCommand(msg.RawMessage) {
-			return true
-		}
-		chatAreaID := ""
-		area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, msg.GroupID)
-		if err == nil {
-			chatAreaID = area.ID
-		}
-		recentMsgs, _ := h.getRecentMessages(ctx, chatAreaID, 10)
-		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs)
-		if score < rs.RelevanceThreshold {
-			log.Debug("回复策略: 相关性不足", "score", score, "threshold", rs.RelevanceThreshold, "reason", reason)
-			return false
-		}
-		log.Debug("回复策略: 相关性通过", "score", score, "reason", reason)
-		return true
-	default: // StrategyAlways
-		return true
-	}
-}
+// checkReplyStrategy 已废弃：相关性判断统一在 filterRelevant 中按批次执行
+// （规则快路径 + relevanceBatchEvaluate），逐条模式不再使用。
+// 原实现见 git history（L1/L2 优化前）。
 
 // batchWindow 同一 ChatArea 消息的批处理窗口：窗口内的消息合并为一次 Agent 处理，
 // 避免多条消息同时到达时各自触发完整 ReAct 循环（重复执行任务 + 回复串味）。
 const batchWindow = time.Second
+
+// 热聊检测（L2.2/L4.1）：1s 滑动窗口内消息数 ≥ floodThreshold 视为刷屏。
+// 刷屏时：批窗口拉长到 hotBatchWindow（合并更多消息），且相关性判断直接降级
+// 为只回 @/命令/提及名字（不调 LLM）。
+const (
+	hotWindow      = time.Second
+	floodThreshold = 5
+	hotBatchWindow = 3 * time.Second
+)
+
+// 相关性判断结果缓存（L2.3/L4.2，Redis）：
+//   - related   → 对话轮次内放宽判断（机器人刚参与过，短时间不再重复判断）
+//   - unrelated → 冷却期（热聊无关消息不反复触发 LLM 判断）
+const (
+	relevanceVerdictKey = "relevance:verdict:" // + areaID
+	verdictRelated      = "related"
+	verdictUnrelated    = "unrelated"
+	relatedVerdictTTL   = 15 * time.Second
+	unrelatedVerdictTTL = 30 * time.Second
+)
+
+// hotStat 单个 ChatArea 的 1s 滑动窗口消息计数（热聊检测用）。
+type hotStat struct {
+	count       int
+	windowStart time.Time
+}
 
 // pendingBatch 同一 ChatArea 在批处理窗口内收集的消息。
 type pendingBatch struct {
@@ -223,6 +216,9 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 // enqueueBatch 将消息加入对应 ChatArea 的待处理批次；窗口结束后统一派发。
 // 若窗口内又来新消息，直接追加到同一批次，保证同一时间每个 ChatArea 只有一个待处理批次。
 func (h *HagoCenter) enqueueBatch(ctx context.Context, ev adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+	// L2.2 热聊统计：每条消息到达都计数（决定批窗口与刷屏降级）
+	count := h.recordMessage(chatArea.ID, time.Now())
+
 	h.batchMu.Lock()
 	if b, ok := h.batches[chatArea.ID]; ok {
 		b.events = append(b.events, ev)
@@ -233,8 +229,14 @@ func (h *HagoCenter) enqueueBatch(ctx context.Context, ev adapter.Event, chatAre
 	h.batches[chatArea.ID] = b
 	h.batchMu.Unlock()
 
+	// L2.2 动态批窗口：刷屏时拉长窗口，合并更多消息为一次判断/处理
+	window := batchWindow
+	if count >= floodThreshold {
+		window = hotBatchWindow
+	}
+
 	// 窗口结束后派发整个批次（复制事件，避免与后续追加竞争）
-	b.timer = time.AfterFunc(batchWindow, func() {
+	b.timer = time.AfterFunc(window, func() {
 		h.batchMu.Lock()
 		delete(h.batches, chatArea.ID)
 		events := append([]adapter.Event(nil), b.events...)
@@ -244,6 +246,64 @@ func (h *HagoCenter) enqueueBatch(ctx context.Context, ev adapter.Event, chatAre
 		}
 		h.spawnBatch(ctx, events, b.rs, chatArea)
 	})
+}
+
+// recordMessage 记录 ChatArea 的消息到达，返回当前 1s 窗口内的消息数。
+func (h *HagoCenter) recordMessage(areaID string, now time.Time) int {
+	h.hotMu.Lock()
+	defer h.hotMu.Unlock()
+	st, ok := h.hotStats[areaID]
+	if !ok || now.Sub(st.windowStart) >= hotWindow {
+		// 新窗口或窗口已过期：重建（防无界增长，超上限整体清空）
+		if !ok && len(h.hotStats) >= 2048 {
+			h.hotStats = make(map[string]*hotStat)
+		}
+		h.hotStats[areaID] = &hotStat{count: 1, windowStart: now}
+		return 1
+	}
+	st.count++
+	return st.count
+}
+
+// isChatFlooding 判断 ChatArea 是否处于刷屏状态（1s 窗口内消息数 ≥ floodThreshold）。
+func (h *HagoCenter) isChatFlooding(areaID string) bool {
+	if areaID == "" {
+		return false
+	}
+	h.hotMu.Lock()
+	defer h.hotMu.Unlock()
+	st, ok := h.hotStats[areaID]
+	if !ok || time.Since(st.windowStart) >= hotWindow {
+		return false
+	}
+	return st.count >= floodThreshold
+}
+
+// getRelevanceVerdict 读取 ChatArea 的相关性判断缓存（Redis）。
+// 返回 "" 表示无缓存；verdictRelated / verdictUnrelated 表示命中。
+func (h *HagoCenter) getRelevanceVerdict(ctx context.Context, areaID string) string {
+	if h.Cache == nil || areaID == "" {
+		return ""
+	}
+	var v string
+	if err := h.Cache.Get(ctx, relevanceVerdictKey+areaID, &v); err != nil {
+		return ""
+	}
+	return v
+}
+
+// setRelevanceVerdict 写入 ChatArea 的相关性判断缓存（Redis，带 TTL）。
+func (h *HagoCenter) setRelevanceVerdict(ctx context.Context, areaID string, verdict string) {
+	if h.Cache == nil || areaID == "" {
+		return
+	}
+	ttl := relatedVerdictTTL
+	if verdict == verdictUnrelated {
+		ttl = unrelatedVerdictTTL
+	}
+	if err := h.Cache.Set(ctx, relevanceVerdictKey+areaID, verdict, ttl); err != nil {
+		log.Warn("相关性判断缓存写入失败", "area", areaID, "err", err)
+	}
 }
 
 // spawnBatch 启动一个批次的 Agent 处理（relevance 检查与并发控制都在 goroutine 内，不阻塞事件循环）。
@@ -270,17 +330,74 @@ func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs 
 }
 
 // filterRelevant 对批次内消息做相关性策略过滤（relevance 策略需要 LLM 判断，在此统一执行）。
+// 流程（L1/L2.1）：规则快路径（@/命令/提及名字 → 必回；噪音 → 丢弃）→
+// 剩余候选消息合并为一次批量判断（含图消息标注 [图片]）。
 func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event, rs ReplySettings) []adapter.Event {
 	if rs.Strategy != models.StrategyRelevance {
 		return events
 	}
-	out := make([]adapter.Event, 0, len(events))
+	var mustKeep, candidates []adapter.Event
 	for _, ev := range events {
-		if ev.SkipReplyCheck || h.checkReplyStrategy(ctx, ev, rs) {
-			out = append(out, ev)
+		if ev.SkipReplyCheck {
+			mustKeep = append(mustKeep, ev)
+			continue
 		}
+		msg := ev.Message
+		if msg == nil {
+			continue
+		}
+		// 非群聊（私聊）不参与相关性判断，直接保留
+		if msg.MessageType != "group" {
+			mustKeep = append(mustKeep, ev)
+			continue
+		}
+		// L1 规则快路径：@ 自己 / 插件命令 / 提及名字 → 必回，无需 LLM
+		if h.isAtSelf(msg.RawMessage) || h.isPluginCommand(msg.RawMessage) || isDefinitelyRelevant(msg, rs) {
+			mustKeep = append(mustKeep, ev)
+			continue
+		}
+		// L1 规则快路径：明显噪音 → 直接丢弃
+		if isDefinitelyIrrelevant(msg) {
+			log.Debug("相关性: 规则判定无关，丢弃", "user_id", msg.UserID, "group_id", msg.GroupID)
+			continue
+		}
+		candidates = append(candidates, ev)
 	}
-	return out
+	if len(candidates) == 0 {
+		return mustKeep
+	}
+
+	// 取 ChatArea ID（批量判断的上下文/后续缓存用）
+	areaID := ""
+	if area := h.getChatArea(ctx, candidates[0].Message); area != nil {
+		areaID = area.ID
+	}
+
+	// L4.1 热度降级：刷屏时跳过 LLM 判断，只回必回消息（@/命令/提及名字）
+	if h.isChatFlooding(areaID) {
+		log.Debug("相关性: 群聊刷屏，降级为仅回@/命令/提及名字", "area", areaID)
+		return mustKeep
+	}
+
+	// L2.3/L4.2 判断结果缓存：related=对话轮次内放宽；unrelated=冷却期内不再判断
+	if v := h.getRelevanceVerdict(ctx, areaID); v != "" {
+		if v == verdictRelated {
+			log.Debug("相关性: 命中 related 缓存，保留候选", "area", areaID)
+			return append(mustKeep, candidates...)
+		}
+		log.Debug("相关性: 命中 unrelated 冷却缓存，丢弃候选", "area", areaID)
+		return mustKeep
+	}
+
+	// L2.1 批量合并判断：一次 LLM 调用决定整批候选去留
+	if h.relevanceBatchEvaluate(ctx, candidates, rs, areaID) {
+		h.setRelevanceVerdict(ctx, areaID, verdictRelated)
+		log.Debug("相关性: 批量判断通过，保留候选", "count", len(candidates))
+		return append(mustKeep, candidates...)
+	}
+	h.setRelevanceVerdict(ctx, areaID, verdictUnrelated)
+	log.Debug("相关性: 批量判断不相关，丢弃候选", "count", len(candidates))
+	return mustKeep
 }
 
 // getChatArea 根据消息类型获取或创建 ChatArea，失败返回 nil。
@@ -396,15 +513,10 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		defer h.Loops.Unregister(loopID)
 	}
 
-	// ---------- 构建系统提示词（工具描述 + 长期记忆 + 核心提示词） ----------
+	// ---------- 构建系统提示词（长期记忆 + 核心提示词；工具感知交由 Eino tools 参数处理） ----------
 	var longTermMems []string
 	if h.Memory != nil {
 		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, chatArea.ID, "", 5)
-	}
-	toolList := h.buildToolList(ctx)
-	toolDescs := ""
-	for _, t := range toolList {
-		toolDescs += fmt.Sprintf("- %s: %s\n", t.Function.Name, t.Function.Description)
 	}
 
 	sessionCtxStr := h.buildSessionContext(ctx, msg, events[len(events)-1].Admins)
@@ -412,7 +524,12 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	if h.Memory != nil {
 		skillMem = h.Memory.GetSkillMemory()
 	}
-	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, toolDescs, skillMem)
+	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, skillMem)
+
+	// 知识库检索注入：对话前模糊匹配，命中内容拼入系统提示词（LRU 加速）
+	if kc := h.buildKnowledgeContext(ctx, combinedUserMsg); kc != "" {
+		systemCtx += "\n\n" + kc
+	}
 
 	// ---------- 构建 Eino 消息列表 ----------
 	einoMsgs := []*einoschema.Message{
@@ -467,6 +584,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// 将 per-message 状态注入 context（避免 HagoCenter 共享字段数据竞争）
 	msgCtx := &MsgSessionCtx{
 		Msg:                msg,
+		Admins:             events[len(events)-1].Admins,
 		SessionCtxStr:      sessionCtxStr,
 		RecentMsgsFn:       h.getRecentMessagesByMsgType,
 		DynamicInstruction: instruction,
@@ -517,6 +635,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 				totalTokens += int64(meta.Usage.TotalTokens)
 			}
 		}
+	}
+
+	// 工具权限被拒（admin_only 工具被非管理员调用）：直接以权限说明回复，
+	// 覆盖 LLM 可能编造的"已执行"输出，避免误导用户
+	if msgCtx.PermDenied != "" {
+		assistantContent = msgCtx.PermDenied
+		toolCalls = nil
+		log.Warn("工具权限被拒，最终回复已覆盖为权限说明", "reason", msgCtx.PermDenied)
 	}
 
 	// 工具调用记录（供聊天记录页展示）
@@ -618,6 +744,8 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs Rep
 // 纯文本部分 → {Type: "text", Data: {"text": "..."}}
 // CQ 码部分 → {Type: "image", Data: {"file": "..."}} 等
 func parseCQToSegments(content string) []adapter.Segment {
+	// 先修复 CQ 码格式瑕疵（如 "[ CQ:face,id=66]"），否则解析不到会原样显示
+	content = adapter.NormalizeCQCodes(content)
 	var segments []adapter.Segment
 	lastIdx := 0
 	for _, loc := range cqCodeRegexp.FindAllStringIndex(content, -1) {

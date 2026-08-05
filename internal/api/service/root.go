@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"time"
 
 	sandbox "JuanNiang-Neo/infrastructure/sandbox"
@@ -19,6 +20,7 @@ import (
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/acl"
 	"JuanNiang-Neo/internal/core/dao"
+	"JuanNiang-Neo/internal/core/imgstore"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
 )
@@ -49,10 +51,26 @@ type Service struct {
 	CronJobManager *cronjobmgr.Manager
 	// OnRebuildAgent MCP/Provider/Tool 热变更后重建 Eino Agent 工具列表。
 	OnRebuildAgent func()
+	// OnUpdateToolAdminOnly 工具的"仅管理员"标志变更后刷新 Agent 运行时权限表。
+	OnUpdateToolAdminOnly func()
+	// OnKnowledgeChanged 知识库条目变更后失效 Agent 侧 LRU 缓存。
+	OnKnowledgeChanged func()
+	// OnExtractKnowledge 知识新增/编辑后触发异步关键词提取。
+	OnExtractKnowledge func(id string)
 	// LoopTracker 当前活跃的 Agent ReAct 循环（监控展示）。
 	LoopTracker *agent.LoopTracker
 	// PromptMgr 提示词管理器（缓存失效用）。
 	PromptMgr *prompt.PromptManager
+	// ImageStore 图床文件存储（data/imgs，二进制文件读写）。
+	ImageStore *imgstore.Store
+	// OnFishCalReload 摸鱼日历配置变更后重新调度。
+	OnFishCalReload func()
+	// OnFishCalTrigger 手动触发摸鱼日历立即执行一次。
+	OnFishCalTrigger func(ctx context.Context) error
+	// OnSchedMsgReload 定时消息任务变更后重新调度。
+	OnSchedMsgReload func()
+	// OnSchedMsgTrigger 手动触发定时消息任务立即执行。
+	OnSchedMsgTrigger func(ctx context.Context, id string) error
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {

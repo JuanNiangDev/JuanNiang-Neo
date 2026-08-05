@@ -16,9 +16,11 @@ type ToolConfig struct {
 	Timeout     int     `gorm:"default:30000"`
 	IsActive    bool    `gorm:"default:true"`
 	IsBuiltin   bool    `gorm:"default:false"`
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	DeletedAt   gorm.DeletedAt `gorm:"index"`
+	// AdminOnly 仅管理员可调用：开启后该工具只能由 Admins 列表内的用户触发（防提示词注入）
+	AdminOnly bool `gorm:"default:false"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
 func (ToolConfig) TableName() string {

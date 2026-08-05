@@ -23,11 +23,14 @@ import (
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
+	"JuanNiang-Neo/internal/agent/fishcal"
+	"JuanNiang-Neo/internal/agent/scheduledmsg"
 	"JuanNiang-Neo/internal/api/engine"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/api/service"
 	"JuanNiang-Neo/internal/core"
 	"JuanNiang-Neo/internal/core/dao"
+	"JuanNiang-Neo/internal/core/imgstore"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
@@ -132,6 +135,41 @@ func main() {
 
 	adapterCfg := loadAdapterConfig(ctx, coreInst.DAO)
 	adapterProv := adapter.New(adapterCfg)
+
+	// ---------- 图床 ----------
+	// 图片二进制存 data/imgs（IMG_DIR 可覆盖）；元数据在 Postgres。
+	imgDir := devEnv("IMG_DIR", devCfg.Images.Dir, "data/imgs")
+	imgStore := imgstore.New(imgDir)
+	if err := imgStore.EnsureDir(); err != nil {
+		log.Warn("图床目录创建失败", "dir", imgDir, "err", err)
+	}
+	// 发送消息时把 imgs://<id> 图床引用解析为 base64（Onebot11 与机器人网络可能不互通）。
+	adapterProv.SetImageResolver(func(raw string) (string, bool) {
+		if !strings.HasPrefix(raw, "imgs://") {
+			return "", false
+		}
+		id := strings.TrimPrefix(raw, "imgs://")
+		b64, err := imgStore.LoadBase64(id)
+		if err != nil {
+			log.Warn("图床图片加载失败", "id", id, "err", err)
+			return "", false
+		}
+		return "base64://" + b64, true
+	})
+	// 发送表情时把 stk://<短UUID> 解析为 base64：短 UUID → 表情 → 图床长 UUID → base64。
+	adapterProv.SetStickerResolver(func(stickerID string) (string, bool) {
+		st, err := coreInst.DAO.Sticker.GetByID(ctx, stickerID)
+		if err != nil {
+			log.Warn("表情不存在", "id", stickerID, "err", err)
+			return "", false
+		}
+		b64, err := imgStore.LoadBase64(st.ImageID)
+		if err != nil {
+			log.Warn("表情图片加载失败", "sticker", stickerID, "img", st.ImageID, "err", err)
+			return "", false
+		}
+		return "base64://" + b64, true
+	})
 	if adapterCfg.Enable {
 		if err := adapterProv.Start(ctx); err != nil {
 			log.Error("Adapter 启动失败", "err", err)
@@ -228,9 +266,29 @@ func main() {
 	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
 	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
 	svc.OnRebuildAgent = func() { hago.RebuildEinoAgent(ctx) }
+	svc.OnUpdateToolAdminOnly = func() { hago.RefreshToolAdminOnly(ctx) }
+	svc.OnKnowledgeChanged = func() { hago.InvalidateKnowledgeLRU() }
+	svc.OnExtractKnowledge = func(id string) { hago.ExtractKeywordsAsync(ctx, id) }
 	svc.CronJobManager = hago.CronJobManager
 	svc.LoopTracker = hago.Loops
 	svc.PromptMgr = hago.Prompt
+	svc.ImageStore = imgStore
+
+	// ---------- 摸鱼人日历（独立调度器，不复用 CronJob） ----------
+	fishCal := fishcal.New(coreInst.DAO.FishCalendar,
+		func() *t2icaller.Client { return hago.T2IClient },
+		adapterProv)
+	go fishCal.Run(ctx)
+	svc.OnFishCalReload = func() { fishCal.Reload(context.Background()) }
+	svc.OnFishCalTrigger = func(triggerCtx context.Context) error { return fishCal.TriggerNow(triggerCtx) }
+
+	// ---------- 定时消息（独立调度器） ----------
+	schedMgr := scheduledmsg.New(coreInst.DAO.ScheduledMsg,
+		func() *t2icaller.Client { return hago.T2IClient },
+		adapterProv)
+	go schedMgr.Run(ctx)
+	svc.OnSchedMsgReload = func() { schedMgr.Reload(context.Background()) }
+	svc.OnSchedMsgTrigger = func(triggerCtx context.Context, id string) error { return schedMgr.TriggerNow(triggerCtx, id) }
 
 	// 前端静态资源目录: 默认 web/dist (构建产物), 可通过 WEB_DIR 覆盖。
 	//   - 开发模式: 前端走 Vite (:3000) 代理 /api 到 :8090, 后端无需服务前端。
@@ -373,6 +431,9 @@ func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, 
 	svc.T2IClient = client
 	hago.T2IClient = client
 	log.Info("T2I 客户端已就绪", "base_url", cfg.BaseURL)
+
+	// T2I 客户端晚于 buildEinoAgent 就绪，重建 Agent 注册 text_to_image 工具
+	hago.RebuildEinoAgent(ctx)
 }
 
 func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
@@ -405,6 +466,9 @@ func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bund
 	svc.SandboxClient = client
 	hago.SandboxClient = client
 	log.Info("Sandbox 客户端已就绪", "base_url", cfg.BaseURL)
+
+	// Sandbox 客户端晚于 buildEinoAgent 就绪，重建 Agent 注册 sandbox 系列工具
+	hago.RebuildEinoAgent(ctx)
 }
 
 // loadWebhookConfig 从 DB 加载 Webhook 配置；若不存在则使用默认值并初始化 DB。

@@ -19,6 +19,7 @@ func RawProviderList2Resp(raw []models.Provider) []ProviderResp {
 		res[i].Model = item.Model
 		res[i].Temperature = item.Temperature
 		res[i].IsActive = item.IsActive
+		res[i].EnableThinking = item.EnableThinking
 	}
 
 	return res
@@ -109,7 +110,20 @@ func RawToolConfig2Resp(raw *models.ToolConfig) ToolConfigResp {
 		Timeout:     raw.Timeout,
 		IsActive:    raw.IsActive,
 		IsBuiltin:   raw.IsBuiltin,
+		AdminOnly:   raw.AdminOnly,
 		CreatedAt:   raw.CreatedAt,
+	}
+}
+
+func RawKnowledge2Resp(raw *models.KnowledgeItem) KnowledgeResp {
+	return KnowledgeResp{
+		ID:            raw.ID,
+		Title:         raw.Title,
+		Content:       raw.Content,
+		Keywords:      raw.Keywords,
+		KeywordStatus: raw.KeywordStatus,
+		CreatedAt:     raw.CreatedAt,
+		UpdatedAt:     raw.UpdatedAt,
 	}
 }
 
@@ -122,6 +136,57 @@ func RawPlugin2Resp(raw *models.Plugin) PluginResp {
 		Config:    raw.Config,
 		IsActive:  raw.IsActive,
 		CreatedAt: raw.CreatedAt,
+	}
+}
+
+// RawImage2Resp 图床图片元数据转换。
+func RawImage2Resp(raw *models.ImageAsset) ImageResp {
+	return ImageResp{
+		ID:        raw.ID,
+		Name:      raw.Name,
+		Folder:    raw.Folder,
+		MimeType:  raw.MimeType,
+		SizeBytes: raw.SizeBytes,
+		CreatedAt: raw.CreatedAt,
+		UpdatedAt: raw.UpdatedAt,
+	}
+}
+
+// RawSticker2Resp 表情转换。
+func RawSticker2Resp(raw *models.Sticker) StickerResp {
+	return StickerResp{
+		ID:        raw.ID,
+		ImageID:   raw.ImageID,
+		Name:      raw.Name,
+		Desc:      raw.Desc,
+		Tags:      raw.Tags,
+		CreatedAt: raw.CreatedAt,
+		UpdatedAt: raw.UpdatedAt,
+	}
+}
+
+// RawScheduledMsg2Resp 定时消息任务转换。
+func RawScheduledMsg2Resp(raw *models.ScheduledMessage) ScheduledMessageResp {
+	blocks := make([]ScheduledBlockResp, 0, len(raw.Blocks))
+	for _, b := range raw.Blocks {
+		segs := make([]ScheduledSegmentResp, 0, len(b.Segments))
+		for _, s := range b.Segments {
+			segs = append(segs, ScheduledSegmentResp{Type: s.Type, Source: s.Source, Content: s.Content})
+		}
+		blocks = append(blocks, ScheduledBlockResp{Type: b.Type, Segments: segs, DelaySeconds: b.DelaySeconds})
+	}
+	return ScheduledMessageResp{
+		ID:         raw.ID,
+		Name:       raw.Name,
+		Enabled:    raw.Enabled,
+		CronExpr:   raw.CronExpr,
+		TargetType: raw.TargetType,
+		TargetID:   raw.TargetID,
+		Blocks:     blocks,
+		LastRunAt:  raw.LastRunAt,
+		LastError:  raw.LastError,
+		CreatedAt:  raw.CreatedAt,
+		UpdatedAt:  raw.UpdatedAt,
 	}
 }
 

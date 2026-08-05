@@ -14,10 +14,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -193,15 +196,16 @@ func (s *Service) GetProvider(ctx context.Context, c *app.RequestContext) {
 	}
 
 	data := dto.ProviderResp{
-		ID:          raw.ID,
-		CreatedAt:   raw.CreatedAt,
-		Name:        raw.Name,
-		Type:        raw.Type,
-		Endpoint:    raw.Endpoint,
-		Token:       raw.Token,
-		Model:       raw.Model,
-		Temperature: raw.Temperature,
-		IsActive:    raw.IsActive,
+		ID:             raw.ID,
+		CreatedAt:      raw.CreatedAt,
+		Name:           raw.Name,
+		Type:           raw.Type,
+		Endpoint:       raw.Endpoint,
+		Token:          raw.Token,
+		Model:          raw.Model,
+		Temperature:    raw.Temperature,
+		IsActive:       raw.IsActive,
+		EnableThinking: raw.EnableThinking,
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, data))
@@ -217,14 +221,15 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 
 	id := newUUID()
 	providerConfig := models.Provider{
-		ID:          id,
-		Name:        data.Name,
-		Type:        data.Type,
-		Endpoint:    data.Endpoint,
-		Token:       data.Token,
-		Model:       data.Model,
-		Temperature: float32(data.Temperature),
-		IsActive:    data.IsActive,
+		ID:             id,
+		Name:           data.Name,
+		Type:           data.Type,
+		Endpoint:       data.Endpoint,
+		Token:          data.Token,
+		Model:          data.Model,
+		Temperature:    float32(data.Temperature),
+		IsActive:       data.IsActive,
+		EnableThinking: data.EnableThinking,
 	}
 
 	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
@@ -249,15 +254,19 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 			}
 		}
 		s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfig{
-			ID:          id,
-			Name:        data.Name,
-			Type:        provType,
-			Endpoint:    data.Endpoint,
-			Token:       data.Token,
-			Model:       data.Model,
-			Temperature: float32(data.Temperature),
+			ID:             id,
+			Name:           data.Name,
+			Type:           provType,
+			Endpoint:       data.Endpoint,
+			Token:          data.Token,
+			Model:          data.Model,
+			Temperature:    float32(data.Temperature),
+			EnableThinking: data.EnableThinking,
 		}))
 	}
+
+	// Provider 变更影响 Eino Agent 的 model adapter（构建时持有实例引用），必须重建
+	s.notifyRebuild()
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, data))
 }
@@ -281,25 +290,27 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 	}
 
 	providerConfig := models.Provider{
-		ID:          id,
-		Name:        data.Name,
-		Type:        data.Type,
-		Endpoint:    data.Endpoint,
-		Token:       data.Token,
-		Model:       data.Model,
-		Temperature: float32(data.Temperature),
-		IsActive:    data.IsActive,
+		ID:             id,
+		Name:           data.Name,
+		Type:           data.Type,
+		Endpoint:       data.Endpoint,
+		Token:          data.Token,
+		Model:          data.Model,
+		Temperature:    float32(data.Temperature),
+		IsActive:       data.IsActive,
+		EnableThinking: data.EnableThinking,
 	}
 
 	provType := provider.ModelType(data.Type)
 	providerConfig_ := provider.ProviderConfig{
-		ID:          id,
-		Name:        data.Name,
-		Type:        provType,
-		Endpoint:    data.Endpoint,
-		Token:       data.Token,
-		Model:       data.Model,
-		Temperature: float32(data.Temperature),
+		ID:             id,
+		Name:           data.Name,
+		Type:           provType,
+		Endpoint:       data.Endpoint,
+		Token:          data.Token,
+		Model:          data.Model,
+		Temperature:    float32(data.Temperature),
+		EnableThinking: data.EnableThinking,
 	}
 
 	// 运行时同步：先移除同类型旧的，再同步新配置
@@ -319,6 +330,9 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// Provider 变更影响 Eino Agent 的 model adapter，必须重建
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
@@ -331,6 +345,9 @@ func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
 	}
 
 	s.ProviderGroup.DelProvider(id)
+
+	// Provider 变更影响 Eino Agent 的 model adapter，必须重建
+	s.notifyRebuild()
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
@@ -368,13 +385,14 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 				}
 			}
 			s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfig{
-				ID:          id,
-				Name:        raw.Name,
-				Type:        provType,
-				Endpoint:    raw.Endpoint,
-				Token:       raw.Token,
-				Model:       raw.Model,
-				Temperature: raw.Temperature,
+				ID:             id,
+				Name:           raw.Name,
+				Type:           provType,
+				Endpoint:       raw.Endpoint,
+				Token:          raw.Token,
+				Model:          raw.Model,
+				Temperature:    raw.Temperature,
+				EnableThinking: raw.EnableThinking,
 			}))
 		}
 	} else {
@@ -387,6 +405,9 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// Provider 变更影响 Eino Agent 的 model adapter，必须重建
+	s.notifyRebuild()
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
@@ -842,6 +863,7 @@ func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
 			if db, ok := byName[name]; ok {
 				resp.ID = db.ID
 				resp.IsActive = db.IsActive
+				resp.AdminOnly = db.AdminOnly
 				resp.CreatedAt = db.CreatedAt
 			}
 			out = append(out, resp)
@@ -885,6 +907,49 @@ func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
 	if err := s.DAO.ToolConfig.SetActive(ctx, id, data.IsActive); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// UpdateToolAdminOnly 更新工具的"仅管理员"标志（内置/自定义工具均可）。
+// 更新成功后回调 OnUpdateToolAdminOnly 刷新 Agent 运行时权限表，立即生效。
+func (s *Service) UpdateToolAdminOnly(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateToolAdminOnlyReq
+	id := c.Param("id")
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 内置工具 ID 形如 builtin:<name>：按 name 查找/创建对应 ToolConfig 行
+	name := id
+	if strings.HasPrefix(id, "builtin:") {
+		name = strings.TrimPrefix(id, "builtin:")
+	}
+
+	tc, err := s.DAO.ToolConfig.GetByName(ctx, name)
+	if err == nil {
+		if err := s.DAO.ToolConfig.SetAdminOnly(ctx, tc.ID, data.AdminOnly); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	} else {
+		// 无对应行（内置工具首次设置）：幂等创建并写入标志
+		desc := ""
+		if s.ToolRegistry != nil {
+			if t, ok := s.ToolRegistry.Get(name); ok {
+				desc = t.Description()
+			}
+		}
+		if err := s.DAO.ToolConfig.EnsureBuiltin(ctx, name, desc, data.AdminOnly); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	}
+
+	// 刷新 Agent 运行时名单，立即生效
+	if s.OnUpdateToolAdminOnly != nil {
+		s.OnUpdateToolAdminOnly()
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
@@ -1472,6 +1537,10 @@ func (s *Service) UpdateT2IConfig(ctx context.Context, c *app.RequestContext) {
 	if s.T2IClient != nil {
 		healthy = s.T2IClient.HealthCheck() == nil
 	}
+
+	// T2I 状态变化影响 text_to_image 工具可用性，重建 Eino Agent 自动注册/卸载
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawT2IConfig2Resp(cfg, healthy)))
 }
 
@@ -1536,6 +1605,10 @@ func (s *Service) UpdateSandboxConfig(ctx context.Context, c *app.RequestContext
 	if s.SandboxClient != nil {
 		healthy = s.SandboxClient.HealthCheck() == nil
 	}
+
+	// Sandbox 状态变化影响 sandbox 系列工具可用性，重建 Eino Agent 自动注册/卸载
+	s.notifyRebuild()
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSandboxConfig2Resp(cfg, healthy)))
 }
 
@@ -1856,6 +1929,7 @@ func (s *Service) GetReplyStrategy(ctx context.Context, c *app.RequestContext) {
 		AgentLite:          cfg.AgentLite,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}))
 }
 
@@ -1889,6 +1963,15 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		}
 	}
 
+	// 验证判断失败策略
+	if data.JudgeFailPolicy == "" {
+		data.JudgeFailPolicy = "drop"
+	}
+	if data.JudgeFailPolicy != "drop" && data.JudgeFailPolicy != "reply" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: "判断失败策略只能是 drop 或 reply"}, nil))
+		return
+	}
+
 	cfg, err := s.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -1902,6 +1985,7 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 	cfg.AgentLite = data.AgentLite
 	cfg.RelevancePrompt = data.RelevancePrompt
 	cfg.RelevanceModel = data.RelevanceModel
+	cfg.JudgeFailPolicy = data.JudgeFailPolicy
 
 	if err := s.DAO.ReplyStrategy.Update(ctx, cfg); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -1916,7 +2000,974 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		AgentLite:          cfg.AgentLite,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}))
+}
+
+// ---------- 知识库 ----------
+
+// ListKnowledge 分页列出知识库条目。
+func (s *Service) ListKnowledge(ctx context.Context, c *app.RequestContext) {
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	list, err := s.DAO.Knowledge.List(ctx, pageSize, (page-1)*pageSize)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	total, _ := s.DAO.Knowledge.Count(ctx)
+	resp := make([]dto.KnowledgeResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.RawKnowledge2Resp(&list[i]))
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{"total": total, "list": resp}))
+}
+
+// GetKnowledge 知识库条目详情。
+func (s *Service) GetKnowledge(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Knowledge.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawKnowledge2Resp(item)))
+}
+
+// AddKnowledge 新增知识库条目（触发异步关键词提取）。
+func (s *Service) AddKnowledge(ctx context.Context, c *app.RequestContext) {
+	var data dto.AddKnowledgeReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Content) == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.KnowledgeContentEmpty, nil))
+		return
+	}
+
+	item := &models.KnowledgeItem{
+		ID:            newUUID(),
+		Title:         data.Title,
+		Content:       data.Content,
+		KeywordStatus: models.KeywordStatusPending,
+	}
+	if err := s.DAO.Knowledge.Create(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 异步提取关键词 + 失效 LRU
+	if s.OnExtractKnowledge != nil {
+		s.OnExtractKnowledge(item.ID)
+	}
+	if s.OnKnowledgeChanged != nil {
+		s.OnKnowledgeChanged()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawKnowledge2Resp(item)))
+}
+
+// UpdateKnowledge 编辑知识库条目（重新触发关键词提取）。
+func (s *Service) UpdateKnowledge(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateKnowledgeReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Content) == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.KnowledgeContentEmpty, nil))
+		return
+	}
+
+	item, err := s.DAO.Knowledge.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	item.Title = data.Title
+	item.Content = data.Content
+	item.KeywordStatus = models.KeywordStatusPending
+	if err := s.DAO.Knowledge.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	if s.OnExtractKnowledge != nil {
+		s.OnExtractKnowledge(item.ID)
+	}
+	if s.OnKnowledgeChanged != nil {
+		s.OnKnowledgeChanged()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawKnowledge2Resp(item)))
+}
+
+// DeleteKnowledge 删除知识库条目。
+func (s *Service) DeleteKnowledge(ctx context.Context, c *app.RequestContext) {
+	if err := s.DAO.Knowledge.Delete(ctx, c.Param("id")); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnKnowledgeChanged != nil {
+		s.OnKnowledgeChanged()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ReExtractKnowledge 手动重试关键词提取（failed 状态时用）。
+func (s *Service) ReExtractKnowledge(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Knowledge.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.DAO.Knowledge.SetKeywordStatus(ctx, item.ID, models.KeywordStatusPending); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnExtractKnowledge != nil {
+		s.OnExtractKnowledge(item.ID)
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- 图床 ----------
+
+// maxImageSize 上传图片大小上限：1.5MB。
+const maxImageSize = 1536 * 1024
+
+// allowedImageMimes 允许的图片 MIME 白名单。
+var allowedImageMimes = map[string]bool{
+	"image/jpeg": true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/webp": true,
+}
+
+// normalizeImageFolder 归一化虚拟文件夹路径（空 → 根 /）。
+func normalizeImageFolder(f string) string {
+	if strings.TrimSpace(f) == "" || strings.TrimSpace(f) == "/" {
+		return "/"
+	}
+	f = "/" + strings.Trim(strings.TrimSpace(f), "/")
+	return f
+}
+
+// ListImages 按虚拟文件夹分页列出图床图片。
+func (s *Service) ListImages(ctx context.Context, c *app.RequestContext) {
+	folder := normalizeImageFolder(c.Query("folder"))
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 48
+	}
+	list, err := s.DAO.Image.List(ctx, folder, pageSize, (page-1)*pageSize)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	total, _ := s.DAO.Image.Count(ctx, folder)
+	resp := make([]dto.ImageResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.RawImage2Resp(&list[i]))
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ImageListResp{Total: total, List: resp}))
+}
+
+// GetImage 获取单张图片元数据。
+func (s *Service) GetImage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Image.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawImage2Resp(item)))
+}
+
+// GetImageFile 返回图片文件字节流（Web 预览用）。
+func (s *Service) GetImageFile(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Image.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	if s.ImageStore == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "图床存储未初始化"}))
+		return
+	}
+	data, err := s.ImageStore.Read(item.ID)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "图片文件读取失败"}))
+		return
+	}
+	c.Data(consts.StatusOK, item.MimeType, data)
+}
+
+// UploadImage 上传图片到图床（multipart：file + name + folder）。
+// 校验：大小 ≤ 1.5MB、MIME 白名单（jpg/png/gif/webp）。
+func (s *Service) UploadImage(ctx context.Context, c *app.RequestContext) {
+	file, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.EmptyFileToUpload, nil))
+		return
+	}
+	if file.Size > maxImageSize {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageTooLarge,
+			dto.ErrorDetail{ErrorDetail: fmt.Sprintf("当前 %.1fMB", float64(file.Size)/1024/1024)}))
+		return
+	}
+	src, err := file.Open()
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "无法打开文件"}))
+		return
+	}
+	defer src.Close()
+	data, err := io.ReadAll(src)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "文件读取失败"}))
+		return
+	}
+
+	// MIME 校验：以文件内容嗅探为准，不信任文件名/Content-Type
+	mime := http.DetectContentType(data)
+	if !allowedImageMimes[mime] {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageTypeNotAllowed, dto.ErrorDetail{ErrorDetail: mime}))
+		return
+	}
+
+	name := strings.TrimSpace(c.PostForm("name"))
+	if name == "" {
+		name = filepath.Base(file.Filename)
+		if name == "" || name == "." {
+			name = "未命名图片"
+		}
+	}
+	folder := normalizeImageFolder(c.PostForm("folder"))
+
+	// 目标文件夹必须存在（根 / 除外）
+	if folder != "/" {
+		folders, _ := s.DAO.Image.FolderList(ctx)
+		found := false
+		for _, f := range folders {
+			if "/"+f.Name == folder {
+				found = true
+				break
+			}
+		}
+		if !found {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageFolderNotExist, nil))
+			return
+		}
+	}
+
+	id := newUUID()
+	item := &models.ImageAsset{
+		ID:        id,
+		Name:      name,
+		FileName:  id + ".img",
+		Folder:    folder,
+		MimeType:  mime,
+		SizeBytes: int64(len(data)),
+	}
+	if s.ImageStore == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "图床存储未初始化"}))
+		return
+	}
+	if err := s.ImageStore.Save(id, data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "图片保存失败"}))
+		return
+	}
+	if err := s.DAO.Image.Create(ctx, item); err != nil {
+		_ = s.ImageStore.Delete(id) // 回滚文件
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawImage2Resp(item)))
+}
+
+// UpdateImage 编辑图床图片（重命名 / 移动虚拟文件夹）。
+func (s *Service) UpdateImage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Image.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	var data dto.UpdateImageReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if data.Name != "" {
+		item.Name = strings.TrimSpace(data.Name)
+	}
+	if data.Folder != "" {
+		folder := normalizeImageFolder(data.Folder)
+		if folder != "/" {
+			folders, _ := s.DAO.Image.FolderList(ctx)
+			found := false
+			for _, f := range folders {
+				if "/"+f.Name == folder {
+					found = true
+					break
+				}
+			}
+			if !found {
+				c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageFolderNotExist, nil))
+				return
+			}
+		}
+		item.Folder = folder
+	}
+	if err := s.DAO.Image.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawImage2Resp(item)))
+}
+
+// DeleteImage 删除图床图片（DB 软删 + 删除磁盘文件）。
+func (s *Service) DeleteImage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Image.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	if err := s.DAO.Image.Delete(ctx, item.ID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.ImageStore != nil {
+		_ = s.ImageStore.Delete(item.ID)
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ListImageFolders 列出图床虚拟文件夹。
+func (s *Service) ListImageFolders(ctx context.Context, c *app.RequestContext) {
+	folders, err := s.DAO.Image.FolderList(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	resp := make([]dto.ImageFolderResp, 0, len(folders))
+	for i := range folders {
+		resp = append(resp, dto.ImageFolderResp{ID: folders[i].ID, Name: folders[i].Name, CreatedAt: folders[i].CreatedAt})
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
+}
+
+// CreateImageFolder 创建图床虚拟文件夹（仅一层，name 不能含 /）。
+func (s *Service) CreateImageFolder(ctx context.Context, c *app.RequestContext) {
+	var data dto.CreateImageFolderReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	name := strings.TrimSpace(data.Name)
+	if name == "" || strings.Contains(name, "/") {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "文件夹名不能为空且不能包含 /"}))
+		return
+	}
+	folders, _ := s.DAO.Image.FolderList(ctx)
+	for _, f := range folders {
+		if f.Name == name {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageFolderExist, nil))
+			return
+		}
+	}
+	f, err := s.DAO.Image.FolderCreate(ctx, name)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ImageFolderResp{ID: f.ID, Name: f.Name, CreatedAt: f.CreatedAt}))
+}
+
+// DeleteImageFolder 删除图床虚拟文件夹（其下图片自动移到根 /）。
+func (s *Service) DeleteImageFolder(ctx context.Context, c *app.RequestContext) {
+	f, err := s.DAO.Image.FolderGetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageFolderNotExist, nil))
+		return
+	}
+	if err := s.DAO.Image.MoveFolderToRoot(ctx, "/"+f.Name); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.DAO.Image.FolderDelete(ctx, f.ID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- 表情包库 ----------
+
+// ListStickers 分页列出表情，支持标签过滤（tag）与名称/简介模糊匹配（keyword）。
+func (s *Service) ListStickers(ctx context.Context, c *app.RequestContext) {
+	tag := strings.TrimSpace(c.Query("tag"))
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 24
+	}
+	list, err := s.DAO.Sticker.List(ctx, tag, keyword, pageSize, (page-1)*pageSize)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	total, _ := s.DAO.Sticker.Count(ctx, tag, keyword)
+	resp := make([]dto.StickerResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.RawSticker2Resp(&list[i]))
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.StickerListResp{Total: total, List: resp}))
+}
+
+// GetSticker 获取表情详情。
+func (s *Service) GetSticker(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Sticker.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerNotExist, nil))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSticker2Resp(item)))
+}
+
+// CreateSticker 新建表情（引用图床图片，需校验图片存在且未被其他表情引用）。
+func (s *Service) CreateSticker(ctx context.Context, c *app.RequestContext) {
+	var data dto.CreateStickerReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	data.Name = strings.TrimSpace(data.Name)
+	data.ImageID = strings.TrimSpace(data.ImageID)
+	if data.Name == "" || data.ImageID == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "名称与图床图片均不能为空"}))
+		return
+	}
+	// 图床图片必须存在
+	if _, err := s.DAO.Image.GetByID(ctx, data.ImageID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ImageNotExist, nil))
+		return
+	}
+	// 同一张图不能重复引用
+	if _, err := s.DAO.Sticker.GetByImageID(ctx, data.ImageID); err == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerImageExist, nil))
+		return
+	}
+	item := &models.Sticker{
+		ImageID: data.ImageID,
+		Name:    data.Name,
+		Desc:    strings.TrimSpace(data.Desc),
+	}
+	tags, err := s.validateStickerTags(ctx, data.Tags)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	item.Tags = models.JSONSlice(tags)
+	if err := s.DAO.Sticker.Create(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSticker2Resp(item)))
+}
+
+// UpdateSticker 编辑表情（名称/简介/标签）。
+func (s *Service) UpdateSticker(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Sticker.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerNotExist, nil))
+		return
+	}
+	var data dto.UpdateStickerReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Name) != "" {
+		item.Name = strings.TrimSpace(data.Name)
+	}
+	if data.Desc != "" {
+		item.Desc = strings.TrimSpace(data.Desc)
+	}
+	tags, err := s.validateStickerTags(ctx, data.Tags)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	item.Tags = models.JSONSlice(tags)
+	if err := s.DAO.Sticker.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawSticker2Resp(item)))
+}
+
+// DeleteSticker 删除表情（软删）。
+func (s *Service) DeleteSticker(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.Sticker.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerNotExist, nil))
+		return
+	}
+	if err := s.DAO.Sticker.Delete(ctx, item.ID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ListStickerTags 列出全部表情标签。
+func (s *Service) ListStickerTags(ctx context.Context, c *app.RequestContext) {
+	tags, err := s.DAO.Sticker.TagList(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	resp := make([]dto.StickerTagResp, 0, len(tags))
+	for i := range tags {
+		resp = append(resp, dto.StickerTagResp{ID: tags[i].ID, Name: tags[i].Name, CreatedAt: tags[i].CreatedAt})
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
+}
+
+// CreateStickerTag 创建表情标签（重名返回 40040）。
+func (s *Service) CreateStickerTag(ctx context.Context, c *app.RequestContext) {
+	var data dto.CreateStickerTagReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	name := strings.TrimSpace(data.Name)
+	if name == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "标签名不能为空"}))
+		return
+	}
+	tags, _ := s.DAO.Sticker.TagList(ctx)
+	for _, t := range tags {
+		if t.Name == name {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagExist, nil))
+			return
+		}
+	}
+	t, err := s.DAO.Sticker.TagCreate(ctx, name)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.StickerTagResp{ID: t.ID, Name: t.Name, CreatedAt: t.CreatedAt}))
+}
+
+// DeleteStickerTag 删除标签（所有表情中的该标签一并移除）。
+func (s *Service) DeleteStickerTag(ctx context.Context, c *app.RequestContext) {
+	t, err := s.DAO.Sticker.TagGetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagNotExist, nil))
+		return
+	}
+	if err := s.DAO.Sticker.RemoveTagFromAll(ctx, t.Name); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := s.DAO.Sticker.TagDelete(ctx, t.ID); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- 摸鱼人日历 ----------
+
+// GetFishCalendarConfig 读取摸鱼日历配置（未初始化则写入默认配置）。
+func (s *Service) GetFishCalendarConfig(ctx context.Context, c *app.RequestContext) {
+	cfg, err := s.DAO.FishCalendar.GetConfig(ctx)
+	if err != nil {
+		if initErr := s.DAO.FishCalendar.InitConfig(ctx); initErr != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.FishCalConfigNotExist, dto.ErrorDetail{ErrorDetail: initErr.Error()}))
+			return
+		}
+		cfg, err = s.DAO.FishCalendar.GetConfig(ctx)
+		if err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.FishCalendarConfigResp{
+		Enabled:      cfg.Enabled,
+		CronExpr:     cfg.CronExpr,
+		TargetGroups: cfg.TargetGroups,
+		LastRunAt:    cfg.LastRunAt,
+		LastError:    cfg.LastError,
+	}))
+}
+
+// UpdateFishCalendarConfig 更新摸鱼日历配置并重新调度。
+func (s *Service) UpdateFishCalendarConfig(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateFishCalendarConfigReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	cfg, err := s.DAO.FishCalendar.GetConfig(ctx)
+	if err != nil {
+		_ = s.DAO.FishCalendar.InitConfig(ctx)
+		cfg, _ = s.DAO.FishCalendar.GetConfig(ctx)
+	}
+	if cfg == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.FishCalConfigNotExist, nil))
+		return
+	}
+	if strings.TrimSpace(data.CronExpr) != "" {
+		cfg.CronExpr = strings.TrimSpace(data.CronExpr)
+	}
+	cfg.Enabled = data.Enabled
+	if len(data.TargetGroups) > 0 {
+		cfg.TargetGroups = models.JSONSlice(cleanStickerTags(data.TargetGroups))
+	}
+	if err := s.DAO.FishCalendar.UpdateConfig(ctx, cfg); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnFishCalReload != nil {
+		s.OnFishCalReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// TriggerFishCalendar 手动触发摸鱼日历立即生成并发送。
+func (s *Service) TriggerFishCalendar(ctx context.Context, c *app.RequestContext) {
+	if s.OnFishCalTrigger == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "摸鱼日历未初始化"}))
+		return
+	}
+	if err := s.OnFishCalTrigger(ctx); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ListFishCalendarAffairs 列出某月（?month=YYYY-MM）已配置的群务。
+func (s *Service) ListFishCalendarAffairs(ctx context.Context, c *app.RequestContext) {
+	month := strings.TrimSpace(c.Query("month"))
+	if !regexpFishCalMonth.MatchString(month) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "month 格式应为 YYYY-MM"}))
+		return
+	}
+	list, err := s.DAO.FishCalendar.AffairListMonth(ctx, month)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	resp := make([]dto.FishCalendarAffairResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.FishCalendarAffairResp{Date: list[i].Date, Content: list[i].Content})
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
+}
+
+// SetFishCalendarAffair 设置某天群务（content 为空则清除当天配置）。
+func (s *Service) SetFishCalendarAffair(ctx context.Context, c *app.RequestContext) {
+	var data dto.SetFishCalendarAffairReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	data.Date = strings.TrimSpace(data.Date)
+	if !regexpFishCalDate.MatchString(data.Date) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "date 格式应为 YYYY-MM-DD"}))
+		return
+	}
+	if err := s.DAO.FishCalendar.AffairUpsert(ctx, data.Date, data.Content); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- 定时消息 ----------
+
+// ListScheduledMessages 分页列出定时消息任务。
+func (s *Service) ListScheduledMessages(ctx context.Context, c *app.RequestContext) {
+	page, _ := strconv.Atoi(c.Query("page"))
+	if page < 1 {
+		page = 1
+	}
+	pageSize, _ := strconv.Atoi(c.Query("page_size"))
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	list, err := s.DAO.ScheduledMsg.List(ctx, pageSize, (page-1)*pageSize)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	total, _ := s.DAO.ScheduledMsg.Count(ctx)
+	resp := make([]dto.ScheduledMessageResp, 0, len(list))
+	for i := range list {
+		resp = append(resp, dto.RawScheduledMsg2Resp(&list[i]))
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ScheduledMessageListResp{Total: total, List: resp}))
+}
+
+// GetScheduledMessage 定时消息任务详情。
+func (s *Service) GetScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.ScheduledMsg.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ScheduledMsgNotExist, nil))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawScheduledMsg2Resp(item)))
+}
+
+// AddScheduledMessage 新建定时消息任务。
+func (s *Service) AddScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	var data dto.AddScheduledMessageReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	segs, err := normalizeScheduledBlocks(data.Blocks)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Name) == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "任务名不能为空"}))
+		return
+	}
+	item := &models.ScheduledMessage{
+		Name:       strings.TrimSpace(data.Name),
+		Enabled:    data.Enabled,
+		CronExpr:   strings.TrimSpace(data.CronExpr),
+		TargetType: data.TargetType,
+		TargetID:   data.TargetID,
+		Blocks:     segs,
+	}
+	if item.TargetType == "" {
+		item.TargetType = "group"
+	}
+	if err := s.DAO.ScheduledMsg.Create(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnSchedMsgReload != nil {
+		s.OnSchedMsgReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawScheduledMsg2Resp(item)))
+}
+
+// UpdateScheduledMessage 编辑定时消息任务。
+func (s *Service) UpdateScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.ScheduledMsg.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ScheduledMsgNotExist, nil))
+		return
+	}
+	var data dto.UpdateScheduledMessageReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	segs, err := normalizeScheduledBlocks(data.Blocks)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if strings.TrimSpace(data.Name) != "" {
+		item.Name = strings.TrimSpace(data.Name)
+	}
+	item.Enabled = data.Enabled
+	if strings.TrimSpace(data.CronExpr) != "" {
+		item.CronExpr = strings.TrimSpace(data.CronExpr)
+	}
+	if data.TargetType != "" {
+		item.TargetType = data.TargetType
+	}
+	if data.TargetID != 0 {
+		item.TargetID = data.TargetID
+	}
+	item.Blocks = segs
+	if err := s.DAO.ScheduledMsg.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnSchedMsgReload != nil {
+		s.OnSchedMsgReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawScheduledMsg2Resp(item)))
+}
+
+// DeleteScheduledMessage 删除定时消息任务。
+func (s *Service) DeleteScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	if _, err := s.DAO.ScheduledMsg.GetByID(ctx, c.Param("id")); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ScheduledMsgNotExist, nil))
+		return
+	}
+	if err := s.DAO.ScheduledMsg.Delete(ctx, c.Param("id")); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnSchedMsgReload != nil {
+		s.OnSchedMsgReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ToggleScheduledMessage 启停定时消息任务。
+func (s *Service) ToggleScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	item, err := s.DAO.ScheduledMsg.GetByID(ctx, c.Param("id"))
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ScheduledMsgNotExist, nil))
+		return
+	}
+	var data struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	item.Enabled = data.Enabled
+	if err := s.DAO.ScheduledMsg.Update(ctx, item); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.OnSchedMsgReload != nil {
+		s.OnSchedMsgReload()
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawScheduledMsg2Resp(item)))
+}
+
+// TriggerScheduledMessage 手动触发定时消息任务立即执行。
+func (s *Service) TriggerScheduledMessage(ctx context.Context, c *app.RequestContext) {
+	if s.OnSchedMsgTrigger == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "定时消息未初始化"}))
+		return
+	}
+	if err := s.OnSchedMsgTrigger(ctx, c.Param("id")); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// normalizeScheduledSegments 校验并归一化消息块内的段（text / image / face）。
+func normalizeScheduledSegments(segs []dto.ScheduledSegmentReq) (models.ScheduledSegments, error) {
+	if len(segs) == 0 {
+		return nil, errors.New("消息块至少需要一个段")
+	}
+	out := make(models.ScheduledSegments, 0, len(segs))
+	for _, s := range segs {
+		s.Type = strings.TrimSpace(s.Type)
+		s.Source = strings.TrimSpace(s.Source)
+		s.Content = strings.TrimSpace(s.Content)
+		if s.Content == "" {
+			return nil, fmt.Errorf("消息段内容不能为空")
+		}
+		switch s.Type {
+		case "text", "face":
+			// 内容即文本/CQ 码
+		case "image":
+			switch s.Source {
+			case "url", "t2i", "imgstore":
+			default:
+				return nil, fmt.Errorf("图片段 source 必须是 t2i / url / imgstore")
+			}
+		default:
+			return nil, fmt.Errorf("消息段 type 必须是 text / image / face")
+		}
+		out = append(out, models.ScheduledMessageSegment{Type: s.Type, Source: s.Source, Content: s.Content})
+	}
+	return out, nil
+}
+
+// normalizeScheduledBlocks 校验并归一化编排块链（message / delay）。
+func normalizeScheduledBlocks(blocks []dto.ScheduledBlockReq) (models.ScheduledBlocks, error) {
+	if len(blocks) == 0 {
+		return nil, errors.New("至少需要一个编排块")
+	}
+	out := make(models.ScheduledBlocks, 0, len(blocks))
+	for i, b := range blocks {
+		switch strings.TrimSpace(b.Type) {
+		case "message":
+			segs, err := normalizeScheduledSegments(b.Segments)
+			if err != nil {
+				return nil, fmt.Errorf("第 %d 块（消息）: %w", i+1, err)
+			}
+			out = append(out, models.ScheduledBlock{Type: "message", Segments: segs})
+		case "delay":
+			if b.DelaySeconds <= 0 || b.DelaySeconds > 3600 {
+				return nil, fmt.Errorf("第 %d 块（延时）: 延迟必须在 1~3600 秒之间", i+1)
+			}
+			out = append(out, models.ScheduledBlock{Type: "delay", DelaySeconds: b.DelaySeconds})
+		default:
+			return nil, fmt.Errorf("第 %d 块类型必须是 message / delay", i+1)
+		}
+	}
+	return out, nil
+}
+
+// cleanStickerTags 清洗表情标签：去空白、去重。
+// regexpFishCalMonth 月份格式 YYYY-MM。
+var regexpFishCalMonth = regexp.MustCompile(`^\d{4}-\d{2}$`)
+
+// regexpFishCalDate 日期格式 YYYY-MM-DD。
+var regexpFishCalDate = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+// validateStickerTags 校验标签均已提前创建（标签先建后选），返回去重清洗后的标签。
+func (s *Service) validateStickerTags(ctx context.Context, tags []string) ([]string, error) {
+	cleaned := cleanStickerTags(tags)
+	if len(cleaned) == 0 {
+		return cleaned, nil
+	}
+	registered := make(map[string]struct{})
+	existing, err := s.DAO.Sticker.TagList(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range existing {
+		registered[t.Name] = struct{}{}
+	}
+	for _, t := range cleaned {
+		if _, ok := registered[t]; !ok {
+			return nil, fmt.Errorf("标签尚未创建: %s", t)
+		}
+	}
+	return cleaned, nil
+}
+
+// cleanStickerTags 清洗表情标签：去空白、去重。
+func cleanStickerTags(tags []string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, len(tags))
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
 }
 
 // ---------- helpers ----------

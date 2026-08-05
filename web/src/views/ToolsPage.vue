@@ -4,12 +4,25 @@
       <div class="page-title">Tool 管理</div>
       <div class="page-subtitle">内置工具运行时常驻 (仅展示), 自定义工具支持启停</div>
     </div>
+    <v-alert type="info" variant="tonal" class="mb-4" density="compact">
+      <strong>仅管理员</strong>：开启后该工具只能由 Admins（管理员列表）内的人触发，防止提示词注入诱导 Agent 执行敏感操作（踢人/禁言/撤回等）。内置群管理工具默认开启。
+    </v-alert>
     <v-data-table :headers="headers" :items="items" :loading="loading">
       <template #item.is_builtin="{ item }">
         <v-chip size="small" :color="item.is_builtin ? 'primary' : 'grey'" variant="tonal">{{ item.is_builtin ? '内置' : '自定义' }}</v-chip>
       </template>
       <template #item.is_active="{ item }">
         <v-chip size="small" :color="item.is_active ? 'success' : 'default'" variant="tonal">{{ item.is_active ? '启用' : '停用' }}</v-chip>
+      </template>
+      <template #item.admin_only="{ item }">
+        <v-switch
+          :model-value="item.admin_only"
+          color="error"
+          density="compact"
+          hide-details
+          :loading="adminOnlyLoading === item.id"
+          @update:model-value="(v) => toggleAdminOnly(item, !!v)"
+        />
       </template>
       <template #item.actions="{ item }">
         <v-btn icon="mdi-eye" size="small" variant="text" color="info" @click="showDetail(item)" />
@@ -61,11 +74,13 @@ const loading = ref(true)
 const items = ref<ToolConfigResp[]>([])
 const detailDialog = ref(false)
 const detail = ref<ToolConfigResp | null>(null)
+const adminOnlyLoading = ref<string | null>(null)
 
 const headers = [
   { title: '名称', key: 'name' },
   { title: '描述', key: 'description' },
   { title: '类型', key: 'is_builtin' },
+  { title: '仅管理员', key: 'admin_only', align: 'center' as const },
   { title: 'Active', key: 'is_active', align: 'center' as const },
   { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
 ]
@@ -80,6 +95,19 @@ async function fetch() {
 function showDetail(item: ToolConfigResp) {
   detail.value = item
   detailDialog.value = true
+}
+
+async function toggleAdminOnly(item: ToolConfigResp, v: boolean) {
+  adminOnlyLoading.value = item.id
+  try {
+    await toolApi.updateAdminOnly(item.id, v)
+    item.admin_only = v
+    toastStore.success(v ? `已开启「${item.name}」仅管理员` : `已关闭「${item.name}」仅管理员`)
+  } catch {
+    toastStore.error('操作失败')
+  } finally {
+    adminOnlyLoading.value = null
+  }
 }
 
 onMounted(fetch)

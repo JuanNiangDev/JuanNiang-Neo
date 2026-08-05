@@ -153,8 +153,8 @@ func (g *MCPGroup) CallTool(ctx context.Context, name string, args json.RawMessa
 }
 
 // mcpToolsTTL 工具列表缓存有效期：MCP 工具变更不频繁，1 分钟足够。
-// 缓存同时作用于 buildToolList（提示词工具描述）与工具调用时的 HasTool/CallTool 查找，
-// 避免每条消息/每次调用都对每个 MCP 服务器发起 ListTools 网络 RPC。
+// 缓存作用于工具调用时的 HasTool/CallTool 查找，避免每次调用都对每个
+// MCP 服务器发起 ListTools 网络 RPC。
 const mcpToolsTTL = time.Minute
 
 // ---------- SDK 客户端封装 ----------

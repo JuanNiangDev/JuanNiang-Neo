@@ -12,6 +12,7 @@
 
 - **Agent 系统**：基于 Eino ADK 的 `ChatModelAgent`（OpenAI 兼容），支持 Provider / MCP / Tool / Skill / Prompt / Plugin 多模块组合，工具调用在 ReAct 循环内同步完成
 - **异步并发处理**：`ConcurrencyManager` 控制每 ChatArea 最多 8 个 Agent goroutine 并发，事件经三阶段管线（Plugin 拦截 → 回复策略 → Agent 派发）高效分流
+- **相关性回复优化**：`relevance` 策略下 @/命令/提及名字必回、噪音消息规则过滤、候选消息批量合并为一次 LLM 判断，带 Redis 结果缓存/冷却、并发限流与刷屏自动降级，热聊场景判断开销降至原来的 ~1/10
 - **四层记忆体系**：短期记忆（Redis 滑动窗口，默认 100 条，自动 Compact）/ 长期记忆（Postgres + 内存 LRU）/ 技能记忆（SkillMemory，Compact 时自动提取）/ 会话记录（Postgres 审计）
 - **OneBot11 反向 WebSocket 适配器**：与 QQ 机器人框架对接，OneBot11 API 作为 Agent 工具注册
 - **Lua 插件系统**：gopher-lua 驱动，支持多级命令、Lua SDK（带 LuaCATS 注解）、系统插件保护
@@ -45,7 +46,7 @@
 | 部署 | [deployment.md](docs/deployment.md) | 部署模式、环境变量、构建流程、健康检查、日志排查、反向代理、systemd、FAQ |
 | 二次开发 | [development.md](docs/development.md) | 该读什么 / 该改什么 / 不该动什么、当前实现状态、约定、写 Agent 工具与 Web API 的最小范式 |
 | 外部服务 | [external-services.md](docs/external-services.md) | 各外部服务的客户端构造、热更新机制、HagoCenter 与 Service 共享指针、鉴权与健康检查 |
-| Webhook / CronJob | [webhook-cronjob.md](docs/webhook-cronjob.md) | Webhook 接外部 HTTP 触发 Lua 插件；CronJob 6 字段秒级 cron 主动注入 Agent；含 GitHub PR / 早安提醒示例 |
+| Webhook / CronJob | [webhook-cronjob.md](docs/webhook-cronjob.md) | Webhook 接外部 HTTP 触发 Lua 插件；CronJob 6 字段秒级 cron 定时触发 Lua 插件 `on_cronjob` 回调（不经过 Agent）；含 GitHub PR / 早安提醒示例 |
 
 ## 快速部署（Docker Compose）
 

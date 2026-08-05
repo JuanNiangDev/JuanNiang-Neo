@@ -3,6 +3,8 @@
 #   1) web-builder : Node 20 构建前端 -> /app/web/dist
 #   2) go-builder  : Go 1.25 编译后端二进制 (前后端不嵌入, 运行时从 /app/web/dist 读取)
 #   3) runtime     : Alpine + 非 root 用户, 仅含 binary + config + web/dist + 健康检查
+#
+# ⚠️ 当前 runtime 实际以 root 运行（无 USER 指令）；如需非 root，请自行添加 useradd + USER。
 
 ARG GO_VERSION=1.25-alpine
 ARG NODE_VERSION=20-alpine

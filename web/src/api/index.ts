@@ -9,8 +9,8 @@ export interface AdapterConnDetail { id: number; ip: string; self_id: number }
 export interface AdapterStatus { running: boolean; listen_addr: string; self_id: number; conn_count: number; conn_ids: number[]; conns: AdapterConnDetail[] }
 export interface UpdateAdapterConfigReq { addr: string; port: number; token: string; admin_qq_numbers: string[]; enabled: boolean }
 
-export interface ProviderResp { id: string; created_at: string; name: string; type: string; endpoint: string; token: string; model: string; temperature: number; is_active: boolean }
-export interface AddProviderReq { name: string; type: string; endpoint: string; token: string; model: string; temperature?: number; isActive: boolean }
+export interface ProviderResp { id: string; created_at: string; name: string; type: string; endpoint: string; token: string; model: string; temperature: number; is_active: boolean; enable_thinking: boolean }
+export interface AddProviderReq { name: string; type: string; endpoint: string; token: string; model: string; temperature?: number; isActive: boolean; enable_thinking: boolean }
 
 export interface MCPServerResp { id: string; name: string; server_url: string; headers: Record<string, any>; timeout: number; retry_count: number; tool_filter: string[]; auto_reconnect: boolean; is_active: boolean; created_at: string }
 export interface AddMCPServerReq { name: string; server_url: string; headers?: Record<string, any>; timeout?: number; retry_count?: number; tool_filter?: string[]; auto_reconnect?: boolean; is_active: boolean }
@@ -26,7 +26,7 @@ export interface SessionResp { id: string; chat_area_id: string; model: string; 
 export interface SkillResp { id: string; name: string; description: string; keywords: string[]; regex_pattern: string; prompt_refs: string[]; tool_refs: string[]; mcp_refs: string[]; is_active: boolean; is_system: boolean; priority: number; created_at: string }
 export interface AddSkillReq { name: string; description?: string; keywords?: string[]; regex_pattern?: string; prompt_refs?: string[]; tool_refs?: string[]; mcp_refs?: string[]; is_active: boolean; is_system?: boolean; priority?: number }
 
-export interface ToolConfigResp { id: string; name: string; description: string; parameters: Record<string, any>; timeout: number; is_active: boolean; is_builtin: boolean; created_at: string }
+export interface ToolConfigResp { id: string; name: string; description: string; parameters: Record<string, any>; timeout: number; is_active: boolean; is_builtin: boolean; admin_only: boolean; created_at: string }
 
 export interface PluginResp { id: string; name: string; version: string; path: string; config: Record<string, any>; is_active: boolean; created_at: string }
 
@@ -124,6 +124,7 @@ export const skillApi = {
 export const toolApi = {
   list: () => client.get('/tools'),
   toggle: (id: string, is_active: boolean) => client.put(`/tools/${id}/toggle`, { is_active }),
+  updateAdminOnly: (id: string, admin_only: boolean) => client.put(`/tools/${id}/admin-only`, { admin_only }),
 }
 
 // ======== Plugins ========
@@ -233,7 +234,9 @@ export interface ReplyStrategyResp {
   agent_lite: boolean
   relevance_prompt: string
   relevance_model: string
+  judge_fail_policy: string
 }
+
 export interface UpdateReplyStrategyReq {
   strategy: string
   relevance_threshold: number
@@ -242,9 +245,165 @@ export interface UpdateReplyStrategyReq {
   agent_lite: boolean
   relevance_prompt?: string
   relevance_model?: string
+  judge_fail_policy?: string
 }
 
 export const replyStrategyApi = {
   get: () => client.get('/reply-strategy'),
   update: (data: UpdateReplyStrategyReq) => client.put('/reply-strategy', data),
+}
+
+export interface KnowledgeResp {
+  id: string
+  title: string
+  content: string
+  keywords: string[]
+  keyword_status: string // pending / ready / failed
+  created_at: string
+  updated_at: string
+}
+export interface AddKnowledgeReq { title: string; content: string }
+export interface KnowledgeListResp { total: number; list: KnowledgeResp[] }
+
+export const knowledgeApi = {
+  list: (page = 1, page_size = 20) => client.get('/knowledge', { params: { page, page_size } }),
+  get: (id: string) => client.get(`/knowledge/${id}`),
+  create: (data: AddKnowledgeReq) => client.post('/knowledge', data),
+  update: (id: string, data: AddKnowledgeReq) => client.put(`/knowledge/${id}`, data),
+  delete: (id: string) => client.delete(`/knowledge/${id}`),
+  reExtract: (id: string) => client.post(`/knowledge/${id}/re-extract`),
+}
+
+// ======== 图床 ========
+export interface ImageResp {
+  id: string
+  name: string
+  folder: string // 虚拟文件夹路径，/ 表示根
+  mime_type: string
+  size_bytes: number
+  created_at: string
+  updated_at: string
+}
+export interface ImageFolderResp { id: string; name: string; created_at: string }
+export interface ImageListResp { total: number; list: ImageResp[] }
+
+// 图片文件访问（Web 预览，不走 axios 以便直接作为 <img> src）。
+// <img> 无法携带 Authorization header，通过 ?token= 查询参数传递 JWT。
+export const imageFileUrl = (id: string) => {
+  const token = localStorage.getItem('token')
+  const q = token ? `?token=${encodeURIComponent(token)}` : ''
+  return `/api/v1/images/${id}/file${q}`
+}
+
+export const imageApi = {
+  list: (params?: { folder?: string; page?: number; page_size?: number }) => client.get('/images', { params }),
+  get: (id: string) => client.get(`/images/${id}`),
+  upload: (file: File, name: string, folder: string) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    if (name.trim()) fd.append('name', name.trim())
+    fd.append('folder', folder)
+    return client.post('/images', fd, { headers: { 'Content-Type': 'multipart/form-data' } })
+  },
+  update: (id: string, data: { name?: string; folder?: string }) => client.put(`/images/${id}`, data),
+  remove: (id: string) => client.delete(`/images/${id}`),
+}
+
+export const imageFolderApi = {
+  list: () => client.get('/image-folders'),
+  create: (name: string) => client.post('/image-folders', { name }),
+  remove: (id: string) => client.delete(`/image-folders/${id}`),
+}
+
+// ======== 表情包库 ========
+export interface StickerResp {
+  id: string // 短 UUID（发送时用）
+  image_id: string // 图床图片长 UUID
+  name: string
+  desc: string
+  tags: string[]
+  created_at: string
+  updated_at: string
+}
+export interface StickerTagResp { id: string; name: string; created_at: string }
+export interface StickerListResp { total: number; list: StickerResp[] }
+
+export const stickerApi = {
+  list: (params?: { tag?: string; keyword?: string; page?: number; page_size?: number }) => client.get('/stickers', { params }),
+  get: (id: string) => client.get(`/stickers/${id}`),
+  create: (data: { image_id: string; name: string; desc?: string; tags?: string[] }) => client.post('/stickers', data),
+  update: (id: string, data: { name?: string; desc?: string; tags?: string[] }) => client.put(`/stickers/${id}`, data),
+  remove: (id: string) => client.delete(`/stickers/${id}`),
+}
+
+export const stickerTagApi = {
+  list: () => client.get('/sticker-tags'),
+  create: (name: string) => client.post('/sticker-tags', { name }),
+  remove: (id: string) => client.delete(`/sticker-tags/${id}`),
+}
+
+// ======== 摸鱼人日历 ========
+export interface FishCalendarConfigResp {
+  enabled: boolean
+  cron_expr: string
+  target_groups: string[]
+  last_run_at?: string | null
+  last_error: string
+}
+export interface UpdateFishCalendarConfigReq {
+  enabled: boolean
+  cron_expr: string
+  target_groups: string[]
+}
+export interface FishCalendarAffairResp { date: string; content: string }
+
+export const fishCalendarApi = {
+  get: () => client.get('/fish-calendar/config'),
+  update: (data: UpdateFishCalendarConfigReq) => client.put('/fish-calendar/config', data),
+  trigger: () => client.post('/fish-calendar/trigger'),
+  affairs: (month: string) => client.get('/fish-calendar/affairs', { params: { month } }),
+  setAffair: (date: string, content: string) => client.put('/fish-calendar/affairs', { date, content }),
+}
+
+// ======== 定时消息 ========
+export interface ScheduledSegment {
+  type: string // text / image / face
+  source?: string // image: t2i / url / imgstore
+  content: string
+}
+export interface ScheduledBlock {
+  type: string // message / delay
+  segments?: ScheduledSegment[]
+  delay_seconds?: number
+}
+export interface ScheduledMessageResp {
+  id: string
+  name: string
+  enabled: boolean
+  cron_expr: string
+  target_type: string // group / private
+  target_id: number
+  blocks: ScheduledBlock[]
+  last_run_at?: string | null
+  last_error: string
+  created_at: string
+  updated_at: string
+}
+export interface AddScheduledMessageReq {
+  name: string
+  enabled: boolean
+  cron_expr: string
+  target_type: string
+  target_id: number
+  blocks: ScheduledBlock[]
+}
+
+export const scheduledMessageApi = {
+  list: (params?: { page?: number; page_size?: number }) => client.get('/scheduled-messages', { params }),
+  get: (id: string) => client.get(`/scheduled-messages/${id}`),
+  create: (data: AddScheduledMessageReq) => client.post('/scheduled-messages', data),
+  update: (id: string, data: AddScheduledMessageReq) => client.put(`/scheduled-messages/${id}`, data),
+  remove: (id: string) => client.delete(`/scheduled-messages/${id}`),
+  toggle: (id: string, enabled: boolean) => client.put(`/scheduled-messages/${id}/toggle`, { enabled }),
+  trigger: (id: string) => client.post(`/scheduled-messages/${id}/trigger`),
 }

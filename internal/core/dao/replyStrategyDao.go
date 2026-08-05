@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"JuanNiang-Neo/internal/core/models"
+
 	"gorm.io/gorm"
 )
 
@@ -25,6 +26,7 @@ func (d *ReplyStrategyDAO) GetOrCreate(ctx context.Context) (*models.ReplyStrate
 		ID:                 newUUID(),
 		Strategy:           models.StrategyAlways,
 		RelevanceThreshold: 0.5,
+		JudgeFailPolicy:    "drop",
 	}
 	if err := d.db.WithContext(ctx).Create(&cfg).Error; err != nil {
 		return nil, err

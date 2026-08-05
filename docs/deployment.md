@@ -151,9 +151,9 @@ go tool pprof -http :8080 http://127.0.0.1:6060/debug/pprof/heap
 
 ## 优雅退出
 
-`SIGINT`/`SIGTERM` → 反向关闭顺序（`cmd/server/main.go:206` `shutdown`）：
+`SIGINT`/`SIGTERM` → 反向关闭顺序（`cmd/server/main.go:287` `shutdown`）：
 
-1. `hago.Stop()`（关回调 channel，停 Agent 事件循环输入）
+1. `hago.Stop()`（当前为占位，仅打日志；事件循环/CronJob 退出依赖外层 ctx 取消）
 2. `WebhookAdapter.Stop`（3s graceful）
 3. `Adapter.Stop`（5s；先停 adapter 再停 web，避免 web 请求持 adapter 锁死锁）
 4. `webEngine.Shutdown`（5s）
@@ -226,7 +226,7 @@ WantedBy=multi-user.target
 
 1. 准备 Postgres + Redis（或直接 `make docker-up` 用 compose 拉起它们）
 2. 设置 `.env`（至少改 `JWT_SECRET`）
-3. 启动进程；首次会 AutoMigrate 22 张表 + 创建 `admin / Admin123`
+3. 启动进程；首次会 AutoMigrate 23 张表 + 创建 `admin / Admin123`
 4. 立即登录 Web 面板，`POST /change-password` 改默认密码
 5. 在"Providers"页配置 LLM Provider（OpenAI 兼容端点），激活
 6. 在"Adapter"页配置 OB_TOKEN 与 admin QQ，启用
@@ -237,7 +237,7 @@ WantedBy=multi-user.target
 
 **Q: 为什么 LLM 拒绝调用某个工具？** A: ACL 规则把它拒绝了，或它在 MCP 但 MCP 断连；可在"ACL"页或"日志"流查看。
 
-**Q: Agent 在群里不回我？** A: 检查回复策略 + `isAtSelf` 是否精确匹配 `[CQ:at,qq=<bot>]`；`relevance` 模式下不会回复相关性低的消息。
+**Q: Agent 在群里不回我？** A: 检查回复策略 + `isAtSelf` 是否精确匹配 `[CQ:at,qq=<bot>]`；`relevance` 模式下不会回复相关性低的消息。相关性判断有批量合并/冷却缓存/刷屏降级等优化——判断失败时默认不回复，可在回复策略页把"判断失败策略"改为 `reply` 照常回复。
 
 **Q: 想只换前端不重编 Go？** A: 可以——前端是磁盘文件，`WEB_DIR` 指向新 `web/dist` 即可；二进制不嵌入它。
 

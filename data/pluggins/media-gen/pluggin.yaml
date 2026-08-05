@@ -1,0 +1,12 @@
+ppid: 2e2349ce-fafe-43a0-9ae4-b55cd4d73a85
+name: media-gen
+version: 1.0.0
+author: JuanNiang-Neo
+description: 媒体生成示例：T2I 文生图 + Sandbox 代码沙箱执行
+entry: main.lua
+permissions:
+    - t2i
+    - sandbox
+    - onebot11
+system: false
+enabled: true

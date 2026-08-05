@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
@@ -19,10 +20,239 @@ type RelevanceCheckResult struct {
 	Reason    string  `json:"reason"`
 }
 
+// 相关性判断限流（L3.1）：全局并发信号量上限与单次判断超时。
+// 并发上限防止热聊时相关性 LLM 请求打爆 provider；超时与信号量等待共享预算，
+// 超时/等待超时均按 JudgeFailPolicy 降级。
+const (
+	relevanceSemLimit     = 4
+	relevanceJudgeTimeout = 5 * time.Second
+)
+
+// acquireRelevanceSem 获取相关性判断并发令牌（L3.1）。ctx 取消/超时即返回错误。
+func (h *HagoCenter) acquireRelevanceSem(ctx context.Context) error {
+	if h.relevanceSem == nil {
+		return nil
+	}
+	select {
+	case h.relevanceSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseRelevanceSem 释放相关性判断并发令牌。
+func (h *HagoCenter) releaseRelevanceSem() {
+	if h.relevanceSem == nil {
+		return
+	}
+	select {
+	case <-h.relevanceSem:
+	default:
+	}
+}
+
+// isDefinitelyRelevant 规则快路径（L1）：消息明显指向机器人，无需 LLM 判断直接视为相关。
+// 调用方已先处理 @ 自己 / 插件命令；这里覆盖"提及名字/常见称呼"。
+func isDefinitelyRelevant(msg *adapter.MessageEvent, rs ReplySettings) bool {
+	text := strings.TrimSpace(msg.RawMessage)
+	if text == "" {
+		return false
+	}
+	if rs.BotName != "" && strings.Contains(text, rs.BotName) {
+		return true
+	}
+	for _, kw := range []string{"机器人", "bot", "Bot", "BOT"} {
+		if strings.Contains(text, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// isDefinitelyIrrelevant 规则快路径（L1）：明显无关的噪音消息，直接丢弃不调 LLM。
+// 覆盖：剥离 CQ 码/URL 后无有效文字（纯表情包/纯图片）、过短消息（≤2 字）、
+// 纯 emoji/符号（无 CJK/字母数字）且较短。
+func isDefinitelyIrrelevant(msg *adapter.MessageEvent) bool {
+	text := strings.TrimSpace(msg.RawMessage)
+	// 剥离 CQ 码与 URL 后取纯文本
+	plain := cqCodeRegexp.ReplaceAllString(text, "")
+	plain = urlRegexp.ReplaceAllString(plain, "")
+	plain = strings.TrimSpace(plain)
+
+	runes := []rune(plain)
+	// 过短（≤2 个有效字符）→ 噪音（"哈哈"、"666"、"1"、纯图片无文字等）
+	if len(runes) <= 2 {
+		return true
+	}
+	// 纯 emoji/符号（无 CJK/字母数字）且较短 → 噪音（"😂😂😂"）
+	if len(runes) <= 6 && !containsMeaningfulChars(plain) {
+		return true
+	}
+	return false
+}
+
+// containsMeaningfulChars 判断文本是否包含有意义字符（ASCII 字母数字或 CJK）。
+func containsMeaningfulChars(s string) bool {
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return true
+		}
+		if r >= 0x4E00 && r <= 0x9FFF { // CJK 统一表意文字
+			return true
+		}
+	}
+	return false
+}
+
+// relevanceBatchEvaluate 对一批候选消息做相关性判断（L2.1 批量合并判断）。
+// 候选消息已通过规则快路径（@/命令/提及名字/噪音过滤）。
+// 返回 true=批内存在值得回复的内容，false=整批丢弃。
+func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapter.Event, rs ReplySettings, areaID string) bool {
+	// 单条候选 → 复用单条判断（带分数阈值比较，更精准）
+	if len(events) == 1 {
+		msg := events[0].Message
+		if msg == nil {
+			return false
+		}
+		recentMsgs, _ := h.getRecentMessages(ctx, areaID, 5) // L3.3: 上下文从 10 条缩至 5 条
+		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs)
+		related := score >= rs.RelevanceThreshold
+		log.Debug("相关性: 单条候选判断", "score", score, "threshold", rs.RelevanceThreshold, "reason", reason, "related", related)
+		return related
+	}
+
+	// 多条候选 → 一次 LLM 调用判断整批
+	// L3.1 并发闸门 + 判断超时（信号量等待与 LLM 调用共享 5s 总预算）
+	judgeCtx, cancel := context.WithTimeout(ctx, relevanceJudgeTimeout)
+	defer cancel()
+	if err := h.acquireRelevanceSem(judgeCtx); err != nil {
+		log.Warn("相关性批量判断: 并发限制等待超时", "err", err)
+		score, _ := judgeFailVerdict(rs, "相关性判断并发限制等待超时")
+		return score >= 0.5
+	}
+	defer h.releaseRelevanceSem()
+
+	botName := rs.BotName
+	selfQQ := h.SelfQQ
+	if h.Adapter != nil {
+		if id := h.Adapter.SelfID(); id != 0 {
+			selfQQ = id
+		}
+	}
+
+	// 构建批量消息列表（带发送者标识；图片消息标注 [图片]）
+	var sb strings.Builder
+	for i, ev := range events {
+		msg := ev.Message
+		if msg == nil {
+			continue
+		}
+		text := strings.TrimSpace(msg.RawMessage)
+		hasImage := false
+		for _, seg := range msg.Message {
+			if seg.Type == "image" {
+				hasImage = true
+				break
+			}
+		}
+		if hasImage {
+			if text != "" {
+				text += " [图片]"
+			} else {
+				text = "[图片]"
+			}
+		}
+		if text == "" {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("[%d] %s(%d): %s\n", i+1, msg.Sender.Nickname, msg.UserID, text))
+	}
+	if sb.Len() == 0 {
+		return false
+	}
+
+	// 回复规则：用户自定义提示词优先，否则用默认
+	rules := rs.RelevancePrompt
+	if rules == "" {
+		rules = fmt.Sprintf(`- 如果任一消息明确指向你（@你、叫你名字"%s"或"%s"、称呼"机器人"/"bot"、询问你的能力、请求你操作），relevant 为 true
+- 如果全部是群友之间的闲聊、互怼、讨论与你无关的话题，relevant 为 false
+- 如果包含群管理相关需求（踢人、禁言等），即使没有@你，relevant 也应该为 true
+- 如果只是纯表情、无意义内容，relevant 为 false
+- 如果群聊处于热聊状态（多人连续发言讨论同一话题），可以适当放宽判断`, h.SelfNickname, botName)
+	}
+
+	prompt := fmt.Sprintf(`你是一个群聊相关度判断助手。请判断以下这批群聊消息中是否有值得你（机器人）回复的内容。
+
+你的身份:
+- 你的名字: %s
+- 你的昵称: %s
+- 你的QQ: %d
+- 群聊中 at 你的格式: [CQ:at,qq=%d]
+
+回复规则:
+%s
+
+消息列表:
+%s
+请以 JSON 格式回复，只包含 JSON 对象，不要有其他内容:
+{"relevant": true 或 false, "reason": "简短原因"}`, botName, h.SelfNickname, selfQQ, selfQQ, rules, sb.String())
+
+	messages := []provider.ChatMessage{
+		{Role: "system", Content: "你是一个群聊相关性判断助手。请以 JSON 格式回复。"},
+		{Role: "user", Content: prompt},
+	}
+
+	req := provider.ChatRequest{
+		Messages:    messages,
+		Temperature: 0.3,
+	}
+
+	llm := h.Providers.SelectModel(provider.ModelTypeText)
+	if rs.RelevanceModel != "" {
+		if p, ok := h.Providers.GetProvider(rs.RelevanceModel); ok && p.Type() == provider.ModelTypeText {
+			llm = p
+		}
+	}
+	if llm == nil {
+		log.Warn("相关性批量判断: 无可用 Text 模型，按不相关处理")
+		return false
+	}
+
+	resp, err := llm.Chat(judgeCtx, req)
+	if err != nil {
+		log.Warn("相关性批量判断 LLM 调用失败", "err", err)
+		score, _ := judgeFailVerdict(rs, "批量相关性判断 LLM 调用失败")
+		return score >= 0.5
+	}
+
+	content := strings.TrimSpace(resp.Message.Content)
+	var result struct {
+		Relevant bool   `json:"relevant"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		// 容错：正则提取 relevant 字段
+		result.Relevant = strings.Contains(content, `"relevant": true`) || strings.Contains(content, `"relevant":true`)
+		result.Reason = "解析失败，按容错提取"
+	}
+
+	log.Info("相关性批量判断结果", "count", len(events), "relevant", result.Relevant, "reason", result.Reason)
+	return result.Relevant
+}
+
 // relevanceAgentEvaluate 调用 LLM 评估消息相关性。
 // 支持自定义提示词（rs.RelevancePrompt）与指定 Text 模型（rs.RelevanceModel）。
 // 返回 0-1 之间的相关性分数，以及原因。
 func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.MessageEvent, recentMessages []string, rs ReplySettings) (float64, string) {
+	// L3.1 并发闸门 + 判断超时（信号量等待与 LLM/Vision 调用共享 5s 总预算）
+	judgeCtx, cancel := context.WithTimeout(ctx, relevanceJudgeTimeout)
+	defer cancel()
+	if err := h.acquireRelevanceSem(judgeCtx); err != nil {
+		return judgeFailVerdict(rs, "相关性判断并发限制等待超时")
+	}
+	defer h.releaseRelevanceSem()
+
 	botName := rs.BotName
 	// 获取机器人 QQ，优先 Adapter 实时值（防止缓存为 0）
 	selfQQ := h.SelfQQ
@@ -68,10 +298,10 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 
 请以 JSON 格式回复: {"relevance": 0.0-1.0, "reason": "简短原因"}`, h.SelfNickname, selfQQ, msg.Sender.Nickname, msg.UserID, h.SelfNickname)
 					// 下载图片并调用 Vision
-					resp, err := visionModel.Vision(ctx, nil, prompt) // Vision expects raw image bytes
+					resp, err := visionModel.Vision(judgeCtx, nil, prompt) // Vision expects raw image bytes
 					if err != nil {
 						log.Warn("Vision 调用失败", "err", err)
-						return 0, "Vision 调用失败"
+						return judgeFailVerdict(rs, "Vision 调用失败")
 					}
 					// 解析 JSON
 					var result RelevanceCheckResult
@@ -147,10 +377,10 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 		Temperature: 0.3,
 	}
 
-	resp, err := llm.Chat(ctx, req)
+	resp, err := llm.Chat(judgeCtx, req)
 	if err != nil {
 		log.Warn("相关性检查 LLM 调用失败", "err", err)
-		return 0, "LLM 调用失败"
+		return judgeFailVerdict(rs, "LLM 调用失败")
 	}
 
 	content := strings.TrimSpace(resp.Message.Content)
@@ -162,6 +392,16 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 
 	log.Info("相关性检查结果", "relevance", result.Relevance, "reason", result.Reason, "raw", content)
 	return result.Relevance, result.Reason
+}
+
+// judgeFailVerdict 相关性判断失败（LLM/Vision 调用出错）时的降级策略。
+//   - rs.JudgeFailPolicy == "reply" → 返回 1.0（照常回复，避免机器人"装死"）
+//   - 默认（drop）→ 返回 0（不回复）
+func judgeFailVerdict(rs ReplySettings, reason string) (float64, string) {
+	if rs.JudgeFailPolicy == "reply" {
+		return 1.0, reason + "（按配置 reply 照常回复）"
+	}
+	return 0, reason
 }
 
 // extractRelevanceJSON 从 LLM 响应中提取 JSON，处理 reason 中可能包含未转义引号的情况。

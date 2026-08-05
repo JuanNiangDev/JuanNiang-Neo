@@ -45,6 +45,14 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.ReplyStrategyConfig{},
 		&models.SkillMemory{},
 		&models.TokenUsageDaily{},
+		&models.KnowledgeItem{},
+		&models.ImageAsset{},
+		&models.ImageFolder{},
+		&models.Sticker{},
+		&models.StickerTag{},
+		&models.FishCalendarConfig{},
+		&models.FishCalendarAffair{},
+		&models.ScheduledMessage{},
 	)
 }
 
@@ -95,6 +103,14 @@ func Init(ctx context.Context, db *gorm.DB, redisClient *redis.Client) (*Core, e
 	var initErr error
 	once.Do(func() {
 		if err := AutoMigrate(db); err != nil {
+			initErr = err
+			return
+		}
+
+		// 迁移：移除 image_folders 旧普通唯一索引（不允许软删后重名，SQLSTATE 23505）。
+		// 新部分唯一索引（WHERE deleted_at IS NULL）已由 AutoMigrate 创建，
+		// 旧索引继续阻塞软删后重建同名文件夹，这里幂等清理。
+		if err := db.Exec("DROP INDEX IF EXISTS idx_image_folders_name").Error; err != nil {
 			initErr = err
 			return
 		}

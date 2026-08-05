@@ -39,6 +39,18 @@ var (
 	PluginIsSystem          = Response{Status: 40028, Info: "系统插件不允许删除或停用"}
 	PromptIsSystem          = Response{Status: 40029, Info: "系统提示词不允许修改或删除"}
 	ToolIsBuiltin           = Response{Status: 40030, Info: "内置工具运行时常驻, 不支持启停"}
+	KnowledgeContentEmpty   = Response{Status: 40033, Info: "知识内容不能为空"}
+	ImageTooLarge           = Response{Status: 40034, Info: "图片大小不能超过 1.5MB"}
+	ImageTypeNotAllowed     = Response{Status: 40035, Info: "不支持的图片格式（仅支持 jpg/png/gif/webp）"}
+	ImageNotExist           = Response{Status: 40036, Info: "图片不存在"}
+	ImageFolderExist        = Response{Status: 40037, Info: "文件夹已存在"}
+	ImageFolderNotExist     = Response{Status: 40038, Info: "文件夹不存在"}
+	StickerNotExist         = Response{Status: 40039, Info: "表情不存在"}
+	StickerTagExist         = Response{Status: 40040, Info: "标签已存在"}
+	StickerTagNotExist      = Response{Status: 40041, Info: "标签不存在"}
+	StickerImageExist       = Response{Status: 40042, Info: "该图床图片已被其他表情引用"}
+	FishCalConfigNotExist   = Response{Status: 40043, Info: "摸鱼日历配置不存在"}
+	ScheduledMsgNotExist    = Response{Status: 40044, Info: "定时消息任务不存在"}
 )
 
 type TokenResp struct {
@@ -67,15 +79,16 @@ type AdapterConfig struct {
 }
 
 type ProviderResp struct {
-	ID          string           `json:"id"`
-	CreatedAt   time.Time        `json:"created_at"`
-	Name        string           `json:"name"`
-	Type        models.ModelType `json:"type"`
-	Endpoint    string           `json:"endpoint"`
-	Token       string           `json:"token"`
-	Model       string           `json:"model"`
-	Temperature float32          `json:"temperature"`
-	IsActive    bool             `json:"is_active"`
+	ID             string           `json:"id"`
+	CreatedAt      time.Time        `json:"created_at"`
+	Name           string           `json:"name"`
+	Type           models.ModelType `json:"type"`
+	Endpoint       string           `json:"endpoint"`
+	Token          string           `json:"token"`
+	Model          string           `json:"model"`
+	Temperature    float32          `json:"temperature"`
+	IsActive       bool             `json:"is_active"`
+	EnableThinking bool             `json:"enable_thinking"` // 模型思考开关
 }
 
 type MCPServerResp struct {
@@ -124,7 +137,19 @@ type ToolConfigResp struct {
 	Timeout     int            `json:"timeout"`
 	IsActive    bool           `json:"is_active"`
 	IsBuiltin   bool           `json:"is_builtin"`
+	AdminOnly   bool           `json:"admin_only"` // 仅管理员可调用
 	CreatedAt   time.Time      `json:"created_at"`
+}
+
+// KnowledgeResp 知识库条目。
+type KnowledgeResp struct {
+	ID            string           `json:"id"`
+	Title         string           `json:"title"`
+	Content       string           `json:"content"`
+	Keywords      models.JSONSlice `json:"keywords"`
+	KeywordStatus string           `json:"keyword_status"` // pending / ready / failed
+	CreatedAt     time.Time        `json:"created_at"`
+	UpdatedAt     time.Time        `json:"updated_at"`
 }
 
 type PluginResp struct {
@@ -229,6 +254,104 @@ type ChatRecordListResp struct {
 	List  []ChatRecordResp `json:"list"`
 }
 
+// ImageResp 图床图片元数据。
+type ImageResp struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Folder    string    `json:"folder"` // 虚拟文件夹路径，/ 表示根
+	MimeType  string    `json:"mime_type"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// ImageFolderResp 图床虚拟文件夹。
+type ImageFolderResp struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// ImageListResp 图床图片分页列表。
+type ImageListResp struct {
+	Total int64       `json:"total"`
+	List  []ImageResp `json:"list"`
+}
+
+// StickerResp 表情包（引用图床图片，ID 为发送用的短 UUID）。
+type StickerResp struct {
+	ID        string           `json:"id"`
+	ImageID   string           `json:"image_id"`
+	Name      string           `json:"name"`
+	Desc      string           `json:"desc"`
+	Tags      models.JSONSlice `json:"tags"`
+	CreatedAt time.Time        `json:"created_at"`
+	UpdatedAt time.Time        `json:"updated_at"`
+}
+
+// StickerTagResp 表情标签。
+type StickerTagResp struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// StickerListResp 表情分页列表。
+type StickerListResp struct {
+	Total int64         `json:"total"`
+	List  []StickerResp `json:"list"`
+}
+
+// FishCalendarConfigResp 摸鱼人日历配置。
+type FishCalendarConfigResp struct {
+	Enabled      bool       `json:"enabled"`
+	CronExpr     string     `json:"cron_expr"`
+	TargetGroups []string   `json:"target_groups"`
+	LastRunAt    *time.Time `json:"last_run_at"`
+	LastError    string     `json:"last_error"`
+}
+
+// FishCalendarAffairResp 某天的群务。
+type FishCalendarAffairResp struct {
+	Date    string `json:"date"`
+	Content string `json:"content"`
+}
+
+// ScheduledSegmentResp 消息块内的消息段。
+type ScheduledSegmentResp struct {
+	Type    string `json:"type"`
+	Source  string `json:"source,omitempty"`
+	Content string `json:"content"`
+}
+
+// ScheduledBlockResp 编排块。
+type ScheduledBlockResp struct {
+	Type         string                 `json:"type"`
+	Segments     []ScheduledSegmentResp `json:"segments,omitempty"`
+	DelaySeconds int                    `json:"delay_seconds,omitempty"`
+}
+
+// ScheduledMessageResp 定时消息任务。
+type ScheduledMessageResp struct {
+	ID         string               `json:"id"`
+	Name       string               `json:"name"`
+	Enabled    bool                 `json:"enabled"`
+	CronExpr   string               `json:"cron_expr"`
+	TargetType string               `json:"target_type"`
+	TargetID   int64                `json:"target_id"`
+	Blocks     []ScheduledBlockResp `json:"blocks"`
+	LastRunAt  *time.Time           `json:"last_run_at"`
+	LastError  string               `json:"last_error"`
+	CreatedAt  time.Time            `json:"created_at"`
+	UpdatedAt  time.Time            `json:"updated_at"`
+}
+
+// ScheduledMessageListResp 定时消息分页列表。
+type ScheduledMessageListResp struct {
+	Total int64                  `json:"total"`
+	List  []ScheduledMessageResp `json:"list"`
+}
+
 type PluginUploadResp struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
@@ -309,6 +432,7 @@ type ReplyStrategyResp struct {
 	BotName            string  `json:"bot_name"`
 	StripMarkdown      bool    `json:"strip_markdown"`
 	AgentLite          bool    `json:"agent_lite"`
-	RelevancePrompt    string  `json:"relevance_prompt"` // 相关性检测自定义提示词
-	RelevanceModel     string  `json:"relevance_model"`  // 相关性检测使用的 Text Provider ID
+	RelevancePrompt    string  `json:"relevance_prompt"`  // 相关性检测自定义提示词
+	RelevanceModel     string  `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID
+	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop / reply
 }

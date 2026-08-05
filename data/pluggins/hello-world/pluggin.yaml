@@ -1,0 +1,10 @@
+ppid: 6fef2d80-8e06-4cb2-b1e8-31d2c520f92a
+name: hello-world
+version: 1.0.0
+author: JuanNiang-Neo
+description: 入门示例：命令注册 + on_message 事件监听 + log/json 使用
+entry: main.lua
+permissions:
+    - onebot11
+system: false
+enabled: true

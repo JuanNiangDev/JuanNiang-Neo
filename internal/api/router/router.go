@@ -68,6 +68,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	// Tools
 	api.GET("/tools", auth, svc.ListTools)
 	api.PUT("/tools/:id/toggle", auth, svc.ToggleTool)
+	api.PUT("/tools/:id/admin-only", auth, svc.UpdateToolAdminOnly)
 
 	// Plugins
 	api.GET("/plugins", auth, svc.ListPlugins)
@@ -129,4 +130,49 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	// Reply Strategy
 	api.GET("/reply-strategy", auth, svc.GetReplyStrategy)
 	api.PUT("/reply-strategy", auth, svc.UpdateReplyStrategy)
+
+	// Knowledge 知识库
+	api.GET("/knowledge", auth, svc.ListKnowledge)
+	api.GET("/knowledge/:id", auth, svc.GetKnowledge)
+	api.POST("/knowledge", auth, svc.AddKnowledge)
+	api.PUT("/knowledge/:id", auth, svc.UpdateKnowledge)
+	api.DELETE("/knowledge/:id", auth, svc.DeleteKnowledge)
+	api.POST("/knowledge/:id/re-extract", auth, svc.ReExtractKnowledge)
+
+	// 图床
+	api.GET("/images", auth, svc.ListImages)
+	api.GET("/images/:id", auth, svc.GetImage)
+	api.GET("/images/:id/file", auth, svc.GetImageFile)
+	api.POST("/images", auth, svc.UploadImage)
+	api.PUT("/images/:id", auth, svc.UpdateImage)
+	api.DELETE("/images/:id", auth, svc.DeleteImage)
+	api.GET("/image-folders", auth, svc.ListImageFolders)
+	api.POST("/image-folders", auth, svc.CreateImageFolder)
+	api.DELETE("/image-folders/:id", auth, svc.DeleteImageFolder)
+
+	// 表情包库
+	api.GET("/stickers", auth, svc.ListStickers)
+	api.GET("/stickers/:id", auth, svc.GetSticker)
+	api.POST("/stickers", auth, svc.CreateSticker)
+	api.PUT("/stickers/:id", auth, svc.UpdateSticker)
+	api.DELETE("/stickers/:id", auth, svc.DeleteSticker)
+	api.GET("/sticker-tags", auth, svc.ListStickerTags)
+	api.POST("/sticker-tags", auth, svc.CreateStickerTag)
+	api.DELETE("/sticker-tags/:id", auth, svc.DeleteStickerTag)
+
+	// 摸鱼人日历（独立于 CronJob）
+	api.GET("/fish-calendar/config", auth, svc.GetFishCalendarConfig)
+	api.PUT("/fish-calendar/config", auth, svc.UpdateFishCalendarConfig)
+	api.POST("/fish-calendar/trigger", auth, svc.TriggerFishCalendar)
+	api.GET("/fish-calendar/affairs", auth, svc.ListFishCalendarAffairs)
+	api.PUT("/fish-calendar/affairs", auth, svc.SetFishCalendarAffair)
+
+	// 定时消息（独立调度器）
+	api.GET("/scheduled-messages", auth, svc.ListScheduledMessages)
+	api.GET("/scheduled-messages/:id", auth, svc.GetScheduledMessage)
+	api.POST("/scheduled-messages", auth, svc.AddScheduledMessage)
+	api.PUT("/scheduled-messages/:id", auth, svc.UpdateScheduledMessage)
+	api.DELETE("/scheduled-messages/:id", auth, svc.DeleteScheduledMessage)
+	api.PUT("/scheduled-messages/:id/toggle", auth, svc.ToggleScheduledMessage)
+	api.POST("/scheduled-messages/:id/trigger", auth, svc.TriggerScheduledMessage)
 }

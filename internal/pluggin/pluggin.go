@@ -331,14 +331,14 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 		loaded[name] = true
 		m := p.Manifest
 		entry := map[string]any{
-			"id":             name, // 目录名，用于 API 操作 (toggle/delete)
-			"name":           m.Name,
-			"version":        m.Version,
-			"author":         m.Author,
-			"description":    m.Description,
-			"permissions":    m.Permissions,
-			"is_system":      m.System,
-			"is_active":         true, // 已加载即视为 active
+			"id":               name, // 目录名，用于 API 操作 (toggle/delete)
+			"name":             m.Name,
+			"version":          m.Version,
+			"author":           m.Author,
+			"description":      m.Description,
+			"permissions":      m.Permissions,
+			"is_system":        m.System,
+			"is_active":        true, // 已加载即视为 active
 			"supports_cronjob": p.SupportsCronJob(),
 		}
 		// 使用 Load 时的 name（目录名）查找命令，而非 manifest.Name
@@ -364,16 +364,16 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 				continue
 			}
 			out = append(out, map[string]any{
-				"id":             entry.Name(), // 目录名，用于 API 操作
-				"name":           manifest.Name,
-				"version":        manifest.Version,
-				"author":         manifest.Author,
-				"description":    manifest.Description,
-				"permissions":    manifest.Permissions,
-				"is_system":         manifest.System,
-				"is_active":         manifest.Enabled, // 从 YAML enabled 字段读取，兼容旧版默认 true
-				"supports_cronjob": false,             // 未加载的插件无法检测，默认 false
-				"commands":          []map[string]any{},
+				"id":               entry.Name(), // 目录名，用于 API 操作
+				"name":             manifest.Name,
+				"version":          manifest.Version,
+				"author":           manifest.Author,
+				"description":      manifest.Description,
+				"permissions":      manifest.Permissions,
+				"is_system":        manifest.System,
+				"is_active":        manifest.Enabled, // 从 YAML enabled 字段读取，兼容旧版默认 true
+				"supports_cronjob": false,            // 未加载的插件无法检测，默认 false
+				"commands":         []map[string]any{},
 			})
 		}
 	}
@@ -1202,8 +1202,9 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 	sendAdp := pe.adapter
 
 	// resolveImage 解析图片路径。URL/base64 直接透传，相对路径从插件目录读取并转 base64。
+	// imgs:// 是图床图片引用，由 adapter 发送层统一解析，这里原样透传。
 	resolveImage := func(path string) string {
-		if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "base64://") {
+		if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") || strings.HasPrefix(path, "base64://") || strings.HasPrefix(path, "imgs://") {
 			return path
 		}
 		pluginDir := filepath.Join(pe.basePath, pluginName)
@@ -1282,6 +1283,30 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 					log.Warn("插件异步发送群消息失败", "plugin", pluginName, "group_id", groupID, "err", err)
 				} else {
 					log.Debug("插件异步发送群消息完成", "plugin", pluginName, "group_id", groupID, "dur_ms", time.Since(t0).Milliseconds())
+				}
+			}()
+			return pushOk(L)
+		},
+		// send_group_sticker / send_private_sticker 发送表情包库表情（短 UUID）。
+		// 底层由 adapter 把 stk://<短UUID> 解析为 base64（subType=1），插件只接触表情 ID。
+		"send_group_sticker": func(L *lua.LState) int {
+			groupID := int64(L.CheckNumber(1))
+			stickerID := L.CheckString(2)
+			go func() {
+				msg := fmt.Sprintf("[CQ:image,file=stk://%s,subType=1]", stickerID)
+				if _, err := sendAdp.SendGroupMsg(groupID, msg); err != nil {
+					log.Warn("插件异步发送群表情失败", "plugin", pluginName, "group_id", groupID, "sticker", stickerID, "err", err)
+				}
+			}()
+			return pushOk(L)
+		},
+		"send_private_sticker": func(L *lua.LState) int {
+			userID := int64(L.CheckNumber(1))
+			stickerID := L.CheckString(2)
+			go func() {
+				msg := fmt.Sprintf("[CQ:image,file=stk://%s,subType=1]", stickerID)
+				if _, err := sendAdp.SendPrivateMsg(userID, msg); err != nil {
+					log.Warn("插件异步发送私聊表情失败", "plugin", pluginName, "user_id", userID, "sticker", stickerID, "err", err)
 				}
 			}()
 			return pushOk(L)

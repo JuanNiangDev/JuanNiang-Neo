@@ -22,6 +22,15 @@ type Adapter struct {
 	events chan Event
 	mu     sync.RWMutex
 	closed bool
+
+	// imageResolver 图床图片解析器：发送消息时遇到 image 段 file 以 "imgs://" 开头，
+	// 调用它把图片 ID 解析为 OneBot11 的 base64 图片串（"base64://<data>"）。
+	// 由 main.go 注入图床存储实现，Plugin 与 Agent 对解析过程无感。
+	imageResolver func(rawFile string) (base64Image string, ok bool)
+
+	// stickerResolver 表情解析器：发送表情段（subType=1）时，用短 UUID 查图床长 UUID
+	// 并返回 base64 图片串。由 main.go 注入表情库存储实现，Plugin 与 Agent 只接触短 UUID。
+	stickerResolver func(stickerID string) (base64Image string, ok bool)
 }
 
 func New(cfg Config) *Adapter {
@@ -30,6 +39,20 @@ func New(cfg Config) *Adapter {
 		events: make(chan Event, 128),
 		closed: true, // 初始为"已停止"状态, 允许 Start
 	}
+}
+
+// SetImageResolver 注入图床图片解析器（见 imageResolver 注释）。
+func (p *Adapter) SetImageResolver(fn func(rawFile string) (string, bool)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.imageResolver = fn
+}
+
+// SetStickerResolver 注入表情解析器（见 stickerResolver 注释）。
+func (p *Adapter) SetStickerResolver(fn func(stickerID string) (string, bool)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stickerResolver = fn
 }
 
 func (p *Adapter) Start(ctx context.Context) error {

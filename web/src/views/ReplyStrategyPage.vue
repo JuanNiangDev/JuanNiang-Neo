@@ -64,6 +64,24 @@
                     placeholder="（默认 Text 模型）"
                     density="comfortable" variant="outlined" clearable hide-details
                   />
+
+                  <v-divider class="my-3" />
+
+                  <div class="text-subtitle-2 font-weight-bold mb-2">判断失败策略</div>
+                  <v-select
+                    v-model="form.judge_fail_policy"
+                    :items="[
+                      { label: '不回复 — 判断失败时保持沉默（默认）', value: 'drop' },
+                      { label: '照常回复 — 判断失败时交给 Agent 回复', value: 'reply' },
+                    ]"
+                    item-title="label"
+                    item-value="value"
+                    label="相关性判断 LLM 调用失败时的处理"
+                    density="comfortable" variant="outlined" hide-details
+                  />
+                  <div class="text-caption text-medium-emphasis mt-1">
+                    LLM 接口超时/限流等瞬态故障时生效；未配置模型不算失败。
+                  </div>
                 </v-card>
               </v-expand-transition>
 
@@ -171,6 +189,7 @@ const form = ref({
   agent_lite: false,
   relevance_prompt: '',
   relevance_model: '',
+  judge_fail_policy: 'drop',
 })
 
 // 相关性检测可选的 Text 模型列表（仅 text_model 类型）
@@ -197,6 +216,7 @@ async function load() {
       form.value.agent_lite = d.agent_lite || false
       form.value.relevance_prompt = d.relevance_prompt || ''
       form.value.relevance_model = d.relevance_model || ''
+      form.value.judge_fail_policy = d.judge_fail_policy || 'drop'
     }
   } catch (_e: any) {}
 }
@@ -223,6 +243,7 @@ async function handleSave() {
       agent_lite: form.value.agent_lite,
       relevance_prompt: form.value.relevance_prompt,
       relevance_model: form.value.relevance_model,
+      judge_fail_policy: form.value.judge_fail_policy,
     })
     toastStore.success('回复设置已保存')
   } catch (e: any) {

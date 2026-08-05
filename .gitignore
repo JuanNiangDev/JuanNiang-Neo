@@ -38,8 +38,9 @@ web/*.local
 web/.DS_Store
 
 bin/*
-server
 dev.yaml
 
-# 运行时生成的插件文件
-data/pluggins/
+# 运行时生成的插件文件（sdk/system 由二进制启动时写入；data/pluggins 下示例插件保留在仓库）
+data/pluggins/sdk/
+data/pluggins/system/
+data/imgs/

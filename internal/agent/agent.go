@@ -66,6 +66,24 @@ type HagoCenter struct {
 	batchMu sync.Mutex
 	batches map[string]*pendingBatch
 
+	// 相关性判断结果缓存（Redis，L2.3/L4.2）
+	Cache *cache.Cache
+
+	// 工具"仅管理员"名单（DB 驱动，Tools 页可切换）：admin_only=true 的工具
+	// 只能由 Admins 列表内用户调用（防提示词注入诱导敏感操作）
+	toolAdminOnlyMu sync.RWMutex
+	toolAdminOnly   map[string]bool
+
+	// 相关性判断并发闸门（L3.1）：限制全局并发，避免热聊时打爆 provider
+	relevanceSem chan struct{}
+
+	// 热聊统计（内存，L2.2/L4.1）：1s 滑动窗口消息计数，用于动态批窗口与刷屏降级
+	hotMu    sync.Mutex
+	hotStats map[string]*hotStat
+
+	// 知识库 LRU（50 条，缓存对话前检索结果，加速匹配）
+	knowledgeLRU *knowledgeLRU
+
 	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
 	EinoAgent *adk.ChatModelAgent
 }
@@ -103,6 +121,10 @@ func NewHagoCenter() *HagoCenter {
 		Loops:           NewLoopTracker(),
 		memberInfoCache: make(map[string]memberInfoEntry),
 		batches:         make(map[string]*pendingBatch),
+		hotStats:        make(map[string]*hotStat),
+		relevanceSem:    make(chan struct{}, relevanceSemLimit),
+		toolAdminOnly:   make(map[string]bool),
+		knowledgeLRU:    newKnowledgeLRU(50),
 	}
 }
 
@@ -114,6 +136,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.ACL = cfg.ACL
 	h.Providers = cfg.Providers
 	h.MCP = cfg.MCPGroup
+	h.Cache = cfg.Cache
 
 	// 缓存机器人自己的 QQ 号和昵称
 	h.SelfQQ = h.Adapter.SelfID()
@@ -172,7 +195,22 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error) {
 			return h.getRecentMessagesByMsgType(ctx, msgType, targetID, limit)
 		},
+		func(ctx context.Context, folder string, limit int) (string, error) {
+			return h.listImagesForTool(ctx, folder, limit)
+		},
+		func(ctx context.Context) (string, error) {
+			return h.listStickerTagsForTool(ctx)
+		},
+		func(ctx context.Context, tag string, page, pageSize int) (string, error) {
+			return h.listStickersForTool(ctx, tag, page, pageSize)
+		},
+		func(ctx context.Context, keyword string, limit int) (string, error) {
+			return h.searchStickersForTool(ctx, keyword, limit)
+		},
 	)
+
+	// 内置工具"仅管理员"标志：seed 默认高危名单到 DB（幂等），并加载运行时权限表
+	h.seedBuiltinToolGuard(ctx)
 
 	if err := h.loadProviders(ctx); err != nil {
 		return err
@@ -205,13 +243,14 @@ func (h *HagoCenter) loadProviders(ctx context.Context) error {
 			continue
 		}
 		pr := provider.NewProvider(provider.ProviderConfig{
-			ID:          p.ID,
-			Name:        p.Name,
-			Type:        provider.ModelType(p.Type),
-			Endpoint:    p.Endpoint,
-			Token:       p.Token,
-			Model:       p.Model,
-			Temperature: p.Temperature,
+			ID:             p.ID,
+			Name:           p.Name,
+			Type:           provider.ModelType(p.Type),
+			Endpoint:       p.Endpoint,
+			Token:          p.Token,
+			Model:          p.Model,
+			Temperature:    p.Temperature,
+			EnableThinking: p.EnableThinking,
 		})
 		h.Providers.AddProvider(pr)
 	}
@@ -338,24 +377,6 @@ func (h *HagoCenter) Start(ctx context.Context) error {
 	return nil
 }
 
-// buildToolList 构建完整的工具列表（注册工具 + MCP 工具），供 LLM 使用。
-func (h *HagoCenter) buildToolList(ctx context.Context) []provider.ToolDef {
-	tools := h.Tools.GetOpenAITools()
-	if h.MCP != nil {
-		for _, t := range h.MCP.ListTools(ctx) {
-			tools = append(tools, provider.ToolDef{
-				Type: "function",
-				Function: provider.ToolDefFunc{
-					Name:        t.Name,
-					Description: t.Description,
-					Parameters:  t.InputSchema,
-				},
-			})
-		}
-	}
-	return tools
-}
-
 // getGroupMemberInfoCached 带缓存的群成员信息查询：命中缓存直接返回，未命中调 OneBot11 API 并缓存。
 func (h *HagoCenter) getGroupMemberInfoCached(groupID, userID int64) (*adapter.GroupMemberInfo, error) {
 	if h.Adapter == nil {
@@ -384,6 +405,55 @@ func (h *HagoCenter) getGroupMemberInfoCached(groupID, userID int64) (*adapter.G
 	}
 	h.memberInfoMu.Unlock()
 	return info, nil
+}
+
+// seedBuiltinToolGuard 为内置工具幂等创建 ToolConfig 行（首次创建时写入默认
+// "仅管理员"标志），并从 DB 加载运行时权限表。
+func (h *HagoCenter) seedBuiltinToolGuard(ctx context.Context) {
+	if h.DAO == nil {
+		return
+	}
+	for _, t := range h.Tools.List() {
+		if !t.IsBuiltin() {
+			continue
+		}
+		if err := h.DAO.ToolConfig.EnsureBuiltin(ctx, t.Name(), t.Description(), adminOnlyToolNames[t.Name()]); err != nil {
+			log.Warn("内置工具配置 seed 失败", "tool", t.Name(), "err", err)
+		}
+	}
+	if err := h.loadToolAdminOnly(ctx); err != nil {
+		log.Warn("工具管理员名单加载失败", "err", err)
+	}
+}
+
+// loadToolAdminOnly 从 DB 加载"仅管理员"工具名单。
+func (h *HagoCenter) loadToolAdminOnly(ctx context.Context) error {
+	m, err := h.DAO.ToolConfig.ListAdminOnly(ctx)
+	if err != nil {
+		return err
+	}
+	h.toolAdminOnlyMu.Lock()
+	h.toolAdminOnly = m
+	h.toolAdminOnlyMu.Unlock()
+	return nil
+}
+
+// RefreshToolAdminOnly 从 DB 重载"仅管理员"工具名单（Web 配置变更后调用）。
+func (h *HagoCenter) RefreshToolAdminOnly(ctx context.Context) {
+	if err := h.loadToolAdminOnly(ctx); err != nil {
+		log.Error("刷新工具管理员名单失败", "err", err)
+		return
+	}
+	h.toolAdminOnlyMu.RLock()
+	defer h.toolAdminOnlyMu.RUnlock()
+	log.Info("工具管理员名单已刷新", "count", len(h.toolAdminOnly))
+}
+
+// isToolAdminOnly 查询工具是否标记为"仅管理员"。
+func (h *HagoCenter) isToolAdminOnly(name string) bool {
+	h.toolAdminOnlyMu.RLock()
+	defer h.toolAdminOnlyMu.RUnlock()
+	return h.toolAdminOnly[name]
 }
 
 // Stop 停止 Agent 系统。

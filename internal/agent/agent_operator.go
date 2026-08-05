@@ -28,17 +28,21 @@ func (h *HagoCenter) SetProviderActive(ctx context.Context, id string, active bo
 			return err
 		}
 		h.Providers.AddProvider(provider.NewProvider(provider.ProviderConfig{
-			ID:          p.ID,
-			Name:        p.Name,
-			Type:        provider.ModelType(p.Type),
-			Endpoint:    p.Endpoint,
-			Token:       p.Token,
-			Model:       p.Model,
-			Temperature: p.Temperature,
+			ID:             p.ID,
+			Name:           p.Name,
+			Type:           provider.ModelType(p.Type),
+			Endpoint:       p.Endpoint,
+			Token:          p.Token,
+			Model:          p.Model,
+			Temperature:    p.Temperature,
+			EnableThinking: p.EnableThinking,
 		}))
 	} else {
 		h.Providers.DelProvider(id)
 	}
+
+	// Provider 变更影响 Eino Agent 的 model adapter（构建时持有实例引用），必须重建
+	h.RebuildEinoAgent(ctx)
 	return nil
 }
 
@@ -65,14 +69,18 @@ func (h *HagoCenter) SwitchProvider(ctx context.Context, id string) error {
 		return err
 	}
 	h.Providers.AddProvider(provider.NewProvider(provider.ProviderConfig{
-		ID:          p.ID,
-		Name:        p.Name,
-		Type:        provider.ModelType(p.Type),
-		Endpoint:    p.Endpoint,
-		Token:       p.Token,
-		Model:       p.Model,
-		Temperature: p.Temperature,
+		ID:             p.ID,
+		Name:           p.Name,
+		Type:           provider.ModelType(p.Type),
+		Endpoint:       p.Endpoint,
+		Token:          p.Token,
+		Model:          p.Model,
+		Temperature:    p.Temperature,
+		EnableThinking: p.EnableThinking,
 	}))
+
+	// Provider 切换影响 Eino Agent 的 model adapter，必须重建
+	h.RebuildEinoAgent(ctx)
 	log.Info("Provider 切换完成", "id", id, "type", p.Type)
 	return nil
 }
@@ -227,6 +235,9 @@ func (h *HagoCenter) SetT2IActive(ctx context.Context, active bool) error {
 		h.T2IClient = nil
 		log.Info("T2I 服务已停用")
 	}
+
+	// T2I 状态变化影响工具可用性（text_to_image），重建 Eino Agent 自动注册/卸载
+	h.RebuildEinoAgent(ctx)
 	return nil
 }
 
@@ -259,6 +270,9 @@ func (h *HagoCenter) SetSandboxActive(ctx context.Context, active bool) error {
 		h.SandboxClient = nil
 		log.Info("Sandbox 服务已停用")
 	}
+
+	// Sandbox 状态变化影响工具可用性（create_sandbox/code_exec 等），重建 Eino Agent
+	h.RebuildEinoAgent(ctx)
 	return nil
 }
 

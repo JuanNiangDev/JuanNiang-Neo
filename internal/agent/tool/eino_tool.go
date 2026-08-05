@@ -124,8 +124,13 @@ func (w *MCPToolWrapper) Name() string {
 func BuildEinoTools(registry *ToolRegistry, mcpGroup MCPGroupCaller, mcpToolLister MCPToolLister) []tool.InvokableTool {
 	var tools []tool.InvokableTool
 
-	// 内置工具
+	// 内置工具（跳过服务不可用的：T2I/Sandbox 停用或未配置时自动卸载）
 	for _, t := range registry.List() {
+		// 通过接口断言获取可用性回调（未实现者视为始终可用）
+		if av, ok := t.(interface{ IsAvailable() bool }); ok && !av.IsAvailable() {
+			log.Debug("工具服务不可用，跳过注册", "tool", t.Name())
+			continue
+		}
 		tools = append(tools, NewEinoToolWrapper(t))
 	}
 

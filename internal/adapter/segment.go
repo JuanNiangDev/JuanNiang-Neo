@@ -18,6 +18,12 @@ func Image(file string) Segment {
 	return Segment{Type: "image", Data: map[string]any{"file": file}}
 }
 
+// Sticker 表情段。与普通图片的区别是 subType=1（OneBot11 用它区分表情与图片）。
+// file 传图床表情引用（stk://<短UUID>），发送层会自动解析为 base64。
+func Sticker(file string) Segment {
+	return Segment{Type: "image", Data: map[string]any{"file": file, "subType": 1}}
+}
+
 // FileMsg 文件 (群文件上传)。
 func FileMsg(file string) Segment {
 	return Segment{Type: "file", Data: map[string]any{"file": file}}
@@ -79,6 +85,23 @@ func BuildMessage(parts ...any) []Segment {
 // --- CQ 码解析 ---
 
 var cqCodeRe = regexp.MustCompile(`\[CQ:(\w+)((?:,[^,\]]+=.*?)*)\]`)
+
+// cqCodeNormalizeRe 匹配 CQ 码前缀，容忍 [ 后 / CQ 后 / 冒号后的空白瑕疵。
+// LLM 偶尔生成 "[ CQ:face,id=66]" 这类格式，OneBot 无法解析会原样显示在消息里。
+var cqCodeNormalizeRe = regexp.MustCompile(`\[\s*CQ\s*:\s*(\w+)`)
+
+// NormalizeCQCodes 修复 CQ 码格式瑕疵，使其可被 cqCodeRe 正确解析：
+//
+//	"[ CQ:face,id=66]"   → "[CQ:face,id=66]"
+//	"[CQ : image,file=url]" → "[CQ:image,file=url]"
+//
+// 参数部分（,key=value]）原样保留。
+func NormalizeCQCodes(s string) string {
+	if s == "" || !strings.Contains(s, "CQ") {
+		return s
+	}
+	return cqCodeNormalizeRe.ReplaceAllString(s, "[CQ:$1")
+}
 
 // ParseCQCodes 解析字符串中的 CQ 码, 返回消息段数组。
 func ParseCQCodes(raw string) []Segment {

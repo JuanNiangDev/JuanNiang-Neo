@@ -1,0 +1,11 @@
+ppid: a93c5de5-0fda-4d00-b1bb-04f897386cf1
+name: agent-ops
+version: 1.0.0
+author: JuanNiang-Neo
+description: Agent 管理示例：Provider/MCP/Tool/Skill/Session 查询 + 运行时切换（多级命令）
+entry: main.lua
+permissions:
+    - agent
+    - onebot11
+system: false
+enabled: true

@@ -30,6 +30,10 @@ type BaseTool struct {
 	parameters  openai.FunctionParameters
 	builtin     bool
 	longRunning bool
+
+	// available 服务可用性回调（如 T2I/Sandbox 客户端 getter）；
+	// nil=始终可用；返回 false 时工具不会注册进 Eino 工具列表（自动卸载）。
+	available func() bool
 }
 
 func (b BaseTool) ID() string                            { return b.id }
@@ -38,6 +42,20 @@ func (b BaseTool) Description() string                   { return b.description 
 func (b BaseTool) Parameters() openai.FunctionParameters { return b.parameters }
 func (b BaseTool) IsBuiltin() bool                       { return b.builtin }
 func (b BaseTool) IsLongRunning() bool                   { return b.longRunning }
+
+// SetAvailable 设置工具可用性回调（服务未启用/未配置时返回 false，
+// 工具会被 BuildEinoTools 过滤，不再出现在 Eino Agent 的工具列表中）。
+func (b *BaseTool) SetAvailable(fn func() bool) {
+	b.available = fn
+}
+
+// IsAvailable 判断工具当前是否可用。
+func (b BaseTool) IsAvailable() bool {
+	if b.available == nil {
+		return true
+	}
+	return b.available()
+}
 
 // ---------- 便利构造 ----------
 

@@ -216,6 +216,13 @@ func (p *openAIProvider) buildChatBody(req ChatRequest, stream bool) []byte {
 	if stream {
 		body["stream"] = true
 	}
+	if p.cfg.EnableThinking {
+		// 模型思考开关：兼容主流 OpenAI 兼容实现的扩展字段。
+		//   DeepSeek 系: thinking={"type":"enabled"}; 通义千问系: enable_thinking=true。
+		// 未知字段通常被忽略，二者同时携带覆盖面最大。
+		body["thinking"] = map[string]any{"type": "enabled"}
+		body["enable_thinking"] = true
+	}
 
 	data, _ := json.Marshal(body)
 	return data

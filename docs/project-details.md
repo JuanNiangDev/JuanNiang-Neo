@@ -19,7 +19,7 @@ flowchart TB
     OB["adapter/: OneBot11 反向 WS + Webhook<br/>事件接收 / API 调用 / 消息段构造"]
   end
   subgraph Core["核心层"]
-    API["api/: Hertz Web 引擎 + JWT + 路由 + Service(68 handler)"]
+    API["api/: Hertz Web 引擎 + JWT + 路由 + Service(69 handler)"]
     Plugin["pluggin/: gopher-lua 引擎<br/>生命周期 / API 暴露 / 命令树 / 事件拦截"]
     Agent["agent/: HagoCenter + Eino ADK ChatModelAgent<br/>Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL<br/>ConcurrencyManager (每 ChatArea 8 goroutine)"]
     CoreLib["core/: models(23表) / dao.Bundle / cache / acl"]
@@ -61,7 +61,7 @@ flowchart TB
 | **适配器** | `internal/adapter/` | OneBot11 反向 WS 服务端 + Webhook HTTP 服务端：事件解析、API 封装、消息段构造 |
 | **Agent** | `internal/agent/` | Agent 核心：`HagoCenter` 聚合 Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL + Eino ADK ChatModelAgent (ReAct loop) + ConcurrencyManager (每 ChatArea 8 goroutine)，事件循环、CronJob、回复策略 |
 | **核心库** | `internal/core/` | 数据模型 (GORM)、DAO Bundle、Redis 缓存、ACL |
-| **Web API** | `internal/api/` | Hertz Web 引擎、JWT 中间件、路由、Service（68 个管理 handler） |
+| **Web API** | `internal/api/` | Hertz Web 引擎、JWT 中间件、路由、Service（69 个 handler + 根路径 `/health`） |
 | **插件** | `internal/pluggin/` | gopher-lua 引擎：生命周期、Lua API 暴露、命令树、事件拦截 |
 | **基础设施** | `infrastructure/` | postgres、redis、sandbox、t2i 客户端（每个含 `handler` 子包，功能选项风格） |
 | **前端服务** | `internal/web/` | `SPAHandler` 通过 Hertz `NoRoute` 兜底服务 `web/dist` |
@@ -79,7 +79,7 @@ classDiagram
   class Provider { string ID; ModelType Type; string Endpoint; string Token; string Model; float32 Temperature; bool IsActive }
   class MCPServer { string ID; string ServerURL; JSONMap Headers; int Timeout; JSONSlice ToolFilter; bool IsActive }
   class Skill { string ID; JSONSlice Keywords; string RegexPattern; string PromptRef; JSONSlice ToolRefs; JSONSlice McpRefs; int Priority }
-  class ToolConfig { string ID; string Name; JSONMap Parameters; bool IsBuiltin; bool IsActive }
+  class ToolConfig { string ID; string Name; JSONMap Parameters; bool IsBuiltin; bool IsActive; bool AdminOnly }
   class Prompt { string ID; PromptType Type; string Content; bool IsSystem; bool IsActive }
   class Onebot11Adapter { uint ID; string Addr; int Port; string Token; JSONSlice AdminQQNumbers; bool Enabled }
   class WebhookConfig { uint ID; string Addr; int Port; string Token; bool Enabled }
@@ -93,9 +93,10 @@ classDiagram
   class ChatRecord { int64 ID; int64 UserID; string Role; string Content; int TokenCount; JSONMap ToolCalls }
   class ACLRule { int64 ID; ACLScope Scope; ACLPermission Permission; ACLTargetType TargetType; JSONSlice UserIDs }
   class CronJob { string ID; string CronExpr; string Message; string MessageType; int64 TargetID; bool IsActive; time Time LastRunAt }
-  class ReplyStrategyConfig { string ID; ReplyStrategy Strategy; float64 RelevanceThreshold; string BotName; bool StripMarkdown; bool AgentLite }
+  class ReplyStrategyConfig { string ID; ReplyStrategy Strategy; float64 RelevanceThreshold; string BotName; bool StripMarkdown; bool AgentLite; string RelevancePrompt; string RelevanceModel; string JudgeFailPolicy }
   class Plugin { string ID; string Name; string Version; string Path; JSONMap Config; bool IsActive }
   class SkillMemory { string ID; string Content }
+  class KnowledgeItem { string ID; string Title; string Content; JSONSlice Keywords; string KeywordStatus }
 
   ChatArea "1" --|> "1" Session
   ChatArea "1" --|> "1" ShortTermMemory
@@ -110,11 +111,12 @@ classDiagram
 - **`ChatArea`**：私聊/群聊最小隔离单元，是 Session / Memory / ChatRecord / ACLRule 的父级。由首条消息自动 `GetOrCreate` 创建，无手动创建接口。
 - **`ChatRecord`**：`id` 为自增 int64（其他模型多为 UUID）。`Session.AppendRecord` 写 Postgres 与短期记忆 Redis 写入**解耦**——前者为审计/检索，后者为 Agent 上下文窗口。
 - **单行配置**：`Onebot11Adapter`/`WebhookConfig`/`T2IConfig`/`SandboxConfig` 固定 `id=1`，首次访问 DB 不存在时 `InitConfig` 用 `OnConflict DoNothing` 创建默认行。
-- **`ReplyStrategyConfig`**：无 `DeletedAt` 的单例，默认 `strategy=always, relevance_threshold=0.5`。
+- **`ReplyStrategyConfig`**：无 `DeletedAt` 的单例，默认 `strategy=always, relevance_threshold=0.5, judge_fail_policy=drop`。
 - **Prompt `IsSystem`**：启动时 `EnsureSystemPrompt` 幂等播种 `__system_locked__`，强制拼接（顺序 SystemLocked → system → personality → custom）。
 - **Plugin `Manifest.System`**：系统插件三层守卫（Manifest.System + `PluginEngine.IsSystem()` + Service 层 Toggle/Delete）禁删/禁停。
 - **`CronJob`**：不与 ChatArea 建外键；触发时由 `cronjob.Manager` 构造合成 `adapter.Event{PostType:"cronjob", IsCronJob:true}` 经 `CronJobEvents` channel 注入事件循环。
 - **`SkillMemory`**：全局技能记忆单例（`id="global"`），存储从对话中提取的技能/知识/黑话。Compact 时由 LLM 自动更新，写回 Postgres。
+- **`KnowledgeItem`**：SQL 知识库条目，存入时由 Agent 异步提取 `Keywords`（`keyword_status`: pending→ready/failed）；对话前 `buildKnowledgeContext` 按关键词命中 + 内容 ILIKE 匹配，命中结果注入系统提示词（LRU 50 条缓存）。
 
 ## 状态管理
 
@@ -159,7 +161,7 @@ flowchart LR
 | `provider` | `provider.go` | OpenAI 兼容 `/v1/chat/completions`（流式 SSE）、`Vision`（inline base64）；`ProviderGroup` 同类型单 Active 管理 |
 | `mcp` | `mcp.go` | `mark3labs/mcp-go` SSE 客户端；`MCPGroup` 聚合连接 + `ListTools`/`CallTool`（MCP 可覆盖 builtin 同名工具） |
 | `memory` | `memory.go` + `shortterm`/`longterm`/`skillmem` | 四层记忆：短期(Redis 滑窗, 默认100条, 自动Compact) / 长期(Postgres + 内存 LRU HotArea) / 技能记忆(SkillMemory, Compact 时 LLM 自动提取) / 会话记录(Postgres 审计) |
-| `prompt` | `prompt.go` | `PromptManager` + 系统锁定提示词 `EnsureSystemPrompt` 幂等播种 + `BuildFullContext` |
+| `prompt` | `prompt.go` | `PromptManager` + 系统锁定提示词 `EnsureSystemPrompt` 幂等播种 + `BuildFullContext`（工具感知不拼入提示词，由 Eino tools 参数提供） |
 | `session` | `session.go` | `SessionManager`：`GetOrCreate` / `AppendRecord`(Postgres) / `UpdateTokenUsage` |
 | `skill` | `skill.go` | `SkillEngine.Match(input)` 按关键词 / 正则 / priority 匹配首个激活技能 |
 | `tool` | `tool.go` / `builtin.go` | `ToolRegistry` + 内置工具 `RegisterBuiltinTools`（OneBot11 / 沙箱 / T2I / vision 等），工具注册为 Eino ADK ToolNode |
@@ -171,13 +173,13 @@ flowchart LR
 |------|--------|--------|------|
 | 始终 | `log` (`jn.log`) | 3 | info/warn/error → slog |
 | 始终 | `json` (`jn.json`) | 2 | encode/decode |
-| `onebot11` | `onebot11` (`jn.onebot11`) | 21 | 消息发送 + 群管理 + 信息查询 + 请求处理 + 登录/状态/版本 |
+| `onebot11` | `onebot11` (`jn.onebot11`) | 23 | 消息发送（异步/同步）+ 群管理 + 信息查询 + 请求处理 + 登录/状态/版本 + read_file_base64 |
 | `http` | `http` (`jn.http`) | 2 | get/post（30s 超时） |
 | `database` | `database` (`jn.database`) | 2 | query/exec（共享 DB，前缀桩未生效，⚠ 权限敏感） |
 | `cache` | `cache` (`jn.cache`) | 4 | get/set/del/exists（`pluggin:<name>:` 命名空间） |
 | `t2i` | `t2i` (`jn.t2i`) | 5 | generate/generate_url + toggle/is_active/get_config |
 | `sandbox` | `sandbox` (`jn.sandbox`) | 8 | create/exec_shell/exec_python/list/delete + toggle/is_active/get_config |
-| `agent` | `agent` (`jn.agent`) | 16 | 配置查询 + Provider/MCP/Tool 切换 + switch_provider + compact_memory + get_current_chat_area |
+| `agent` | `agent` (`jn.agent`) | 17 | 配置查询 + Provider/MCP/Tool 切换 + switch_provider + compact_memory + get_current_chat_area |
 | 内置 | `jn.command` | 1 | `register(path, handler, opts)` 多级命令注册 |
 
 详见 [plugin-development.md](plugin-development.md)。
@@ -232,11 +234,11 @@ cmd/server/main.go:41 main()
 └─ go webEngine.Run() / wait ctx                main.go:248-263
 ```
 
-## 优雅退出（`cmd/server/main.go:284 shutdown`）
+## 优雅退出（`cmd/server/main.go:287 shutdown`）
 
 ```
-shutdown(adapterProv, webhookAdapter, hago, webEngine, pluginEngine)  main.go:284
-├─ hago.Stop()                                    main.go:286   ← agent.go (停止事件循环)
+shutdown(adapterProv, webhookAdapter, hago, webEngine, pluginEngine)  main.go:287
+├─ hago.Stop()                                    main.go:289   ← agent.go (占位, 仅打日志)
 ├─ webhookAdapter.Stop(ctx 5s)                    main.go:290   ← webhook.go (3s graceful)
 ├─ adapterProv.Stop(ctx 5s)                      main.go:297   ← adapter.go (close events，置 nil 以便重启)
 ├─ webEngine.Shutdown(ctx 5s)                     main.go:304   ← 先停 adapter 避免锁竞争
@@ -279,7 +281,7 @@ Adapter.SendPrivateMsg(uid, msg)                 api.go:15
 ## Agent 事件循环（核心路径）
 
 ```
-runEventLoop                                     agent/event.go:38
+runEventLoop                                     agent/event.go:39
 └─ select {
    case <-ctx.Done(): stop
    case ev := <-h.Adapter.Events():              event.go:50
@@ -297,20 +299,20 @@ runEventLoop                                     agent/event.go:38
 ### processEvent（三阶段架构）
 
 ```
-processEvent 三阶段                                  event.go:79
-├─ Phase 1: PluginEngine.Dispatch(ev)                event.go:82-87
+processEvent 三阶段                                  event.go:81
+├─ Phase 1: PluginEngine.Dispatch(ev)                event.go:83-89
 │   result.Consumed=true → return (插件拦截，不入 Agent)
 │   ev = result.Event (插件可修改事件)
-├─ Phase 2: 仅 message 事件继续                     event.go:88-91
+├─ Phase 2: 仅 message 事件继续                     event.go:90-92
 │   PostType!="message" || Message==nil → return
-├─ Phase 3: 回复策略检查                             event.go:92-98
+├─ Phase 3: 回复策略检查                             event.go:94-103
 │   skip_reply 标记时跳过检查
-│   getReplySettings(ctx) → checkReplyStrategy
+│   getReplySettings(ctx) → checkReplyStrategyFast 廉价检查
 │   never_reply → skip
 │   at_only → 仅 isAtSelf 通过
-│   relevance → relevanceAgentEvaluate (LLM/Vision 判定) >= threshold 通过
+│   relevance → 延迟到 dispatchToAgent 后 filterRelevant 批量判断
 │   always → 通过
-└─ dispatchToAgent(ctx, ev, rs)                      event.go:99
+└─ dispatchToAgent(ctx, ev, rs)                      event.go:104
     goroutine + ConcurrencyManager.Acquire(chatAreaID)
     → handleMessage(ctx, ev, chatArea, rs)
     → ConcurrencyManager.Release(chatAreaID)
@@ -319,31 +321,35 @@ processEvent 三阶段                                  event.go:79
 ### handleMessage（Eino ADK 对话主流程）
 
 ```
-handleMessage                                       event.go:190
-├─ chatArea = getChatArea(ctx, msg)                  event.go:195
-├─ ACL: 非admin/CronJob → ACL.CheckChat             event.go:213
-│   (false→append tool msg 回写)
-├─ h.Session.GetOrCreate(chatArea.ID)               event.go:224
-├─ skillMatched = h.Skills.Match(userMsg)            event.go:233
-├─ llm = h.Providers.SelectModel(ModelTypeText)      event.go:240
-├─ longTermMems = h.Memory.GetLongTermMemory          event.go:247
-├─ skillMem = h.Memory.GetSkillMemory()              event.go:257
-├─ toolDescs = h.buildToolDescriptions(ctx)           event.go:262
-├─ systemCtx = h.Prompt.BuildFullContext(longTermMem, toolDescs, skillMem)
-│                                                   event.go:270
-├─ messages 组装: systemPrompt → sessionCtx → [Skill:] → 短期记忆 → user
-│                                                   event.go:275-295
+handleMessage                                       event.go:311
+├─ msg = 批次最后一条; chatArea 缺失时 getChatArea   event.go:315-324
+├─ 聊天黑名单: isAdmin || ACL.CheckChat → 丢弃       event.go:327-341
+│   (命中黑名单直接丢弃, 不进入 Agent, 不写回 tool msg)
+├─ h.Session.GetOrCreate(chatArea.ID)               event.go:344
+├─ 收集批内用户消息(带发言人标识) + Skills.Match      event.go:351-380
+├─ Loops.Register 活跃循环 (Web 监控页展示)         event.go:388-397
+├─ longTermMems = h.Memory.GetLongTermMemory          event.go:402
+├─ skillMem = h.Memory.GetSkillMemory()              event.go:413
+├─ systemCtx = h.Prompt.BuildFullContext(longTermMem, skillMem)
+│   (工具感知不拼入提示词, 由 Eino 每次模型调用自动携带 tools 参数)
+├─ buildKnowledgeContext(批内消息): LRU/DB 模糊匹配知识库, 命中拼入 systemCtx
+│   (关键词命中 + 内容 ILIKE 兜底, 限 5 条, LRU 50 条缓存)
+│                                                   event.go:415
+├─ einoMsgs 组装: system → sessionCtx → [Skill:] → 短期记忆 → user
+│                                                   event.go:418-437
 ├─ AddShortTermMessage + Session.AppendRecord (Postgres 解耦)
-│                                                   event.go:290
-├─ 读 ReplyStrategy: skipSilenceCheck / agentLite    event.go:301-305
-├─ h.EinoAgent.Run(ctx, einoMessages, agentOptions)  event.go:330
-│   Eino ADK ReAct 循环（工具调用同步完成）
-├─ 解析 agentResult → 提取文本回复
-├─ 非空内容:
+│                                                   event.go:440-447
+├─ 读 ReplyStrategy: skipSilenceCheck / agentLite    event.go:450-465
+│   + WithMsgSessionCtx + DeferredSendQueue 入队       event.go:468-483
+├─ adk.NewRunner(ctx).Run(ctx, einoMsgs)             event.go:491-520
+│   Eino ADK ReAct 循环（工具调用同步完成, 累计每轮 token）
+├─ 任务期间排队的发送消息 deferredSends.Flush 统一发送
+│                                                   event.go:545
+├─ 非空内容且未投递当前会话:
 │   群聊检查 isSilenceResponse("__NO_REPLY__" 或静默短语) → drop
 │   sendReply + recordChat("assistant",...) + Memory.AddShortTermMessage
-│                                                   event.go:370-395
-└─ Session.UpdateTokenUsage                          event.go:400
+│                                                   event.go:571-584
+└─ Session.RecordTokenUsage (会话总账 + 每日统计)    event.go:526-530
 ```
 
 ### 工具调用（Eino ADK ReAct 循环内同步执行）
@@ -356,10 +362,15 @@ Eino ADK ReAct 循环 (MaxIterations=20)
    ├─ LLM.Chat(messages, tools) → resp
    ├─ resp 无 ToolCalls → 返回文本回复，循环结束
    └─ resp 有 ToolCalls:
-      ├─ ACL (admin bypass): CheckMCP / CheckTool → 否定回写 tool-role msg
-      ├─ 选源: h.MCP.HasTool(name) 优先, 否则 h.Tools.Get
-      ├─ MCP.CallTool / Tools.Execute 同步执行 → result append
-      └─ 继续下一轮 ReAct 迭代
+      ├─ 工具来源: buildEinoAgent 时合并的 Eino 工具列表
+      │   (builtin 在前 + MCP 追加在后, 见 tool/eino_tool.go::BuildEinoTools)
+      ├─ 由 JuanNiangMiddleware.WrapInvokableToolCall 包装后同步执行
+      │   (记录日志 + 更新 LoopTracker 当前工具 + 仅管理员工具校验)
+      ├─ 执行结果回填 tool-role msg → 继续下一轮 ReAct 迭代
+      └─ 权限: ACL 仅聊天黑名单(handleMessage 阶段); 标记 admin_only 的工具
+         (ToolConfig 表, Tools 页可逐工具开关)在 WrapInvokableToolCall 强制校验
+         调用者为 Admins 列表内, 否则拒绝执行(防提示词注入); 内置群管理工具
+         首次启动 seed 默认开启
 ```
 
 > **已移除**：BgTaskExecutor 和 DrainerAgent 已完全移除。所有工具调用（包括长时间运行的操作）均在 Eino ADK 的 ReAct 循环内同步完成。
@@ -367,19 +378,21 @@ Eino ADK ReAct 循环 (MaxIterations=20)
 ## CronJob 调度
 
 ```
-CronJobManager.Run                                 cronjob/manager.go:40
+CronJobManager.Run                                 cronjob/manager.go:46
 ├─ reloadAll: ListActive → cron.AddFunc(expr, makeJobFunc(job))
 │   makeJobFunc(job):
 │     触发时 DAO.CronJob.UpdateLastRun(now)
-│     构造 adapter.MessageEvent{MessageType, RawMessage=job.Message, GroupID|UserID}
-│     构造 adapter.Event{PostType:"cronjob", IsCronJob:true, Message:msg, Time:now}
+│     构造 adapter.Event{PostType:"cronjob", IsCronJob:true,
+│       CronJobPayload, CronJobPluginIDs, Time:now}
+│     可选 Message: 由 job.Message/MessageType/TargetID 组装
+│       (仅作为插件 on_cronjob 的 raw_message 等上下文, 不进 LLM)
 │     非阻塞 send to eventChan (= HagoCenter.CronJobEvents)
-│     manager.go:91-126
+│     manager.go:98-136
 ├─ cron.Start()
 └─ <-ctx → cron.Stop()
 
 API 侧变更: AddCronJob/UpdateCronJob/DeleteCronJob/ToggleCronJob
-   → svc.CronJobManager.Reload() 同步调度器      service.go:1693/1725/1762/1776
+   → svc.CronJobManager.Reload() 同步调度器      service.go:1733/1768/1808/1822
 ```
 
 ## Web API 请求 → handler
@@ -388,7 +401,7 @@ API 侧变更: AddCronJob/UpdateCronJob/DeleteCronJob/ToggleCronJob
 Hertz server (engine.go:18)
 └─ middleware.Recovery → middleware.CORS → router.RegisterRoutes
    └─ /api/v1 组: 中间件 JWTAuth? (各路由按需)
-      └─ svc.<Handler> (68 个, 内部走 DTO transfer + DAO)
+      └─ svc.<Handler> (69 个, 内部走 DTO transfer + DAO)
         成功 → dto.GenFinalResponse(OK, data) → 200
         失败 → GenFinalResponse(<错误码>, nil) → 200
 未命中路由:
@@ -415,7 +428,7 @@ log.Info("msg", k, v)  → Logger.log()              logging/logger.go:182
 slog 兼容: Handler 桥接器将 slog 调用路由到新系统 (logging/handler.go)
 GORM 集成: GormLogger 将 SQL 日志路由到 logging 模块 (infrastructure/postgres/gorm_logger.go)
 
-GET /api/v1/logs/stream → svc.StreamLogs          service.go:1567
+GET /api/v1/logs/stream → svc.StreamLogs          service.go:1634
 ├─ sse.NewWriter(c)
 ├─ 阶段1: LogHub.Recent() 250 条按序 WriteEvent("log")
 ├─ 阶段2: subscribe() 实时 WriteEvent("log", entry)
@@ -438,7 +451,7 @@ JuanNiang-Neo 有三类外部事件源，最终都汇入 `HagoCenter.runEventLoo
 
 ## EventLoop（2 个 goroutine）
 
-`HagoCenter.Start` 启动两个并发 goroutine（`agent.go:303-304`）：
+`HagoCenter.Start` 启动两个并发 goroutine（`agent.go:334-339`）：
 
 ```mermaid
 flowchart TB
@@ -471,7 +484,7 @@ flowchart TD
 
 ## 事件分发决策树（processEvent 三阶段）
 
-`processEvent`（`event.go:79-111`）采用三阶段架构：Plugin 拦截 → 消息过滤 → 回复策略检查 → 异步派发 Agent。
+`processEvent`（`event.go:81-117`）采用三阶段架构：Plugin 拦截 → 消息过滤 → 回复策略检查 → 异步派发 Agent。
 
 ```mermaid
 flowchart TD
@@ -487,7 +500,7 @@ flowchart TD
   P3C -->|否| STR{"ReplyStrategy?"}
   STR --> never_reply["skip"]
   STR --> at_only["仅 isAtSelf 通过"]
-  STR --> relevance["relevanceAgentEvaluate ≥ threshold 通过"]
+  STR --> relevance["filterRelevant: 规则快路径 + 批量判断/缓存/降级"]
   STR --> always["通过"]
   at_only --> DA
   relevance --> DA
@@ -498,7 +511,7 @@ flowchart TD
 ```
 
 > `isAtSelf`（`reply_strategy.go`）做的是精确 `[CQ:at,qq=<self>]` 匹配；优先用当前 `Adapter.SelfID()` 而非缓存 `SelfQQ`，支持机器人换号后立即生效。
-> `relevanceAgentEvaluate`（`reply_strategy.go`）：消息含图片段且有 Vision Provider → 走 Vision 判定；否则 text 模型 temp 0.3 判定，解析 `{relevance, reason}` JSON。
+> relevance 判断优化管线（`filterRelevant` → `relevanceBatchEvaluate`）：@/命令/提及名字 → 必回（0 次 LLM）；噪音消息（纯表情/过短/仅 URL）→ 规则丢弃；其余候选合并为**一次** LLM 批量判断（含图消息标注 `[图片]`，单条候选走原分数判断）。判断结果写 Redis（related=15s 对话轮次放宽 / unrelated=30s 冷却），判断并发全局上限 4、单次 5s 超时，失败按 `judge_fail_policy`（drop/reply）降级；群聊刷屏（1s≥5 条）时批窗口拉长到 3s 并降级为只回必回消息。
 
 ## 一条消息的全程（OneBot11 → 回执）
 
@@ -528,7 +541,7 @@ sequenceDiagram
   HM->>HM: GetOrCreate ChatArea/Session
   HM->>HM: ACL.CheckChat (admin 跳过)
   HM->>HM: Skills.Match + Memory + SkillMemory
-  HM->>HM: Prompt.BuildFullContext<br/>(SystemLocked + skillMemory + tools)
+  HM->>HM: Prompt.BuildFullContext<br/>(SystemLocked + 长期记忆 + skillMemory)<br/>工具感知交由 Eino tools 参数
   HM->>HM: AddShortTermMessage(Redis) + AppendRecord(Postgres)
   HM->>EA: EinoAgent.Run (ReAct 循环, MaxIterations=20)
   EA->>EA: LLM.Chat → 工具调用(同步) → 循环
@@ -547,21 +560,22 @@ sequenceDiagram
   participant Mgr as CronJobManager
   participant DB as Postgres
   participant EL as runEventLoop
-  participant HM as handleMessage
-  participant LLM as Providers
+  participant PE as processEvent (Plugin.Dispatch)
+  participant Plugin as Lua 插件 (on_cronjob)
   participant QQ as QQ
 
   Cron->>Mgr: 到期触发 makeJobFunc(job)
   Mgr->>DB: UpdateLastRun(now)
-  Mgr->>Mgr: 构造 MessageEvent + 合成 Event<br/>(PostType="cronjob", IsCronJob=true)
+  Mgr->>Mgr: 构造 Event{PostType:"cronjob",<br/>CronJobPayload, CronJobPluginIDs}
   Mgr->>EL: send → CronJobEvents (满则丢)
-  EL->>EL: 分支4 → processEvent (PostType=="cronjob" 跳策略/ACL)
-  EL->>HM: handleMessage (用户视角处理 job.Message)
-  HM->>LLM: Chat (可调 browser_search 等工具)
-  HM->>QQ: sendReply
+  EL->>PE: 分支4 → processEvent (PostType=="cronjob")
+  PE->>Plugin: PluginEngine.Dispatch → on_cronjob(event)<br/>(按 plugin_ids 过滤, event.payload 透传)
+  Plugin->>QQ: onebot11.send_*_msg (可选)
 ```
 
-API 侧增删改后 `Manager.Reload()` 同步调度器（`service.go:1693/1725/1762/1776`），无需重启进程。详见 [webhook-cronjob.md](webhook-cronjob.md)。
+> CronJob 事件只派发给 Lua 插件（`on_cronjob` 回调），**不进入 LLM Agent**、不经过回复策略与 ACL。CronJob 的 `message`/`message_type`/`target_id` 字段仅作为 `event.raw_message` 等上下文透传给插件。
+
+API 侧增删改后 `Manager.Reload()` 同步调度器（`service.go:1733/1768/1808/1822`），无需重启进程。详见 [webhook-cronjob.md](webhook-cronjob.md)。
 
 ## Webhook 注入流
 
@@ -589,7 +603,7 @@ sequenceDiagram
 
 - **Adapter 重启不会击穿事件循环**：`Adapter.Stop` 会 `close(events)` 并置 nil，`Start` 时若 `events==nil` 重建（`adapter.go:36-62`）；EventLoop 分支2 检测关闭后 sleep 1s 重新取句柄（`event.go:52`）。
 - **Redis 与 Postgres 解耦**：短期记忆写 Redis 是为了 LLM 上下文窗口，`Session.AppendRecord` 写 Postgres 是为了审计检索；任一失败不影响另一路。
-- **Admins 绕过 ACL**：Admins 列表（来自 `Onebot11Adapter.AdminQQNumbers`）从 adapter 透传到每条 `Event`，`handleMessage`/`CheckMCP`/`CheckTool` 对 admin 一律放行。
+- **Admins 绕过 ACL**：Admins 列表（来自 `Onebot11Adapter.AdminQQNumbers`）从 adapter 透传到每条 `Event`；`handleMessage` 中 `isAdmin(userID, admins) || ACL.CheckChat(...)` 决定消息是否进入 Agent。ACL 现仅管理聊天黑名单（仅 `deny` 规则生效，`allow` 规则不再生效）。
 - **`__NO_REPLY__` 静默**：LLM 可主动输出 `__NO_REPLY__` 让系统不发任何 QQ 消息（避免群聊噪音）。
 - **SystemLocked 强制拼接**：每次对话系统提示词必含 `__system_locked__` 内容，前端不能停用，保证 LLM 知道能用 T2I 富文本、分消息段、权限层级等行为约束。
 - **工具调用全同步**：所有工具调用（包括长时间运行的操作）均在 Eino ADK ReAct 循环内同步完成，无后台任务分流。BgTaskExecutor 和 DrainerAgent 已完全移除。
@@ -791,7 +805,7 @@ Lua 侧通过 SDK `jn.command.register(path, handlerFn, opts)` 注册，path 可
 
 ## 注入的 Lua 全局表
 
-按 `permissions` 字段 gated，由 `injectBaseAPI`（`pluggin.go:503-568`）注入。完整签名见 [plugin-development.md](plugin-development.md#api-参考)。
+按 `permissions` 字段 gated，由 `injectBaseAPI`（`pluggin.go:973`）注入。完整签名见 [plugin-development.md](plugin-development.md#api-参考)。
 
 | 全局表 | 权限 | 说明 |
 |--------|------|------|
