@@ -70,15 +70,17 @@
           <v-btn icon="mdi-close" size="small" variant="text" @click="detailDialog = false" />
         </v-card-title>
         <v-divider />
-        <v-tabs v-model="tab" color="primary" class="px-3 detail-tabs">
-          <v-tab value="readme"><v-icon start>mdi-text-box-outline</v-icon>说明</v-tab>
-          <v-tab value="meta"><v-icon start>mdi-code-json</v-icon>元数据 / 命令</v-tab>
-          <v-tab value="config"><v-icon start>mdi-tune-variant</v-icon>配置</v-tab>
-        </v-tabs>
-        <v-divider />
-        <v-card-text class="px-4 pb-4 pt-4 detail-body">
-          <!-- README -->
-          <v-window v-model="tab">
+        <div class="d-flex detail-main">
+          <!-- 左侧纵向 Tab 栏 -->
+          <v-tabs v-model="tab" direction="vertical" color="primary" class="detail-tabs">
+            <v-tab value="readme"><v-icon start>mdi-text-box-outline</v-icon>说明</v-tab>
+            <v-tab value="meta"><v-icon start>mdi-code-json</v-icon>元数据</v-tab>
+            <v-tab value="config"><v-icon start>mdi-tune-variant</v-icon>配置</v-tab>
+          </v-tabs>
+          <v-divider vertical />
+          <v-card-text class="px-4 pb-4 pt-4 detail-body">
+            <!-- README -->
+            <v-window v-model="tab">
             <v-window-item value="readme">
               <div v-if="readmeLoading" class="text-center pa-8"><v-progress-circular indeterminate /></div>
               <div v-else-if="readmeContent" class="markdown-body" v-html="renderedReadme" />
@@ -172,7 +174,8 @@
               </div>
             </v-window-item>
           </v-window>
-        </v-card-text>
+          </v-card-text>
+        </div>
         <v-divider />
         <v-card-actions class="pa-4">
           <PluginEnableToggle
@@ -472,7 +475,7 @@ onMounted(fetch)
 .markdown-body :deep(code) { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; }
 .markdown-body :deep(img) { max-width: 100%; }
 .cmd-code { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; padding: 2px 6px; background: rgba(var(--v-theme-on-surface), 0.06); border-radius: 4px; }
-/* 弹窗内容超高时仅内容区内部滚动，固定顶部标题/tab/底部按钮；窗口尺寸固定 */
+/* 弹窗内容超高时仅内容区内部滚动，固定顶部标题/底部按钮；窗口尺寸固定 */
 .detail-card {
   width: 100%;
   height: 80vh;
@@ -482,9 +485,21 @@ onMounted(fetch)
   flex-direction: column;
   overflow: hidden;
 }
-.detail-body {
+
+/* 中部：左侧纵向 tab + 右侧内容区 */
+.detail-main {
   flex: 1 1 auto;
   min-height: 0;
+}
+.detail-tabs {
+  width: 128px;
+  min-width: 128px;
+  padding: 8px 0;
+}
+.detail-tabs :deep(.v-slide-group__container) { overflow-y: auto; }
+.detail-body {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   display: flex;
   flex-direction: column;
