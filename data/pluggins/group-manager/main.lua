@@ -114,13 +114,18 @@ end, {
 -- --------------------------------------------------------------------
 function on_notice(event)
     if event.notice_type == "group_increase" then
-        jn.onebot11.send_group_msg(event.group_id,
-            "[CQ:at,qq=" .. event.user_id .. "] 欢迎加入本群！请查看群公告~")
+        local msg = config.get("welcome_message") or ""
+        if msg ~= "" then
+            msg = msg:gsub("{user}", "[CQ:at,qq=" .. event.user_id .. "]")
+            jn.onebot11.send_group_msg(event.group_id, msg)
+        end
     end
     -- 戳一戳自动回应
     if event.notice_type == "notify" and event.sub_type == "poke" then
-        jn.onebot11.send_group_msg(event.group_id,
-            "[CQ:at,qq=" .. event.user_id .. "] 别戳啦，再戳要散架了！")
+        if config.get("poke_reply") ~= false then
+            jn.onebot11.send_group_msg(event.group_id,
+                "[CQ:at,qq=" .. event.user_id .. "] 别戳啦，再戳要散架了！")
+        end
     end
 end
 
@@ -129,7 +134,8 @@ end
 -- --------------------------------------------------------------------
 function on_request(event)
     if event.request_type == "friend" then
-        if event.comment and event.comment:find("卷娘") then
+        local code = config.get("friend_code") or ""
+        if code ~= "" and event.comment and event.comment:find(code, 1, true) then
             jn.onebot11.handle_friend_request(event.flag, true, "暗号正确，欢迎")
             log.info("已自动同意好友申请", event.user_id)
         else

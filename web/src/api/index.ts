@@ -149,6 +149,7 @@ export const storeApi = {
   config: () => client.get('/plugin-store/config'),
   saveConfig: (cfg: any) => client.put('/plugin-store/config', cfg),
   addMirror: (mirror: string) => client.post('/plugin-store/mirror', { mirror }),
+  testMirror: (mirror: string) => client.post('/plugin-store/mirror/test', { mirror }),
   removeMirror: (mirror: string) => client.delete('/plugin-store/mirror', { data: { mirror } }),
 }
 

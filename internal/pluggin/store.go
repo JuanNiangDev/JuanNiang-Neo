@@ -246,7 +246,7 @@ func (sc *StoreClient) List() ([]StorePluginEntry, error) {
 }
 
 func (sc *StoreClient) GetReadmeRaw(pluginPath string) (string, error) {
-	data, err := sc.fetch(pluginPath + "/README.md")
+	data, err := sc.fetch("plugins/" + pluginPath + "/README.md")
 	if err != nil {
 		return "", err
 	}
@@ -254,11 +254,19 @@ func (sc *StoreClient) GetReadmeRaw(pluginPath string) (string, error) {
 }
 
 func (sc *StoreClient) GetAvatarRaw(pluginPath string) ([]byte, error) {
-	return sc.fetch(pluginPath + "/avatar.png")
+	return sc.fetch("plugins/" + pluginPath + "/avatar.png")
 }
 
 func (sc *StoreClient) DownloadPlugin(path string) ([]byte, error) {
 	return sc.fetch("dist/" + path + ".zip")
+}
+
+// TestMirror 测试指定镜像源是否可用（拉取 plugins.json 并返回耗时）。
+func (sc *StoreClient) TestMirror(mirror string) (time.Duration, error) {
+	u := sc.resolveURL(mirror, "plugins.json")
+	start := time.Now()
+	_, err := sc.fetchOne(u)
+	return time.Since(start), err
 }
 
 // InstallPluginZip 将商店下载的 zip 解压安装到 data/pluggins/<name>/ 并加载。

@@ -6,8 +6,10 @@ HTTP 请求示例：`http.get` / `http.post`，对接一言 API、wttr.in 天气
 
 ```
 data/pluggins/http-tools/
-├── pluggin.yaml
-├── main.lua
+├── pluggin.yaml   # 插件清单（名称/入口/权限）
+├── main.lua       # 插件逻辑
+├── config.yaml    # 动态配置声明
+├── avatar.png     # 插件图标
 └── README.md
 ```
 

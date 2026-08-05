@@ -43,7 +43,7 @@
 
     <!-- 详情弹窗 -->
     <v-dialog v-model="detailDialog" max-width="800" scrollable>
-      <v-card rounded="lg">
+      <v-card rounded="lg" class="detail-card">
         <v-card-title class="d-flex align-center pa-4">
           <v-avatar size="40" rounded="lg" class="me-3">
             <v-img v-if="detailAvatar" :src="detailAvatar" contain />
@@ -57,7 +57,7 @@
           <v-btn icon="mdi-close" size="small" variant="text" @click="detailDialog = false" />
         </v-card-title>
         <v-divider />
-        <v-card-text class="pa-4" style="min-height:200px">
+        <v-card-text class="pa-4 detail-body" style="min-height:200px">
           <div v-if="readmeLoading" class="text-center pa-8"><v-progress-circular indeterminate /></div>
           <div v-else-if="readmeContent" class="markdown-body" v-html="renderedReadme" />
           <div v-else class="text-center pa-8 text-medium-emphasis">该插件没有说明文档</div>
@@ -71,7 +71,7 @@
     </v-dialog>
 
     <!-- 镜像源设置 -->
-    <v-dialog v-model="settingsDialog" max-width="700">
+    <v-dialog v-model="settingsDialog" max-width="720">
       <v-card rounded="lg">
         <v-card-title>镜像源设置</v-card-title>
         <v-divider />
@@ -90,14 +90,30 @@
             </v-row>
           </v-form>
 
-          <div class="text-caption text-medium-emphasis mb-2 mt-2">自定义镜像源（已内置 GitHub / ghproxy / gitmirror / jsDelivr）</div>
+          <div class="text-caption text-medium-emphasis mb-2 mt-4">镜像源（下拉选择或手动输入新地址，需包含 {path} 占位符）</div>
+          <div class="d-flex align-center" style="gap:8px">
+            <v-combobox
+              v-model="mirrorInput"
+              :items="allMirrors"
+              label="选择或输入镜像地址"
+              variant="outlined"
+              density="compact"
+              hide-details
+              clearable
+            />
+            <v-btn color="success" variant="tonal" prepend-icon="mdi-access-point" :loading="testingMirror" @click="testMirror">测试</v-btn>
+            <v-btn color="primary" variant="tonal" prepend-icon="mdi-plus" :disabled="!canAddMirror" @click="addMirror">添加</v-btn>
+          </div>
+          <div v-if="mirrorTestResult" class="mt-2" :class="mirrorTestOk ? 'text-success' : 'text-error'">
+            <v-icon size="small" class="me-1">{{ mirrorTestOk ? 'mdi-check-circle' : 'mdi-alert-circle' }}</v-icon>
+            {{ mirrorTestResult }}
+          </div>
+
+          <div class="text-caption text-medium-emphasis mb-2 mt-4">已添加的自定义镜像源（内置镜像始终优先）</div>
+          <div v-if="customMirrors.length === 0" class="text-caption text-medium-emphasis">暂无自定义镜像源</div>
           <div v-for="m in customMirrors" :key="m" class="d-flex align-center mb-2" style="gap:8px">
             <code class="mirror-code flex-grow-1">{{ m }}</code>
             <v-btn icon="mdi-delete" size="small" variant="text" color="error" @click="removeMirror(m)" />
-          </div>
-          <div class="d-flex align-center" style="gap:8px">
-            <v-text-field v-model="newMirror" label="新镜像地址（含 {path} 占位符）" variant="outlined" density="compact" hide-details />
-            <v-btn color="primary" variant="tonal" prepend-icon="mdi-plus" @click="addMirror">添加</v-btn>
           </div>
         </v-card-text>
         <v-divider />
@@ -143,9 +159,27 @@ const renderedReadme = computed(() => readmeContent.value ? marked.parse(readmeC
 
 const settingsDialog = ref(false)
 const configForm = ref({ repo_owner: '', repo_name: '', branch: 'main' })
+const allMirrors = ref<string[]>([])
 const customMirrors = ref<string[]>([])
-const newMirror = ref('')
+const mirrorInput = ref('')
+const testingMirror = ref(false)
+const mirrorTestResult = ref('')
+const mirrorTestOk = ref(false)
 const savingConfig = ref(false)
+
+// 内置镜像前缀（用于区分自定义镜像）
+const builtinMirrorPrefixes = [
+  'https://raw.githubusercontent.com',
+  'https://ghproxy',
+  'https://gh-proxy',
+  'https://raw.gitmirror',
+  'https://cdn.jsdelivr',
+]
+
+const canAddMirror = computed(() => {
+  const m = (mirrorInput.value || '').trim()
+  return m !== '' && m.includes('{path}') && !allMirrors.value.includes(m)
+})
 
 async function fetchStore() {
   loading.value = true
@@ -201,17 +235,34 @@ async function fetchConfig() {
       repo_name: cfg.repo_name || 'JuanNiang-Plugins',
       branch: cfg.branch || 'main',
     }
-    customMirrors.value = data.mirrors?.filter((m: string) => !m.startsWith('https://raw.githubusercontent') && !m.startsWith('https://ghproxy') && !m.startsWith('https://gh-proxy') && !m.startsWith('https://raw.gitmirror') && !m.startsWith('https://cdn.jsdelivr')) || []
+    allMirrors.value = (data.mirrors || []).slice()
+    customMirrors.value = (data.mirrors || []).filter((m: string) => !builtinMirrorPrefixes.some((p) => m.startsWith(p)))
   } catch { /* ignore */ }
 }
 
+async function testMirror() {
+  const m = (mirrorInput.value || '').trim()
+  if (!m) return
+  testingMirror.value = true
+  mirrorTestResult.value = ''
+  try {
+    const res = await storeApi.testMirror(m)
+    const latency = res.data?.data?.latency_ms ?? 0
+    mirrorTestOk.value = true
+    mirrorTestResult.value = `连接成功，延迟 ${latency} ms`
+  } catch (e: any) {
+    mirrorTestOk.value = false
+    mirrorTestResult.value = `连接失败：${e?.response?.data?.data?.error_detail || e?.response?.data?.info || e?.message || '未知错误'}`
+  } finally { testingMirror.value = false }
+}
+
 async function addMirror() {
-  const m = newMirror.value.trim()
+  const m = (mirrorInput.value || '').trim()
   if (!m) return
   try {
     await storeApi.addMirror(m)
     toastStore.success('已添加镜像')
-    newMirror.value = ''
+    mirrorInput.value = ''
     await fetchConfig()
   } catch (e: any) { toastStore.error(e?.response?.data?.info || e?.message || '添加失败') }
 }
@@ -242,6 +293,9 @@ onMounted(() => {
 <style scoped>
 .store-card { cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; }
 .store-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.12) !important; }
+/* 弹窗内容超高时内部滚动，避免内容溢出 */
+.detail-card { max-height: 85vh; display: flex; flex-direction: column; overflow: hidden; }
+.detail-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .store-desc {
   display: -webkit-box;
   -webkit-line-clamp: 2;

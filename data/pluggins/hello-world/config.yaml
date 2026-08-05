@@ -1,0 +1,17 @@
+# ====================================================================
+# hello-world 插件配置
+# ====================================================================
+# 每个配置项由 key / type / label / description / default 声明。
+# type 支持三种：
+#   bool   → Web 面板开关
+#   string → Web 面板单行输入框
+#   list   → Web 面板可增删的多项输入框
+# 插件通过 jn.config.get("key") / jn.config.all() 读取。
+# ====================================================================
+
+configs:
+  - key: default_name
+    type: string
+    label: 默认称呼
+    description: /hello 未指定名字时使用的称呼
+    default: "朋友"

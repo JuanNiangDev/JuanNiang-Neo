@@ -1395,6 +1395,31 @@ func (s *Service) StoreMirrorAdd(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+// StoreMirrorTest 测试指定镜像源是否可用（拉取 plugins.json 验证）。
+func (s *Service) StoreMirrorTest(ctx context.Context, c *app.RequestContext) {
+	if s.StoreClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "StoreClient 未初始化"}))
+		return
+	}
+	var req struct {
+		Mirror string `json:"mirror"`
+	}
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if req.Mirror == "" {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "镜像地址不能为空"}))
+		return
+	}
+	latency, err := s.StoreClient.TestMirror(req.Mirror)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{"latency_ms": latency.Milliseconds()}))
+}
+
 // StoreMirrorRemove 删除一个自定义镜像源。
 func (s *Service) StoreMirrorRemove(ctx context.Context, c *app.RequestContext) {
 	if s.StoreClient == nil {

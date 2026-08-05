@@ -8,6 +8,8 @@ JuanNiang-Neo 插件入门示例，覆盖插件最基础的三件事：**命令�
 data/pluggins/hello-world/
 ├── pluggin.yaml   # 插件清单（名称/入口/权限）
 ├── main.lua       # 插件逻辑
+├── config.yaml    # 动态配置声明（default_name 可在 Web 面板修改）
+├── avatar.png     # 插件图标
 └── README.md
 ```
 

@@ -90,6 +90,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.GET("/plugin-store/config", auth, svc.StoreConfigGet)
 	api.PUT("/plugin-store/config", auth, svc.StoreConfigUpdate)
 	api.POST("/plugin-store/mirror", auth, svc.StoreMirrorAdd)
+	api.POST("/plugin-store/mirror/test", auth, svc.StoreMirrorTest)
 	api.DELETE("/plugin-store/mirror", auth, svc.StoreMirrorRemove)
 
 	// ACL

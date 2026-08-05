@@ -111,6 +111,7 @@ jn.config.schema()       -- 完整 schema
 | GET | `/api/v1/plugin-store/config` | 商店配置 + 镜像列表 |
 | PUT | `/api/v1/plugin-store/config` | 更新商店配置 |
 | POST | `/api/v1/plugin-store/mirror` | 添加自定义镜像 |
+| POST | `/api/v1/plugin-store/mirror/test` | 测试镜像源连通性（拉取 `plugins.json` 验证并返回延迟） |
 | DELETE | `/api/v1/plugin-store/mirror` | 删除自定义镜像 |
 
 ## 5. 镜像源与国内加速
@@ -125,7 +126,7 @@ https://raw.gitmirror.com/{owner}/{repo}/{branch}/{path}
 https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}
 ```
 
-镜像模板支持占位符：`{owner}` `{repo}` `{branch}` `{path}`。用户可在 Web 「镜像源设置」添加/删除自定义镜像（需包含 `{path}` 占位符），持久化到 `data/plugin_store.json`。
+镜像模板支持占位符：`{owner}` `{repo}` `{branch}` `{path}`。Web 「镜像源设置」中镜像源以**下拉选择列表**展示（可手动输入新地址添加），每个镜像可点击「测试」验证连通性（拉取 `plugins.json` 并返回延迟）。自定义镜像持久化到 `data/plugin_store.json`。
 
 ## 6. 插件仓库（JuanNiang-Plugins）
 
@@ -133,6 +134,7 @@ https://cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}
 
 - `plugins.json` → 分片索引 `{ total, chunks, updated_at }`
 - `metadata/chunk_N.json` → 插件条目数组（含 `name/version/author/description/path/image/has_config/has_readme`）
+- 商店客户端按以下路径拉取文件：元数据在仓库根（`plugins.json` / `metadata/`），插件的 README/头像在 `plugins/<name>/` 下，安装包在 `dist/<name>.zip`（`dist/` 由每晚 workflow 强制提交）
 
 ### GitHub Workflow
 

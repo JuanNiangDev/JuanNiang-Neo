@@ -17,20 +17,9 @@
     </div>
     <v-container fluid class="pa-0">
       <v-row class="d-flex flex-wrap">
-        <v-col v-for="item in filteredItems" :key="item.id || item.name" cols="12" sm="6" md="4" lg="3" xl="2">
+        <v-col v-for="item in filteredItems" :key="item.id || item.name" cols="12" sm="6" md="4" lg="3">
           <v-card rounded="lg" elevation="1" class="plugin-card" @click="openDetail(item)">
-            <div class="d-flex justify-end pa-2 plugin-toggle">
-              <v-switch
-                :model-value="item.is_active"
-                :disabled="item.is_system"
-                color="primary"
-                density="compact"
-                hide-details
-                @update:model-value="(v) => toggle(item.id || item.name, !!v)"
-                @click.stop
-              />
-            </div>
-            <div class="d-flex flex-column align-center px-2 pb-4">
+            <div class="d-flex flex-column align-center pa-4">
               <v-avatar size="72" rounded="lg" class="mb-3 plugin-avatar">
                 <v-img
                   v-if="avatarSrc[item.id || item.name]"
@@ -46,6 +35,19 @@
                 <v-chip size="x-small" variant="tonal" color="grey">v{{ item.version }}</v-chip>
               </div>
             </div>
+            <v-divider />
+            <v-card-actions>
+              <v-switch
+                :model-value="item.is_active"
+                :disabled="item.is_system"
+                color="primary"
+                density="compact"
+                hide-details
+                :label="item.is_active ? '已启用' : '已停用'"
+                @update:model-value="(v) => toggle(item.id || item.name, !!v)"
+                @click.stop
+              />
+            </v-card-actions>
           </v-card>
         </v-col>
       </v-row>
@@ -423,7 +425,6 @@ onMounted(fetch)
 <style scoped>
 .plugin-card { cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; }
 .plugin-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.12) !important; }
-.plugin-toggle { position: absolute; top: 0; right: 0; z-index: 2; }
 .plugin-avatar { background: rgba(var(--v-theme-primary), 0.08); }
 .plugin-name { word-break: break-all; }
 .plugin-desc {
@@ -439,7 +440,8 @@ onMounted(fetch)
 .markdown-body :deep(code) { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; }
 .markdown-body :deep(img) { max-width: 100%; }
 .cmd-code { font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace; font-size: 12px; padding: 2px 6px; background: rgba(var(--v-theme-on-surface), 0.06); border-radius: 4px; }
-.detail-card { max-height: 90vh; display: flex; flex-direction: column; }
-.detail-body { overflow-y: auto; }
+/* 弹窗内容超高时内部滚动，避免内容盖住顶部 tab 栏 */
+.detail-card { max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+.detail-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .config-item { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08); padding-bottom: 12px; }
 </style>
