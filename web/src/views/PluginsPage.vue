@@ -55,7 +55,7 @@
     </v-container>
 
     <!-- 详情弹窗: README / 元数据+命令 / 配置 三页签 -->
-    <v-dialog v-model="detailDialog" width="900" scrollable>
+    <v-dialog v-model="detailDialog" width="1000" scrollable>
       <v-card rounded="lg" class="detail-card">
         <v-card-title class="d-flex align-center pa-4">
           <v-avatar size="40" rounded="lg" class="me-3">
@@ -475,7 +475,7 @@ onMounted(fetch)
 /* 弹窗内容超高时仅内容区内部滚动，固定顶部标题/tab/底部按钮；窗口尺寸固定 */
 .detail-card {
   width: 100%;
-  height: 78vh;
+  height: 80vh;
   min-height: 420px;
   max-width: calc(100vw - 32px);
   display: flex;
