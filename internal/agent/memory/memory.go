@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -30,7 +31,11 @@ type MemoryGroup struct {
 	ShortTerm   *shortterm.ShortTermMemory
 	LongTerm    *longterm.LongTermMemory
 	SkillMemory *skillmem.SkillMemory
-	LLMProvider provider.Provider // 用于 Compact 中的技能记忆更新
+	LLMProvider provider.Provider // 用于 Compact 中的技能记忆更新（兼容旧赋值，动态获取函数优先）
+
+	// llmProviderFn 动态获取 Text LLM Provider：Compact 触发时实时取最新模型，
+	// 避免启动时序（Init 时 ProviderGroup 尚未加载）与 Provider 热更新导致的 nil/过期问题。
+	llmProviderFn func() provider.Provider
 
 	// per-ChatArea 短期记忆配置缓存（cache → DB → 全局默认）
 	shortTermStore  ShortTermStore
@@ -50,6 +55,19 @@ func NewMemoryGroup(st *shortterm.ShortTermMemory, lt *longterm.LongTermMemory, 
 // SetShortTermStore 注入 Per-ChatArea 配置读取源（由 agent.Init 调用）。
 func (m *MemoryGroup) SetShortTermStore(store ShortTermStore) {
 	m.shortTermStore = store
+}
+
+// SetLLMProviderFn 注入 Text LLM Provider 动态获取函数（由 agent.Init 调用）。
+func (m *MemoryGroup) SetLLMProviderFn(fn func() provider.Provider) {
+	m.llmProviderFn = fn
+}
+
+// getLLMProvider 返回当前可用的 Text LLM Provider：优先动态获取函数，回退旧字段。
+func (m *MemoryGroup) getLLMProvider() provider.Provider {
+	if m.llmProviderFn != nil {
+		return m.llmProviderFn()
+	}
+	return m.LLMProvider
 }
 
 // shortTermConfigFor 解析指定 ChatArea 的短期记忆配置：优先读缓存，未命中则查 DB，
@@ -89,18 +107,26 @@ func (m *MemoryGroup) AddShortTermMessage(ctx context.Context, areaID string, ms
 	}
 
 	// AutoCompact: 窗口已满时异步触发 Compact（不阻塞消息处理）
-	if conf.AutoCompact && m.LLMProvider != nil {
-		msgs, err := m.ShortTerm.GetAll(ctx, areaID)
-		if err == nil && int64(len(msgs)) >= conf.WindowSize {
-			go func() {
-				compactCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				defer cancel()
-				if err := m.CompactShortTermMemory(compactCtx, areaID, m.LLMProvider); err != nil {
-					log.Error("AutoCompact 失败", "area_id", areaID, "err", err)
-				} else {
-					log.Info("AutoCompact 完成", "area_id", areaID)
-				}
-			}()
+	if conf.AutoCompact {
+		llm := m.getLLMProvider()
+		if llm != nil {
+			msgs, err := m.ShortTerm.GetAll(ctx, areaID)
+			if err == nil && int64(len(msgs)) >= conf.WindowSize {
+				go func() {
+					compactCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+					defer cancel()
+					if err := m.CompactShortTermMemory(compactCtx, areaID, llm); err != nil {
+						// 同一 area 已有 Compact 在运行是预期的并发防护，非致命错误，降级为 Debug
+						if errors.Is(err, shortterm.ErrCompactInProgress) {
+							log.Debug("AutoCompact 已在运行，跳过本次触发", "area_id", areaID)
+						} else {
+							log.Error("AutoCompact 失败", "area_id", areaID, "err", err)
+						}
+					} else {
+						log.Info("AutoCompact 完成", "area_id", areaID)
+					}
+				}()
+			}
 		}
 	}
 
@@ -170,7 +196,11 @@ func (m *MemoryGroup) GetSkillMemory() string {
 // UpdateSkillMemory 使用 LLM 根据近期对话更新全局技能记忆。
 // 实现 shortterm.SkillMemoryUpdater 接口，在 Compact 时自动触发。
 func (m *MemoryGroup) UpdateSkillMemory(ctx context.Context, recentMsgs []shortterm.ChatMessage) error {
-	if m.SkillMemory == nil || m.LLMProvider == nil {
+	if m.SkillMemory == nil {
+		return nil
+	}
+	llm := m.getLLMProvider()
+	if llm == nil {
 		return nil
 	}
 
@@ -199,7 +229,7 @@ func (m *MemoryGroup) UpdateSkillMemory(ctx context.Context, recentMsgs []shortt
 
 直接输出更新后的完整技能记忆内容，不要加任何前缀或解释。`, currentContent, convText.String())
 
-	resp, err := m.LLMProvider.Chat(ctx, provider.ChatRequest{
+	resp, err := llm.Chat(ctx, provider.ChatRequest{
 		Messages: []provider.ChatMessage{
 			{Role: "system", Content: "你是一个中文互联网文化专家，负责维护一份「黑话/热词/梗」的记忆清单。"},
 			{Role: "user", Content: prompt},
