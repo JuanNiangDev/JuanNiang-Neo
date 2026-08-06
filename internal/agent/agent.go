@@ -66,6 +66,11 @@ type HagoCenter struct {
 	batchMu sync.Mutex
 	batches map[string]*pendingBatch
 
+	// sendMu 全局发送互斥锁：所有批次的发送动作串行执行，
+	// 避免多批次/多分组并行完成时回复交叉乱序（如一条完整回复被另一条插入打断）。
+	// 只保护"发送动作"（毫秒级），不阻塞 ReAct 循环，不影响多群并行处理。
+	sendMu sync.Mutex
+
 	// 相关性判断结果缓存（Redis，L2.3/L4.2）
 	Cache *cache.Cache
 
