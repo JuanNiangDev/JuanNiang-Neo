@@ -2,10 +2,12 @@ package dao
 
 import (
 	"context"
+	"strings"
 
 	"JuanNiang-Neo/internal/core/models"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ImageDAO 图床图片 + 虚拟文件夹。
@@ -41,6 +43,26 @@ func (d *ImageDAO) List(ctx context.Context, folder string, limit, offset int) (
 	var list []models.ImageAsset
 	q := d.db.WithContext(ctx).Where("folder = ?", normalizeFolder(folder))
 	err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&list).Error
+	return list, err
+}
+
+// SearchByName 按图片展示名称模糊匹配（供 Agent search_images 工具使用）。
+// 命中条件：name ILIKE '%keyword%'；结果按名称匹配度（前缀优先）再按创建时间倒序。
+func (d *ImageDAO) SearchByName(ctx context.Context, keyword string, limit int) ([]models.ImageAsset, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	keyword = strings.TrimSpace(keyword)
+	if keyword == "" {
+		return nil, nil
+	}
+	var list []models.ImageAsset
+	err := d.db.WithContext(ctx).
+		Where("name ILIKE ?", "%"+keyword+"%").
+		Order(clause.Expr{SQL: "CASE WHEN name ILIKE ? THEN 0 ELSE 1 END", Vars: []interface{}{keyword + "%"}}).
+		Order("created_at DESC").
+		Limit(limit).
+		Find(&list).Error
 	return list, err
 }
 

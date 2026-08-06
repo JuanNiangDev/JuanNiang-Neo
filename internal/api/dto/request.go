@@ -59,25 +59,49 @@ type UpdateAdapterConfigReq struct {
 }
 
 type AddProviderReq struct {
-	Name           string           `json:"name"`
-	Type           models.ModelType `json:"type"`
-	Endpoint       string           `json:"endpoint"`
-	Token          string           `json:"token"`
-	Model          string           `json:"model"`
-	Temperature    FlexFloat32      `json:"temperature"`
-	IsActive       bool             `json:"isActive"`
-	EnableThinking bool             `json:"enable_thinking"` // 模型思考开关
+	Name              string           `json:"name"`
+	Type              models.ModelType `json:"type"`
+	Endpoint          string           `json:"endpoint"`
+	Token             string           `json:"token"`
+	Model             string           `json:"model"`
+	Temperature       FlexFloat32      `json:"temperature"`
+	IsActive          bool             `json:"isActive"`
+	EnableThinking    bool             `json:"enable_thinking"` // 模型思考开关（旧字段）
+	APIMode           string           `json:"api_mode"`        // 协议模式：chat_completions/anthropic_messages/openai_responses/gemini_native
+	ThinkingEffort    string           `json:"thinking_effort"` // off/low/medium/high
+	ThinkingBudget    int              `json:"thinking_budget"`
+	MaxTokens         int              `json:"max_tokens"`
+	TopP              *FlexFloat32     `json:"top_p"`
+	TopK              *int             `json:"top_k"`
+	FrequencyPenalty  *FlexFloat32     `json:"frequency_penalty"`
+	PresencePenalty   *FlexFloat32     `json:"presence_penalty"`
+	RepetitionPenalty *FlexFloat32     `json:"repetition_penalty"`
+	ProviderKey       string           `json:"provider_key"`
+	AuthHeader        string           `json:"auth_header"`
+	URLMode           string           `json:"url_mode"`
 }
 
 type UpdateProviderReq struct {
-	Name           string           `json:"name"`
-	Type           models.ModelType `json:"type"`
-	Endpoint       string           `json:"endpoint"`
-	Token          string           `json:"token"`
-	Model          string           `json:"model"`
-	Temperature    FlexFloat32      `json:"temperature"`
-	IsActive       bool             `json:"isActive"`
-	EnableThinking bool             `json:"enable_thinking"` // 模型思考开关
+	Name              string           `json:"name"`
+	Type              models.ModelType `json:"type"`
+	Endpoint          string           `json:"endpoint"`
+	Token             string           `json:"token"`
+	Model             string           `json:"model"`
+	Temperature       FlexFloat32      `json:"temperature"`
+	IsActive          bool             `json:"isActive"`
+	EnableThinking    bool             `json:"enable_thinking"` // 模型思考开关（旧字段）
+	APIMode           string           `json:"api_mode"`
+	ThinkingEffort    string           `json:"thinking_effort"`
+	ThinkingBudget    int              `json:"thinking_budget"`
+	MaxTokens         int              `json:"max_tokens"`
+	TopP              *FlexFloat32     `json:"top_p"`
+	TopK              *int             `json:"top_k"`
+	FrequencyPenalty  *FlexFloat32     `json:"frequency_penalty"`
+	PresencePenalty   *FlexFloat32     `json:"presence_penalty"`
+	RepetitionPenalty *FlexFloat32     `json:"repetition_penalty"`
+	ProviderKey       string           `json:"provider_key"`
+	AuthHeader        string           `json:"auth_header"`
+	URLMode           string           `json:"url_mode"`
 }
 
 type ToggleProviderReq struct {

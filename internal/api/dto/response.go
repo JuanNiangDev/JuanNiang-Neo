@@ -79,16 +79,50 @@ type AdapterConfig struct {
 }
 
 type ProviderResp struct {
-	ID             string           `json:"id"`
-	CreatedAt      time.Time        `json:"created_at"`
-	Name           string           `json:"name"`
-	Type           models.ModelType `json:"type"`
-	Endpoint       string           `json:"endpoint"`
-	Token          string           `json:"token"`
-	Model          string           `json:"model"`
-	Temperature    float32          `json:"temperature"`
-	IsActive       bool             `json:"is_active"`
-	EnableThinking bool             `json:"enable_thinking"` // 模型思考开关
+	ID                string           `json:"id"`
+	CreatedAt         time.Time        `json:"created_at"`
+	Name              string           `json:"name"`
+	Type              models.ModelType `json:"type"`
+	Endpoint          string           `json:"endpoint"`
+	Token             string           `json:"token"`
+	Model             string           `json:"model"`
+	Temperature       float32          `json:"temperature"`
+	IsActive          bool             `json:"is_active"`
+	EnableThinking    bool             `json:"enable_thinking"` // 模型思考开关（旧字段）
+	APIMode           string           `json:"api_mode"`        // 协议模式
+	ThinkingEffort    string           `json:"thinking_effort"`
+	ThinkingBudget    int              `json:"thinking_budget"`
+	MaxTokens         int              `json:"max_tokens"`
+	TopP              *float32         `json:"top_p"`
+	TopK              *int             `json:"top_k"`
+	FrequencyPenalty  *float32         `json:"frequency_penalty"`
+	PresencePenalty   *float32         `json:"presence_penalty"`
+	RepetitionPenalty *float32         `json:"repetition_penalty"`
+	ProviderKey       string           `json:"provider_key"`
+	AuthHeader        string           `json:"auth_header"`
+	URLMode           string           `json:"url_mode"`
+}
+
+// ProviderPresetResp 国产厂商协议能力预设（前端渲染协议下拉）。
+type ProviderPresetResp struct {
+	Key       string                 `json:"key"`
+	Name      string                 `json:"name"`
+	Protocols []ProviderProtocolResp `json:"protocols"`
+}
+
+// ProviderProtocolResp 单个协议能力。
+// ProviderProtocolResp 协议能力预设（前端渲染协议下拉）。
+type ProviderProtocolResp struct {
+	APIMode    string `json:"api_mode"`
+	BaseURL    string `json:"base_url"`
+	AuthHeader string `json:"auth_header"`
+	Note       string `json:"note,omitempty"`
+}
+
+// TestProviderResp 连接测试结果。
+type TestProviderResp struct {
+	Ok      bool   `json:"ok"`
+	Message string `json:"message"` // 成功=模型回复；失败=错误详情
 }
 
 type MCPServerResp struct {

@@ -169,6 +169,8 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		log.Warn("技能记忆预热失败", "err", err)
 	}
 	h.Memory = memory.NewMemoryGroup(st, lt, sm)
+	// 注入 Per-ChatArea 短期记忆配置读取源（cache → DB → 全局默认）
+	h.Memory.SetShortTermStore(cfg.DAO.ShortTermMemory)
 	// 设置 LLM Provider 供 Compact 中的技能记忆更新使用
 	h.Memory.LLMProvider = h.Providers.SelectModel(provider.ModelTypeText)
 
@@ -205,6 +207,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		func(ctx context.Context, folder string, limit int) (string, error) {
 			return h.listImagesForTool(ctx, folder, limit)
 		},
+		func(ctx context.Context, keyword string, limit int) (string, error) {
+			return h.searchImagesForTool(ctx, keyword, limit)
+		},
 		func(ctx context.Context) (string, error) {
 			return h.listStickerTagsForTool(ctx)
 		},
@@ -213,6 +218,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		},
 		func(ctx context.Context, keyword string, limit int) (string, error) {
 			return h.searchStickersForTool(ctx, keyword, limit)
+		},
+		func(ctx context.Context, keyword string, limit int) (string, error) {
+			return h.searchKnowledgeForTool(ctx, keyword, limit)
 		},
 	)
 
@@ -249,16 +257,7 @@ func (h *HagoCenter) loadProviders(ctx context.Context) error {
 		if !p.IsActive {
 			continue
 		}
-		pr := provider.NewProvider(provider.ProviderConfig{
-			ID:             p.ID,
-			Name:           p.Name,
-			Type:           provider.ModelType(p.Type),
-			Endpoint:       p.Endpoint,
-			Token:          p.Token,
-			Model:          p.Model,
-			Temperature:    p.Temperature,
-			EnableThinking: p.EnableThinking,
-		})
+		pr := provider.NewProvider(provider.ProviderConfigFromModel(&p))
 		h.Providers.AddProvider(pr)
 	}
 	log.Info("Provider 加载完成", "count", len(list))

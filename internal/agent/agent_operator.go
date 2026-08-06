@@ -27,16 +27,7 @@ func (h *HagoCenter) SetProviderActive(ctx context.Context, id string, active bo
 		if err != nil {
 			return err
 		}
-		h.Providers.AddProvider(provider.NewProvider(provider.ProviderConfig{
-			ID:             p.ID,
-			Name:           p.Name,
-			Type:           provider.ModelType(p.Type),
-			Endpoint:       p.Endpoint,
-			Token:          p.Token,
-			Model:          p.Model,
-			Temperature:    p.Temperature,
-			EnableThinking: p.EnableThinking,
-		}))
+		h.Providers.AddProvider(provider.NewProvider(provider.ProviderConfigFromModel(p)))
 	} else {
 		h.Providers.DelProvider(id)
 	}

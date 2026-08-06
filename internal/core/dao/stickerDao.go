@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"encoding/json"
 
 	"JuanNiang-Neo/internal/core/models"
 
@@ -47,8 +48,9 @@ func (d *StickerDAO) GetByID(ctx context.Context, id string) (*models.Sticker, e
 	return &s, nil
 }
 
-// List 分页列出表情，支持按标签过滤（tags jsonb ? 操作符）与名称/简介模糊匹配。
-// 注意：PG 的 jsonb "?" 操作符在 GORM 中必须写成 "??"（GORM 用 ?? 转义字面 ?）。
+// List 分页列出表情，支持按标签过滤（tags jsonb @> 包含操作符）与名称/简介模糊匹配。
+// 注意：PG 的 jsonb "?" 操作符在 GORM v1.31 中会因 "?" 被当作占位符而报错，
+// 故改用 "@>"（包含）并以 JSON 数组参数传入，避免转义问题。
 func (d *StickerDAO) List(ctx context.Context, tag, keyword string, limit, offset int) ([]models.Sticker, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -59,11 +61,11 @@ func (d *StickerDAO) List(ctx context.Context, tag, keyword string, limit, offse
 	var list []models.Sticker
 	q := d.db.WithContext(ctx).Model(&models.Sticker{})
 	if tag != "" {
-		q = q.Where("tags ?? ?", tag)
+		q = q.Where("tags @> ?", tagJSONArray(tag))
 	}
 	if keyword != "" {
 		like := "%" + keyword + "%"
-		q = q.Where("name ILIKE ? OR desc ILIKE ?", like, like)
+		q = q.Where("name ILIKE ? OR \"desc\" ILIKE ?", like, like)
 	}
 	err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&list).Error
 	return list, err
@@ -74,14 +76,23 @@ func (d *StickerDAO) Count(ctx context.Context, tag, keyword string) (int64, err
 	var n int64
 	q := d.db.WithContext(ctx).Model(&models.Sticker{})
 	if tag != "" {
-		q = q.Where("tags ?? ?", tag)
+		q = q.Where("tags @> ?", tagJSONArray(tag))
 	}
 	if keyword != "" {
 		like := "%" + keyword + "%"
-		q = q.Where("name ILIKE ? OR desc ILIKE ?", like, like)
+		q = q.Where("name ILIKE ? OR \"desc\" ILIKE ?", like, like)
 	}
 	err := q.Count(&n).Error
 	return n, err
+}
+
+// tagJSONArray 把单个标签名包装为 JSON 数组字符串（用于 jsonb @> 包含查询）。
+func tagJSONArray(tag string) string {
+	b, err := json.Marshal([]string{tag})
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 func (d *StickerDAO) Update(ctx context.Context, s *models.Sticker) error {
