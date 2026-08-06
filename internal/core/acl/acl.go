@@ -25,6 +25,7 @@ func NewACL(dao *dao.ACLDAO) *ACL {
 //   - 无规则 = 允许所有（默认）
 //   - deny all  = 禁止所有用户
 //   - deny list = 禁止指定用户列表
+//
 // 命中黑名单返回 false（禁止），否则 true（允许）。allow/白名单不再生效。
 func (a *ACL) Check(ctx context.Context, userID int64, chatAreaID string, scope models.ACLScope) bool {
 	rules, err := a.dao.GetByChatAreaAndScope(ctx, chatAreaID, scope)
