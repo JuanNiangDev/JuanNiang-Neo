@@ -23,9 +23,10 @@ func (d *ShortTermMemoryDAO) GetOrCreate(ctx context.Context, chatAreaID string)
 	}
 
 	m = models.ShortTermMemory{
-		ID:         newUUID(),
-		ChatAreaID: chatAreaID,
-		WindowSize: 20,
+		ID:          newUUID(),
+		ChatAreaID:  chatAreaID,
+		WindowSize:  100,
+		AutoCompact: true,
 	}
 	if err := d.db.WithContext(ctx).Create(&m).Error; err != nil {
 		return nil, err
