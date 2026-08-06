@@ -59,15 +59,24 @@ func (m *ShortTermMemory) key(areaID string) string {
 
 // Add 追加一条消息并维护滑动窗口（保留最近 WindowSize 条，最早在前）。
 func (m *ShortTermMemory) Add(ctx context.Context, areaID string, msg ChatMessage) error {
+	return m.AddWithWindow(ctx, areaID, msg, m.conf.WindowSize)
+}
+
+// AddWithWindow 追加一条消息并按指定的窗口大小维护滑动窗口（最早在前）。
+// Per-ChatArea 配置解析后由调用方传入该 area 的窗口大小，避免全局实例的共享配置互相覆盖。
+func (m *ShortTermMemory) AddWithWindow(ctx context.Context, areaID string, msg ChatMessage, windowSize int64) error {
 	if m.cache == nil {
 		return fmt.Errorf("shortterm cache 未初始化")
+	}
+	if windowSize <= 0 {
+		windowSize = m.conf.WindowSize
 	}
 	key := m.key(areaID)
 	if err := m.cache.RPush(ctx, key, msg); err != nil {
 		return err
 	}
-	// 仅保留最近 WindowSize 条
-	return m.cache.LTrim(ctx, key, -m.conf.WindowSize, -1)
+	// 仅保留最近 windowSize 条
+	return m.cache.LTrim(ctx, key, -windowSize, -1)
 }
 
 // GetAll 返回该 ChatArea 当前窗口内的全部消息（按时间最早→最新）。
@@ -84,8 +93,17 @@ func (m *ShortTermMemory) GetAll(ctx context.Context, areaID string) ([]ChatMess
 
 // Overwrite 用新列表覆盖窗口（先清空后追加）。
 func (m *ShortTermMemory) Overwrite(ctx context.Context, areaID string, msgs []ChatMessage) error {
+	return m.OverwriteWithWindow(ctx, areaID, msgs, m.conf.WindowSize)
+}
+
+// OverwriteWithWindow 用新列表覆盖窗口，并按指定的窗口大小截断。
+// Per-ChatArea 配置解析后由调用方传入该 area 的窗口大小。
+func (m *ShortTermMemory) OverwriteWithWindow(ctx context.Context, areaID string, msgs []ChatMessage, windowSize int64) error {
 	if m.cache == nil {
 		return fmt.Errorf("shortterm cache 未初始化")
+	}
+	if windowSize <= 0 {
+		windowSize = m.conf.WindowSize
 	}
 	key := m.key(areaID)
 	if err := m.cache.Del(ctx, key); err != nil {
@@ -101,7 +119,7 @@ func (m *ShortTermMemory) Overwrite(ctx context.Context, areaID string, msgs []C
 	if err := m.cache.RPush(ctx, key, args...); err != nil {
 		return err
 	}
-	return m.cache.LTrim(ctx, key, -m.conf.WindowSize, -1)
+	return m.cache.LTrim(ctx, key, -windowSize, -1)
 }
 
 // Clear 清空窗口。

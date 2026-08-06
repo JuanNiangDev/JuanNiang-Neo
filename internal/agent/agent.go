@@ -169,6 +169,8 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		log.Warn("技能记忆预热失败", "err", err)
 	}
 	h.Memory = memory.NewMemoryGroup(st, lt, sm)
+	// 注入 Per-ChatArea 短期记忆配置读取源（cache → DB → 全局默认）
+	h.Memory.SetShortTermStore(cfg.DAO.ShortTermMemory)
 	// 设置 LLM Provider 供 Compact 中的技能记忆更新使用
 	h.Memory.LLMProvider = h.Providers.SelectModel(provider.ModelTypeText)
 

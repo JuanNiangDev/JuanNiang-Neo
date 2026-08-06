@@ -1704,7 +1704,7 @@ func (s *Service) UpdateShortTermMemoryConfig(ctx context.Context, c *app.Reques
 
 	// 运行时同步
 	if s.MemoryGroup != nil {
-		s.MemoryGroup.UpdateShortTermConfig(memory.ShortTermMemoryConfig{
+		s.MemoryGroup.UpdateShortTermConfig(chatAreaID, memory.ShortTermMemoryConfig{
 			WindowSize:  int64(data.WindowSize),
 			AutoCompact: data.AutoCompact,
 		})
