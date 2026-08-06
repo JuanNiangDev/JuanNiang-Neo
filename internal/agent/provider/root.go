@@ -3,7 +3,20 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
+
+	"JuanNiang-Neo/internal/core/models"
+)
+
+// APIMode 协议模式（与 MintWord apiMode 对齐）。
+type APIMode string
+
+const (
+	APIModeChatCompletions   APIMode = "chat_completions"
+	APIModeAnthropicMessages APIMode = "anthropic_messages"
+	APIModeOpenAIResponses   APIMode = "openai_responses"
+	APIModeGeminiNative      APIMode = "gemini_native"
 )
 
 // ModelType 模型类型枚举。
@@ -25,8 +38,74 @@ type ProviderConfig struct {
 	Token       string    `json:"token"`
 	Model       string    `json:"model"`
 	Temperature float32   `json:"temperature"`
-	// EnableThinking 模型思考开关：true 时请求携带 thinking/enable_thinking 扩展参数
+	// EnableThinking 模型思考开关（旧字段）：true 且 ThinkingEffort 为空时映射为 effort=medium
 	EnableThinking bool `json:"enable_thinking"`
+	// APIMode 协议模式：空 = chat_completions（存量兼容）
+	APIMode APIMode `json:"api_mode,omitempty"`
+	// ThinkingEffort 思考档位：off/low/medium/high（空 + EnableThinking=false = off）
+	ThinkingEffort string `json:"thinking_effort,omitempty"`
+	// ThinkingBudget anthropic/gemini 的 thinking 预算 token（0 = 协议默认）
+	ThinkingBudget    int      `json:"thinking_budget,omitempty"`
+	MaxTokens         int      `json:"max_tokens,omitempty"`
+	TopP              *float32 `json:"top_p,omitempty"`
+	TopK              *int     `json:"top_k,omitempty"`
+	FrequencyPenalty  *float32 `json:"frequency_penalty,omitempty"`
+	PresencePenalty   *float32 `json:"presence_penalty,omitempty"`
+	RepetitionPenalty *float32 `json:"repetition_penalty,omitempty"`
+	// ProviderKey 厂商分组（deepseek/kimi/zhipu/...），驱动 thinking 矩阵与认证头分派；空 = 按 Name 关键词匹配
+	ProviderKey string `json:"provider_key,omitempty"`
+	// AuthHeader 认证头：""|bearer|x-api-key|api-key（空 = 按协议默认）
+	AuthHeader string `json:"auth_header,omitempty"`
+	// URLMode URL 拼接：""|auto|exact（auto=base+协议后缀自动拼接；exact=完整端点原样使用）
+	URLMode string `json:"url_mode,omitempty"`
+}
+
+// apiMode 返回归一化后的协议模式（空 → chat_completions）。
+func (c *ProviderConfig) apiMode() APIMode {
+	if c.APIMode == "" {
+		return APIModeChatCompletions
+	}
+	return c.APIMode
+}
+
+// urlMode 返回归一化后的 URL 模式（空 → auto）。
+func (c *ProviderConfig) urlMode() string {
+	if c.URLMode == "" {
+		return "auto"
+	}
+	return c.URLMode
+}
+
+// ProviderConfigFromModel 把 GORM Provider 模型映射为运行时 ProviderConfig。
+// 供 service / agent 启动加载统一使用，避免新字段在多处遗漏。
+func ProviderConfigFromModel(m *models.Provider) ProviderConfig {
+	return ProviderConfig{
+		ID:                m.ID,
+		Type:              ModelType(m.Type),
+		Name:              m.Name,
+		Endpoint:          m.Endpoint,
+		Token:             m.Token,
+		Model:             m.Model,
+		Temperature:       m.Temperature,
+		EnableThinking:    m.EnableThinking,
+		APIMode:           APIMode(m.APIMode),
+		ThinkingEffort:    m.ThinkingEffort,
+		ThinkingBudget:    m.ThinkingBudget,
+		MaxTokens:         m.MaxTokens,
+		TopP:              m.TopP,
+		TopK:              m.TopK,
+		FrequencyPenalty:  m.FrequencyPenalty,
+		PresencePenalty:   m.PresencePenalty,
+		RepetitionPenalty: m.RepetitionPenalty,
+		ProviderKey:       m.ProviderKey,
+		AuthHeader:        m.AuthHeader,
+		URLMode:           m.URLMode,
+	}
+}
+
+// normalizeProviderKey 小写归一化厂商分组关键词。
+func normalizeProviderKey(key string) string {
+	return strings.ToLower(strings.TrimSpace(key))
 }
 
 // ---------- 请求/响应 ----------

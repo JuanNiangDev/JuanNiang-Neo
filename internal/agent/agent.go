@@ -249,16 +249,7 @@ func (h *HagoCenter) loadProviders(ctx context.Context) error {
 		if !p.IsActive {
 			continue
 		}
-		pr := provider.NewProvider(provider.ProviderConfig{
-			ID:             p.ID,
-			Name:           p.Name,
-			Type:           provider.ModelType(p.Type),
-			Endpoint:       p.Endpoint,
-			Token:          p.Token,
-			Model:          p.Model,
-			Temperature:    p.Temperature,
-			EnableThinking: p.EnableThinking,
-		})
+		pr := provider.NewProvider(provider.ProviderConfigFromModel(&p))
 		h.Providers.AddProvider(pr)
 	}
 	log.Info("Provider 加载完成", "count", len(list))

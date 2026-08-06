@@ -188,6 +188,25 @@ func (s *Service) ListProviders(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, list))
 }
 
+// ListProviderPresets 返回国产厂商协议能力预设表（供前端渲染协议下拉）。
+func (s *Service) ListProviderPresets(ctx context.Context, c *app.RequestContext) {
+	presets := provider.ListProviderPresets()
+	resp := make([]dto.ProviderPresetResp, 0, len(presets))
+	for _, p := range presets {
+		rp := dto.ProviderPresetResp{Key: p.Key, Name: p.Name}
+		for _, proto := range p.Protocols {
+			rp.Protocols = append(rp.Protocols, dto.ProviderProtocolResp{
+				APIMode:    string(proto.APIMode),
+				BaseURL:    proto.BaseURL,
+				AuthHeader: proto.AuthHeader,
+				Note:       proto.Note,
+			})
+		}
+		resp = append(resp, rp)
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
+}
+
 func (s *Service) GetProvider(ctx context.Context, c *app.RequestContext) {
 	raw, err := s.DAO.Provider.GetByID(ctx, c.Param("id"))
 
@@ -196,18 +215,7 @@ func (s *Service) GetProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	data := dto.ProviderResp{
-		ID:             raw.ID,
-		CreatedAt:      raw.CreatedAt,
-		Name:           raw.Name,
-		Type:           raw.Type,
-		Endpoint:       raw.Endpoint,
-		Token:          raw.Token,
-		Model:          raw.Model,
-		Temperature:    raw.Temperature,
-		IsActive:       raw.IsActive,
-		EnableThinking: raw.EnableThinking,
-	}
+	data := dto.RawProvider2Resp(raw)
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, data))
 }
@@ -232,6 +240,7 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 		IsActive:       data.IsActive,
 		EnableThinking: data.EnableThinking,
 	}
+	dto.ApplyProviderFields(&providerConfig, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode)
 
 	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
 	if data.IsActive {
@@ -254,16 +263,7 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 				s.ProviderGroup.DelProvider(p.ID())
 			}
 		}
-		s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfig{
-			ID:             id,
-			Name:           data.Name,
-			Type:           provType,
-			Endpoint:       data.Endpoint,
-			Token:          data.Token,
-			Model:          data.Model,
-			Temperature:    float32(data.Temperature),
-			EnableThinking: data.EnableThinking,
-		}))
+		s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfigFromModel(&providerConfig)))
 	}
 
 	// Provider 变更影响 Eino Agent 的 model adapter（构建时持有实例引用），必须重建
@@ -301,18 +301,10 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		IsActive:       data.IsActive,
 		EnableThinking: data.EnableThinking,
 	}
+	dto.ApplyProviderFields(&providerConfig, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode)
 
 	provType := provider.ModelType(data.Type)
-	providerConfig_ := provider.ProviderConfig{
-		ID:             id,
-		Name:           data.Name,
-		Type:           provType,
-		Endpoint:       data.Endpoint,
-		Token:          data.Token,
-		Model:          data.Model,
-		Temperature:    float32(data.Temperature),
-		EnableThinking: data.EnableThinking,
-	}
+	providerConfig_ := provider.ProviderConfigFromModel(&providerConfig)
 
 	// 运行时同步：先移除同类型旧的，再同步新配置
 	if s.ProviderGroup != nil {
@@ -385,16 +377,7 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 					s.ProviderGroup.DelProvider(p.ID())
 				}
 			}
-			s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfig{
-				ID:             id,
-				Name:           raw.Name,
-				Type:           provType,
-				Endpoint:       raw.Endpoint,
-				Token:          raw.Token,
-				Model:          raw.Model,
-				Temperature:    raw.Temperature,
-				EnableThinking: raw.EnableThinking,
-			}))
+			s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfigFromModel(raw)))
 		}
 	} else {
 		if s.ProviderGroup != nil {

@@ -26,6 +26,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 
 	// Providers
 	api.GET("/providers", auth, svc.ListProviders)
+	api.GET("/providers/presets", auth, svc.ListProviderPresets)
 	api.GET("/providers/:id", auth, svc.GetProvider)
 	api.POST("/providers", auth, svc.AddProvider)
 	api.PUT("/providers/:id", auth, svc.UpdateProvider)

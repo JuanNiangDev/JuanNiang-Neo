@@ -10,19 +10,63 @@ func RawProviderList2Resp(raw []models.Provider) []ProviderResp {
 	res := make([]ProviderResp, len(raw))
 
 	for i, item := range raw {
-		res[i].ID = item.ID
-		res[i].CreatedAt = item.CreatedAt
-		res[i].Name = item.Name
-		res[i].Type = item.Type
-		res[i].Endpoint = item.Endpoint
-		res[i].Token = item.Token
-		res[i].Model = item.Model
-		res[i].Temperature = item.Temperature
-		res[i].IsActive = item.IsActive
-		res[i].EnableThinking = item.EnableThinking
+		res[i] = RawProvider2Resp(&item)
 	}
 
 	return res
+}
+
+// RawProvider2Resp 单个 Provider → 响应 DTO。
+func RawProvider2Resp(raw *models.Provider) ProviderResp {
+	return ProviderResp{
+		ID:                raw.ID,
+		CreatedAt:         raw.CreatedAt,
+		Name:              raw.Name,
+		Type:              raw.Type,
+		Endpoint:          raw.Endpoint,
+		Token:             raw.Token,
+		Model:             raw.Model,
+		Temperature:       raw.Temperature,
+		IsActive:          raw.IsActive,
+		EnableThinking:    raw.EnableThinking,
+		APIMode:           raw.APIMode,
+		ThinkingEffort:    raw.ThinkingEffort,
+		ThinkingBudget:    raw.ThinkingBudget,
+		MaxTokens:         raw.MaxTokens,
+		TopP:              raw.TopP,
+		TopK:              raw.TopK,
+		FrequencyPenalty:  raw.FrequencyPenalty,
+		PresencePenalty:   raw.PresencePenalty,
+		RepetitionPenalty: raw.RepetitionPenalty,
+		ProviderKey:       raw.ProviderKey,
+		AuthHeader:        raw.AuthHeader,
+		URLMode:           raw.URLMode,
+	}
+}
+
+// flexFloat32Ptr 把 *FlexFloat32 转为 *float32（nil 透传）。
+func flexFloat32Ptr(p *FlexFloat32) *float32 {
+	if p == nil {
+		return nil
+	}
+	v := float32(*p)
+	return &v
+}
+
+// ApplyProviderFields 把请求中共有的扩展字段写入 models.Provider（Add/Update 复用）。
+func ApplyProviderFields(m *models.Provider, apiMode, thinkingEffort string, thinkingBudget, maxTokens int, topP *FlexFloat32, topK *int, freqPenalty, presencePenalty, repetitionPenalty *FlexFloat32, providerKey, authHeader, urlMode string) {
+	m.APIMode = apiMode
+	m.ThinkingEffort = thinkingEffort
+	m.ThinkingBudget = thinkingBudget
+	m.MaxTokens = maxTokens
+	m.TopP = flexFloat32Ptr(topP)
+	m.TopK = topK
+	m.FrequencyPenalty = flexFloat32Ptr(freqPenalty)
+	m.PresencePenalty = flexFloat32Ptr(presencePenalty)
+	m.RepetitionPenalty = flexFloat32Ptr(repetitionPenalty)
+	m.ProviderKey = providerKey
+	m.AuthHeader = authHeader
+	m.URLMode = urlMode
 }
 
 func RawMCPServer2Resp(raw *models.MCPServer) MCPServerResp {
