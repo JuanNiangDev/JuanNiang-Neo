@@ -67,6 +67,19 @@
 
                   <v-divider class="my-3" />
 
+                  <div class="text-subtitle-2 font-weight-bold mb-2">相关性判断超时（秒）</div>
+                  <v-text-field
+                    v-model.number="form.relevance_timeout"
+                    type="number" :min="1" :max="120"
+                    label="相关性判断 LLM 调用总超时（含等待，默认 10s）"
+                    density="comfortable" variant="outlined" hide-details
+                  />
+                  <div class="text-caption text-medium-emphasis mt-1">
+                    慢速提供商可调大到 15-30s；信号量等待与 LLM 调用共享该预算。
+                  </div>
+
+                  <v-divider class="my-3" />
+
                   <div class="text-subtitle-2 font-weight-bold mb-2">判断失败策略</div>
                   <v-select
                     v-model="form.judge_fail_policy"
@@ -189,6 +202,7 @@ const form = ref({
   agent_lite: false,
   relevance_prompt: '',
   relevance_model: '',
+  relevance_timeout: 10,
   judge_fail_policy: 'drop',
 })
 
@@ -216,6 +230,7 @@ async function load() {
       form.value.agent_lite = d.agent_lite || false
       form.value.relevance_prompt = d.relevance_prompt || ''
       form.value.relevance_model = d.relevance_model || ''
+      form.value.relevance_timeout = d.relevance_timeout || 10
       form.value.judge_fail_policy = d.judge_fail_policy || 'drop'
     }
   } catch (_e: any) {}
@@ -243,6 +258,7 @@ async function handleSave() {
       agent_lite: form.value.agent_lite,
       relevance_prompt: form.value.relevance_prompt,
       relevance_model: form.value.relevance_model,
+      relevance_timeout: form.value.relevance_timeout || 10,
       judge_fail_policy: form.value.judge_fail_policy,
     })
     toastStore.success('回复设置已保存')

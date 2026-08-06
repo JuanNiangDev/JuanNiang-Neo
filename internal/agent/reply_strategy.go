@@ -28,6 +28,14 @@ const (
 	relevanceJudgeTimeout = 10 * time.Second
 )
 
+// relevanceTimeout 返回相关性判断超时（配置值无效时回退到默认 10s）。
+func (rs ReplySettings) relevanceTimeout() time.Duration {
+	if rs.RelevanceTimeout <= 0 || rs.RelevanceTimeout > 120*time.Second {
+		return relevanceJudgeTimeout
+	}
+	return rs.RelevanceTimeout
+}
+
 // acquireRelevanceSem 获取相关性判断并发令牌（L3.1）。ctx 取消/超时即返回错误。
 func (h *HagoCenter) acquireRelevanceSem(ctx context.Context) error {
 	if h.relevanceSem == nil {
@@ -123,8 +131,8 @@ func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapte
 	}
 
 	// 多条候选 → 一次 LLM 调用判断整批
-	// L3.1 并发闸门 + 判断超时（信号量等待与 LLM 调用共享 5s 总预算）
-	judgeCtx, cancel := context.WithTimeout(ctx, relevanceJudgeTimeout)
+	// L3.1 并发闸门 + 判断超时（信号量等待与 LLM 调用共享超时预算）
+	judgeCtx, cancel := context.WithTimeout(ctx, rs.relevanceTimeout())
 	defer cancel()
 	if err := h.acquireRelevanceSem(judgeCtx); err != nil {
 		log.Warn("相关性批量判断: 并发限制等待超时", "err", err)
@@ -245,8 +253,8 @@ func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapte
 // 支持自定义提示词（rs.RelevancePrompt）与指定 Text 模型（rs.RelevanceModel）。
 // 返回 0-1 之间的相关性分数，以及原因。
 func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.MessageEvent, recentMessages []string, rs ReplySettings) (float64, string) {
-	// L3.1 并发闸门 + 判断超时（信号量等待与 LLM/Vision 调用共享 5s 总预算）
-	judgeCtx, cancel := context.WithTimeout(ctx, relevanceJudgeTimeout)
+	// L3.1 并发闸门 + 判断超时（信号量等待与 LLM/Vision 调用共享超时预算）
+	judgeCtx, cancel := context.WithTimeout(ctx, rs.relevanceTimeout())
 	defer cancel()
 	if err := h.acquireRelevanceSem(judgeCtx); err != nil {
 		return judgeFailVerdict(rs, "相关性判断并发限制等待超时")

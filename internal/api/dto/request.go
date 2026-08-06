@@ -347,5 +347,6 @@ type UpdateReplyStrategyReq struct {
 	AgentLite          bool    `json:"agent_lite"`
 	RelevancePrompt    string  `json:"relevance_prompt"`  // 相关性检测自定义提示词（空则用默认）
 	RelevanceModel     string  `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID（空则用默认）
+	RelevanceTimeout   int     `json:"relevance_timeout"` // 相关性检测超时（秒），0=默认 10s
 	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop=不回复（默认）, reply=照常回复
 }

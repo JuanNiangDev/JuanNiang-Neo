@@ -132,6 +132,12 @@ func Init(ctx context.Context, db *gorm.DB, redisClient *redis.Client) (*Core, e
 			return
 		}
 
+		// 系统内置「常用」表情标签：幂等创建（不存在则建），不可删除
+		if err := bundle.Sticker.EnsureCommonTag(ctx); err != nil {
+			initErr = err
+			return
+		}
+
 		instance = &Core{
 			DB:    db,
 			Cache: cacheInst,

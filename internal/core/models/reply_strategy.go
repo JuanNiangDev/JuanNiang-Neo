@@ -22,6 +22,7 @@ type ReplyStrategyConfig struct {
 	AgentLite          bool          `gorm:"default:false" json:"agent_lite"`              // AgentLite 模式：不调用工具/MCP，无 Agent 循环
 	RelevancePrompt    string        `gorm:"type:text;default:''" json:"relevance_prompt"` // 相关性检测自定义提示词（空则用默认）
 	RelevanceModel     string        `gorm:"default:''" json:"relevance_model"`            // 相关性检测使用的 Text Provider ID（空则用默认）
+	RelevanceTimeout   int           `gorm:"default:10" json:"relevance_timeout"`          // 相关性检测超时（秒），含信号量等待与 LLM 调用总预算
 	JudgeFailPolicy    string        `gorm:"default:'drop'" json:"judge_fail_policy"`      // 相关性判断失败时的处理: drop=不回复（默认）, reply=照常回复
 	CreatedAt          time.Time     `json:"created_at"`
 	UpdatedAt          time.Time     `json:"updated_at"`
