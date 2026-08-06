@@ -2,7 +2,7 @@
 
 > 状态：待评审（未实施）
 > 关联 Issue：[JuanNiang-Neo#22](https://github.com/JuanNiangDev/JuanNiang-Neo/issues/22)（URL 后缀硬编码）
-> 参考实现：MintWord（`src-tauri/src/ai.rs` + `src/lib/aiProviders.ts`）、cloudwego/eino-ext（context7 实测组件文档）、Vercel AI SDK（ai-sdk.dev）
+> 参考实现：MintWord（`src-tauri/src/ai.rs` + `src/lib/aiProviders.ts`）、cloudwego/eino-ext（context7 实测组件文档）
 
 ---
 
@@ -92,12 +92,6 @@
 | qwen | `BaseURL: .../compatible-mode/v1`、`MaxTokens/Temperature/TopP` | chat_completions |
 | openrouter | `Reasoning{Effort}` | chat_completions + reasoning_effort |
 | ark | 多模态 generate_with_image（base64 图片） | 多模态参考 |
-
-### 3.3 Vercel AI SDK（ai-sdk.dev 实测）
-
-- **provider 工厂 + baseURL**：`createOpenAI({baseURL})` 等，协议路径封装在 provider 实现内部，用户只感知 baseURL —— 印证"base URL + 自动拼后缀"是主流
-- **provider registry**：`providerId:modelId` 命名空间管理多厂商 —— 对应本方案 `api_mode` + provider 分组
-- **多模态**：统一 content parts（`{type:'text'|'file'|'image'}`）+ `uploadFile`/`ProviderReference` 跨厂商文件引用 —— 本方案多模态中间表示参考
 
 ---
 
@@ -433,7 +427,7 @@ type VisionInput struct {
 
 - **Gemini 3.5 Flash 系**：输入支持 Text/Image/Video/Audio/PDF 五模态 —— `inlineData` part 按 MIME 扩展（`application/pdf` 等），文本/图片现有实现可直接承载
 - **Kimi K3**：OpenAI 兼容 `image_url`（base64 data URL）或 `video_url`（`ms://{file_id}`，需先 `files.create` 上传）—— video_url 为 Kimi 扩展 part 类型，chat_completions 构造器需放行未知 part 类型透传
-- **多模态前置上传**（AI SDK `uploadFile` 模式，可选阶段）：Anthropic/OpenAI 文件引用需先上传获取 file_id；本方案最小实现保持 base64 内联，预留 `ProviderReference` 扩展点
+- **多模态文件引用**（可选阶段）：Anthropic/OpenAI 文件引用需先上传获取 file_id；本方案最小实现保持 base64 内联，后续如需文件引用再按各厂商上传接口单独扩展
 
 ### 5.7 模型能力元数据（可选阶段，MintWord `aiProviders.ts` 模式）
 
