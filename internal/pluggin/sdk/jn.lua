@@ -87,8 +87,8 @@ M.json = json
 ---@field send_group_msg fun(group_id: number, message: string|table): boolean, string? 异步发送群消息，不阻塞
 ---@field send_private_msg_sync fun(user_id: number, message: string|table): boolean, string? 同步发送私聊消息，等待结果
 ---@field send_group_msg_sync fun(group_id: number, message: string|table): boolean, string? 同步发送群消息，等待结果
----@field delete_msg fun(message_id: number): boolean, string?
----@field get_msg fun(message_id: number): table, string? 根据消息 ID 获取消息完整内容
+---@field delete_msg fun(message_id: number|string): boolean, string? 撤回消息（事件表的 message_id 为字符串）
+---@field get_msg fun(message_id: number|string): table, string? 根据消息 ID 获取消息完整内容
 ---@field get_group_info fun(group_id: number): table, string?
 ---@field get_group_member_list fun(group_id: number): table[], string?
 ---@field get_group_member_info fun(group_id: number, user_id: number): table, string?
