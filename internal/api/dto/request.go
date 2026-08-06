@@ -81,28 +81,8 @@ type AddProviderReq struct {
 	URLMode           string           `json:"url_mode"`
 }
 
-type UpdateProviderReq struct {
-	Name              string           `json:"name"`
-	Type              models.ModelType `json:"type"`
-	Endpoint          string           `json:"endpoint"`
-	Token             string           `json:"token"`
-	Model             string           `json:"model"`
-	Temperature       FlexFloat32      `json:"temperature"`
-	IsActive          bool             `json:"isActive"`
-	EnableThinking    bool             `json:"enable_thinking"` // 模型思考开关（旧字段）
-	APIMode           string           `json:"api_mode"`
-	ThinkingEffort    string           `json:"thinking_effort"`
-	ThinkingBudget    int              `json:"thinking_budget"`
-	MaxTokens         int              `json:"max_tokens"`
-	TopP              *FlexFloat32     `json:"top_p"`
-	TopK              *int             `json:"top_k"`
-	FrequencyPenalty  *FlexFloat32     `json:"frequency_penalty"`
-	PresencePenalty   *FlexFloat32     `json:"presence_penalty"`
-	RepetitionPenalty *FlexFloat32     `json:"repetition_penalty"`
-	ProviderKey       string           `json:"provider_key"`
-	AuthHeader        string           `json:"auth_header"`
-	URLMode           string           `json:"url_mode"`
-}
+// UpdateProviderReq 与 AddProviderReq 结构完全一致（覆盖更新），用类型别名复用避免重复维护。
+type UpdateProviderReq = AddProviderReq
 
 type ToggleProviderReq struct {
 	IsActive bool `json:"is_active"`
@@ -121,16 +101,8 @@ type AddMCPServerReq struct {
 	IsActive      bool             `json:"is_active"`
 }
 
-type UpdateMCPServerReq struct {
-	Name          string           `json:"name"`
-	ServerURL     string           `json:"server_url"`
-	Headers       models.JSONMap   `json:"headers"`
-	Timeout       int              `json:"timeout"`
-	RetryCount    int              `json:"retry_count"`
-	ToolFilter    models.JSONSlice `json:"tool_filter"`
-	AutoReconnect bool             `json:"auto_reconnect"`
-	IsActive      bool             `json:"is_active"`
-}
+// UpdateMCPServerReq 与 AddMCPServerReq 结构完全一致（覆盖更新），用类型别名复用。
+type UpdateMCPServerReq = AddMCPServerReq
 
 type ToggleMCPServerReq struct {
 	IsActive bool `json:"is_active"`
@@ -151,18 +123,8 @@ type AddSkillReq struct {
 	Priority     int              `json:"priority"`
 }
 
-type UpdateSkillReq struct {
-	Name         string           `json:"name"`
-	Description  string           `json:"description"`
-	Keywords     models.JSONSlice `json:"keywords"`
-	RegexPattern string           `json:"regex_pattern"`
-	PromptRefs   models.JSONSlice `json:"prompt_refs"`
-	ToolRefs     models.JSONSlice `json:"tool_refs"`
-	McpRefs      models.JSONSlice `json:"mcp_refs"`
-	IsActive     bool             `json:"is_active"`
-	IsSystem     bool             `json:"is_system"`
-	Priority     int              `json:"priority"`
-}
+// UpdateSkillReq 与 AddSkillReq 结构完全一致（覆盖更新），用类型别名复用。
+type UpdateSkillReq = AddSkillReq
 
 // ---------- Prompt ----------
 
@@ -173,12 +135,8 @@ type AddPromptReq struct {
 	IsActive bool              `json:"is_active"`
 }
 
-type UpdatePromptReq struct {
-	Name     string            `json:"name"`
-	Content  string            `json:"content"`
-	Type     models.PromptType `json:"type"`
-	IsActive bool              `json:"is_active"`
-}
+// UpdatePromptReq 与 AddPromptReq 结构完全一致（覆盖更新），用类型别名复用。
+type UpdatePromptReq = AddPromptReq
 
 type TogglePromptReq struct {
 	IsActive bool `json:"is_active"`

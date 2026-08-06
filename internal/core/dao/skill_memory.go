@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"JuanNiang-Neo/internal/core/models"
@@ -21,7 +22,7 @@ const skillMemoryID = "global"
 func (d *SkillMemoryDAO) GetOrCreate(ctx context.Context) (*models.SkillMemory, error) {
 	var mem models.SkillMemory
 	err := d.db.WithContext(ctx).Where("id = ?", skillMemoryID).First(&mem).Error
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		mem = models.SkillMemory{ID: skillMemoryID, Content: "", UpdatedAt: time.Now()}
 		if err := d.db.WithContext(ctx).Create(&mem).Error; err != nil {
 			return nil, err

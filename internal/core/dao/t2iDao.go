@@ -16,11 +16,11 @@ func NewT2IConfigDAO(db *gorm.DB) *T2IConfigDAO {
 
 // InitConfig 初始化默认配置（已存在则忽略）。
 func (d *T2IConfigDAO) InitConfig(ctx context.Context) error {
-	return d.db.Create(&models.T2IConfig{
+	return d.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&models.T2IConfig{
 		ID:      1,
 		BaseURL: "http://localhost:8999",
 		Timeout: 30,
-	}).WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Error
+	}).Error
 }
 
 // GetConfig 获取 T2I 配置。

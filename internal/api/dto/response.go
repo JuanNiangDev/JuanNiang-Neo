@@ -39,6 +39,8 @@ var (
 	PluginIsSystem          = Response{Status: 40028, Info: "系统插件不允许删除或停用"}
 	PromptIsSystem          = Response{Status: 40029, Info: "系统提示词不允许修改或删除"}
 	ToolIsBuiltin           = Response{Status: 40030, Info: "内置工具运行时常驻, 不支持启停"}
+	InvalidPluginName       = Response{Status: 40045, Info: "插件名不合法（仅允许字母/数字/下划线/连字符）"}
+	PluginPackageUnsafe     = Response{Status: 40046, Info: "插件包包含非法路径（疑似 zip-slip 攻击）"}
 	KnowledgeContentEmpty   = Response{Status: 40033, Info: "知识内容不能为空"}
 	ImageTooLarge           = Response{Status: 40034, Info: "图片大小不能超过 1.5MB"}
 	ImageTypeNotAllowed     = Response{Status: 40035, Info: "不支持的图片格式（仅支持 jpg/png/gif/webp）"}
@@ -110,8 +112,7 @@ type ProviderPresetResp struct {
 	Protocols []ProviderProtocolResp `json:"protocols"`
 }
 
-// ProviderProtocolResp 单个协议能力。
-// ProviderProtocolResp 协议能力预设（前端渲染协议下拉）。
+// ProviderProtocolResp 单个协议能力（前端渲染协议下拉）。
 type ProviderProtocolResp struct {
 	APIMode    string `json:"api_mode"`
 	BaseURL    string `json:"base_url"`

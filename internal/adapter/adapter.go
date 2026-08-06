@@ -56,22 +56,34 @@ func (p *Adapter) SetStickerResolver(fn func(stickerID string) (string, bool)) {
 }
 
 func (p *Adapter) Start(ctx context.Context) error {
+	p.mu.RLock()
+	running := !p.closed
+	p.mu.RUnlock()
+	if running {
+		return nil // 已在运行
+	}
+
 	listenAddr := p.listenAddr()
+
 	p.mu.Lock()
 	// 若 events 已被 Stop 关闭, 重建一个新的 channel, 否则后续推送会 panic
 	// (向已关闭 channel 发送 panic)。
 	if p.events == nil {
 		p.events = make(chan Event, 128)
 	}
+	events := p.events // 局部变量贯穿创建过程，避免 Stop 并发置 nil 后拿到 nil channel
 	p.mu.Unlock()
 
-	srv, err := newWSServer(ctx, listenAddr, p.cfg.Token, p.events)
+	srv, err := newWSServer(ctx, listenAddr, p.cfg.Token, events)
 	if err != nil {
 		return fmt.Errorf("adapter start: %w", err)
 	}
+
 	p.mu.Lock()
-	if !p.closed {
-		// 已经在运行, 把多余启动的 srv 关掉, 不替换现有 server。
+	// newWSServer 创建期间可能被 Stop：Stop 会把 events 关闭并置 nil（或重建），
+	// 用 p.events != events 即可可靠检测。不能用 p.closed 判断——首次启动时
+	// closed 本来就是 true（New 初始为"已停止"），会导致刚创建的 server 被误关。
+	if p.events != events {
 		p.mu.Unlock()
 		srv.stop()
 		return nil
@@ -144,6 +156,8 @@ func (p *Adapter) Stop(ctx context.Context) error {
 }
 
 func (p *Adapter) Events() <-chan Event {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.events
 }
 
@@ -155,10 +169,13 @@ func (p *Adapter) Admins() []string {
 }
 
 func (p *Adapter) SelfID() int64 {
-	if p.server == nil {
+	p.mu.RLock()
+	server := p.server
+	p.mu.RUnlock()
+	if server == nil {
 		return 0
 	}
-	return p.server.selfID()
+	return server.selfID()
 }
 
 func (p *Adapter) Restart(ctx context.Context) error {
@@ -228,8 +245,11 @@ func (p *Adapter) SyncConfig(ctx context.Context, conf Config) error {
 }
 
 func (p *Adapter) call(action string, params map[string]any) (*APIResponse, error) {
-	if p.server == nil {
+	p.mu.RLock()
+	server := p.server
+	p.mu.RUnlock()
+	if server == nil {
 		return nil, fmt.Errorf("adapter 未启动")
 	}
-	return p.server.callAPI(action, params)
+	return server.callAPI(action, params)
 }

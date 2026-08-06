@@ -107,12 +107,19 @@ func Init(ctx context.Context, db *gorm.DB, redisClient *redis.Client) (*Core, e
 			return
 		}
 
-		// 迁移：移除 image_folders 旧普通唯一索引（不允许软删后重名，SQLSTATE 23505）。
-		// 新部分唯一索引（WHERE deleted_at IS NULL）已由 AutoMigrate 创建，
-		// 旧索引继续阻塞软删后重建同名文件夹，这里幂等清理。
-		if err := db.Exec("DROP INDEX IF EXISTS idx_image_folders_name").Error; err != nil {
-			initErr = err
-			return
+		// 迁移：移除旧普通唯一索引（不允许软删后重名，SQLSTATE 23505）。
+		// 新部分唯一索引（WHERE deleted_at IS NULL）已由 AutoMigrate 按新索引名创建，
+		// 旧索引继续阻塞软删后重建同名记录，这里幂等清理（含 image_folders 历史索引）。
+		for _, idx := range []string{
+			"idx_image_folders_name",   // image_folders 历史索引
+			"idx_sticker_tags_name",    // sticker_tags
+			"idx_plugins_name",         // plugins
+			"idx_admin_users_username", // admin_users
+		} {
+			if err := db.Exec("DROP INDEX IF EXISTS " + idx).Error; err != nil {
+				initErr = err
+				return
+			}
 		}
 
 		cacheInst := cache.NewCache(redisClient, os.Getenv("REDIS_PREFIX"))

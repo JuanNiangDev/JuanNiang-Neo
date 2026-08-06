@@ -17,12 +17,12 @@ func NewWebhookConfigDAO(db *gorm.DB) *WebhookConfigDAO {
 
 // InitConfig 初始化默认配置（已存在则忽略）。
 func (d *WebhookConfigDAO) InitConfig(ctx context.Context) error {
-	return d.db.Create(&models.WebhookConfig{
+	return d.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&models.WebhookConfig{
 		ID:      1,
 		Addr:    "0.0.0.0",
 		Port:    8091,
 		Enabled: false,
-	}).WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Error
+	}).Error
 }
 
 // GetConfig 获取 Webhook 配置。

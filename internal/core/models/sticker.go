@@ -24,9 +24,11 @@ type Sticker struct {
 func (Sticker) TableName() string { return "stickers" }
 
 // StickerTag 表情标签。
+// Name 使用部分唯一索引（WHERE deleted_at IS NULL）：软删除的标签不占用名字，
+// 删除后可重建同名标签，否则旧软删行会阻塞唯一索引（SQLSTATE 23505）。
 type StickerTag struct {
 	ID        string         `gorm:"primaryKey;type:uuid"`
-	Name      string         `gorm:"not null;uniqueIndex"` // 标签名
+	Name      string         `gorm:"not null;uniqueIndex:uk_sticker_tags_name,where:deleted_at IS NULL"` // 标签名
 	CreatedAt time.Time      `json:"created_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index"` // 软删
 }

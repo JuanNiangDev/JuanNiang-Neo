@@ -35,6 +35,19 @@ import (
 
 var log = logging.NewModule("api")
 
+// builtinToolPrefix 内置工具的 ID 前缀（如 builtin:send_group_msg）。
+const builtinToolPrefix = "builtin:"
+
+// pluginNameRe 插件名白名单：仅允许字母/数字/下划线/连字符。
+// 插件名会拼接进文件路径（data/pluggins/<name>），必须拒绝 "/"、".." 等
+// 路径分隔符，防止上传/删除时路径穿越到插件目录之外。
+var pluginNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// validPluginName 校验插件名是否安全（非空 + 白名单）。
+func validPluginName(name string) bool {
+	return name != "" && pluginNameRe.MatchString(name)
+}
+
 func (s *Service) Login(ctx context.Context, c *app.RequestContext) {
 	var data dto.LoginReq
 
@@ -337,7 +350,9 @@ func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	s.ProviderGroup.DelProvider(id)
+	if s.ProviderGroup != nil {
+		s.ProviderGroup.DelProvider(id)
+	}
 
 	// Provider 变更影响 Eino Agent 的 model adapter，必须重建
 	s.notifyRebuild()
@@ -873,7 +888,7 @@ func (s *Service) ListTools(ctx context.Context, c *app.RequestContext) {
 			seen[name] = true
 			paramsJSON, _ := json.Marshal(t.Parameters())
 			resp := dto.ToolConfigResp{
-				ID:          "builtin:" + name,
+				ID:          builtinToolPrefix + name,
 				Name:        name,
 				Description: t.Description(),
 				Parameters:  models.JSONMap{},
@@ -914,7 +929,7 @@ func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
 
 	// 内置工具: DB 不一定有对应记录, 仅当存在记录时才切换 DB 状态。
 	// 内置工具运行时始终在注册表中, 不允许真正"停用"——DB 拒绝切换。
-	if strings.HasPrefix(id, "builtin:") {
+	if strings.HasPrefix(id, builtinToolPrefix) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ToolIsBuiltin, dto.ErrorDetail{ErrorDetail: "内置工具运行时常驻, 不支持启停"}))
 		return
 	}
@@ -946,8 +961,8 @@ func (s *Service) UpdateToolAdminOnly(ctx context.Context, c *app.RequestContext
 
 	// 内置工具 ID 形如 builtin:<name>：按 name 查找/创建对应 ToolConfig 行
 	name := id
-	if strings.HasPrefix(id, "builtin:") {
-		name = strings.TrimPrefix(id, "builtin:")
+	if strings.HasPrefix(id, builtinToolPrefix) {
+		name = strings.TrimPrefix(id, builtinToolPrefix)
 	}
 
 	tc, err := s.DAO.ToolConfig.GetByName(ctx, name)
@@ -1086,24 +1101,55 @@ func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
 		pluginName = file.Filename
 		pluginName = pluginName[:len(pluginName)-len(filepath.Ext(pluginName))]
 	}
+	// 插件名白名单校验：仅允许字母/数字/下划线/连字符，
+	// 防止含 "/"、".." 等路径分隔符的名称逃逸 data/pluggins 目录。
+	if !validPluginName(pluginName) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidPluginName, dto.ErrorDetail{ErrorDetail: "插件名不合法: " + pluginName}))
+		return
+	}
 
 	destDir := filepath.Join("data/pluggins", pluginName)
 	os.RemoveAll(destDir)
 	os.MkdirAll(destDir, 0755)
 
 	for _, f := range reader.File {
-		path := filepath.Join(destDir, f.Name)
+		// 防 zip-slip：校验每个条目解压后仍在 destDir 内（拒绝 "../"、绝对路径等逃逸条目）
+		target := filepath.Join(destDir, f.Name)
+		rel, err := filepath.Rel(destDir, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			log.Warn("插件包包含逃逸路径条目，拒绝安装", "plugin", pluginName, "entry", f.Name)
+			os.RemoveAll(destDir)
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginPackageUnsafe, dto.ErrorDetail{ErrorDetail: "非法路径条目: " + f.Name}))
+			return
+		}
 		if f.FileInfo().IsDir() {
-			os.MkdirAll(path, 0755)
+			os.MkdirAll(target, 0755)
 			continue
 		}
-		os.MkdirAll(filepath.Dir(path), 0755)
-		dst, err := os.Create(path)
+		os.MkdirAll(filepath.Dir(target), 0755)
+		dst, err := os.Create(target)
 		if err != nil {
-			continue
+			log.Error("插件文件创建失败", "plugin", pluginName, "entry", f.Name, "err", err)
+			os.RemoveAll(destDir)
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WriteFileFail, nil))
+			return
 		}
-		rc, _ := f.Open()
-		io.Copy(dst, rc)
+		rc, err := f.Open()
+		if err != nil {
+			dst.Close()
+			log.Error("插件文件读取失败", "plugin", pluginName, "entry", f.Name, "err", err)
+			os.RemoveAll(destDir)
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidZipFile, nil))
+			return
+		}
+		if _, err := io.Copy(dst, rc); err != nil {
+			rc.Close()
+			dst.Close()
+			log.Error("插件文件写入失败", "plugin", pluginName, "entry", f.Name, "err", err)
+			os.RemoveAll(destDir)
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WriteFileFail, nil))
+			return
+		}
 		rc.Close()
 		dst.Close()
 	}
@@ -1158,6 +1204,12 @@ func (s *Service) TogglePlugin(ctx context.Context, c *app.RequestContext) {
 
 func (s *Service) DeletePlugin(ctx context.Context, c *app.RequestContext) {
 	name := c.Param("id")
+
+	// 插件名白名单校验：防止路径穿越删除 data/pluggins 之外任意目录
+	if !validPluginName(name) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidPluginName, dto.ErrorDetail{ErrorDetail: "插件名不合法: " + name}))
+		return
+	}
 
 	// 系统插件禁止删除
 	if s.PluginEngine != nil && s.PluginEngine.IsSystem(name) {

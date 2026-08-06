@@ -585,6 +585,11 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	for _, spc := range skillPromptContents {
 		instruction += "\n\n" + spc
 	}
+	// 表情包上下文：每轮注入全部标签 + 「常用」表情（ID/描述），
+	// 让 Agent 优先按标签取表情或直接用常用表情 ID 发送
+	if sc := h.buildStickerContext(ctx); sc != "" {
+		instruction += "\n\n" + sc
+	}
 	if agentLite {
 		instruction = "【AgentLite 精简模式】当前仅禁用了 MCP 服务器、沙箱（代码/命令执行、浏览器搜索）和文生图工具，" +
 			"其余能力与正常模式一致，仍保留 ReAct 循环并可调用消息发送等其他工具。" +

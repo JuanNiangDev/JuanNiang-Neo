@@ -33,6 +33,12 @@ type wsConn struct {
 	mu         sync.Mutex
 	seq        uint64
 	responses  map[string]chan *APIResponse
+
+	// closed 标志 + closeOnce：close() 幂等，所有 channel 操作（注册/投递/关闭）
+	// 都在 conn.mu 保护下并检查 closed，避免断线重连/替换时向已关闭 channel 发送
+	// 或对 nil map 赋值导致 panic。
+	closed    bool
+	closeOnce sync.Once
 }
 
 func newWSServer(ctx context.Context, addr, token string, events chan Event) (*wsServer, error) {
@@ -151,12 +157,21 @@ func (s *wsServer) callAPI(action string, params map[string]any) (*APIResponse, 
 	ch := make(chan *APIResponse, 1)
 
 	conn.mu.Lock()
+	if conn.closed {
+		conn.mu.Unlock()
+		return nil, fmt.Errorf("connection closed (selfID=%d)", selfID)
+	}
 	conn.responses[echo] = ch
 	conn.mu.Unlock()
 
 	defer func() {
 		conn.mu.Lock()
-		delete(conn.responses, echo)
+		if ch, ok := conn.responses[echo]; ok {
+			delete(conn.responses, echo)
+			// 关闭 channel 释放等待方；readLoop 投递在 conn.mu 保护下检查
+			// responses 是否仍含该 echo，因此不会向已关闭 channel 发送。
+			close(ch)
+		}
 		conn.mu.Unlock()
 	}()
 
@@ -174,7 +189,11 @@ func (s *wsServer) callAPI(action string, params map[string]any) (*APIResponse, 
 	}
 
 	select {
-	case rsp := <-ch:
+	case rsp, ok := <-ch:
+		if !ok {
+			// channel 被 close() 关闭（连接断开）：等待中的调用方安全退出
+			return nil, fmt.Errorf("connection closed while waiting for api %s", action)
+		}
 		if rsp.Status == "failed" {
 			return rsp, fmt.Errorf("api %s failed: retcode=%d msg=%s", action, rsp.RetCode, rsp.Msg)
 		}
@@ -233,7 +252,11 @@ func (s *wsServer) handleWS(w http.ResponseWriter, r *http.Request, token string
 func (s *wsServer) readLoop(wsc *wsConn) {
 	defer func() {
 		s.mu.Lock()
-		delete(s.conns, wsc.selfID)
+		// 仅当 map 中仍存的是自己时才删除：同 selfID 重连时旧连接的清理
+		// 不能误删新注册的连接。
+		if s.conns[wsc.selfID] == wsc {
+			delete(s.conns, wsc.selfID)
+		}
 		s.mu.Unlock()
 		wsc.close()
 		log.Info("客户端断开", "self_id", wsc.selfID)
@@ -253,16 +276,23 @@ func (s *wsServer) readLoop(wsc *wsConn) {
 		// API 调用响应
 		if echo := rsp.Get("echo"); echo.Exists() {
 			wsc.mu.Lock()
-			ch, ok := wsc.responses[echo.String()]
-			wsc.mu.Unlock()
-			if ok {
-				ch <- &APIResponse{
-					Status:  rsp.Get("status").String(),
-					RetCode: rsp.Get("retcode").Int(),
-					Data:    rsp.Get("data").Raw,
-					Msg:     rsp.Get("msg").String(),
+			// 在锁内检查 closed + channel 是否仍注册，且用 select-default 非阻塞投递，
+			// 避免向已关闭/已删除的 channel 发送导致 panic。
+			if !wsc.closed {
+				if ch, ok := wsc.responses[echo.String()]; ok {
+					select {
+					case ch <- &APIResponse{
+						Status:  rsp.Get("status").String(),
+						RetCode: rsp.Get("retcode").Int(),
+						Data:    rsp.Get("data").Raw,
+						Msg:     rsp.Get("msg").String(),
+					}:
+					default:
+						// 调用方已有超时兜底，丢弃即可
+					}
 				}
 			}
+			wsc.mu.Unlock()
 			continue
 		}
 
@@ -314,13 +344,16 @@ func parseEvent(raw []byte) Event {
 }
 
 func (c *wsConn) close() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.conn.Close()
-	for _, ch := range c.responses {
-		close(ch)
-	}
-	c.responses = nil
+	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.closed = true
+		c.conn.Close()
+		for _, ch := range c.responses {
+			close(ch)
+		}
+		c.responses = nil
+	})
 }
 
 func checkAuth(r *http.Request, token string) bool {

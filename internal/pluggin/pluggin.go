@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1186,6 +1187,20 @@ func (pe *PluginEngine) injectJSON(L *lua.LState) {
 	L.SetGlobal("json", jsonTable)
 }
 
+// luaMsgID 将 Lua 的 message_id 参数转为 int64，兼容字符串（事件表传递格式）与数字（旧插件直传）。
+// 事件表 message_id 以字符串传递：QQ message_id 可达 19 位（> 2^53），
+// 用 Lua number（float64）会丢精度，导致 delete_msg/get_msg 撤回或查询失败。
+func luaMsgID(v lua.LValue) (int64, error) {
+	switch t := v.(type) {
+	case lua.LString:
+		return strconv.ParseInt(string(t), 10, 64)
+	case lua.LNumber:
+		return int64(t), nil
+	default:
+		return 0, fmt.Errorf("message_id 必须是数字或字符串，got %s", v.Type())
+	}
+}
+
 // luaTableToSegments 将 Lua 的 {{type="text",data={text="hello"}}, ...} 转为 []adapter.Segment
 func luaTableToSegments(L *lua.LState, tbl *lua.LTable) []adapter.Segment {
 	var segs []adapter.Segment
@@ -1359,11 +1374,23 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			return pushResult(L, err)
 		},
 		"delete_msg": func(L *lua.LState) int {
-			err := sendAdp.DeleteMsg(int64(L.CheckNumber(1)))
+			id, err := luaMsgID(L.Get(1))
+			if err != nil {
+				L.Push(lua.LBool(false))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			err = sendAdp.DeleteMsg(id)
 			return pushResult(L, err)
 		},
 		"get_msg": func(L *lua.LState) int {
-			msg, err := sendAdp.GetMsg(int64(L.CheckNumber(1)))
+			id, err := luaMsgID(L.Get(1))
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			msg, err := sendAdp.GetMsg(id)
 			return pushResultJSON(L, msg, err)
 		},
 		"get_group_info": func(L *lua.LState) int {
@@ -2152,7 +2179,8 @@ func eventToLuaTable(L *lua.LState, ev EventData) *lua.LTable {
 	}
 	// message 附加字段
 	if ev.MessageID != 0 {
-		L.SetField(t, "message_id", lua.LNumber(ev.MessageID))
+		// 以字符串传递：QQ message_id 可达 19 位（> 2^53），float64 会丢精度导致 delete_msg/get_msg 失效
+		L.SetField(t, "message_id", lua.LString(strconv.FormatInt(ev.MessageID, 10)))
 	}
 	if len(ev.Sender) > 0 {
 		L.SetField(t, "sender", goToLuaValue(L, ev.Sender))

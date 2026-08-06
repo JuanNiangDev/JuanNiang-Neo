@@ -32,10 +32,6 @@ func NewProvider(cfg ProviderConfig) Provider {
 	}
 }
 
-func NewProviderFromDB(cfg ProviderConfig) Provider {
-	return NewProvider(cfg)
-}
-
 func (p *openAIProvider) ID() string      { return p.cfg.ID }
 func (p *openAIProvider) Name() string    { return p.cfg.Name }
 func (p *openAIProvider) Type() ModelType { return p.cfg.Type }

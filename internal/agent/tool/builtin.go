@@ -70,6 +70,7 @@ func RegisterBuiltinTools(
 	listStickerTags func(ctx context.Context) (string, error),
 	listStickers func(ctx context.Context, tag string, page, pageSize int) (string, error),
 	searchStickers func(ctx context.Context, keyword string, limit int) (string, error),
+	sendStickerByKeyword func(ctx context.Context, keyword, msgType string, targetID int64) (string, error),
 	searchKnowledge func(ctx context.Context, keyword string, limit int) (string, error),
 ) {
 	tools := []Tool{}
@@ -86,7 +87,7 @@ func RegisterBuiltinTools(
 					"folder": map[string]any{"type": "string", "description": "虚拟文件夹路径（如 /meme），不填默认根目录 /"},
 					"limit":  map[string]any{"type": "integer", "description": "返回条数上限（默认 20，最大 50）"},
 				},
-			}, false, false),
+			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				Folder string `json:"folder"`
@@ -111,7 +112,7 @@ func RegisterBuiltinTools(
 					"limit":   map[string]any{"type": "integer", "description": "返回条数上限（默认 20，最大 50）"},
 				},
 				"required": []string{"keyword"},
-			}, false, false),
+			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				Keyword string `json:"keyword"`
@@ -189,7 +190,7 @@ func RegisterBuiltinTools(
 	// list_sticker_tags 获取全部表情标签。
 	tools = append(tools, &onebotTool{
 		BaseTool: NewTool("", "list_sticker_tags", "获取表情包库的全部标签（表情 ID 查询时可按标签过滤）",
-			openai.FunctionParameters{"type": "object", "properties": map[string]any{}}, false, false),
+			openai.FunctionParameters{"type": "object", "properties": map[string]any{}}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			if listStickerTags == nil {
 				return "表情包库未初始化", nil
@@ -208,7 +209,7 @@ func RegisterBuiltinTools(
 					"page":      map[string]any{"type": "integer", "description": "页码，从 1 开始"},
 					"page_size": map[string]any{"type": "integer", "description": "每页条数（默认 20，最大 50）"},
 				},
-			}, false, false),
+			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				Tag      string `json:"tag"`
@@ -233,7 +234,7 @@ func RegisterBuiltinTools(
 					"limit":   map[string]any{"type": "integer", "description": "返回条数上限（默认 20，最大 50）"},
 				},
 				"required": []string{"keyword"},
-			}, false, false),
+			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				Keyword string `json:"keyword"`
@@ -244,6 +245,38 @@ func RegisterBuiltinTools(
 				return "表情包库未初始化", nil
 			}
 			return searchStickers(ctx, p.Keyword, p.Limit)
+		},
+	})
+
+	// send_sticker_by_keyword 一步发送：按关键词搜索并直接发送最匹配的表情，
+	// 省去"先 search 再 send"两步调用，Agent 接梗/回应情绪时一次搞定。
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "send_sticker_by_keyword", "按关键词搜索表情包库并直接发送最匹配的一个表情（一步完成，无需先查 ID）。适合接梗、回应情绪、表达态度等场景：直接描述你想表达的意思（如\"嘲笑\"、\"点赞\"、\"晚安\"、\"笑死\"），系统会搜索表情包库并发送最匹配的表情；未找到匹配时返回提示。想从某个标签下挑选表情用 list_stickers，知道具体 ID 用 send_sticker",
+			openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"keyword":      map[string]any{"type": "string", "description": "想表达的意思或搜索关键词（匹配名称/简介/标签）"},
+					"message_type": map[string]any{"type": "string", "description": "发送目标：group 群聊 / private 私聊，不填默认当前会话"},
+					"target_id":    map[string]any{"type": "integer", "description": "目标群号或 QQ 号，不填默认当前会话"},
+				},
+				"required": []string{"keyword"},
+			}, true, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Keyword     string    `json:"keyword"`
+				MessageType string    `json:"message_type"`
+				TargetID    FlexInt64 `json:"target_id"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("参数解析失败: %w", err)
+			}
+			if strings.TrimSpace(p.Keyword) == "" {
+				return "", fmt.Errorf("缺少 keyword 参数")
+			}
+			if sendStickerByKeyword == nil {
+				return "表情包库未初始化", nil
+			}
+			return sendStickerByKeyword(ctx, p.Keyword, p.MessageType, int64(p.TargetID))
 		},
 	})
 

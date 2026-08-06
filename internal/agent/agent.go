@@ -171,8 +171,12 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Memory = memory.NewMemoryGroup(st, lt, sm)
 	// 注入 Per-ChatArea 短期记忆配置读取源（cache → DB → 全局默认）
 	h.Memory.SetShortTermStore(cfg.DAO.ShortTermMemory)
-	// 设置 LLM Provider 供 Compact 中的技能记忆更新使用
-	h.Memory.LLMProvider = h.Providers.SelectModel(provider.ModelTypeText)
+	// 注入 Text LLM Provider 动态获取函数（Compact 触发时实时取最新模型）：
+	// 必须在 loadProviders 之前调用，启动后 ProviderGroup 才加载完成，
+	// 直接赋值 SelectModel 的结果会是 nil，导致 AutoCompact 永不触发。
+	h.Memory.SetLLMProviderFn(func() provider.Provider {
+		return h.Providers.SelectModel(provider.ModelTypeText)
+	})
 
 	h.Prompt = prompt.NewPromptManager(cfg.DAO.Prompt)
 	h.Skills = skill.NewSkillEngine()
@@ -218,6 +222,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		},
 		func(ctx context.Context, keyword string, limit int) (string, error) {
 			return h.searchStickersForTool(ctx, keyword, limit)
+		},
+		func(ctx context.Context, keyword, msgType string, targetID int64) (string, error) {
+			return h.sendStickerByKeywordForTool(ctx, keyword, msgType, targetID)
 		},
 		func(ctx context.Context, keyword string, limit int) (string, error) {
 			return h.searchKnowledgeForTool(ctx, keyword, limit)

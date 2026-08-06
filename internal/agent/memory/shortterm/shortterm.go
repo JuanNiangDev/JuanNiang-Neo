@@ -3,6 +3,7 @@ package shortterm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -130,11 +131,12 @@ func (m *ShortTermMemory) Clear(ctx context.Context, areaID string) error {
 	return m.cache.Del(ctx, m.key(areaID))
 }
 
-// Compact 压缩短期记忆: 调用 LLM 摘要后写入长期记忆。
+// Compact 压缩短期记忆: 调用 LLM 摘要后写入长期记忆，并清理短期记忆窗口。
+// 同一 ChatArea 已有 Compact 在运行时返回 ErrCompactInProgress（并发防护，非致命错误）。
 func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provider.Provider, store CompactStore) error {
 	mu := m.compactLock(areaID)
 	if !mu.TryLock() {
-		return fmt.Errorf("compact already in progress for area %s", areaID)
+		return fmt.Errorf("%w %s", ErrCompactInProgress, areaID)
 	}
 	defer mu.Unlock()
 
@@ -189,9 +191,27 @@ func (m *ShortTermMemory) Compact(ctx context.Context, areaID string, llm provid
 		}
 	}
 
+	// 清理短期记忆：只保留最近 compactKeepRecent 条原始消息（其余已压缩进长期记忆）。
+	// 若不清理，窗口持续满载，每条新消息都会再次触发 Compact（频繁 "already in progress"）。
+	if len(msgs) > compactKeepRecent {
+		if err := m.Overwrite(ctx, areaID, msgs[len(msgs)-compactKeepRecent:]); err != nil {
+			log.Warn("Compact 后清理短期记忆失败", "area_id", areaID, "err", err)
+		} else {
+			log.Info("Compact 已清理短期记忆，保留最近消息", "area_id", areaID, "kept", compactKeepRecent)
+		}
+	}
+
 	log.Info("短期记忆 Compact 完成", "area_id", areaID, "summary_len", len(summary))
 	return nil
 }
+
+// compactKeepRecent Compact 完成后短期记忆保留的最近消息条数，
+// 保证上下文连贯性的同时避免窗口满载重复触发 Compact。
+const compactKeepRecent = 10
+
+// ErrCompactInProgress 同一 ChatArea 已有 Compact 在运行（并发防护触发）。
+// 属于预期的竞争现象（窗口满时多条消息先后触发），调用方可据此降级日志级别。
+var ErrCompactInProgress = errors.New("compact already in progress for area")
 
 // CompactStore 是 Compact 时需要的存储接口。
 type CompactStore interface {

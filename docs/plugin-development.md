@@ -240,7 +240,7 @@ jn.file.append_line("data/log.txt", "事件发生于 " .. os.date())
 | `onebot11.send_group_msg(group_id, message) → bool, string` | **异步发送**群聊，立即返回 |
 | `onebot11.send_private_msg_sync(user_id, message) → bool [, err]` | **同步发送**私聊，阻塞等待结果返回 |
 | `onebot11.send_group_msg_sync(group_id, message) → bool [, err]` | **同步发送**群聊，阻塞等待结果返回 |
-| `onebot11.delete_msg(message_id) → bool [, err]` | 撤回消息 |
+| `onebot11.delete_msg(message_id) → bool [, err]` | 撤回消息；`message_id` 接受数字或字符串（事件表的 `message_id` 为字符串，避免 QQ 长 ID 精度丢失） |
 | `onebot11.read_file_base64(path) → string, err` | 从插件目录读取文件并返回 `base64://...` 字符串 |
 
 > **异步 vs 同步**：默认 `send_xxx_msg` 为异步（fire-and-forget），适合大多数场景。需要确认发送结果或获取 `message_id` 时用 `send_xxx_msg_sync`。
@@ -474,7 +474,7 @@ jn.agent.set_provider_active("uuid", true)   -- 启用
 | 函数 | 返回 | 说明 |
 |------|------|------|
 | `agent.get_current_chat_area() → table` | `{post_type, message_type, user_id, group_id, chat_area_id}` | 当前正在处理的消息所属 ChatArea |
-| `agent.compact_memory() → string [, err]` | | Compact 当前 ChatArea 短期记忆：LLM 压缩为摘要，写入长期记忆并清空窗口（需 Text LLM Provider） |
+| `agent.compact_memory() → string [, err]` | | Compact 当前 ChatArea 短期记忆：LLM 压缩为摘要写入长期记忆，随后窗口清理为只保留最近 10 条消息（需 Text LLM Provider） |
 
 ## SDK 模块: `jn.command`
 
