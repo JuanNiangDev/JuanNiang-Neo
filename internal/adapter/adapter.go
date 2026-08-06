@@ -80,9 +80,10 @@ func (p *Adapter) Start(ctx context.Context) error {
 	}
 
 	p.mu.Lock()
-	// newWSServer 创建期间可能被 Stop（关闭 events / closed=true），
-	// 此时不替换现有 server，关闭多余的 srv 即可（events 也已被重建）。
-	if p.closed || p.events != events {
+	// newWSServer 创建期间可能被 Stop：Stop 会把 events 关闭并置 nil（或重建），
+	// 用 p.events != events 即可可靠检测。不能用 p.closed 判断——首次启动时
+	// closed 本来就是 true（New 初始为"已停止"），会导致刚创建的 server 被误关。
+	if p.events != events {
 		p.mu.Unlock()
 		srv.stop()
 		return nil
