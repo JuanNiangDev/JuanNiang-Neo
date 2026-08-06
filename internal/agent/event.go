@@ -80,6 +80,16 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 
 // processEvent 三阶段架构：Plugin 拦截 → 消息过滤 → 回复策略 → Agent。
 func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
+	// Phase 0: 消息幂等去重。WS 断线重连/多连接时 OneBot 端可能重复推送同一条
+	// 消息（相同 message_id），重复消费会导致 Agent 重复执行任务与重复回复。
+	// 群/私聊的 message_id 各自独立递增，key 需带上 message_type。
+	if ev.PostType == "message" && ev.Message != nil && ev.Message.MessageID > 0 {
+		key := ev.Message.MessageType + ":" + strconv.FormatInt(ev.Message.MessageID, 10)
+		if h.msgDedup.seenBefore(key) {
+			log.Info("重复消息已丢弃", "message_id", ev.Message.MessageID, "message_type", ev.Message.MessageType, "user_id", ev.Message.UserID)
+			return
+		}
+	}
 	// Phase 1: Plugin 统一拦截
 	if h.PluginEngine != nil {
 		result := h.PluginEngine.Dispatch(ev)

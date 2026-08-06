@@ -86,6 +86,9 @@ type HagoCenter struct {
 
 	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
 	EinoAgent *adk.ChatModelAgent
+
+	// msgDedup 消息去重器：过滤 WS 断线重连/多连接导致的同一条消息重复投递。
+	msgDedup *msgDedup
 }
 
 // memberInfoTTL 群成员信息缓存有效期（角色变更不频繁，10 分钟足够）。
@@ -125,8 +128,12 @@ func NewHagoCenter() *HagoCenter {
 		relevanceSem:    make(chan struct{}, relevanceSemLimit),
 		toolAdminOnly:   make(map[string]bool),
 		knowledgeLRU:    newKnowledgeLRU(50),
+		msgDedup:        newMsgDedup(dedupWindow),
 	}
 }
+
+// dedupWindow 消息去重窗口：需大于 WS 断线重连 + 重推积压的最长间隔。
+const dedupWindow = 60 * time.Second
 
 // Init 从 DB 加载配置并初始化所有子模块。
 func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
