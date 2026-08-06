@@ -8,6 +8,7 @@ import (
 	"JuanNiang-Neo/internal/agent/skill"
 	"JuanNiang-Neo/internal/api/dto"
 	"JuanNiang-Neo/internal/api/middleware"
+	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
@@ -2285,6 +2286,7 @@ func (s *Service) GetReplyStrategy(ctx context.Context, c *app.RequestContext) {
 		AgentLite:          cfg.AgentLite,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		RelevanceTimeout:   cfg.RelevanceTimeout,
 		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}))
 }
@@ -2319,6 +2321,15 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		}
 	}
 
+	// 验证相关性判断超时（1-120 秒，0=默认 10s）
+	if data.RelevanceTimeout < 0 || data.RelevanceTimeout > 120 {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: "相关性判断超时必须在 1-120 秒之间"}, nil))
+		return
+	}
+	if data.RelevanceTimeout == 0 {
+		data.RelevanceTimeout = 10
+	}
+
 	// 验证判断失败策略
 	if data.JudgeFailPolicy == "" {
 		data.JudgeFailPolicy = "drop"
@@ -2341,6 +2352,7 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 	cfg.AgentLite = data.AgentLite
 	cfg.RelevancePrompt = data.RelevancePrompt
 	cfg.RelevanceModel = data.RelevanceModel
+	cfg.RelevanceTimeout = data.RelevanceTimeout
 	cfg.JudgeFailPolicy = data.JudgeFailPolicy
 
 	if err := s.DAO.ReplyStrategy.Update(ctx, cfg); err != nil {
@@ -2356,6 +2368,7 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		AgentLite:          cfg.AgentLite,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		RelevanceTimeout:   cfg.RelevanceTimeout,
 		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}))
 }
@@ -2930,10 +2943,15 @@ func (s *Service) CreateStickerTag(ctx context.Context, c *app.RequestContext) {
 }
 
 // DeleteStickerTag 删除标签（所有表情中的该标签一并移除）。
+// 系统内置「常用」标签不可删除（每轮对话注入依赖它）。
 func (s *Service) DeleteStickerTag(ctx context.Context, c *app.RequestContext) {
 	t, err := s.DAO.Sticker.TagGetByID(ctx, c.Param("id"))
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagNotExist, nil))
+		return
+	}
+	if t.Name == dao.CommonStickerTag {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.StickerTagSystem, dto.ErrorDetail{ErrorDetail: "系统内置标签「" + dao.CommonStickerTag + "」不可删除"}))
 		return
 	}
 	if err := s.DAO.Sticker.RemoveTagFromAll(ctx, t.Name); err != nil {

@@ -53,6 +53,7 @@ var (
 	StickerImageExist       = Response{Status: 40042, Info: "该图床图片已被其他表情引用"}
 	FishCalConfigNotExist   = Response{Status: 40043, Info: "摸鱼日历配置不存在"}
 	ScheduledMsgNotExist    = Response{Status: 40044, Info: "定时消息任务不存在"}
+	StickerTagSystem        = Response{Status: 40047, Info: "系统内置标签不可删除"}
 )
 
 type TokenResp struct {
@@ -469,5 +470,6 @@ type ReplyStrategyResp struct {
 	AgentLite          bool    `json:"agent_lite"`
 	RelevancePrompt    string  `json:"relevance_prompt"`  // 相关性检测自定义提示词
 	RelevanceModel     string  `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID
+	RelevanceTimeout   int     `json:"relevance_timeout"` // 相关性检测超时（秒）
 	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop / reply
 }

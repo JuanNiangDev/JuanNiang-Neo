@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
@@ -29,9 +30,10 @@ type ReplySettings struct {
 	AgentLite          bool
 	BotName            string
 	RelevanceThreshold float64
-	RelevancePrompt    string // 相关性检测自定义提示词（空则用默认）
-	RelevanceModel     string // 相关性检测使用的 Text Provider ID（空则用默认）
-	JudgeFailPolicy    string // 判断失败策略: drop=不回复（默认）, reply=照常回复
+	RelevancePrompt    string        // 相关性检测自定义提示词（空则用默认）
+	RelevanceModel     string        // 相关性检测使用的 Text Provider ID（空则用默认）
+	RelevanceTimeout   time.Duration // 相关性检测超时（含信号量等待与 LLM 调用总预算）
+	JudgeFailPolicy    string        // 判断失败策略: drop=不回复（默认）, reply=照常回复
 }
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
@@ -158,6 +160,11 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		log.Warn("获取回复策略失败，使用默认值", "err", err)
 		return ReplySettings{Strategy: models.StrategyAlways}
 	}
+	// 相关性判断超时（秒）；0/非法值回退到默认 10s
+	timeout := time.Duration(cfg.RelevanceTimeout) * time.Second
+	if cfg.RelevanceTimeout <= 0 || timeout > 120*time.Second {
+		timeout = relevanceJudgeTimeout
+	}
 	return ReplySettings{
 		Strategy:           cfg.Strategy,
 		StripMarkdown:      cfg.StripMarkdown,
@@ -166,6 +173,7 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		RelevanceThreshold: cfg.RelevanceThreshold,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		RelevanceTimeout:   timeout,
 		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}
 }
@@ -177,6 +185,10 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 // batchWindow 同一 ChatArea 消息的批处理窗口：窗口内的消息合并为一次 Agent 处理，
 // 避免多条消息同时到达时各自触发完整 ReAct 循环（重复执行任务 + 回复串味）。
 const batchWindow = time.Second
+
+// acquireTimeout 并发令牌等待超时：同群上一子批次 ReAct 循环执行时间较长时，
+// 后续子批次不再无限排队，超时后直接派发处理（跳过令牌等待，让消息尽快得到响应）。
+const acquireTimeout = 30 * time.Second
 
 // 热聊检测（L2.2/L4.1）：1s 滑动窗口内消息数 ≥ floodThreshold 视为刷屏。
 // 刷屏时：批窗口拉长到 hotBatchWindow（合并更多消息），且相关性判断直接降级
@@ -317,26 +329,124 @@ func (h *HagoCenter) setRelevanceVerdict(ctx context.Context, areaID string, ver
 }
 
 // spawnBatch 启动一个批次的 Agent 处理（relevance 检查与并发控制都在 goroutine 内，不阻塞事件循环）。
+// 批次内不同用户的消息按 UserID 拆分为多个子批次，每个用户的消息独立占一个 ReAct 循环
+// （同一用户窗口内的消息仍合并为一次处理）。子批次**并行**执行 ReAct 循环，
+// 但发送动作交给 orderedReplier 按消息顺序投递，避免并行导致的回复乱序。
 func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs ReplySettings, chatArea *models.ChatArea) {
-	if h.Concurrency != nil {
-		go func() {
-			if events = h.filterRelevant(ctx, events, rs); len(events) == 0 {
-				return
+	groups := groupEventsByUser(events)
+
+	if h.Concurrency == nil {
+		// 无并发管理：同步串行处理，组间天然有序
+		for _, g := range groups {
+			if filtered := h.filterRelevant(ctx, g, rs); len(filtered) > 0 {
+				h.handleMessage(ctx, filtered, chatArea, rs)
 			}
-			if err := h.Concurrency.Acquire(ctx, chatArea.ID); err != nil {
-				log.Warn("Agent 并发获取失败", "err", err, "area", chatArea.ID)
-				return
-			}
-			defer h.Concurrency.Release(chatArea.ID)
-			h.handleMessage(ctx, events, chatArea, rs)
-		}()
+		}
 		return
 	}
 
-	if events = h.filterRelevant(ctx, events, rs); len(events) == 0 {
+	// 并行处理 + 按序发送：每组一个 ReAct 循环并发执行，完成后发送动作按 index 顺序投递
+	replier := newOrderedReplier()
+	for i, g := range groups {
+		group := g
+		index := i
+		go func() {
+			filtered := h.filterRelevant(ctx, group, rs)
+			if len(filtered) == 0 {
+				return
+			}
+			acquireCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
+			defer cancel()
+			if err := h.Concurrency.Acquire(acquireCtx, chatArea.ID); err != nil {
+				log.Warn("Agent 并发令牌等待超时，直接派发处理（跳过排队）", "err", err, "area", chatArea.ID, "events", len(group))
+			}
+			defer h.Concurrency.Release(chatArea.ID)
+			h.handleMessage(WithOrderedReplier(ctx, replier, index), filtered, chatArea, rs)
+		}()
+	}
+}
+
+// orderedReplier 按 index 顺序执行发送动作：不同用户子批次并行处理完成后，
+// 回复按消息到达顺序投递，避免并行导致的回复乱序（如后发先回）。
+type orderedReplier struct {
+	mu      sync.Mutex
+	next    int
+	pending map[int]func()
+}
+
+func newOrderedReplier() *orderedReplier {
+	return &orderedReplier{pending: make(map[int]func())}
+}
+
+// Enqueue 注册 index 对应的发送动作。index == next 时立即执行并推进，
+// 否则暂存，等前面的 index 完成后再按序执行。
+func (r *orderedReplier) Enqueue(index int, fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if index == r.next {
+		r.next++
+		r.runAvailableLocked(fn)
 		return
 	}
-	h.handleMessage(ctx, events, chatArea, rs)
+	r.pending[index] = fn
+}
+
+// runAvailableLocked 执行当前动作并连续执行后续已就绪的 pending 动作（调用方持锁）。
+func (r *orderedReplier) runAvailableLocked(first func()) {
+	first()
+	for {
+		fn, ok := r.pending[r.next]
+		if !ok {
+			return
+		}
+		delete(r.pending, r.next)
+		r.next++
+		fn()
+	}
+}
+
+type (
+	orderedReplierKey      struct{}
+	orderedReplierIndexKey struct{}
+)
+
+// WithOrderedReplier 把按序发送器及其 index 注入 context（供 handleMessage 后处理使用）。
+func WithOrderedReplier(ctx context.Context, r *orderedReplier, index int) context.Context {
+	ctx = context.WithValue(ctx, orderedReplierKey{}, r)
+	ctx = context.WithValue(ctx, orderedReplierIndexKey{}, index)
+	return ctx
+}
+
+// GetOrderedReplier 返回 context 中的按序发送器（nil 表示非分组模式，直接发送）。
+func GetOrderedReplier(ctx context.Context) *orderedReplier {
+	r, _ := ctx.Value(orderedReplierKey{}).(*orderedReplier)
+	return r
+}
+
+// GetOrderedReplierIndex 返回 context 中的发送顺序 index。
+func GetOrderedReplierIndex(ctx context.Context) int {
+	i, _ := ctx.Value(orderedReplierIndexKey{}).(int)
+	return i
+}
+
+// groupEventsByUser 按 UserID 把事件分组为多个子批次（每组保持组内原始顺序）。
+// 无 Message 的事件被丢弃。
+func groupEventsByUser(events []adapter.Event) [][]adapter.Event {
+	var groups [][]adapter.Event
+	index := map[int64]int{}
+	for _, ev := range events {
+		if ev.Message == nil {
+			continue
+		}
+		uid := ev.Message.UserID
+		if i, ok := index[uid]; ok {
+			groups[i] = append(groups[i], ev)
+		} else {
+			index[uid] = len(groups)
+			groups = append(groups, []adapter.Event{ev})
+		}
+	}
+	return groups
 }
 
 // filterRelevant 对批次内消息做相关性策略过滤（relevance 策略需要 LLM 判断，在此统一执行）。
@@ -559,11 +669,17 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 			}
 		}
 	}
-	for _, mu := range userMsgs {
-		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: mu})
+	// 批量消息区分：批内前面的消息是背景（多人独立发言，不要求逐一回复），
+	// 最后一条是当前需要回复的主消息。避免模型把多人的问题拼在一起一次回复（回复串味）。
+	for i, mu := range userMsgs {
+		content := mu
+		if i < len(userMsgs)-1 {
+			content = "【背景消息·来自其他用户，无需逐一回复】" + mu
+		} else {
+			content = "【需要你回复的消息】" + mu
+		}
+		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: content})
 	}
-
-	// 写短期记忆 + 持久化聊天记录（批次内每条）
 	if h.Memory != nil {
 		for _, mm := range memMsgs {
 			h.Memory.AddShortTermMessage(ctx, chatArea.ID, mm)
@@ -589,6 +705,10 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// 让 Agent 优先按标签取表情或直接用常用表情 ID 发送
 	if sc := h.buildStickerContext(ctx); sc != "" {
 		instruction += "\n\n" + sc
+	}
+	// 批量消息规则：一条会话内可能包含多人的独立发言，只回复主消息
+	if len(userMsgs) > 1 {
+		instruction += "\n\n【批量消息处理】本轮包含多人的独立发言：标注「需要你回复的消息」的是当前应回复的内容，其余标注「背景消息」的仅供理解语境，不必逐一回答；若背景消息中有与你相关的提问，可简短带过。"
 	}
 	if agentLite {
 		instruction = "【AgentLite 精简模式】当前仅禁用了 MCP 服务器、沙箱（代码/命令执行、浏览器搜索）和文生图工具，" +
@@ -682,47 +802,62 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 	deliveredToCurrent := deferredSends.DeliveredTo(msg.MessageType, currentTargetID)
 
-	// ---------- 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发） ----------
-	flushed := deferredSends.Flush(ctx, h.Adapter)
+	// 后处理闭包：统一发送任务期间排队的内容 + 写回记忆 + 最终回复。
+	// 并行分组模式下（存在 orderedReplier）整体按消息顺序执行，避免多人回复乱序；
+	// 非分组模式直接执行。全局 sendMu 保证跨批次的发送也串行（回复不被插入打断）。
+	finish := func() {
+		h.sendMu.Lock()
+		defer h.sendMu.Unlock()
 
-	// 将投递给当前会话的交付消息写回记忆与聊天记录：
-	// 否则对话历史会停留在"用户消息无人回复"，导致后续 LLM 误以为旧任务仍待执行
-	// （如用户再次发言时，模型把上一个未回复的天气请求又执行一遍）。
-	// 注意：交付消息即本轮的 assistant 回复，需携带真实 token 用量，
-	// 否则 chat_records.token_count 总和（Overview 总用量）不会增长。
-	recordedTokens := false
-	for _, s := range flushed {
-		if !s.Delivery || s.MessageType != msg.MessageType || s.TargetID != currentTargetID {
-			continue
+		// 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发）
+		flushed := deferredSends.Flush(ctx, h.Adapter)
+
+		// 将投递给当前会话的交付消息写回记忆与聊天记录：
+		// 否则对话历史会停留在"用户消息无人回复"，导致后续 LLM 误以为旧任务仍待执行
+		// （如用户再次发言时，模型把上一个未回复的天气请求又执行一遍）。
+		// 注意：交付消息即本轮的 assistant 回复，需携带真实 token 用量，
+		// 否则 chat_records.token_count 总和（Overview 总用量）不会增长。
+		recordedTokens := false
+		for _, s := range flushed {
+			if !s.Delivery || s.MessageType != msg.MessageType || s.TargetID != currentTargetID {
+				continue
+			}
+			if text := s.Text(); text != "" {
+				tokens := 0
+				if !recordedTokens {
+					tokens = int(totalTokens)
+					recordedTokens = true // 同一轮的 token 只记一次，避免多条投递重复计数
+				}
+				h.recordChat(ctx, chatArea.ID, userID, "assistant", text, tokens, callsJSON)
+				if h.Memory != nil {
+					h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: text})
+				}
+			}
 		}
-		if text := s.Text(); text != "" {
-			tokens := 0
-			if !recordedTokens {
-				tokens = int(totalTokens)
-				recordedTokens = true // 同一轮的 token 只记一次，避免多条投递重复计数
+
+		// 后处理：静默检测 + 发送 + 记忆
+		if assistantContent != "" && !deliveredToCurrent {
+			silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(assistantContent)
+			if silenced {
+				log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
+			} else {
+				h.sendReply(msg, assistantContent, rs)
+				h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), callsJSON)
+				if h.Memory != nil {
+					h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
+				}
 			}
-			h.recordChat(ctx, chatArea.ID, userID, "assistant", text, tokens, callsJSON)
-			if h.Memory != nil {
-				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: text})
-			}
+		} else if assistantContent != "" {
+			log.Info("已通过工具向当前会话发送消息，跳过最终回复", "content", assistantContent, "message_type", msg.MessageType, "target", currentTargetID)
 		}
 	}
 
-	// ---------- 后处理：静默检测 + 发送 + 记忆 ----------
-	if assistantContent != "" && !deliveredToCurrent {
-		silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(assistantContent)
-		if silenced {
-			log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
-		} else {
-			h.sendReply(msg, assistantContent, rs)
-			h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), callsJSON)
-			if h.Memory != nil {
-				h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
-			}
-		}
-	} else if assistantContent != "" {
-		log.Info("已通过工具向当前会话发送消息，跳过最终回复", "content", assistantContent, "message_type", msg.MessageType, "target", currentTargetID)
+	// 并行分组模式：发送动作按消息顺序投递
+	if replier := GetOrderedReplier(ctx); replier != nil {
+		replier.Enqueue(GetOrderedReplierIndex(ctx), finish)
+		return
 	}
+	finish()
 }
 
 // cqCodeRegexp 匹配 CQ 码: [CQ:type,key=value,...]
@@ -730,6 +865,10 @@ var cqCodeRegexp = regexp.MustCompile(`\[CQ:[a-zA-Z_]+(?:,[^\]]+)?\]`)
 
 // urlRegexp 匹配 URL，提取为包级变量避免每次调用 splitMessages 时重新编译。
 var urlRegexp = regexp.MustCompile(`https?://\S+`)
+
+// emojiPrefixRe 匹配开头的连续 emoji（含变体选择符/ZWJ 序列）。
+// splitMessages 用它把断句符后紧跟的 emoji 归入前一段，避免 emoji 被切到下一条消息开头。
+var emojiPrefixRe = regexp.MustCompile(`^[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}\x{200D}]+`)
 
 // sendReply 解析 CQ 码并组装消息段发送。
 // rs 从调用链传入，避免读取 HagoCenter 共享字段导致数据竞争。
@@ -810,9 +949,9 @@ func parseCQCode(s string) adapter.Segment {
 }
 
 // splitMessages 将 Agent 输出拆分为最多 3 段消息。
-// 算法参考 Maibot：在自然断句处（。！？；）拆分，每段有效文字 ≤60 字。
-// CQ 码和 URL 不计入有效字数。换行不是拆分点：多行内容保留在同一条消息内，
-// 内部换行原样保留（不再被 TrimSpace 吞掉）。
+// 算法参考 Maibot：在自然断句处（。！？；）与换行处拆分，每段有效文字 ≤60 字。
+// CQ 码和 URL 不计入有效字数。拆分点不会落在 CQ 码内部：带 query 参数的图片 URL（含 ?）
+// 或 CQ 码内的标点不能成为断句点，否则 CQ 码会被切成两段导致表情/图片发送失败。
 func splitMessages(content string) []string {
 	effectiveLen := func(s string) int {
 		s = cqCodeRegexp.ReplaceAllString(s, "")
@@ -825,9 +964,34 @@ func splitMessages(content string) []string {
 		return []string{content}
 	}
 
-	// 按自然断句拆分，保留分隔符附着在前一段尾部
-	splitRe := regexp.MustCompile(`[。！？；]`)
-	matches := splitRe.FindAllStringIndex(content, -1)
+	// 受保护区间：CQ 码整体不可拆分（断句点落在其中会切开 CQ 码）
+	cqSpans := cqCodeRegexp.FindAllStringIndex(content, -1)
+	inProtected := func(pos int) bool {
+		for _, sp := range cqSpans {
+			if pos >= sp[0] && pos < sp[1] {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 按自然断句拆分（。！？；+ 换行），保留分隔符附着在前一段尾部；
+	// 跳过 CQ 码内部的断句点。标点断句符后紧跟的 emoji 归入前一段
+	// （emoji 通常修饰前面的句子）；换行是行分隔，不归附 emoji。
+	splitRe := regexp.MustCompile(`[。！？；\n]`)
+	var matches [][]int
+	for _, loc := range splitRe.FindAllStringIndex(content, -1) {
+		if inProtected(loc[0]) {
+			continue
+		}
+		end := loc[1]
+		if content[loc[0]] != '\n' {
+			if m := emojiPrefixRe.FindStringIndex(content[end:]); m != nil {
+				end += m[1]
+			}
+		}
+		matches = append(matches, []int{loc[0], end})
+	}
 	if len(matches) == 0 {
 		return []string{content}
 	}

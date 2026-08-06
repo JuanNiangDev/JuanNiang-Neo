@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"JuanNiang-Neo/internal/core/models"
 
@@ -142,6 +143,23 @@ func (d *StickerDAO) RemoveTagFromAll(ctx context.Context, tagName string) error
 }
 
 // ---------- 标签 ----------
+
+// CommonStickerTag 系统内置「常用」标签名：每轮对话会把该标签下的表情 ID/描述注入提示词，
+// Agent 可直接用 send_sticker + ID 发送。该标签启动时自动创建、不可删除。
+const CommonStickerTag = "常用"
+
+// EnsureCommonTag 幂等创建系统内置「常用」标签（启动时调用；已存在则忽略）。
+func (d *StickerDAO) EnsureCommonTag(ctx context.Context) error {
+	var t models.StickerTag
+	err := d.db.WithContext(ctx).Where("name = ?", CommonStickerTag).First(&t).Error
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	return d.db.WithContext(ctx).Create(&models.StickerTag{ID: newUUID(), Name: CommonStickerTag}).Error
+}
 
 func (d *StickerDAO) TagCreate(ctx context.Context, name string) (*models.StickerTag, error) {
 	t := &models.StickerTag{ID: newUUID(), Name: name}

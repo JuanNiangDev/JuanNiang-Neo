@@ -27,6 +27,7 @@ func (d *ReplyStrategyDAO) GetOrCreate(ctx context.Context) (*models.ReplyStrate
 		ID:                 newUUID(),
 		Strategy:           models.StrategyAlways,
 		RelevanceThreshold: 0.5,
+		RelevanceTimeout:   10,
 		JudgeFailPolicy:    "drop",
 	}
 	if err := d.db.WithContext(ctx).Create(&cfg).Error; err != nil {

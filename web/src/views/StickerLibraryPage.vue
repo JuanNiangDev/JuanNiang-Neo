@@ -41,7 +41,8 @@
         :color="currentTag === t.name ? 'primary' : undefined"
         variant="tonal"
         class="me-2 mb-1"
-        closable
+        :closable="t.name !== '常用'"
+        :title="t.name === '常用' ? '系统内置标签，不可删除' : undefined"
         @click="selectTag(t.name)"
         @click:close="confirmDeleteTag(t)"
       >{{ t.name }}</v-chip>

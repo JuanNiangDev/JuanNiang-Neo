@@ -253,6 +253,7 @@ export const cronJobApi = {
 }
 
 // ======== Reply Strategy ========
+
 export interface ReplyStrategyResp {
   strategy: string
   relevance_threshold: number
@@ -261,6 +262,7 @@ export interface ReplyStrategyResp {
   agent_lite: boolean
   relevance_prompt: string
   relevance_model: string
+  relevance_timeout: number
   judge_fail_policy: string
 }
 
@@ -272,6 +274,7 @@ export interface UpdateReplyStrategyReq {
   agent_lite: boolean
   relevance_prompt?: string
   relevance_model?: string
+  relevance_timeout?: number
   judge_fail_policy?: string
 }
 

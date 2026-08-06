@@ -70,6 +70,7 @@
 | 40044 | 定时消息任务不存在 |
 | 40045 | 插件名不合法（仅允许字母/数字/下划线/连字符） |
 | 40046 | 插件包包含非法路径（疑似 zip-slip 攻击） |
+| 40047 | 系统内置标签不可删除 |
 | 50000 | 服务器内部错误 |
 
 ## 认证
@@ -711,12 +712,12 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 ### GET /reply-strategy
 获取配置。首次 GET 不存在时自动创建（`strategy=always, relevance_threshold=0.5`）。
 
-**data** `ReplyStrategyResp`: `strategy`、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`judge_fail_policy` string（`drop`=判断失败不回复（默认）/ `reply`=照常回复）。
+**data** `ReplyStrategyResp`: `strategy`、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`relevance_timeout` int（相关性判断超时秒，默认 10）、`judge_fail_policy` string（`drop`=判断失败不回复（默认）/ `reply`=照常回复）。
 
 ### PUT /reply-strategy
 更新。
 
-**Body** `UpdateReplyStrategyReq`: `strategy`、`relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）、`judge_fail_policy`（`drop`/`reply`，空=默认 `drop`）。
+**Body** `UpdateReplyStrategyReq`: `strategy`、`relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）、`relevance_timeout`（相关性判断超时秒，0=默认 10s，范围 1-120）、`judge_fail_policy`（`drop`/`reply`，空=默认 `drop`）。
 
 **data** `ReplyStrategyResp`。
 
@@ -833,7 +834,7 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 1. **全部标签列表** → 引导 Agent 优先用 `send_sticker_by_keyword` 按意图发送，或 `list_stickers` 按标签浏览；
 2. **「常用」标签下的表情（ID/名称/简介，最多 20 个）**，按表情自身标签分组 → Agent 命中场景时可直接用 `send_sticker + ID` 发送。
 
-使用方式：在 Web 表情包管理页新建名为 **「常用」** 的标签，把常用表情加入该标签即可；没有该标签或标签为空时不注入对应部分。
+使用方式：「常用」为**系统内置标签**（启动时自动创建、不可删除）；把常用表情加入该标签即可。其余标签可自由创建/删除。没有「常用」标签内容时不注入对应部分。
 
 ### Plugin API
 
