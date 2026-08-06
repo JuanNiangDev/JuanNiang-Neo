@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"JuanNiang-Neo/internal/agent/tool"
+	"JuanNiang-Neo/internal/core/dao"
 )
 
 // listStickerTagsForTool 供 Agent 内置工具 list_sticker_tags 使用。
@@ -101,9 +102,10 @@ func tagOrAll(tag string) string {
 	return tag
 }
 
-// commonStickerTag 表情包库「常用」标签名：每轮对话会把该标签下的表情 ID/描述注入提示词，
-// Agent 可直接用 send_sticker + ID 发送；用户可在 Web 表情包管理页把常用表情加入此标签。
-const commonStickerTag = "常用"
+// commonStickerTag 表情包库「常用」标签名（系统内置，启动时自动创建、不可删除）：
+// 每轮对话会把该标签下的表情 ID/描述注入提示词，Agent 可直接用 send_sticker + ID 发送；
+// 用户可在 Web 表情包管理页把常用表情加入此标签。
+const commonStickerTag = dao.CommonStickerTag
 
 // stickerContextLimit 每轮注入「常用」标签下的表情条数上限（控制 token 占用）。
 const stickerContextLimit = 20
