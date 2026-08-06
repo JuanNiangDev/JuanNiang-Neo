@@ -238,3 +238,51 @@ func formatKnowledgeContext(items []models.KnowledgeItem) string {
 	}
 	return sb.String()
 }
+
+// searchKnowledgeForTool 供 Agent 内置工具 search_knowledge 使用：按关键词主动查询知识库，
+// 返回标题 + 内容片段，让 Agent 在对话中按需检索（区别于对话前自动注入的 buildKnowledgeContext）。
+func (h *HagoCenter) searchKnowledgeForTool(ctx context.Context, keyword string, limit int) (string, error) {
+	if h.DAO == nil || h.DAO.Knowledge == nil {
+		return "知识库未初始化", nil
+	}
+	keyword = strings.TrimSpace(preprocessKnowledgeQuery(keyword))
+	if keyword == "" {
+		return "请提供搜索关键词", nil
+	}
+	if limit <= 0 || limit > 20 {
+		limit = 5
+	}
+	items, err := h.DAO.Knowledge.Match(ctx, keyword, limit)
+	if err != nil {
+		return "", err
+	}
+	if len(items) == 0 {
+		return fmt.Sprintf("知识库中未找到与 %q 相关的内容", keyword), nil
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "按关键词 %q 检索到 %d 条知识：\n", keyword, len(items))
+	for _, it := range items {
+		content := strings.TrimSpace(it.Content)
+		// 截断过长的内容，避免占用过多 token
+		runes := []rune(content)
+		if len(runes) > 300 {
+			content = string(runes[:300]) + "…"
+		}
+		title := strings.TrimSpace(it.Title)
+		if title == "" {
+			title = "(无标题)"
+		}
+		if content == "" {
+			continue
+		}
+		sb.WriteString("- 【")
+		sb.WriteString(title)
+		sb.WriteString("】 ")
+		sb.WriteString(content)
+		sb.WriteString("\n")
+	}
+	if sb.Len() == 0 {
+		return fmt.Sprintf("知识库中未找到与 %q 相关的内容", keyword), nil
+	}
+	return sb.String(), nil
+}

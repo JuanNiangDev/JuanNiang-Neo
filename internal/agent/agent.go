@@ -207,6 +207,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		func(ctx context.Context, folder string, limit int) (string, error) {
 			return h.listImagesForTool(ctx, folder, limit)
 		},
+		func(ctx context.Context, keyword string, limit int) (string, error) {
+			return h.searchImagesForTool(ctx, keyword, limit)
+		},
 		func(ctx context.Context) (string, error) {
 			return h.listStickerTagsForTool(ctx)
 		},
@@ -215,6 +218,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		},
 		func(ctx context.Context, keyword string, limit int) (string, error) {
 			return h.searchStickersForTool(ctx, keyword, limit)
+		},
+		func(ctx context.Context, keyword string, limit int) (string, error) {
+			return h.searchKnowledgeForTool(ctx, keyword, limit)
 		},
 	)
 

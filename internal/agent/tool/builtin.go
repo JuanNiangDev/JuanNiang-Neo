@@ -66,9 +66,11 @@ func RegisterBuiltinTools(
 	getCurrentMsg func(ctx context.Context) *adapter.MessageEvent,
 	getRecentMsgs func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error),
 	listImages func(ctx context.Context, folder string, limit int) (string, error),
+	searchImages func(ctx context.Context, keyword string, limit int) (string, error),
 	listStickerTags func(ctx context.Context) (string, error),
 	listStickers func(ctx context.Context, tag string, page, pageSize int) (string, error),
 	searchStickers func(ctx context.Context, keyword string, limit int) (string, error),
+	searchKnowledge func(ctx context.Context, keyword string, limit int) (string, error),
 ) {
 	tools := []Tool{}
 
@@ -95,6 +97,31 @@ func RegisterBuiltinTools(
 				return "图床未初始化", nil
 			}
 			return listImages(ctx, p.Folder, p.Limit)
+		},
+	})
+
+	// search_images 图床按名称搜索：Agent 不知道图片 ID 时按图片展示名搜索，
+	// 拿到 ID 后可拼 [CQ:image,file=imgs://图片ID] 引用（发送层会自动转 base64）。
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "search_images", "按图片展示名称模糊搜索图床中的图片（含 ID/名称/文件夹），用于按名找到图床图片后在消息中用 [CQ:image,file=imgs://图片ID] 引用；发图前先调用本工具获取图片 ID",
+			openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"keyword": map[string]any{"type": "string", "description": "图片名称关键词（匹配名称，如 猫/meme/表情）"},
+					"limit":   map[string]any{"type": "integer", "description": "返回条数上限（默认 20，最大 50）"},
+				},
+				"required": []string{"keyword"},
+			}, false, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Keyword string `json:"keyword"`
+				Limit   int    `json:"limit"`
+			}
+			_ = json.Unmarshal(args, &p)
+			if searchImages == nil {
+				return "图床未初始化", nil
+			}
+			return searchImages(ctx, p.Keyword, p.Limit)
 		},
 	})
 
@@ -217,6 +244,31 @@ func RegisterBuiltinTools(
 				return "表情包库未初始化", nil
 			}
 			return searchStickers(ctx, p.Keyword, p.Limit)
+		},
+	})
+
+	// search_knowledge 知识库主动检索：区别于对话前自动注入的 knowledge context，
+	// 让 Agent 在对话中按需查询知识库内容。
+	tools = append(tools, &onebotTool{
+		BaseTool: NewTool("", "search_knowledge", "按关键词主动检索知识库，返回相关知识内容。当你需要查阅团队/项目/领域的知识、术语、规则或资料时调用；对话开始时系统已自动注入过一些知识，但若需要更细或更多内容请主动调用本工具",
+			openai.FunctionParameters{
+				"type": "object",
+				"properties": map[string]any{
+					"keyword": map[string]any{"type": "string", "description": "检索关键词（匹配知识关键词或内容）"},
+					"limit":   map[string]any{"type": "integer", "description": "返回条数上限（默认 5，最大 20）"},
+				},
+				"required": []string{"keyword"},
+			}, true, false),
+		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Keyword string `json:"keyword"`
+				Limit   int    `json:"limit"`
+			}
+			_ = json.Unmarshal(args, &p)
+			if searchKnowledge == nil {
+				return "知识库未初始化", nil
+			}
+			return searchKnowledge(ctx, p.Keyword, p.Limit)
 		},
 	})
 
