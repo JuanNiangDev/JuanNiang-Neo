@@ -474,7 +474,7 @@ jn.agent.set_provider_active("uuid", true)   -- 启用
 | 函数 | 返回 | 说明 |
 |------|------|------|
 | `agent.get_current_chat_area() → table` | `{post_type, message_type, user_id, group_id, chat_area_id}` | 当前正在处理的消息所属 ChatArea |
-| `agent.compact_memory() → string [, err]` | | Compact 当前 ChatArea 短期记忆：LLM 压缩为摘要，写入长期记忆并清空窗口（需 Text LLM Provider） |
+| `agent.compact_memory() → string [, err]` | | Compact 当前 ChatArea 短期记忆：LLM 压缩为摘要写入长期记忆，随后窗口清理为只保留最近 10 条消息（需 Text LLM Provider） |
 
 ## SDK 模块: `jn.command`
 

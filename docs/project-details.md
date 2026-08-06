@@ -335,6 +335,8 @@ handleMessage                                       event.go:311
 ├─ buildKnowledgeContext(批内消息): LRU/DB 模糊匹配知识库, 命中拼入 systemCtx
 │   (关键词命中 + 内容 ILIKE 兜底, 限 5 条, LRU 50 条缓存)
 │                                                   event.go:415
+├─ buildStickerContext: 表情包全部标签 + 「常用」标签下的表情(ID/描述) 拼入指令
+│   (Agent 优先按标签取表情 / 直接用常用表情 ID 发 send_sticker)          event.go:sticker.go
 ├─ einoMsgs 组装: system → sessionCtx → [Skill:] → 短期记忆 → user
 │                                                   event.go:418-437
 ├─ AddShortTermMessage + Session.AppendRecord (Postgres 解耦)

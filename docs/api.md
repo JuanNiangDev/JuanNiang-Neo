@@ -54,8 +54,8 @@
 | 40028 | 系统插件不允许删除或停用 |
 | 40029 | 系统提示词不允许修改或删除 |
 | 40030 | 内置工具运行时常驻，不支持启停 |
-| 40031 | CronJob 不存在 |
-| 40032 | 回复策略配置不存在 |
+| 40031 | 无效的回复策略 |
+| 40032 | 相关性阈值非法 / 判断失败策略只能是 drop 或 reply |
 | 40033 | 知识内容不能为空 |
 | 40034 | 图片大小不能超过 1.5MB |
 | 40035 | 不支持的图片格式（仅支持 jpg/png/gif/webp） |
@@ -68,6 +68,8 @@
 | 40042 | 该图床图片已被其他表情引用 |
 | 40043 | 摸鱼日历配置不存在 |
 | 40044 | 定时消息任务不存在 |
+| 40045 | 插件名不合法（仅允许字母/数字/下划线/连字符） |
+| 40046 | 插件包包含非法路径（疑似 zip-slip 攻击） |
 | 50000 | 服务器内部错误 |
 
 ## 认证
@@ -302,7 +304,7 @@ MCP（Model Context Protocol，SSE 传输）服务器配置 CRUD，支持运行�
 短期/长期记忆**配置**管理（按 ChatArea）。短期消息实际存 Redis，长期条目存 Postgres，本组接口只管理配置元数据。
 
 ### GET /memory/:chatAreaID/short-term
-获取短期记忆配置，不存在则自动创建（`window_size=20, auto_compact=false`）。
+获取短期记忆配置，不存在则自动创建（`window_size=100, auto_compact=true`）。
 
 **data** `ShortTermMemoryResp`: `id`、`chat_area_id`、`window_size` int、`auto_compact` bool、`created_at`。
 
@@ -822,6 +824,15 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 - `list_sticker_tags`：获取全部标签
 - `list_stickers`：按标签分页获取表情（`tag`/`page`/`page_size`）
 - `search_stickers`：关键词模糊匹配表情名称/简介（`keyword`/`limit`）
+
+### 每轮对话注入的表情包上下文
+
+`handleMessage` 构建系统指令时会注入表情包上下文（`buildStickerContext`）：
+
+1. **全部标签列表** → 引导 Agent 优先调用 `list_stickers` 按最合适的标签获取该标签下的表情；
+2. **「常用」标签下的表情（ID/名称/简介）** → Agent 可直接用 `send_sticker + ID` 发送，无需先查询。
+
+使用方式：在 Web 表情包管理页新建名为 **「常用」** 的标签，把常用表情加入该标签即可；没有该标签或标签为空时不注入对应部分。
 
 ### Plugin API
 
