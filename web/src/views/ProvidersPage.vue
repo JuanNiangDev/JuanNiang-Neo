@@ -243,9 +243,6 @@ const selectedPresetNote = computed(() => {
   return p.protocols[selectedProtocolIdx.value]?.note || ''
 })
 
-// 支持 thinking 的厂商分组关键词（驱动 thinking 参数区显隐）。
-const thinkingPresetKeys = ['deepseek', 'zhipu', 'kimi', 'moonshot', 'alibaba', 'qwen', 'glm', 'stepfun', 'minimax', 'tencent']
-
 // 按协议模式 + 厂商参数化各配置项是否适用（选择提供商时隐藏不适用的配置）。
 const show = computed(() => {
   const mode = form.value.api_mode
@@ -255,7 +252,7 @@ const show = computed(() => {
   const resp = mode === 'openai_responses'
   const chat = mode === 'chat_completions'
   return {
-    thinking: anthro || gemini || resp || thinkingPresetKeys.includes(pk),
+    thinking: anthro || gemini || resp || chat,
     topP: !resp,
     topK: anthro || gemini || pk === 'minimax',
     freqPresence: chat || resp,
