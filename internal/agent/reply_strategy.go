@@ -25,7 +25,7 @@ type RelevanceCheckResult struct {
 // 超时/等待超时均按 JudgeFailPolicy 降级。
 const (
 	relevanceSemLimit     = 4
-	relevanceJudgeTimeout = 5 * time.Second
+	relevanceJudgeTimeout = 10 * time.Second
 )
 
 // acquireRelevanceSem 获取相关性判断并发令牌（L3.1）。ctx 取消/超时即返回错误。
