@@ -223,6 +223,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		func(ctx context.Context, keyword string, limit int) (string, error) {
 			return h.searchStickersForTool(ctx, keyword, limit)
 		},
+		func(ctx context.Context, keyword, msgType string, targetID int64) (string, error) {
+			return h.sendStickerByKeywordForTool(ctx, keyword, msgType, targetID)
+		},
 		func(ctx context.Context, keyword string, limit int) (string, error) {
 			return h.searchKnowledgeForTool(ctx, keyword, limit)
 		},

@@ -821,16 +821,17 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 ### Agent 工具
 
 - `send_sticker`：单独发送表情（参数 `sticker_id` 短 UUID + 可选 `message_type`/`target_id`）
+- `send_sticker_by_keyword`：**一步发送**——按关键词搜索表情包库并直接发送最匹配的一个（参数 `keyword` + 可选 `message_type`/`target_id`），接梗/回应情绪时优先使用
 - `list_sticker_tags`：获取全部标签
 - `list_stickers`：按标签分页获取表情（`tag`/`page`/`page_size`）
-- `search_stickers`：关键词模糊匹配表情名称/简介（`keyword`/`limit`）
+- `search_stickers`：关键词模糊匹配表情名称/简介/标签（`keyword`/`limit`）
 
 ### 每轮对话注入的表情包上下文
 
 `handleMessage` 构建系统指令时会注入表情包上下文（`buildStickerContext`）：
 
-1. **全部标签列表** → 引导 Agent 优先调用 `list_stickers` 按最合适的标签获取该标签下的表情；
-2. **「常用」标签下的表情（ID/名称/简介）** → Agent 可直接用 `send_sticker + ID` 发送，无需先查询。
+1. **全部标签列表** → 引导 Agent 优先用 `send_sticker_by_keyword` 按意图发送，或 `list_stickers` 按标签浏览；
+2. **「常用」标签下的表情（ID/名称/简介，最多 20 个）**，按表情自身标签分组 → Agent 命中场景时可直接用 `send_sticker + ID` 发送。
 
 使用方式：在 Web 表情包管理页新建名为 **「常用」** 的标签，把常用表情加入该标签即可；没有该标签或标签为空时不注入对应部分。
 
