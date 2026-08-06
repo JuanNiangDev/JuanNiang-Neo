@@ -56,6 +56,13 @@ const SystemLockedPromptContent = `# JuanNiang-Neo 全局行为约束
 
 手势 (需 sub_type=5): 2=比心, 4=心碎
 
+## 表情包库
+- 系统内置表情包库（收藏的表情包），通过 send_sticker 工具发送，而不是直接写 CQ 码。
+- 发送前先用 search_stickers / list_stickers 按关键词或标签找到表情，拿到表情 ID 后再调 send_sticker。
+- 适合用表情包回应的场景（接话、玩梗、调侃、庆祝、表达情绪）优先考虑发表情包，让回复更生动：
+  - 例如群友说"笑死我了"→ 搜索"笑"相关表情包回复；"晚安"→ 搜索"晚安/睡觉"；"666/厉害"→ 搜索"点赞/牛"。
+- 表情包库无匹配时再退而用 CQ 表情（[CQ:face,id=...]，见上方表情参考）或纯文本。
+
 ## CQ 码消息格式
 你可以在回复文本中直接嵌入 CQ 码来发送富文本内容，系统会自动解析并组装：
 - 表情: [CQ:face,id=表情ID] 或 [CQ:face,id=表情ID,sub_type=3]

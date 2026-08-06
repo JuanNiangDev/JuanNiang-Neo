@@ -86,7 +86,7 @@ func RegisterBuiltinTools(
 					"folder": map[string]any{"type": "string", "description": "虚拟文件夹路径（如 /meme），不填默认根目录 /"},
 					"limit":  map[string]any{"type": "integer", "description": "返回条数上限（默认 20，最大 50）"},
 				},
-			}, false, false),
+			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				Folder string `json:"folder"`
@@ -111,7 +111,7 @@ func RegisterBuiltinTools(
 					"limit":   map[string]any{"type": "integer", "description": "返回条数上限（默认 20，最大 50）"},
 				},
 				"required": []string{"keyword"},
-			}, false, false),
+			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				Keyword string `json:"keyword"`
@@ -189,7 +189,7 @@ func RegisterBuiltinTools(
 	// list_sticker_tags 获取全部表情标签。
 	tools = append(tools, &onebotTool{
 		BaseTool: NewTool("", "list_sticker_tags", "获取表情包库的全部标签（表情 ID 查询时可按标签过滤）",
-			openai.FunctionParameters{"type": "object", "properties": map[string]any{}}, false, false),
+			openai.FunctionParameters{"type": "object", "properties": map[string]any{}}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			if listStickerTags == nil {
 				return "表情包库未初始化", nil
@@ -208,7 +208,7 @@ func RegisterBuiltinTools(
 					"page":      map[string]any{"type": "integer", "description": "页码，从 1 开始"},
 					"page_size": map[string]any{"type": "integer", "description": "每页条数（默认 20，最大 50）"},
 				},
-			}, false, false),
+			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				Tag      string `json:"tag"`
@@ -233,7 +233,7 @@ func RegisterBuiltinTools(
 					"limit":   map[string]any{"type": "integer", "description": "返回条数上限（默认 20，最大 50）"},
 				},
 				"required": []string{"keyword"},
-			}, false, false),
+			}, true, false),
 		executor: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				Keyword string `json:"keyword"`

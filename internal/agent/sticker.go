@@ -98,3 +98,45 @@ func tagOrAll(tag string) string {
 	}
 	return tag
 }
+
+// commonStickerTag 表情包库「常用」标签名：每轮对话会把该标签下的表情 ID/描述注入提示词，
+// Agent 可直接用 send_sticker + ID 发送；用户可在 Web 表情包管理页把常用表情加入此标签。
+const commonStickerTag = "常用"
+
+// buildStickerContext 构建表情包上下文，每轮对话注入系统指令：
+//  1. 表情包库全部标签 → Agent 优先用 list_stickers 按最合适的标签获取该标签下的表情；
+//  2. 「常用」标签下的表情（ID/名称/简介）→ Agent 可直接用 send_sticker + ID 发送。
+//
+// 空库/无标签时返回空串（不注入）。
+func (h *HagoCenter) buildStickerContext(ctx context.Context) string {
+	if h.DAO == nil || h.DAO.Sticker == nil {
+		return ""
+	}
+	var sb strings.Builder
+
+	// 1. 全部标签
+	tags, err := h.DAO.Sticker.TagList(ctx)
+	if err == nil && len(tags) > 0 {
+		sb.WriteString("表情包库全部标签：")
+		for _, t := range tags {
+			sb.WriteString("「" + t.Name + "」")
+		}
+		sb.WriteString("\n需要表情时优先调用 list_stickers 按最合适的标签获取该标签下的表情列表（返回表情 ID），再用 send_sticker 发送。\n")
+	}
+
+	// 2. 「常用」标签下的表情（ID/名称/简介）
+	list, err := h.DAO.Sticker.List(ctx, commonStickerTag, "", 50, 0)
+	if err == nil && len(list) > 0 {
+		sb.WriteString("表情包库「常用」标签下的表情（可直接用 send_sticker + ID 发送）：\n")
+		for i := range list {
+			s := &list[i]
+			desc := strings.TrimSpace(s.Desc)
+			if desc == "" {
+				desc = "(无简介)"
+			}
+			fmt.Fprintf(&sb, "- ID=%s 名称=%s 简介=%s\n", s.ID, s.Name, desc)
+		}
+	}
+
+	return sb.String()
+}
