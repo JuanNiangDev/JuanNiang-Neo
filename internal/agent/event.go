@@ -29,9 +29,10 @@ type ReplySettings struct {
 	AgentLite          bool
 	BotName            string
 	RelevanceThreshold float64
-	RelevancePrompt    string // 相关性检测自定义提示词（空则用默认）
-	RelevanceModel     string // 相关性检测使用的 Text Provider ID（空则用默认）
-	JudgeFailPolicy    string // 判断失败策略: drop=不回复（默认）, reply=照常回复
+	RelevancePrompt    string        // 相关性检测自定义提示词（空则用默认）
+	RelevanceModel     string        // 相关性检测使用的 Text Provider ID（空则用默认）
+	RelevanceTimeout   time.Duration // 相关性检测超时（含信号量等待与 LLM 调用总预算）
+	JudgeFailPolicy    string        // 判断失败策略: drop=不回复（默认）, reply=照常回复
 }
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
@@ -158,6 +159,11 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		log.Warn("获取回复策略失败，使用默认值", "err", err)
 		return ReplySettings{Strategy: models.StrategyAlways}
 	}
+	// 相关性判断超时（秒）；0/非法值回退到默认 10s
+	timeout := time.Duration(cfg.RelevanceTimeout) * time.Second
+	if cfg.RelevanceTimeout <= 0 || timeout > 120*time.Second {
+		timeout = relevanceJudgeTimeout
+	}
 	return ReplySettings{
 		Strategy:           cfg.Strategy,
 		StripMarkdown:      cfg.StripMarkdown,
@@ -166,6 +172,7 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		RelevanceThreshold: cfg.RelevanceThreshold,
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
+		RelevanceTimeout:   timeout,
 		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}
 }
@@ -559,11 +566,17 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 			}
 		}
 	}
-	for _, mu := range userMsgs {
-		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: mu})
+	// 批量消息区分：批内前面的消息是背景（多人独立发言，不要求逐一回复），
+	// 最后一条是当前需要回复的主消息。避免模型把多人的问题拼在一起一次回复（回复串味）。
+	for i, mu := range userMsgs {
+		content := mu
+		if i < len(userMsgs)-1 {
+			content = "【背景消息·来自其他用户，无需逐一回复】" + mu
+		} else {
+			content = "【需要你回复的消息】" + mu
+		}
+		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: content})
 	}
-
-	// 写短期记忆 + 持久化聊天记录（批次内每条）
 	if h.Memory != nil {
 		for _, mm := range memMsgs {
 			h.Memory.AddShortTermMessage(ctx, chatArea.ID, mm)
@@ -589,6 +602,10 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// 让 Agent 优先按标签取表情或直接用常用表情 ID 发送
 	if sc := h.buildStickerContext(ctx); sc != "" {
 		instruction += "\n\n" + sc
+	}
+	// 批量消息规则：一条会话内可能包含多人的独立发言，只回复主消息
+	if len(userMsgs) > 1 {
+		instruction += "\n\n【批量消息处理】本轮包含多人的独立发言：标注「需要你回复的消息」的是当前应回复的内容，其余标注「背景消息」的仅供理解语境，不必逐一回答；若背景消息中有与你相关的提问，可简短带过。"
 	}
 	if agentLite {
 		instruction = "【AgentLite 精简模式】当前仅禁用了 MCP 服务器、沙箱（代码/命令执行、浏览器搜索）和文生图工具，" +
