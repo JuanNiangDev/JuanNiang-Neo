@@ -77,7 +77,10 @@ export const providerApi = {
   update: (id: string, data: AddProviderReq) => client.put(`/providers/${id}`, data),
   delete: (id: string) => client.delete(`/providers/${id}`),
   toggle: (id: string, is_active: boolean) => client.put(`/providers/${id}/toggle`, { is_active }),
+  test: (data: AddProviderReq) => client.post('/providers/test', data),
 }
+
+export interface TestProviderResp { ok: boolean; message: string }
 
 export const providerPresetsApi = {
   list: () => client.get('/providers/presets'),

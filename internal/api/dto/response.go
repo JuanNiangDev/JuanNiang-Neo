@@ -111,11 +111,18 @@ type ProviderPresetResp struct {
 }
 
 // ProviderProtocolResp 单个协议能力。
+// ProviderProtocolResp 协议能力预设（前端渲染协议下拉）。
 type ProviderProtocolResp struct {
 	APIMode    string `json:"api_mode"`
 	BaseURL    string `json:"base_url"`
 	AuthHeader string `json:"auth_header"`
 	Note       string `json:"note,omitempty"`
+}
+
+// TestProviderResp 连接测试结果。
+type TestProviderResp struct {
+	Ok      bool   `json:"ok"`
+	Message string `json:"message"` // 成功=模型回复；失败=错误详情
 }
 
 type MCPServerResp struct {

@@ -396,6 +396,45 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+// TestProvider 用请求中的配置构建临时 Provider 并发送一条最小探测消息，
+// 校验 API 地址 / Token / 模型名是否可用（不落库、不影响运行时）。
+func (s *Service) TestProvider(ctx context.Context, c *app.RequestContext) {
+	var data dto.AddProviderReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if s.ProviderGroup == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.TestProviderResp{Ok: false, Message: "Provider 运行时未初始化"}))
+		return
+	}
+
+	m := &models.Provider{
+		Name:           data.Name,
+		Type:           data.Type,
+		Endpoint:       data.Endpoint,
+		Token:          data.Token,
+		Model:          data.Model,
+		Temperature:    float32(data.Temperature),
+		EnableThinking: data.EnableThinking,
+	}
+	dto.ApplyProviderFields(m, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode)
+
+	p := provider.NewProvider(provider.ProviderConfigFromModel(m))
+	testCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := p.Chat(testCtx, provider.ChatRequest{
+		Messages:  []provider.ChatMessage{{Role: "user", Content: "ping"}},
+		MaxTokens: 16,
+	})
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.TestProviderResp{Ok: false, Message: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.TestProviderResp{Ok: true, Message: resp.Message.Content}))
+}
+
 func (s *Service) ListMCPServers(ctx context.Context, c *app.RequestContext) {
 	list, err := s.DAO.MCPServer.List(ctx)
 	if err != nil {
