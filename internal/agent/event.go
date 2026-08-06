@@ -830,6 +830,8 @@ func parseCQCode(s string) adapter.Segment {
 // 算法参考 Maibot：在自然断句处（。！？；）拆分，每段有效文字 ≤60 字。
 // CQ 码和 URL 不计入有效字数。换行不是拆分点：多行内容保留在同一条消息内，
 // 内部换行原样保留（不再被 TrimSpace 吞掉）。
+// 拆分点不会落在 CQ 码内部：带 query 参数的图片 URL（含 ?）或 CQ 码内的标点
+// 不能成为断句点，否则 CQ 码会被切成两段导致表情/图片发送失败。
 func splitMessages(content string) []string {
 	effectiveLen := func(s string) int {
 		s = cqCodeRegexp.ReplaceAllString(s, "")
@@ -842,9 +844,26 @@ func splitMessages(content string) []string {
 		return []string{content}
 	}
 
-	// 按自然断句拆分，保留分隔符附着在前一段尾部
+	// 受保护区间：CQ 码整体不可拆分（断句点落在其中会切开 CQ 码）
+	cqSpans := cqCodeRegexp.FindAllStringIndex(content, -1)
+	inProtected := func(pos int) bool {
+		for _, sp := range cqSpans {
+			if pos >= sp[0] && pos < sp[1] {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 按自然断句拆分，保留分隔符附着在前一段尾部；跳过 CQ 码内部的断句点
 	splitRe := regexp.MustCompile(`[。！？；]`)
-	matches := splitRe.FindAllStringIndex(content, -1)
+	var matches [][]int
+	for _, loc := range splitRe.FindAllStringIndex(content, -1) {
+		if inProtected(loc[0]) {
+			continue
+		}
+		matches = append(matches, loc)
+	}
 	if len(matches) == 0 {
 		return []string{content}
 	}
