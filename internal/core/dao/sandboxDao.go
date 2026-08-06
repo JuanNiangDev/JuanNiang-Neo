@@ -16,11 +16,11 @@ func NewSandboxConfigDAO(db *gorm.DB) *SandboxConfigDAO {
 
 // InitConfig 初始化默认配置（已存在则忽略）。
 func (d *SandboxConfigDAO) InitConfig(ctx context.Context) error {
-	return d.db.Create(&models.SandboxConfig{
+	return d.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&models.SandboxConfig{
 		ID:      1,
 		BaseURL: "http://localhost:8080",
 		Timeout: 30,
-	}).WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Error
+	}).Error
 }
 
 // GetConfig 获取 Sandbox 配置。

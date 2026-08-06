@@ -26,12 +26,14 @@ func NewACL(dao *dao.ACLDAO) *ACL {
 //   - deny all  = 禁止所有用户
 //   - deny list = 禁止指定用户列表
 //
-// 命中黑名单返回 false（禁止），否则 true（允许）。allow/白名单不再生效。
+// 命中黑名单返回 false（禁止），否则 true（允许）。allow/白名单规则不再生效。
+// 查询失败时默认放行（fail-open）——与"无规则=允许所有"的默认语义一致，
+// 但会记录 Error 日志以便排查 DB 故障。
 func (a *ACL) Check(ctx context.Context, userID int64, chatAreaID string, scope models.ACLScope) bool {
 	rules, err := a.dao.GetByChatAreaAndScope(ctx, chatAreaID, scope)
 	if err != nil {
 		log.Error("ACL 查询失败", "user_id", userID, "chat_area_id", chatAreaID, "scope", scope, "err", err)
-		return true // 查询失败默认允许
+		return true // 查询失败默认允许（黑名单语义：无规则 = 允许所有）
 	}
 	if len(rules) == 0 {
 		return true // 无规则 = 允许所有

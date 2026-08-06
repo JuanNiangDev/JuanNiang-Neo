@@ -20,30 +20,7 @@ func (d *ChatRecordDAO) BatchCreate(ctx context.Context, records []models.ChatRe
 }
 
 func (d *ChatRecordDAO) ListByChatArea(ctx context.Context, chatAreaID string, limit, offset int) ([]models.ChatRecord, int64, error) {
-	var list []models.ChatRecord
-	var total int64
-
-	q := d.db.WithContext(ctx).Model(&models.ChatRecord{}).Where("chat_area_id = ?", chatAreaID)
-	if err := q.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&list).Error
-	return list, total, err
-}
-
-func (d *ChatRecordDAO) GetToolCallRecords(ctx context.Context, chatAreaID string, limit, offset int) ([]models.ChatRecord, int64, error) {
-	var list []models.ChatRecord
-	var total int64
-
-	q := d.db.WithContext(ctx).Model(&models.ChatRecord{}).
-		Where("chat_area_id = ? AND role = ?", chatAreaID, "tool")
-	if err := q.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&list).Error
-	return list, total, err
+	return d.listByChatAreaWithRole(ctx, chatAreaID, "", limit, offset)
 }
 
 func (d *ChatRecordDAO) TotalTokenUsage(ctx context.Context) (int64, error) {
@@ -54,11 +31,18 @@ func (d *ChatRecordDAO) TotalTokenUsage(ctx context.Context) (int64, error) {
 }
 
 func (d *ChatRecordDAO) ListByChatAreaAndRole(ctx context.Context, chatAreaID, role string, limit, offset int) ([]models.ChatRecord, int64, error) {
+	return d.listByChatAreaWithRole(ctx, chatAreaID, role, limit, offset)
+}
+
+// listByChatAreaWithRole 分页查询某 ChatArea 的聊天记录，role 为空时不过滤角色。
+func (d *ChatRecordDAO) listByChatAreaWithRole(ctx context.Context, chatAreaID, role string, limit, offset int) ([]models.ChatRecord, int64, error) {
 	var list []models.ChatRecord
 	var total int64
 
-	q := d.db.WithContext(ctx).Model(&models.ChatRecord{}).
-		Where("chat_area_id = ? AND role = ?", chatAreaID, role)
+	q := d.db.WithContext(ctx).Model(&models.ChatRecord{}).Where("chat_area_id = ?", chatAreaID)
+	if role != "" {
+		q = q.Where("role = ?", role)
+	}
 	if err := q.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}

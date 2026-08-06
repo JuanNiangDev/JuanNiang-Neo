@@ -1,8 +1,10 @@
 package dao
 
 import (
-	"JuanNiang-Neo/internal/core/models"
 	"context"
+	"errors"
+
+	"JuanNiang-Neo/internal/core/models"
 
 	"gorm.io/gorm"
 )
@@ -70,7 +72,7 @@ func (d *ToolConfigDAO) EnsureBuiltin(ctx context.Context, name, desc string, ad
 	if err == nil {
 		return nil
 	}
-	if err != gorm.ErrRecordNotFound {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
 	return d.Create(ctx, &models.ToolConfig{

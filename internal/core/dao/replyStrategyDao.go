@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"errors"
 
 	"JuanNiang-Neo/internal/core/models"
 
@@ -19,7 +20,7 @@ func (d *ReplyStrategyDAO) GetOrCreate(ctx context.Context) (*models.ReplyStrate
 	if err == nil {
 		return &cfg, nil
 	}
-	if err != gorm.ErrRecordNotFound {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 	cfg = models.ReplyStrategyConfig{

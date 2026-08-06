@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -55,7 +56,7 @@ func (d *FishCalendarDAO) AffairUpsert(ctx context.Context, date, content string
 		existing.Content = content
 		return d.db.WithContext(ctx).Save(&existing).Error
 	}
-	if err != gorm.ErrRecordNotFound {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return err
 	}
 	return d.db.WithContext(ctx).Create(&models.FishCalendarAffair{Date: date, Content: content}).Error
@@ -66,7 +67,7 @@ func (d *FishCalendarDAO) AffairGet(ctx context.Context, date string) (*models.F
 	var a models.FishCalendarAffair
 	err := d.db.WithContext(ctx).Where("date = ?", date).First(&a).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, err
