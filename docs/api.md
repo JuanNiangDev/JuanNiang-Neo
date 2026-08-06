@@ -887,7 +887,7 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 `FishCalendarConfigResp`: `enabled`、`cron_expr`、`target_groups` string[]、`last_run_at`（可空）、`last_error`。
 `FishCalendarAffairResp`: `date`、`content`。
 
-发送消息为富文本：`[CQ:at,qq=all] 今日份摸鱼人日历来了~` + 日历图片（800×720，黑白纸张质感模板，内容铺满）。
+发送消息为富文本：`今日份摸鱼人日历来了~` + 日历图片（800×720，黑白纸张质感模板，内容铺满）。
 
 ---
 

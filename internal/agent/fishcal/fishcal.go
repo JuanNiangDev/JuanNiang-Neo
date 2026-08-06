@@ -130,9 +130,9 @@ func (s *Scheduler) TriggerNow(ctx context.Context) error {
 		return recordErr(fmt.Errorf("T2I 生成失败: %w", err))
 	}
 
-	// 富文本消息：@全体成员 + 文案 + 图片
+	// 富文本消息：文案 + 图片（不 @全体成员）
 	b64 := "base64://" + base64.StdEncoding.EncodeToString(img)
-	msg := fmt.Sprintf("[CQ:at,qq=all] 今日份摸鱼人日历来了~\n[CQ:image,file=%s]", b64)
+	msg := fmt.Sprintf("今日份摸鱼人日历来了~\n[CQ:image,file=%s]", b64)
 	for _, gid := range groups {
 		if _, err := s.adapter.SendGroupMsg(gid, msg); err != nil {
 			log.Error("摸鱼日历发送群失败", "group", gid, "err", err)
