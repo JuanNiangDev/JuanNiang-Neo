@@ -225,14 +225,11 @@ func (pg *ProviderGroup) SelectModel(typ ModelType) Provider {
 	return nil
 }
 
-// HasImageModel 检查是否配置了识图模型。
-func (pg *ProviderGroup) HasImageModel() bool {
-	return pg.SelectModel(ModelTypeImage) != nil
-}
-
+// SyncConfig 同步单个 Provider 配置到运行时（热更新路径）。
+// 注意：写 map 必须持写锁，与 SelectModel/ListProviders 等读锁并发时避免数据竞争。
 func (pg *ProviderGroup) SyncConfig(conf ProviderConfig) {
-	pg.mu.RLock()
-	defer pg.mu.RUnlock()
+	pg.mu.Lock()
+	defer pg.mu.Unlock()
 
 	_, ok := pg.providers[conf.ID]
 	if ok {
