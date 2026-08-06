@@ -10,6 +10,7 @@ import (
 // CommandHandler 命令处理函数签名。
 //   - args: 命令路径之后的所有参数（已按空格切分）
 //   - event: 触发命令的事件上下文
+//
 // 返回:
 //   - consumed: 是否消费此命令（true 则跳过 Agent 处理）
 //   - reply: 若非空，则由 PluginEngine 自动回复给用户
@@ -24,11 +25,11 @@ type CommandOpts struct {
 
 // CommandNode 命令树节点。叶节点（Handler != nil）可执行；非叶节点仅作为分组。
 type CommandNode struct {
-	Name        string
-	Opts        CommandOpts
-	Handler     CommandHandler
-	PluginName  string // 注册该命令的插件名
-	Children    map[string]*CommandNode
+	Name       string
+	Opts       CommandOpts
+	Handler    CommandHandler
+	PluginName string // 注册该命令的插件名
+	Children   map[string]*CommandNode
 }
 
 // CommandRegistry 多级命令注册表，支持按路径派发与 /help 自动生成。
@@ -47,6 +48,7 @@ func NewCommandRegistry() *CommandRegistry {
 //   - path: 命令路径（如 ["system", "provider", "switch"]）；空数组非法
 //   - opts: 元信息
 //   - handler: 处理函数；nil 表示仅作为分组节点（其子命令的父）
+//
 // 同一路径重复注册会覆盖旧 handler/opts。
 func (r *CommandRegistry) Register(plugin string, path []string, opts CommandOpts, handler CommandHandler) {
 	if len(path) == 0 {
@@ -242,10 +244,10 @@ func (r *CommandRegistry) ListSubcommands(path []string) []*CommandNode {
 
 // PluginCommandInfo 单条命令的展示信息。
 type PluginCommandInfo struct {
-	Path        []string `json:"path"`         // 完整路径, 如 ["system","provider","switch"]
-	Description string   `json:"description"`  // 描述
-	Usage       string   `json:"usage"`        // 用法示例
-	IsLeaf      bool     `json:"is_leaf"`      // 是否为可执行命令 (handler != nil)
+	Path        []string `json:"path"`        // 完整路径, 如 ["system","provider","switch"]
+	Description string   `json:"description"` // 描述
+	Usage       string   `json:"usage"`       // 用法示例
+	IsLeaf      bool     `json:"is_leaf"`     // 是否为可执行命令 (handler != nil)
 }
 
 // ListByPlugin 返回指定插件注册的所有命令路径 (递归遍历整棵命令树)。

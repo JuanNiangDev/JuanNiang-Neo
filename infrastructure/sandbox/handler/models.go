@@ -101,9 +101,9 @@ type SandboxInfo struct {
 	Profile       string                 `json:"profile"`
 	CargoID       string                 `json:"cargo_id"`
 	Capabilities  []string               `json:"capabilities"`
-	CreatedAt     BayTime                 `json:"created_at"`
-	ExpiresAt     *BayTime                `json:"expires_at"`
-	IdleExpiresAt *BayTime                `json:"idle_expires_at"`
+	CreatedAt     BayTime                `json:"created_at"`
+	ExpiresAt     *BayTime               `json:"expires_at"`
+	IdleExpiresAt *BayTime               `json:"idle_expires_at"`
 	Containers    []RuntimeContainerInfo `json:"containers,omitempty"`
 }
 
@@ -166,19 +166,19 @@ type StatusOK struct {
 
 // ExecutionHistoryEntry 执行历史条目
 type ExecutionHistoryEntry struct {
-	ID              string     `json:"id"`
-	SessionID       *string    `json:"session_id"`
-	ExecType        string     `json:"exec_type"`
-	Code            string     `json:"code"`
-	Success         bool       `json:"success"`
-	ExecutionTimeMs int        `json:"execution_time_ms"`
-	Output          *string    `json:"output"`
-	Error           *string    `json:"error"`
-	PayloadRef      *string    `json:"payload_ref"`
-	Description     *string    `json:"description"`
-	Tags            *string    `json:"tags"`
-	Notes           *string    `json:"notes"`
-	CreatedAt       BayTime   `json:"created_at"`
+	ID              string  `json:"id"`
+	SessionID       *string `json:"session_id"`
+	ExecType        string  `json:"exec_type"`
+	Code            string  `json:"code"`
+	Success         bool    `json:"success"`
+	ExecutionTimeMs int     `json:"execution_time_ms"`
+	Output          *string `json:"output"`
+	Error           *string `json:"error"`
+	PayloadRef      *string `json:"payload_ref"`
+	Description     *string `json:"description"`
+	Tags            *string `json:"tags"`
+	Notes           *string `json:"notes"`
+	CreatedAt       BayTime `json:"created_at"`
 }
 
 // ExecutionHistoryList 执行历史列表
