@@ -65,7 +65,7 @@ func (d *StickerDAO) List(ctx context.Context, tag, keyword string, limit, offse
 	}
 	if keyword != "" {
 		like := "%" + keyword + "%"
-		q = q.Where("name ILIKE ? OR desc ILIKE ?", like, like)
+		q = q.Where("name ILIKE ? OR \"desc\" ILIKE ?", like, like)
 	}
 	err := q.Order("created_at DESC").Limit(limit).Offset(offset).Find(&list).Error
 	return list, err
@@ -80,7 +80,7 @@ func (d *StickerDAO) Count(ctx context.Context, tag, keyword string) (int64, err
 	}
 	if keyword != "" {
 		like := "%" + keyword + "%"
-		q = q.Where("name ILIKE ? OR desc ILIKE ?", like, like)
+		q = q.Where("name ILIKE ? OR \"desc\" ILIKE ?", like, like)
 	}
 	err := q.Count(&n).Error
 	return n, err
