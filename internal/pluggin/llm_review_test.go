@@ -363,9 +363,9 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 		t.Fatalf("敏感词不应触发 LLM, calls=%d", llm.callCount())
 	}
 
-	// 3. 灰色地带：命中 all.txt 灰色词（考研/加群/资料群）→ 不消费、不立即处罚，异步触发 LLM
+	// 3. 灰色地带：命中 all.txt 灰色词（考研/加群）→ 不消费、不立即处罚，异步触发 LLM
 	llm.setReply(`{"violation":"ad","reason":"以资料分享为幌子拉群引流"}`)
-	consumed = runOnMessage(t, L, 10001, 20003, "考研资料群，无偿分享，加群领资料", "90003")
+	consumed = runOnMessage(t, L, 10001, 20003, "考研上岸的学长学姐，加群一起交流经验", "90003")
 	if consumed {
 		t.Fatal("灰色词消息不应被消费（先放行）")
 	}
