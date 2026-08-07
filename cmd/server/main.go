@@ -233,6 +233,7 @@ func main() {
 		nil,
 		coreInst.DAO,
 		hago,
+		hago,
 	)
 	if err := pluginEngine.LoadAll(); err != nil {
 		log.Error("插件加载失败", "err", err)

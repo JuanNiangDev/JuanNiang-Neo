@@ -16,9 +16,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/provider"
 
 	lua "github.com/yuin/gopher-lua"
 	"gopkg.in/yaml.v3"
@@ -108,6 +110,15 @@ type ProviderGroupAccess interface {
 	GetActive(id string) bool
 }
 
+// LLMAccess 插件通过此接口调用 Bot 的 LLM：复用 Bot 自身启用的文本模型
+// Provider 及其配置（模型 / 采样参数 / 密钥），插件不接触任何密钥。
+type LLMAccess interface {
+	// Available 当前是否有启用的文本模型 Provider。
+	Available() bool
+	// Chat 调用 Bot 当前启用的文本模型。req 中未设置的采样参数回退到 Bot 配置。
+	Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error)
+}
+
 // MCPGroupAccess 暴露给插件的 MCP 管理接口。
 type MCPGroupAccess interface {
 	ListMCPs() []MCPInfo
@@ -157,28 +168,74 @@ type PluginEngine struct {
 	sandbox   *sandboxcaller.Client
 	dao       *dao.Bundle
 	agentOp   AgentOperator
+	llmAccess LLMAccess
+	// asyncAPIs 异步 API 注册表：kind（如 "chat"）→ 派发规格。xxx_async 类接口
+	// 提交后立即返回 req_id，阻塞操作在独立 goroutine 完成，完成后派发到插件
+	// Lua 入口函数（如 on_chat_response）。注册表集中管理，后续新增
+	// t2i/http/agent 等异步只需注册一个 kind。
+	asyncAPIs map[string]*AsyncAPI
+	// asyncCh 异步任务完成后的回调队列（runAsyncCallbacks 消费）。
+	asyncCh chan asyncTask
+	// asyncSeq req_id 自增序号。
+	asyncSeq  uint64
 	currentEv EventData
 	commands  *CommandRegistry
 }
 
-func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache.Cache, t2i *t2icaller.Client, sb *sandboxcaller.Client, d *dao.Bundle, ag AgentOperator) *PluginEngine {
+// AsyncAPI 描述一类可异步执行的 API（注册进引擎异步注册表）。
+// 插件侧调用形态：xxx_async(...) 立即返回 req_id，完成后引擎调用插件 Lua
+// 入口函数 Entry：on_xxx_response(req_id, <Encode 返回值...>)，与事件派发互斥。
+type AsyncAPI struct {
+	// Entry 插件侧 Lua 入口函数名，如 "on_chat_response"。
+	Entry string
+	// Encode 在锁内把 Go 结果转成 Lua 返回值（req_id 已由派发器先压入）。
+	// 成功：err 为 nil、result 为业务结果；失败：result 为 nil、err 非 nil。
+	Encode func(L *lua.LState, result any, err error) []lua.LValue
+}
+
+// asyncTask 一次异步调用的完成事件（runAsyncCallbacks 消费）。
+type asyncTask struct {
+	pluginName string
+	kind       string
+	api        *AsyncAPI
+	reqID      uint64
+	result     any
+	err        error
+}
+
+func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache.Cache, t2i *t2icaller.Client, sb *sandboxcaller.Client, d *dao.Bundle, ag AgentOperator, llm LLMAccess) *PluginEngine {
 	if basePath == "" {
 		basePath = "data/pluggins"
 	}
 	pe := &PluginEngine{
-		plugins:  make(map[string]*LoadedPlugin),
-		basePath: basePath,
-		adapter:  adapter,
-		db:       db,
-		cache:    c,
-		t2i:      t2i,
-		sandbox:  sb,
-		dao:      d,
-		agentOp:  ag,
-		commands: NewCommandRegistry(),
+		plugins:   make(map[string]*LoadedPlugin),
+		basePath:  basePath,
+		adapter:   adapter,
+		db:        db,
+		cache:     c,
+		t2i:       t2i,
+		sandbox:   sb,
+		dao:       d,
+		agentOp:   ag,
+		llmAccess: llm,
+		asyncAPIs: make(map[string]*AsyncAPI),
+		asyncCh:   make(chan asyncTask, 128),
+		commands:  NewCommandRegistry(),
 	}
+	// 注册内置异步 API：chat → 插件入口 on_chat_response
+	pe.RegisterAsyncAPI("chat", AsyncAPI{
+		Entry: "on_chat_response",
+		Encode: func(L *lua.LState, result any, err error) []lua.LValue {
+			if err != nil {
+				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
+			}
+			return []lua.LValue{lua.LString(result.(string)), lua.LNil}
+		},
+	})
 	// 注册内置 /help 命令
 	pe.registerBuiltinCommands()
+	// 异步任务消费者：与事件派发互斥执行 Lua，保证 LState 安全
+	go pe.runAsyncCallbacks()
 	return pe
 }
 
@@ -1048,6 +1105,11 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 		pe.injectAgent(L)
 	}
 
+	// LLM：调用 Bot 自身 LLM（复用 Bot Provider 配置，需要 llm 权限）
+	if hasPerm("llm") && pe.llmAccess != nil {
+		pe.injectLLM(L, pluginName)
+	}
+
 	// File：插件目录内文本文件读写（需要 file 权限）
 	if hasPerm("file") {
 		pe.injectFileAPI(L, pluginName)
@@ -1655,6 +1717,54 @@ func (pe *PluginEngine) injectCache(L *lua.LState, pluginName string) {
 
 // ---------- T2I ----------
 
+// luaTableToT2IOptions 解析 t2i.generate / t2i.generate_url 的可选 options 表
+// （键名与 T2I 服务 GenerateOptions 的 JSON 字段一致）；未传或为 nil 时返回 nil。
+// 未知键返回错误，便于插件尽早发现拼写问题。
+func luaTableToT2IOptions(L *lua.LState, idx int) (*t2icaller.GenerateOptions, error) {
+	if L.Get(idx) == lua.LNil {
+		return nil, nil
+	}
+	tbl := L.CheckTable(idx)
+	opts := &t2icaller.GenerateOptions{}
+	var parseErr error
+	tbl.ForEach(func(k, v lua.LValue) {
+		if parseErr != nil {
+			return
+		}
+		switch lua.LVAsString(k) {
+		case "type":
+			opts.Type = t2icaller.ImageType(lua.LVAsString(v))
+		case "quality":
+			opts.Quality = int(lua.LVAsNumber(v))
+		case "omit_background":
+			opts.OmitBackground = lua.LVAsBool(v)
+		case "full_page":
+			fp := lua.LVAsBool(v)
+			opts.FullPage = &fp
+		case "viewport_width":
+			opts.ViewportWidth = int(lua.LVAsNumber(v))
+		case "viewport_height":
+			opts.ViewportHeight = int(lua.LVAsNumber(v))
+		case "scale":
+			opts.Scale = lua.LVAsString(v)
+		case "animations":
+			opts.Animations = t2icaller.Animation(lua.LVAsString(v))
+		case "caret":
+			opts.Caret = t2icaller.Caret(lua.LVAsString(v))
+		case "device_scale_factor_level":
+			opts.DeviceScaleFactor = t2icaller.ScaleLevel(lua.LVAsString(v))
+		case "timeout":
+			opts.Timeout = float64(lua.LVAsNumber(v))
+		default:
+			parseErr = fmt.Errorf("未知 T2I 选项: %s", lua.LVAsString(k))
+		}
+	})
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return opts, nil
+}
+
 func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 	t2iTable := L.NewTable()
 
@@ -1675,9 +1785,16 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 				return 2
 			}
 			html := L.CheckString(1)
+			opts, optErr := luaTableToT2IOptions(L, 2)
+			if optErr != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(optErr.Error()))
+				return 2
+			}
 			resp, err := client.Generate(context.Background(), t2icaller.GenerateRequest{
-				HTML:   html,
-				AsJSON: true,
+				HTML:    html,
+				AsJSON:  true,
+				Options: opts,
 			})
 			if err != nil {
 				L.Push(lua.LNil)
@@ -1695,9 +1812,16 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 				return 2
 			}
 			html := L.CheckString(1)
+			opts, optErr := luaTableToT2IOptions(L, 2)
+			if optErr != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(optErr.Error()))
+				return 2
+			}
 			url, err := client.GenerateURL(context.Background(), t2icaller.GenerateRequest{
-				HTML:   html,
-				AsJSON: true,
+				HTML:    html,
+				AsJSON:  true,
+				Options: opts,
 			})
 			if err != nil {
 				L.Push(lua.LNil)
@@ -2041,6 +2165,195 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 
 	L.SetFuncs(agentTable, funcs)
 	L.SetGlobal("agent", agentTable)
+}
+
+// ---------- LLM ----------
+
+// injectLLM 注入 llm 全局表：插件通过 Bot 自身启用的文本模型 Provider 调用 LLM
+// （模型 / 采样参数 / 密钥全部复用 Bot 配置，插件不接触密钥）。
+//   - llm.available() -> boolean                当前是否有可用文本模型
+//   - llm.chat(messages, opts) -> content, err  同步调用（适合命令等低频路径）
+//   - llm.chat_async(messages, opts) -> req_id  异步调用（不阻塞事件循环）
+//
+// messages: 单字符串（role=user）或数组，元素为字符串（role=user）或
+//
+//	{role="system|user|assistant", content="..."}。
+//
+// opts: {temperature=?, max_tokens=?, timeout=?秒}，缺省回退 Bot Provider 配置。
+// chat_async 立即返回 req_id（失败返回 0 并附加错误串）；完成后引擎调用插件
+// 入口函数 on_chat_response(req_id, content, err)，err 为 nil 表示成功。
+// 派发规格由异步注册表（kind "chat"）定义，见 RegisterAsyncAPI。
+func (pe *PluginEngine) injectLLM(L *lua.LState, pluginName string) {
+	llmTable := L.NewTable()
+	funcs := map[string]lua.LGFunction{
+		"available": func(L *lua.LState) int {
+			L.Push(lua.LBool(pe.llmAccess != nil && pe.llmAccess.Available()))
+			return 1
+		},
+		"chat": func(L *lua.LState) int {
+			req, err := luaChatRequest(L, 1, 2)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), llmTimeoutFromOpts(L, 2))
+			defer cancel()
+			resp, err := pe.llmAccess.Chat(ctx, req)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			L.Push(lua.LString(resp.Message.Content))
+			return 1
+		},
+		"chat_async": func(L *lua.LState) int {
+			req, err := luaChatRequest(L, 1, 2)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			run := func(ctx context.Context) (any, error) {
+				resp, err := pe.llmAccess.Chat(ctx, req)
+				if err != nil {
+					return nil, err
+				}
+				return resp.Message.Content, nil
+			}
+			id, err := pe.submitAsync(pluginName, "chat", llmTimeoutFromOpts(L, 2), run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			// req_id 为 uint64；Lua number 在 2^53 内精确，实际序列号远达不到
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+	}
+	L.SetFuncs(llmTable, funcs)
+	L.SetGlobal("llm", llmTable)
+}
+
+// RegisterAsyncAPI 注册一类异步 API（如 "chat" → 插件入口 on_chat_response）。
+// 注册表集中管理 xxx_async 类接口的派发规格，后续新增 t2i/http/agent 等异步
+// 只需注册一个 kind。重复注册 panic（内置 kind 在 NewPluginEngine 注册）。
+func (pe *PluginEngine) RegisterAsyncAPI(kind string, api AsyncAPI) {
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if _, dup := pe.asyncAPIs[kind]; dup {
+		panic("pluggin: 异步 API 重复注册: " + kind)
+	}
+	pe.asyncAPIs[kind] = &api
+}
+
+// submitAsync 提交一个异步任务：run 在独立 goroutine 中执行（不得触碰任何 LState），
+// 完成后派发到插件的 Entry 入口函数。返回 req_id；kind 未注册返回 error。
+func (pe *PluginEngine) submitAsync(pluginName, kind string, timeout time.Duration, run func(ctx context.Context) (any, error)) (uint64, error) {
+	pe.mu.RLock()
+	api, ok := pe.asyncAPIs[kind]
+	pe.mu.RUnlock()
+	if !ok {
+		return 0, fmt.Errorf("pluggin: 异步 API %q 未注册", kind)
+	}
+	id := atomic.AddUint64(&pe.asyncSeq, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		result, err := run(ctx)
+		pe.asyncCh <- asyncTask{pluginName: pluginName, kind: kind, api: api, reqID: id, result: result, err: err}
+	}()
+	return id, nil
+}
+
+// runAsyncCallbacks 消费异步任务队列，串行派发到插件 Lua 入口函数
+// on_<kind>_response(req_id, <Encode 返回值...>)。与事件派发通过 pe.mu
+// 互斥（写锁），保证同一 LState 不会并发执行 Lua。插件已卸载则丢弃任务。
+func (pe *PluginEngine) runAsyncCallbacks() {
+	for task := range pe.asyncCh {
+		pe.mu.Lock()
+		p, ok := pe.plugins[task.pluginName]
+		if ok {
+			L := p.State
+			fn := L.GetGlobal(task.api.Entry)
+			if fn.Type() == lua.LTFunction {
+				vals := task.api.Encode(L, task.result, task.err)
+				L.Push(fn)
+				L.Push(lua.LNumber(task.reqID))
+				for _, v := range vals {
+					L.Push(v)
+				}
+				if err := L.PCall(1+len(vals), 0, nil); err != nil {
+					log.Error("插件异步回调错误", "plugin", task.pluginName, "kind", task.kind, "err", err)
+				}
+			}
+		}
+		pe.mu.Unlock()
+	}
+}
+
+// luaChatRequest 将 Lua 参数转换为 provider.ChatRequest。
+func luaChatRequest(L *lua.LState, msgIdx int, optsIdx int) (provider.ChatRequest, error) {
+	var req provider.ChatRequest
+	v := L.Get(msgIdx)
+	switch v.Type() {
+	case lua.LTString:
+		req.Messages = []provider.ChatMessage{{Role: "user", Content: v.String()}}
+	case lua.LTTable:
+		tbl := v.(*lua.LTable)
+		tbl.ForEach(func(_, val lua.LValue) {
+			switch val.Type() {
+			case lua.LTString:
+				req.Messages = append(req.Messages, provider.ChatMessage{Role: "user", Content: val.String()})
+			case lua.LTTable:
+				item := val.(*lua.LTable)
+				role := lvString(item.RawGetString("role"), "user")
+				content := lvString(item.RawGetString("content"), "")
+				req.Messages = append(req.Messages, provider.ChatMessage{Role: role, Content: content})
+			}
+		})
+	default:
+		return req, fmt.Errorf("llm: messages 参数必须是字符串或数组")
+	}
+	if len(req.Messages) == 0 {
+		return req, fmt.Errorf("llm: messages 不能为空")
+	}
+	if opts := L.Get(optsIdx); opts.Type() == lua.LTTable {
+		ot := opts.(*lua.LTable)
+		if t := ot.RawGetString("temperature"); t.Type() == lua.LTNumber {
+			req.Temperature = float32(t.(lua.LNumber))
+		}
+		if mt := ot.RawGetString("max_tokens"); mt.Type() == lua.LTNumber {
+			req.MaxTokens = int(mt.(lua.LNumber))
+		}
+	}
+	return req, nil
+}
+
+// lvString 取 Lua 字符串/数字值，缺省回退 def。
+func lvString(v lua.LValue, def string) string {
+	switch v.Type() {
+	case lua.LTString:
+		return string(v.(lua.LString))
+	case lua.LTNumber:
+		return strconv.FormatFloat(float64(v.(lua.LNumber)), 'f', -1, 64)
+	}
+	return def
+}
+
+// llmTimeoutFromOpts 从 opts.timeout（秒）解析调用超时，缺省 60s。
+func llmTimeoutFromOpts(L *lua.LState, optsIdx int) time.Duration {
+	timeout := 60 * time.Second
+	if opts := L.Get(optsIdx); opts.Type() == lua.LTTable {
+		if t := opts.(*lua.LTable).RawGetString("timeout"); t.Type() == lua.LTNumber {
+			if sec := float64(t.(lua.LNumber)); sec > 0 {
+				timeout = time.Duration(sec * float64(time.Second))
+			}
+		}
+	}
+	return timeout
 }
 
 // ====================================================================
