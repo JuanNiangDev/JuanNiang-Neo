@@ -9,7 +9,7 @@
       <v-btn color="primary" prepend-icon="mdi-plus" @click="openCreate">新建定时任务</v-btn>
     </div>
 
-    <v-data-table :headers="headers" :items="tasks" :loading="loading" :items-per-page="pageSize" @update:options="onPageChange">
+    <v-data-table :headers="headers" :items="tasks" :loading="loading" :page="page" :items-per-page="pageSize" :items-length="total" @update:options="onPageChange">
       <template #item.name="{ item }">
         <div class="font-weight-medium">{{ item.name }}</div>
         <div class="text-caption text-medium-emphasis">{{ (item.blocks?.length || 0) }} 个编排块</div>
@@ -288,6 +288,7 @@ const loading = ref(false)
 const tasks = ref<ScheduledMessageResp[]>([])
 const page = ref(1)
 const pageSize = 20
+const total = ref(0)
 
 const dialog = ref(false)
 const editingId = ref<string | null>(null)
@@ -336,6 +337,7 @@ async function fetchTasks() {
   try {
     const res = (await scheduledMessageApi.list({ page: page.value, page_size: pageSize })).data.data
     tasks.value = res.list || []
+    total.value = res.total || 0
   } catch (e: any) {
     toastStore.error(e?.message || '加载任务失败')
   } finally {
