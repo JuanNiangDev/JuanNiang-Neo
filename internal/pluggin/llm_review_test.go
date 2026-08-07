@@ -137,7 +137,12 @@ func (f *fakeLLM) callCount() int {
 func copyPlugin(t *testing.T, dst string) {
 	t.Helper()
 	src := filepath.Join("..", "..", "..", "Plugins", "plugins", "redrock_group_manager")
-	filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+	// 跨仓库端到端测试：Plugins 仓库需与 Bot 同级检出；CI 无此目录时跳过，
+	// Go 侧机制测试（TestLLMInjectSyncAndAsync）仍正常执行。
+	if _, err := os.Stat(src); os.IsNotExist(err) {
+		t.Skipf("插件源码目录不存在（需 Plugins 仓库同级检出）: %s", src)
+	}
+	if err := filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -151,7 +156,9 @@ func copyPlugin(t *testing.T, dst string) {
 			return err
 		}
 		return os.WriteFile(target, data, 0o644)
-	})
+	}); err != nil {
+		t.Fatalf("复制插件目录失败: %v", err)
+	}
 }
 
 func newTestEngine(t *testing.T, llm LLMAccess) (*PluginEngine, *fakeAdapter, string) {
