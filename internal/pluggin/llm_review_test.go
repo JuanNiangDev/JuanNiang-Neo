@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/agent/provider"
 
 	lua "github.com/yuin/gopher-lua"
@@ -447,3 +450,139 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 
 // 防未使用告警（io 保留给后续扩展）
 var _ = io.Discard
+
+// ---------- 测试: t2i/http 异步 API（xxx_async → on_xxx_response，带调用现场 ctx） ----------
+
+// t2iHTTPAsyncTestMain 异步机制测试插件：{{HTTP_URL}} 由 Go 侧替换为 httptest server。
+const t2iHTTPAsyncTestMain = `-- t2i/http 异步机制测试
+-- 成功路径（带 ctx）
+t2i_rid = t2i.generate_async("<h1>hi</h1>", nil, { tag = "ctx-t2i", group = 10001 })
+http_rid = http.get_async("{{HTTP_URL}}/echo", { tag = "ctx-http" })
+-- 同步阶段错误：opts 含未知键
+opts_rid, opts_err = t2i.generate_async("<h1>x</h1>", { bad_key = 1 })
+-- 异步回调错误路径：连接拒绝
+http.get_async("http://127.0.0.1:1/")
+
+function on_t2i_response(req_id, ctx, result, err)
+    t2i_result = tostring(result)
+    t2i_err = tostring(err)
+    if ctx then
+        t2i_ctx_tag = tostring(ctx.tag)
+        t2i_ctx_group = ctx.group
+    end
+    t2i_done = (t2i_done or 0) + 1
+end
+
+function on_http_response(req_id, ctx, result, err)
+    if err then
+        http_fail_err = tostring(err)
+    else
+        http_status = result.status
+        http_body = tostring(result.body)
+        if ctx then http_ctx_tag = tostring(ctx.tag) end
+    end
+    http_done = (http_done or 0) + 1
+end
+`
+
+func TestT2IAndHTTPAsync(t *testing.T) {
+	// HTTP 测试 server（GET /echo 返回固定 JSON）
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/echo" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"path":%q}`, r.URL.Path)
+	}))
+	defer httpSrv.Close()
+
+	// T2I 测试 server（模拟 POST /text2img/generate）
+	t2iSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/text2img/generate" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"id":"data/rendered.png"}}`))
+	}))
+	defer t2iSrv.Close()
+	t2iClient := &t2icaller.Client{
+		Config:     t2icaller.Config{BaseURL: t2iSrv.URL, Timeout: 5 * time.Second},
+		HttpClient: t2iSrv.Client(),
+	}
+
+	base := t.TempDir()
+	pe := NewPluginEngine(base, &fakeAdapter{}, nil, nil, t2iClient, nil, nil, nil, &fakeLLM{reply: "x"})
+	writeTestPlugin(t, base, "t2ihttp")
+	main := strings.ReplaceAll(t2iHTTPAsyncTestMain, "{{HTTP_URL}}", httpSrv.URL)
+	if err := os.WriteFile(filepath.Join(base, "t2ihttp", "main.lua"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	L := lua.NewState()
+	t.Cleanup(L.Close)
+	pe.injectSDK(L, "t2ihttp")
+	pe.injectBaseAPI(L, "t2ihttp", []string{"t2i", "http"})
+	L.DoString(fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "t2ihttp")+"/?.lua"))
+	if err := L.DoFile(filepath.Join(base, "t2ihttp", "main.lua")); err != nil {
+		t.Fatalf("加载测试插件失败: %v", err)
+	}
+	pe.mu.Lock()
+	pe.plugins["t2ihttp"] = &LoadedPlugin{Manifest: Manifest{Name: "t2ihttp"}, State: L, Dir: filepath.Join(base, "t2ihttp")}
+	pe.mu.Unlock()
+
+	// 1. t2i 异步成功：req_id > 0，回调拿到结果与 ctx
+	rid := L.GetGlobal("t2i_rid")
+	if rid.Type() != lua.LTNumber || float64(rid.(lua.LNumber)) <= 0 {
+		t.Fatalf("t2i.generate_async 应返回 req_id > 0, got %v", rid)
+	}
+	waitFor(t, func() bool {
+		v := L.GetGlobal("t2i_done")
+		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 1
+	})
+	if v := L.GetGlobal("t2i_result"); v.String() != "data/rendered.png" {
+		t.Fatalf("on_t2i_response result = %v, want data/rendered.png", v)
+	}
+	if v := L.GetGlobal("t2i_err"); v.String() != "nil" {
+		t.Fatalf("on_t2i_response err = %v, want nil", v)
+	}
+	if v := L.GetGlobal("t2i_ctx_tag"); v.String() != "ctx-t2i" {
+		t.Fatalf("ctx.tag = %v, want ctx-t2i", v)
+	}
+	if v := L.GetGlobal("t2i_ctx_group"); float64(v.(lua.LNumber)) != 10001 {
+		t.Fatalf("ctx.group = %v, want 10001", v)
+	}
+
+	// 2. http 异步成功：req_id > 0，回调拿到 {status, body} 与 ctx
+	rid = L.GetGlobal("http_rid")
+	if rid.Type() != lua.LTNumber || float64(rid.(lua.LNumber)) <= 0 {
+		t.Fatalf("http.get_async 应返回 req_id > 0, got %v", rid)
+	}
+	waitFor(t, func() bool {
+		v := L.GetGlobal("http_done")
+		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 2 // 成功 + 连接失败两个回调
+	})
+	if v := L.GetGlobal("http_status"); float64(v.(lua.LNumber)) != 200 {
+		t.Fatalf("on_http_response status = %v, want 200", v)
+	}
+	if v := L.GetGlobal("http_body"); !strings.Contains(v.String(), "/echo") {
+		t.Fatalf("on_http_response body = %v, want 包含 /echo", v)
+	}
+	if v := L.GetGlobal("http_ctx_tag"); v.String() != "ctx-http" {
+		t.Fatalf("ctx.tag = %v, want ctx-http", v)
+	}
+
+	// 3. 异步回调错误路径：连接拒绝 → err 非 nil
+	if v := L.GetGlobal("http_fail_err"); v.String() == "" || v.String() == "nil" {
+		t.Fatalf("连接失败应回调 err, got %v", v)
+	}
+
+	// 4. 同步阶段错误：opts 含未知键 → 返回 (0, err)
+	if v := L.GetGlobal("opts_rid"); float64(v.(lua.LNumber)) != 0 {
+		t.Fatalf("opts 解析错误应返回 req_id 0, got %v", v)
+	}
+	if v := L.GetGlobal("opts_err"); !strings.Contains(v.String(), "未知 T2I 选项") {
+		t.Fatalf("opts 解析错误串 = %v, want 包含 未知 T2I 选项", v)
+	}
+}

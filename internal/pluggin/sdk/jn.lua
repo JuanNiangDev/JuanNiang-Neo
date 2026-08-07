@@ -119,7 +119,14 @@ M.onebot11 = onebot11
 ---@class jn.HTTP
 ---@field get fun(url: string): jn.HTTPResponse, string?
 ---@field post fun(url: string, content_type?: string, body?: string): jn.HTTPResponse, string?
+---@field get_async fun(url: string, ctx?: table): number 异步 GET，立即返回 req_id；完成后引擎调用插件入口 on_http_response(req_id, ctx, result, err)
+---@field post_async fun(url: string, content_type?: string, body?: string, ctx?: table): number 异步 POST（最后一个 table 参数视为 ctx）
 M.http = http
+
+-- 异步回调约定（引擎级异步注册表，kind "http"）：
+-- 插件定义全局函数 on_http_response(req_id, ctx, result, err)，引擎在请求完成后
+-- 串行调用（与事件派发互斥）。result={status, body}；err 为 nil 表示成功。
+-- ctx 为调用时传入的现场表（原样带回，未传则 nil），用于延续调用前的业务状态。
 
 -- ====================================================================
 -- database 数据库访问 (需要 database 权限，表名自动加 pluggin_<name>_ 前缀)
@@ -160,10 +167,17 @@ M.cache = cache
 ---@class jn.T2I
 ---@field generate fun(html: string, options?: table): string, string? 生成图片，返回图片 ID
 ---@field generate_url fun(html: string, options?: table): string, string? 生成图片，返回 URL
----@field toggle fun(active: boolean): boolean, string? 启用/停用 T2I 服务
+---@field generate_async fun(html: string, options?: table, ctx?: table): number 异步生成（默认超时 120s，opts.timeout 可覆盖），立即返回 req_id；完成后引擎调用插件入口 on_t2i_response(req_id, ctx, result, err)
+---@field generate_url_async fun(html: string, options?: table, ctx?: table): number 异步生成 URL
+---@field toggle fun(active: boolean): boolean, string?
 ---@field is_active fun(): boolean
 ---@field get_config fun(): table, string?
 M.t2i = t2i
+
+-- 异步回调约定（引擎级异步注册表，kind "t2i"）：
+-- 插件定义全局函数 on_t2i_response(req_id, ctx, result, err)，引擎在渲染完成后
+-- 串行调用（与事件派发互斥）。result 为图片 ID 或公开 URL；err 为 nil 表示成功。
+-- ctx 为调用时传入的现场表（原样带回，未传则 nil）。
 
 -- ====================================================================
 -- sandbox 代码沙箱 (需要 sandbox 权限)
