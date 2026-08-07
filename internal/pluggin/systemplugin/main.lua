@@ -551,7 +551,7 @@ end, {
 function on_message(event)
     -- 所有 /system* 命令已由 jn.command 注册表处理
     -- 此处仅用于不匹配任何命令时的兜底
-    return false
+    return false, false  -- consumed, skip_reply
 end
 
 log.info("system 插件已加载")

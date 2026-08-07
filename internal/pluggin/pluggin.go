@@ -482,8 +482,8 @@ type EventData struct {
 
 // DispatchResult 是 Plugin 引擎统一派发结果。
 type DispatchResult struct {
-	Consumed  bool          // Plugin 已消费事件（命令命中；消息事件不再被插件消费）
-	Event     adapter.Event // 透传事件（插件不再允许修改事件）
+	Consumed  bool          // 任一插件 consumed=true：消息不进 Agent（所有 on_message 仍全部执行，不短路）
+	Event     adapter.Event // 透传事件（插件不允许修改事件）
 	SkipReply bool          // skip_reply 标记：跳过回复策略检查直接给 Agent（强制必回）
 }
 
@@ -741,8 +741,10 @@ func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 // dispatchMessageLocked 消息事件的统一派发（需在持有读锁时调用）。
 // 派发规则：
 //  1. 命令注册表优先：/cmd 命中即 Consumed（命令消息不进 Agent）
-//  2. 其余消息遍历各插件 on_message 回调，插件只能返回 skip_reply（跳过回复策略检查
-//     强制进 Agent），不能消费消息、不能修改事件——消息始终进入 Agent 处理
+//  2. 其余消息遍历各插件 on_message 回调，返回 (consumed, skip_reply)：
+//     - consumed=true → 消息不进 Agent，但**不短路**，所有插件 on_message 仍全部执行
+//     - skip_reply=true → 跳过回复策略检查强制进 Agent（consumed 优先）
+//  3. 插件不能修改事件（modified_event 已移除）
 func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 	msg := ev.Message
 	pluginEvent := EventData{
@@ -778,8 +780,8 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 		}
 	}
 
-	// 2. 派发给各插件的 on_message：只收集 skip_reply，不消费、不改事件
-	var anySkipReply bool
+	// 2. 派发给各插件的 on_message：不短路，全部执行；收集 consumed 与 skip_reply
+	var anyConsumed, anySkipReply bool
 	for _, p := range pe.plugins {
 		if !p.HasPermission("onebot11") {
 			continue
@@ -791,19 +793,24 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 		table := eventToLuaTable(p.State, pluginEvent)
 		p.State.Push(fn)
 		p.State.Push(table)
-		if err := p.State.PCall(1, 1, nil); err != nil { // 返回值: skip_reply
+		if err := p.State.PCall(1, 2, nil); err != nil { // 返回值: consumed, skip_reply
 			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
 			continue
 		}
 
+		consumedRet := p.State.Get(-2)
 		skipReplyRet := p.State.Get(-1)
-		p.State.Pop(1)
+		p.State.Pop(2)
+
+		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
+			anyConsumed = true
+		}
 		if skipReplyRet.Type() == lua.LTBool && bool(skipReplyRet.(lua.LBool)) {
 			anySkipReply = true
 		}
 	}
 
-	return DispatchResult{Consumed: false, Event: ev, SkipReply: anySkipReply}
+	return DispatchResult{Consumed: anyConsumed, Event: ev, SkipReply: anySkipReply}
 }
 
 // onCronJobLocked 派发 cronjob 事件给插件（需在持有读锁时调用）。
