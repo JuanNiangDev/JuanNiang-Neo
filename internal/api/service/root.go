@@ -53,6 +53,8 @@ type Service struct {
 	OnRebuildAgent func()
 	// OnUpdateToolAdminOnly 工具的"仅管理员"标志变更后刷新 Agent 运行时权限表。
 	OnUpdateToolAdminOnly func()
+	// OnReplyStrategyChanged 回复策略更新后失效 Agent 侧内存缓存（立即生效，TTL 兜底）。
+	OnReplyStrategyChanged func()
 	// OnKnowledgeChanged 知识库条目变更后失效 Agent 侧 LRU 缓存。
 	OnKnowledgeChanged func()
 	// OnExtractKnowledge 知识新增/编辑后触发异步关键词提取。

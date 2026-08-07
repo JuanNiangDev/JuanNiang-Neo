@@ -94,6 +94,13 @@ type HagoCenter struct {
 
 	// msgDedup 消息去重器：过滤 WS 断线重连/多连接导致的同一条消息重复投递。
 	msgDedup *msgDedup
+
+	// 回复策略内存缓存（TTL 20min）：策略为单例配置且极少变更，
+	// 避免每条消息都同步查 DB 阻塞事件循环；Web 面板更新策略时通过
+	// InvalidateReplySettings 立即失效（TTL 仅作兜底）。
+	replySettingsMu  sync.Mutex
+	replySettings    ReplySettings
+	replySettingsExp time.Time
 }
 
 // memberInfoTTL 群成员信息缓存有效期（角色变更不频繁，10 分钟足够）。

@@ -2360,6 +2360,11 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		return
 	}
 
+	// 失效 Agent 侧内存缓存（TTL 20min 兜底，此处立即生效）
+	if s.OnReplyStrategyChanged != nil {
+		s.OnReplyStrategyChanged()
+	}
+
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ReplyStrategyResp{
 		Strategy:           string(cfg.Strategy),
 		RelevanceThreshold: cfg.RelevanceThreshold,

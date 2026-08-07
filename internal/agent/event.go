@@ -152,9 +152,20 @@ func (h *HagoCenter) checkReplyStrategyFast(ctx context.Context, ev adapter.Even
 	}
 }
 
-// getReplySettings 从 DB 读取回复策略配置，返回 per-message 设置。
+// replySettingsTTL 回复策略内存缓存有效期：策略是单例配置且极少变更，
+// 缓存避免每条消息都同步查 DB 阻塞事件循环；Web 面板更新策略时
+// 通过 InvalidateReplySettings 立即失效，TTL 仅作兜底。
+const replySettingsTTL = 20 * time.Minute
+
+// getReplySettings 读取回复策略配置（内存缓存，TTL 20min），返回 per-message 设置。
 // 不写入 HagoCenter 共享字段，避免数据竞争。
 func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
+	// 内存缓存快路径；miss 时持锁查 DB（防并发 miss 重复查询）
+	h.replySettingsMu.Lock()
+	defer h.replySettingsMu.Unlock()
+	if time.Now().Before(h.replySettingsExp) {
+		return h.replySettings
+	}
 	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
 		log.Warn("获取回复策略失败，使用默认值", "err", err)
@@ -165,7 +176,7 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 	if cfg.RelevanceTimeout <= 0 || timeout > 120*time.Second {
 		timeout = relevanceJudgeTimeout
 	}
-	return ReplySettings{
+	rs := ReplySettings{
 		Strategy:           cfg.Strategy,
 		StripMarkdown:      cfg.StripMarkdown,
 		AgentLite:          cfg.AgentLite,
@@ -176,6 +187,16 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		RelevanceTimeout:   timeout,
 		JudgeFailPolicy:    cfg.JudgeFailPolicy,
 	}
+	h.replySettings = rs
+	h.replySettingsExp = time.Now().Add(replySettingsTTL)
+	return rs
+}
+
+// InvalidateReplySettings 使回复策略内存缓存失效（Web 面板更新策略后立即生效）。
+func (h *HagoCenter) InvalidateReplySettings() {
+	h.replySettingsMu.Lock()
+	h.replySettingsExp = time.Time{}
+	h.replySettingsMu.Unlock()
 }
 
 // checkReplyStrategy 已废弃：相关性判断统一在 filterRelevant 中按批次执行
@@ -328,11 +349,85 @@ func (h *HagoCenter) setRelevanceVerdict(ctx context.Context, areaID string, ver
 	}
 }
 
+// memoryMsg 生成写入短期记忆 / 注入上下文的用户消息文本（带发言人标识）。
+// 空消息返回 ""（调用方跳过）。
+func memoryMsg(m *adapter.MessageEvent) string {
+	uMsg := strings.TrimSpace(m.RawMessage)
+	if uMsg == "" {
+		return ""
+	}
+	if speaker := buildMemorySpeaker(m); speaker != "" {
+		uMsg = speaker + uMsg
+	}
+	return uMsg
+}
+
+// filterBlockedEvents 聊天黑名单过滤（管理员豁免），返回新 slice（不改原 events）。
+// 与 handleMessage 内过滤逻辑一致，供 spawnBatch 批次级记忆屏障使用。
+func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea) []adapter.Event {
+	kept := make([]adapter.Event, 0, len(events))
+	for _, ev := range events {
+		m := ev.Message
+		if m == nil {
+			continue
+		}
+		if isAdmin(m.UserID, ev.Admins) || h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
+			kept = append(kept, ev)
+		} else {
+			log.Info("聊天黑名单丢弃消息", "user_id", m.UserID, "chat_area_id", chatArea.ID)
+		}
+	}
+	return kept
+}
+
+// writeBatchToMemory 批次级记忆屏障：把整批用户消息（黑名单过滤后、带发言人标识）
+// 一次性写入短期记忆（幂等去重），取代原 handleMessage 内逐组分散写入。
+// 同批并发组读到的记忆一致，避免"另一 Agent 不知情 / 重复消费"；
+// 返回整批消息文本列表，供上下文注入与记忆快照剔除。
+func (h *HagoCenter) writeBatchToMemory(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea) []string {
+	batchMsgs := make([]string, 0, len(events))
+	for _, ev := range events {
+		if ev.Message == nil {
+			continue
+		}
+		if mu := memoryMsg(ev.Message); mu != "" {
+			batchMsgs = append(batchMsgs, mu)
+			if h.Memory != nil {
+				// 幂等去重键：仅真实 OneBot11 消息（message_id≠0）携带；
+				// 无 ID 的事件（cronjob/webhook 注入）不去重，避免误吞不同消息
+				msgID := ""
+				if ev.Message.MessageID != 0 {
+					msgID = strconv.FormatInt(ev.Message.MessageID, 10)
+				}
+				if err := h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{
+					Role:    "user",
+					Content: mu,
+					MsgID:   msgID,
+				}); err != nil {
+					log.Warn("批次消息写入短期记忆失败", "area_id", chatArea.ID, "err", err)
+				}
+			}
+		}
+	}
+	return batchMsgs
+}
+
 // spawnBatch 启动一个批次的 Agent 处理（relevance 检查与并发控制都在 goroutine 内，不阻塞事件循环）。
 // 批次内不同用户的消息按 UserID 拆分为多个子批次，每个用户的消息独立占一个 ReAct 循环
 // （同一用户窗口内的消息仍合并为一次处理）。子批次**并行**执行 ReAct 循环，
 // 但发送动作交给 orderedReplier 按消息顺序投递，避免并行导致的回复乱序。
+// 批次级记忆屏障：派发前先把整批用户消息一次性写入短期记忆并注入上下文，
+// 保证所有并发组读到的记忆一致，且每条消息只在一个组的"主消息"位置出现一次。
 func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs ReplySettings, chatArea *models.ChatArea) {
+	// 黑名单过滤提前到派发阶段（handleMessage 内仍保留双保险）
+	events = h.filterBlockedEvents(ctx, events, chatArea)
+	if len(events) == 0 {
+		return
+	}
+	// 批次级记忆屏障 + 整批消息注入 context
+	batchMsgs := h.writeBatchToMemory(ctx, events, chatArea)
+	ctx = WithBatchUserMsgs(ctx, batchMsgs)
+
 	groups := groupEventsByUser(events)
 
 	if h.Concurrency == nil {
@@ -408,6 +503,7 @@ func (r *orderedReplier) runAvailableLocked(first func()) {
 type (
 	orderedReplierKey      struct{}
 	orderedReplierIndexKey struct{}
+	batchUserMsgsKey       struct{}
 )
 
 // WithOrderedReplier 把按序发送器及其 index 注入 context（供 handleMessage 后处理使用）。
@@ -427,6 +523,17 @@ func GetOrderedReplier(ctx context.Context) *orderedReplier {
 func GetOrderedReplierIndex(ctx context.Context) int {
 	i, _ := ctx.Value(orderedReplierIndexKey{}).(int)
 	return i
+}
+
+// WithBatchUserMsgs 把批次级消息列表（带发言人标识，已写入短期记忆）注入 context。
+func WithBatchUserMsgs(ctx context.Context, msgs []string) context.Context {
+	return context.WithValue(ctx, batchUserMsgsKey{}, msgs)
+}
+
+// GetBatchUserMsgs 返回本批次注入的消息列表（nil 表示非批次直处理路径）。
+func GetBatchUserMsgs(ctx context.Context) []string {
+	v, _ := ctx.Value(batchUserMsgsKey{}).([]string)
+	return v
 }
 
 // groupEventsByUser 按 UserID 把事件分组为多个子批次（每组保持组内原始顺序）。
@@ -561,19 +668,11 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 
 	// 聊天黑名单检查：命中黑名单的消息直接丢弃（不进入 Agent 循环）
-	kept := events[:0]
-	for _, ev := range events {
-		m := ev.Message
-		if isAdmin(m.UserID, ev.Admins) || h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
-			kept = append(kept, ev)
-		} else {
-			log.Info("聊天黑名单丢弃消息", "user_id", m.UserID, "chat_area_id", chatArea.ID)
-		}
-	}
-	if len(kept) == 0 {
+	// （spawnBatch 派发时已过滤一次，此处为 fallback 路径双保险）
+	events = h.filterBlockedEvents(ctx, events, chatArea)
+	if len(events) == 0 {
 		return
 	}
-	events = kept
 	msg = events[len(events)-1].Message
 	userID = msg.UserID
 
@@ -584,9 +683,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		return
 	}
 
-	// 收集批次内各条用户消息（带发言人标识）+ 技能匹配
-	var userMsgs []string
-	var memMsgs []shortterm.ChatMessage
+	// 技能匹配（基于本组消息原文）+ 本组主消息定位
+	var mainMsg string
 	var skillPromptContents []string
 	for _, ev := range events {
 		m := ev.Message
@@ -594,14 +692,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		if uMsg == "" {
 			continue
 		}
-		// 记忆中的用户消息带发言人标识（昵称+QQ+群号），
-		// 避免多人同时发言时 LLM 混淆消息归属
-		memMsg := uMsg
-		if speaker := buildMemorySpeaker(m); speaker != "" {
-			memMsg = speaker + uMsg
+		if mu := memoryMsg(m); mu != "" {
+			mainMsg = mu // 本组最后一条非空消息即主消息
 		}
-		userMsgs = append(userMsgs, memMsg)
-		memMsgs = append(memMsgs, shortterm.ChatMessage{Role: "user", Content: memMsg})
 
 		// 技能匹配（批内多条消息时合并收集提示词）
 		if s, ok := h.Skills.Match(uMsg); ok {
@@ -614,6 +707,34 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 				}
 			}
 		}
+	}
+
+	// 上下文消息注入（方案2）：批次路径注入整批消息（本组最后一条为主，其余全部标
+	// 背景"无需逐一回复"）；非批次直处理路径（chatArea==nil 兜底）回退到本组消息。
+	// 每条消息只在一个组的"主消息"位置出现一次，其他组看到的都是背景，避免重复消费。
+	batchMsgs := GetBatchUserMsgs(ctx)
+	var userMsgs []string
+	mainIdx := -1
+	if len(batchMsgs) > 0 {
+		userMsgs = batchMsgs
+		if mainMsg != "" {
+			for i, mu := range batchMsgs {
+				if mu == mainMsg {
+					mainIdx = i
+					break
+				}
+			}
+		}
+		if mainIdx < 0 {
+			mainIdx = len(userMsgs) - 1 // 兜底：无主消息时取整批最后一条
+		}
+	} else {
+		for _, ev := range events {
+			if mu := memoryMsg(ev.Message); mu != "" {
+				userMsgs = append(userMsgs, mu)
+			}
+		}
+		mainIdx = len(userMsgs) - 1
 	}
 	if len(userMsgs) == 0 {
 		return
@@ -664,26 +785,30 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	if h.Memory != nil {
 		stMsgs, err := h.Memory.GetShortTermMessages(ctx, chatArea.ID)
 		if err == nil {
+			// 方案2：剔除本批消息（已由下方 userMsgs 注入），避免上下文重复出现
+			batchSet := make(map[string]struct{}, len(batchMsgs))
+			for _, mu := range batchMsgs {
+				batchSet[mu] = struct{}{}
+			}
 			for _, m := range stMsgs {
+				if _, dup := batchSet[m.Content]; dup {
+					continue
+				}
 				einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.RoleType(m.Role), Content: m.Content, Name: m.Name})
 			}
 		}
 	}
-	// 批量消息区分：批内前面的消息是背景（多人独立发言，不要求逐一回复），
-	// 最后一条是当前需要回复的主消息。避免模型把多人的问题拼在一起一次回复（回复串味）。
+	// 批量消息区分：批内非主消息是背景（多人独立发言，不要求逐一回复），
+	// 主消息（本组最后一条）是当前需要回复的消息。避免模型把多人的问题
+	// 拼在一起一次回复（回复串味），也避免并行组重复消费同一消息。
 	for i, mu := range userMsgs {
 		content := mu
-		if i < len(userMsgs)-1 {
+		if i != mainIdx {
 			content = "【背景消息·来自其他用户，无需逐一回复】" + mu
 		} else {
 			content = "【需要你回复的消息】" + mu
 		}
 		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: content})
-	}
-	if h.Memory != nil {
-		for _, mm := range memMsgs {
-			h.Memory.AddShortTermMessage(ctx, chatArea.ID, mm)
-		}
 	}
 	for _, ev := range events {
 		h.Session.AppendRecord(ctx, chatArea.ID, ev.Message.UserID, "user", strings.TrimSpace(ev.Message.RawMessage), 0, nil)
