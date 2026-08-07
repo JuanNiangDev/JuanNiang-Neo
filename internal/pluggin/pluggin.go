@@ -177,7 +177,7 @@ type PluginEngine struct {
 	// asyncCh 异步任务完成后的回调队列（runAsyncCallbacks 消费）。
 	asyncCh chan asyncTask
 	// asyncSeq req_id 自增序号。
-	asyncSeq uint64
+	asyncSeq  uint64
 	currentEv EventData
 	commands  *CommandRegistry
 }
@@ -208,19 +208,19 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 		basePath = "data/pluggins"
 	}
 	pe := &PluginEngine{
-		plugins:    make(map[string]*LoadedPlugin),
-		basePath:   basePath,
-		adapter:    adapter,
-		db:         db,
-		cache:      c,
-		t2i:        t2i,
-		sandbox:    sb,
-		dao:        d,
-		agentOp:    ag,
-		llmAccess:  llm,
-		asyncAPIs:  make(map[string]*AsyncAPI),
-		asyncCh:    make(chan asyncTask, 128),
-		commands:   NewCommandRegistry(),
+		plugins:   make(map[string]*LoadedPlugin),
+		basePath:  basePath,
+		adapter:   adapter,
+		db:        db,
+		cache:     c,
+		t2i:       t2i,
+		sandbox:   sb,
+		dao:       d,
+		agentOp:   ag,
+		llmAccess: llm,
+		asyncAPIs: make(map[string]*AsyncAPI),
+		asyncCh:   make(chan asyncTask, 128),
+		commands:  NewCommandRegistry(),
 	}
 	// 注册内置异步 API：chat → 插件入口 on_chat_response
 	pe.RegisterAsyncAPI("chat", AsyncAPI{
@@ -2171,11 +2171,14 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 
 // injectLLM 注入 llm 全局表：插件通过 Bot 自身启用的文本模型 Provider 调用 LLM
 // （模型 / 采样参数 / 密钥全部复用 Bot 配置，插件不接触密钥）。
-//  - llm.available() -> boolean                当前是否有可用文本模型
-//  - llm.chat(messages, opts) -> content, err  同步调用（适合命令等低频路径）
-//  - llm.chat_async(messages, opts) -> req_id  异步调用（不阻塞事件循环）
+//   - llm.available() -> boolean                当前是否有可用文本模型
+//   - llm.chat(messages, opts) -> content, err  同步调用（适合命令等低频路径）
+//   - llm.chat_async(messages, opts) -> req_id  异步调用（不阻塞事件循环）
+//
 // messages: 单字符串（role=user）或数组，元素为字符串（role=user）或
-//           {role="system|user|assistant", content="..."}。
+//
+//	{role="system|user|assistant", content="..."}。
+//
 // opts: {temperature=?, max_tokens=?, timeout=?秒}，缺省回退 Bot Provider 配置。
 // chat_async 立即返回 req_id（失败返回 0 并附加错误串）；完成后引擎调用插件
 // 入口函数 on_chat_response(req_id, content, err)，err 为 nil 表示成功。
