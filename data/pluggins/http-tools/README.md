@@ -1,6 +1,6 @@
 # http-tools
 
-HTTP 请求示例（**异步版**）：`http.get_async` / `http.post_async`，对接一言 API、wttr.in 天气与 httpbin 回显。
+HTTP 请求示例（**同步版 + 异步版双示范**）：`http.get/post`（同步）与 `http.get_async/post_async`（异步），对接一言 API、wttr.in 天气与 httpbin 回显。
 
 ## 文件结构
 
@@ -13,40 +13,46 @@ data/pluggins/http-tools/
 └── README.md
 ```
 
-## 功能
+## 功能（每个功能都有同步版 + 异步版）
 
-| 命令 | 说明 |
-|------|------|
-| `/hitokoto [类型]` | 一言金句（`a`动画 `b`漫画 `c`游戏 `d`小说 `e`原创 `f`网络 `g`其他） |
-| `/weather <城市>` | wttr.in 简版天气（默认北京） |
-| `/http post <文本>` | 演示 `http.post_async` + JSON 编解码（httpbin 回显） |
+| 命令 | 模式 | API |
+|------|------|-----|
+| `/hitokoto [类型]` | 同步 | `http.get` |
+| `/hitokoto async [类型]` | 异步 | `http.get_async` + ctx |
+| `/weather <城市>` | 同步 | `http.get` |
+| `/weather async <城市>` | 异步 | `http.get_async` + ctx |
+| `/http post <文本>` | 同步 | `http.post` |
+| `/http post async <文本>` | 异步 | `http.post_async` + ctx |
 
-## 覆盖的 API（异步）
+> `[类型]`：`a`动画 `b`漫画 `c`游戏 `d`小说 `e`原创 `f`网络 `g`其他
 
-外部 HTTP 请求可能耗时（秒级），示例全部使用**异步版**，不阻塞事件循环：
+## 同步 vs 异步
+
+### 同步版（低频快路径，会阻塞事件循环）
 
 ```lua
--- 提交：立即返回 req_id（失败返回 0），阻塞请求在后台 goroutine 完成
-local ctx = { action = "weather", target = { kind = "group", id = 123456 } }
-local rid = jn.http.get_async("https://wttr.in/北京?format=3", ctx)
+local res, err = jn.http.get("https://v1.hitokoto.cn/?encode=json")
+if err then log.warn(err) return end
+-- res = {status=number, body=string}
+local data = json.decode(res.body)
+```
 
--- 完成回调：引擎串行调用 on_http_response(req_id, ctx, result, err)
+### 异步版（耗时请求推荐，不阻塞事件循环）
+
+```lua
+-- 提交：立即返回 req_id（失败返回 0），请求在后台 goroutine 完成
+local ctx = { action = "hitokoto", target = { kind = "group", id = 123456 } }
+local rid = jn.http.get_async("https://v1.hitokoto.cn/?encode=json", ctx)
+
+-- 完成回调：引擎串行调用（与事件派发互斥）
 function on_http_response(req_id, ctx, result, err)
-    if err then return end
-    -- result = {status=number, body=string}；ctx 为调用时保存的现场表（原样带回）
+    -- result = {status, body}；ctx 为调用时保存的现场表（原样带回）
 end
 ```
 
-同步版 `http.get(url)` / `http.post(url, ct, body)` 仍可用（适合命令等低频快路径），但会阻塞事件循环；耗时请求一律用 `xxx_async`。
-
 ## 调用现场保存（ctx）
 
-调用 `xxx_async` 时把要保留的变量打包成一张表作为最后一个参数传入（`get_async(url, ctx)`），引擎按 `req_id` 关联保存，回调时**原样带回**（不序列化，可含函数）。示例中用 `ctx.action` 区分不同命令的响应，`ctx.target` 携带回复目标：
-
-```lua
-local ctx = { action = "hitokoto", target = { kind = "group", id = event.group_id } }
-local rid = jn.http.get_async(url, ctx)
-```
+异步版最后一个参数是 ctx 表：把回复目标等变量打包传入，引擎按 `req_id` 关联保存，回调时**原样带回**（不序列化）。示例用 `ctx.action` 区分回调来源、`ctx.target` 携带回复目标。业务处理函数（`handle_hitokoto` 等）由同步/异步两条路径共用，避免逻辑重复。
 
 ## 权限
 
@@ -54,6 +60,6 @@ local rid = jn.http.get_async(url, ctx)
 
 ## 试用
 
-- `/hitokoto` → 随机一言金句
-- `/weather 重庆` → 重庆当前天气
-- `/http post 卷娘赛高` → httpbin 回显
+- `/hitokoto` → 随机一言金句（同步）；`/hitokoto async` → 同一功能异步版
+- `/weather 重庆` → 重庆天气；`/weather async 重庆` → 异步版
+- `/http post 卷娘赛高` → httpbin 回显；`/http post async 卷娘赛高` → 异步版

@@ -1,6 +1,6 @@
 # media-gen
 
-媒体生成示例（**异步版**）：**T2I 文生图**（HTML 模板渲染）与 **Sandbox 代码沙箱**（Python / Shell 执行）。
+媒体生成示例（**同步版 + 异步版双示范**）：**T2I 文生图**（HTML 模板渲染）与 **Sandbox 代码沙箱**（Python / Shell 执行）。
 
 ## 文件结构
 
@@ -13,52 +13,46 @@ data/pluggins/media-gen/
 └── README.md
 ```
 
-## 功能
+## 功能（每个功能都有同步版 + 异步版）
 
-| 命令 | 说明 |
-|------|------|
-| `/img <文字>` | T2I 生成渐变海报并发送（`t2i.generate_url_async` → 富文本带图片） |
-| `/run <python代码>` | 沙箱异步执行 Python（如 `/run print(1+1)`） |
-| `/sb shell <命令>` | 沙箱异步执行 Shell（如 `/sb shell uname -a`） |
-| `/sb del` | 删除当前沙箱（同步，快操作） |
-| `/sb status` | 查看 T2I / Sandbox 启用状态与配置（同步，快查询） |
+| 命令 | 模式 | API |
+|------|------|-----|
+| `/img sync <文字>` | 同步 | `t2i.generate_url` |
+| `/img <文字>` | 异步 | `t2i.generate_url_async` + ctx |
+| `/run sync <python代码>` | 同步 | `sandbox.exec_python` |
+| `/run <python代码>` | 异步 | `sandbox.exec_python_async` + ctx |
+| `/sb shell sync <命令>` | 同步 | `sandbox.exec_shell` |
+| `/sb shell <命令>` | 异步 | `sandbox.exec_shell_async` + ctx |
+| `/sb del` | 同步 | `sandbox.delete`（管理类快操作） |
+| `/sb status` | 同步 | `is_active`/`get_config`（快查询） |
 
-## 覆盖的 API
+## 同步 vs 异步
 
-### t2i（需先在 Web「T2I」页启用服务）
-
-渲染图片可能耗时，示例使用**异步版**：
+### 同步版（低频快路径，会阻塞事件循环）
 
 ```lua
+local url, err = jn.t2i.generate_url(html)                -- 阻塞直到渲染完成
+local out, exit = jn.sandbox.exec_shell(sid, "ls -la")    -- 沙箱执行可能数十秒
+```
+
+### 异步版（渲染/执行耗时，推荐，不阻塞事件循环）
+
+```lua
+-- 提交：立即返回 req_id（失败返回 0），阻塞操作在后台 goroutine 完成
 local ctx = { action = "img", target = { kind = "group", id = 123456 } }
-local rid = jn.t2i.generate_url_async(html, nil, ctx)  -- 立即返回 req_id
+local rid = jn.t2i.generate_url_async(html, nil, ctx)
 
-function on_t2i_response(req_id, ctx, result, err)
-    -- result = 图片 URL；ctx 为调用时保存的现场表（原样带回）
-end
+local ctx2 = { action = "run", sid = "sb-xxx", target = { kind = "group", id = 123456 } }
+local rid2 = jn.sandbox.exec_python_async("sb-xxx", "print(1+1)", ctx2)
+
+-- 完成回调：引擎串行调用（与事件派发互斥）
+function on_t2i_response(req_id, ctx, result, err)        -- result = 图片 URL
+function on_sandbox_response(req_id, ctx, result, err)    -- result = {output, exit_code|error}
 ```
-
-同步版 `t2i.generate` / `t2i.generate_url` 仍可用（低频路径），但会阻塞事件循环。
-
-### sandbox（需先在 Web「Sandbox」页启用服务）
-
-`create` 只返回 ID（快，保留同步）；**代码执行用异步版**：
-
-```lua
-local sb, err = jn.sandbox.create()                    -- 同步，{sandbox_id, status}
-local ctx = { action = "run", sid = sb.sandbox_id, target = { kind = "group", id = 123456 } }
-local rid = jn.sandbox.exec_python_async(sb.sandbox_id, "print(1+1)", ctx)
-
-function on_sandbox_response(req_id, ctx, result, err)
-    -- result：exec_python → {output, error}；exec_shell → {output, exit_code}
-end
-```
-
-同步版 `exec_shell` / `exec_python` 仍可用，但沙箱执行可能耗时数十秒，务必用异步版。
 
 ## 调用现场保存（ctx）
 
-`xxx_async` 最后一个 table 参数为调用现场，回调时**原样带回**（不序列化）。示例中 `ctx.action` 区分回调来源（`img`/`run`/`shell`），`ctx.sid` 携带沙箱 ID，`ctx.target` 携带回复目标——一次异步调用后的所有业务状态都延续到回调。
+异步版最后一个参数是 ctx 表：把回复目标、沙箱 ID 等变量打包传入，回调时**原样带回**（不序列化）。示例用 `ctx.action` 区分回调来源（`img`/`run`/`shell`）、`ctx.sid` 携带沙箱 ID、`ctx.target` 携带回复目标——一次异步调用后的业务状态全部延续到回调。业务处理函数（`send_image`/`handle_python`/`handle_shell`）由同步/异步两条路径共用。
 
 ## 权限
 
@@ -69,7 +63,7 @@ end
 ## 试用
 
 1. 先到 Web「T2I」「Sandbox」页启用服务
-2. `/img 今日宜摸鱼` → 群里收到生成的渐变海报
-3. `/run print(2**10)` → 输出 1024
-4. `/sb shell echo hello` → 输出 hello
+2. `/img 今日宜摸鱼` → 群里收到渐变海报；`/img sync 今日宜摸鱼` → 同步版
+3. `/run print(2**10)` → 输出 1024；`/run sync print(2**10)` → 同步版
+4. `/sb shell echo hello` → 输出 hello；`/sb shell sync echo hello` → 同步版
 5. `/sb status` → 查看服务状态
