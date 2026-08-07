@@ -1655,6 +1655,54 @@ func (pe *PluginEngine) injectCache(L *lua.LState, pluginName string) {
 
 // ---------- T2I ----------
 
+// luaTableToT2IOptions 解析 t2i.generate / t2i.generate_url 的可选 options 表
+// （键名与 T2I 服务 GenerateOptions 的 JSON 字段一致）；未传或为 nil 时返回 nil。
+// 未知键返回错误，便于插件尽早发现拼写问题。
+func luaTableToT2IOptions(L *lua.LState, idx int) (*t2icaller.GenerateOptions, error) {
+	if L.Get(idx) == lua.LNil {
+		return nil, nil
+	}
+	tbl := L.CheckTable(idx)
+	opts := &t2icaller.GenerateOptions{}
+	var parseErr error
+	tbl.ForEach(func(k, v lua.LValue) {
+		if parseErr != nil {
+			return
+		}
+		switch lua.LVAsString(k) {
+		case "type":
+			opts.Type = t2icaller.ImageType(lua.LVAsString(v))
+		case "quality":
+			opts.Quality = int(lua.LVAsNumber(v))
+		case "omit_background":
+			opts.OmitBackground = lua.LVAsBool(v)
+		case "full_page":
+			fp := lua.LVAsBool(v)
+			opts.FullPage = &fp
+		case "viewport_width":
+			opts.ViewportWidth = int(lua.LVAsNumber(v))
+		case "viewport_height":
+			opts.ViewportHeight = int(lua.LVAsNumber(v))
+		case "scale":
+			opts.Scale = lua.LVAsString(v)
+		case "animations":
+			opts.Animations = t2icaller.Animation(lua.LVAsString(v))
+		case "caret":
+			opts.Caret = t2icaller.Caret(lua.LVAsString(v))
+		case "device_scale_factor_level":
+			opts.DeviceScaleFactor = t2icaller.ScaleLevel(lua.LVAsString(v))
+		case "timeout":
+			opts.Timeout = float64(lua.LVAsNumber(v))
+		default:
+			parseErr = fmt.Errorf("未知 T2I 选项: %s", lua.LVAsString(k))
+		}
+	})
+	if parseErr != nil {
+		return nil, parseErr
+	}
+	return opts, nil
+}
+
 func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 	t2iTable := L.NewTable()
 
@@ -1675,9 +1723,16 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 				return 2
 			}
 			html := L.CheckString(1)
+			opts, optErr := luaTableToT2IOptions(L, 2)
+			if optErr != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(optErr.Error()))
+				return 2
+			}
 			resp, err := client.Generate(context.Background(), t2icaller.GenerateRequest{
-				HTML:   html,
-				AsJSON: true,
+				HTML:    html,
+				AsJSON:  true,
+				Options: opts,
 			})
 			if err != nil {
 				L.Push(lua.LNil)
@@ -1695,9 +1750,16 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 				return 2
 			}
 			html := L.CheckString(1)
+			opts, optErr := luaTableToT2IOptions(L, 2)
+			if optErr != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(optErr.Error()))
+				return 2
+			}
 			url, err := client.GenerateURL(context.Background(), t2icaller.GenerateRequest{
-				HTML:   html,
-				AsJSON: true,
+				HTML:    html,
+				AsJSON:  true,
+				Options: opts,
 			})
 			if err != nil {
 				L.Push(lua.LNil)

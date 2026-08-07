@@ -145,9 +145,21 @@ M.cache = cache
 -- t2i 文生图 (需要 t2i 权限)
 -- ====================================================================
 
+--- generate / generate_url 的可选 options 表（键名与 T2I 服务 GenerateOptions 的 JSON 字段一致）：
+---   type                      string   图片格式 "jpeg" | "png"（默认 png）
+---   quality                   number   压缩质量（仅 jpeg 有效）
+---   omit_background           boolean  透明背景（png）
+---   full_page                 boolean  整页截图（默认 true；false 时按 viewport 尺寸截图）
+---   viewport_width            number   视口宽度（px）
+---   viewport_height           number   视口高度（px）
+---   scale                     string   "css" | "device"
+---   animations                string   "allow" | "disabled"
+---   caret                     string   "hide" | "initial"
+---   device_scale_factor_level string   "normal" | "high" | "ultra"
+---   timeout                   number   渲染超时（秒）
 ---@class jn.T2I
----@field generate fun(html: string): string, string? 生成图片，返回图片 ID
----@field generate_url fun(html: string): string, string? 生成图片，返回 URL
+---@field generate fun(html: string, options?: table): string, string? 生成图片，返回图片 ID
+---@field generate_url fun(html: string, options?: table): string, string? 生成图片，返回 URL
 ---@field toggle fun(active: boolean): boolean, string? 启用/停用 T2I 服务
 ---@field is_active fun(): boolean
 ---@field get_config fun(): table, string?
