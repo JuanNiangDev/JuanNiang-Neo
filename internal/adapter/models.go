@@ -164,6 +164,8 @@ type GroupMemberInfo struct {
 	Title           string `json:"title"`
 	TitleExpireTime int64  `json:"title_expire_time"`
 	CardChangeable  bool   `json:"card_changeable"`
+	// ShutUpTimestamp 禁言到期时间戳（秒）；0 或小于当前时间表示未在禁言中。
+	ShutUpTimestamp int64 `json:"shut_up_timestamp"`
 }
 
 type GroupHonorInfo struct {
