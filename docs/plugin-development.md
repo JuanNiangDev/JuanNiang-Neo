@@ -419,6 +419,9 @@ end
 | `sandbox.create() → table [, err]` | `{sandbox_id, status}` | 新沙箱 |
 | `sandbox.exec_shell(sandbox_id, command) → (output, exit_code) \| (nil, err)` | | |
 | `sandbox.exec_python(sandbox_id, code) → (output, error) \| (nil, err)` | | |
+| `sandbox.create_async([ctx]) → number` | `req_id` | 异步版：立即返回，完成回调 `on_sandbox_response`（不阻塞事件循环） |
+| `sandbox.exec_shell_async(sandbox_id, command [, ctx]) → number` | `req_id` | 异步执行 shell（默认超时 120s），回调 result=`{output, exit_code}` |
+| `sandbox.exec_python_async(sandbox_id, code [, ctx]) → number` | `req_id` | 异步执行 python，回调 result=`{output, error}` |
 | `sandbox.toggle(active) → bool [, err]` | 启停：`SetSandboxActive` |
 | `sandbox.is_active() → bool` | 从 DB 读配置 |
 | `sandbox.get_config() → table [, err]` | base_url/api_key/timeout/is_active 等 |
@@ -431,6 +434,13 @@ local sid = sb.sandbox_id
 local out, exit = jn.sandbox.exec_shell(sid, "ls -la /")
 local out, e = jn.sandbox.exec_python(sid, "print(1+1)")
 jn.sandbox.delete(sid)
+
+-- 异步（执行代码可能很慢，建议异步）：完成回调 on_sandbox_response
+local rid = jn.sandbox.exec_shell_async(sid, "ls -la /", { sid = sid })
+function on_sandbox_response(req_id, ctx, result, err)
+    if err then jn.log.warn("沙箱执行失败: " .. err) return end
+    jn.log.info("exit=" .. result.exit_code .. " output=" .. result.output)
+end
 ```
 
 ## 全局表: `agent`
@@ -552,6 +562,7 @@ end
 | `chat` | `llm.chat_async(messages, opts?)` | `on_chat_response` | `(req_id, content, err)` |
 | `t2i` | `t2i.generate_async` / `t2i.generate_url_async` | `on_t2i_response` | `(req_id, ctx, result, err)` |
 | `http` | `http.get_async` / `http.post_async` | `on_http_response` | `(req_id, ctx, result, err)` |
+| `sandbox` | `sandbox.create_async` / `exec_shell_async` / `exec_python_async` | `on_sandbox_response` | `(req_id, ctx, result, err)` |
 
 > **调用现场保存（ctx）**：`t2i` / `http` 异步回调带 `ctx` 参数——调用时把要保留的变量打包成一张表作为最后一个参数传入（如 `generate_async(html, opts, ctx)`），引擎按 `req_id` 关联保存，回调时**原样带回**（不序列化，可含函数）。用于延续调用前的业务状态（待处理消息、群号、临时标记等）；不传则为 `nil`。`llm.chat_async` 不带 `ctx`（回调签名保持 `(req_id, content, err)`，兼容现有插件）。
 >
@@ -764,12 +775,18 @@ end
 function on_http_response(req_id, ctx, result, err)
     -- result: {status=number, body=string}；err 非 nil 表示失败
 end
+
+function on_sandbox_response(req_id, ctx, result, err)
+    -- result: create→{sandbox_id, status}、exec_shell→{output, exit_code}、
+    --         exec_python→{output, error}；err 非 nil 表示失败
+end
 ```
 
 | 回调 | req_id 来源 | ctx | result |
 |------|-----------|-----|--------|
 | `on_t2i_response(req_id, ctx, result, err)` | `t2i.generate_async` / `t2i.generate_url_async` | 调用现场表（原样带回） | 图片 ID / URL |
 | `on_http_response(req_id, ctx, result, err)` | `http.get_async` / `http.post_async` | 同上 | `{status, body}` |
+| `on_sandbox_response(req_id, ctx, result, err)` | `sandbox.create_async` / `exec_shell_async` / `exec_python_async` | 同上 | 见上注释 |
 
 ```lua
 -- 示例：http 异步 + 现场保存（url 与回调目标一起带到回调）

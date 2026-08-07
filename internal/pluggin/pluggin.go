@@ -265,6 +265,22 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 			return []lua.LValue{t, lua.LNil}
 		},
 	})
+	// sandbox → on_sandbox_response（带调用现场 ctx）；结果：标量字段表
+	// （create→{sandbox_id,status}、exec_shell→{output,exit_code}、exec_python→{output,error}）
+	pe.RegisterAsyncAPI("sandbox", AsyncAPI{
+		Entry:   "on_sandbox_response",
+		WithCtx: true,
+		Encode: func(L *lua.LState, result any, err error) []lua.LValue {
+			if err != nil {
+				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
+			}
+			m, ok := result.(map[string]any)
+			if !ok {
+				return []lua.LValue{lua.LNil, lua.LString("sandbox: 未知结果类型")}
+			}
+			return []lua.LValue{luaTableFromMap(L, m), lua.LNil}
+		},
+	})
 	// 注册内置 /help 命令
 	pe.registerBuiltinCommands()
 	// 异步任务消费者：与事件派发互斥执行 Lua，保证 LState 安全
@@ -1991,6 +2007,9 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 
 // ---------- Sandbox ----------
 
+// sandboxAsyncTimeout sandbox 异步任务默认总超时（沙箱执行代码可能较慢）。
+const sandboxAsyncTimeout = 120 * time.Second
+
 func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 	sbTable := L.NewTable()
 
@@ -2067,6 +2086,91 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(""))
 			}
 			return 2
+		},
+		// 异步版：立即返回 req_id（失败返回 0 + 错误串），完成回调 on_sandbox_response(req_id, ctx, result, err)
+		"create_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("Sandbox 服务未启用"))
+				return 2
+			}
+			run := func(ctx context.Context) (any, error) {
+				sbox, err := client.CreateSandbox(ctx, sandboxcaller.CreateSandboxRequest{})
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"sandbox_id": sbox.ID, "status": string(sbox.Status)}, nil
+			}
+			id, err := pe.submitAsync(pluginName, "sandbox", sandboxAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 1) // 第 1 位：可选 ctx 现场表
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+		"exec_shell_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("Sandbox 服务未启用"))
+				return 2
+			}
+			sid := L.CheckString(1)
+			cmd := L.CheckString(2)
+			run := func(ctx context.Context) (any, error) {
+				result, err := client.ExecShell(ctx, sid, sandboxcaller.ShellExecRequest{Command: cmd})
+				if err != nil {
+					return nil, err
+				}
+				exitCode := 0
+				if result.ExitCode != nil {
+					exitCode = *result.ExitCode
+				}
+				return map[string]any{"output": result.Output, "exit_code": exitCode}, nil
+			}
+			id, err := pe.submitAsync(pluginName, "sandbox", sandboxAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 3) // 第 3 位：可选 ctx 现场表（sid, cmd, ctx）
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+		"exec_python_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("Sandbox 服务未启用"))
+				return 2
+			}
+			sid := L.CheckString(1)
+			code := L.CheckString(2)
+			run := func(ctx context.Context) (any, error) {
+				result, err := client.ExecPython(ctx, sid, sandboxcaller.PythonExecRequest{Code: code})
+				if err != nil {
+					return nil, err
+				}
+				errStr := ""
+				if result.Error != nil {
+					errStr = *result.Error
+				}
+				return map[string]any{"output": result.Output, "error": errStr}, nil
+			}
+			id, err := pe.submitAsync(pluginName, "sandbox", sandboxAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 3)
+			L.Push(lua.LNumber(id))
+			return 1
 		},
 		// 开关管理
 		"toggle": func(L *lua.LState) int {
@@ -2452,6 +2556,29 @@ func saveAsyncCtx(L *lua.LState, reqID uint64, ctxIdx int) {
 type httpResult struct {
 	Status int
 	Body   string
+}
+
+// luaTableFromMap 把标量字段的 map 转成 Lua table（异步 Encode 阶段使用，
+// 回调前在锁内执行，L 可用）。仅支持 string/int/int64/float64/bool，其余置 nil。
+func luaTableFromMap(L *lua.LState, m map[string]any) *lua.LTable {
+	t := L.NewTable()
+	for k, v := range m {
+		switch vv := v.(type) {
+		case string:
+			t.RawSetString(k, lua.LString(vv))
+		case int:
+			t.RawSetString(k, lua.LNumber(vv))
+		case int64:
+			t.RawSetString(k, lua.LNumber(vv))
+		case float64:
+			t.RawSetString(k, lua.LNumber(vv))
+		case bool:
+			t.RawSetString(k, lua.LBool(vv))
+		default:
+			t.RawSetString(k, lua.LNil)
+		}
+	}
+	return t
 }
 
 // luaChatRequest 将 Lua 参数转换为 provider.ChatRequest。

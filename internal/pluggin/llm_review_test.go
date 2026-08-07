@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/agent/provider"
 
@@ -584,5 +585,113 @@ func TestT2IAndHTTPAsync(t *testing.T) {
 	}
 	if v := L.GetGlobal("opts_err"); !strings.Contains(v.String(), "未知 T2I 选项") {
 		t.Fatalf("opts 解析错误串 = %v, want 包含 未知 T2I 选项", v)
+	}
+}
+
+// ---------- 测试: sandbox 异步 API（create/exec_shell/exec_python 异步化） ----------
+
+// sandboxAsyncTestMain 异步机制测试插件。
+const sandboxAsyncTestMain = `-- sandbox 异步机制测试
+sb_create_rid = sandbox.create_async({ tag = "ctx-create" })
+sb_shell_rid = sandbox.exec_shell_async("sb-1", "echo hi", { tag = "ctx-shell" })
+sb_py_rid = sandbox.exec_python_async("sb-1", "print('world')", { tag = "ctx-py" })
+-- 异步回调错误路径：sb-9 在测试 server 返回 500
+sandbox.exec_shell_async("sb-9", "boom")
+
+function on_sandbox_response(req_id, ctx, result, err)
+    if err then
+        sb_fail_err = tostring(err)
+    elseif ctx and ctx.tag == "ctx-shell" then
+        sb_shell_output = result.output
+        sb_shell_exit = result.exit_code
+    elseif ctx and ctx.tag == "ctx-create" then
+        sb_create_id = result.sandbox_id
+        sb_create_status = result.status
+    elseif ctx and ctx.tag == "ctx-py" then
+        sb_py_output = result.output
+    end
+    sb_done = (sb_done or 0) + 1
+end
+`
+
+func TestSandboxAsync(t *testing.T) {
+	// 模拟 sandbox 服务：/v1/sandboxes（create）、/{sid}/shell/exec、/{sid}/python/exec
+	sbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/sandboxes":
+			w.Write([]byte(`{"id":"sb-1","status":"running"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/shell/exec"):
+			if strings.Contains(r.URL.Path, "sb-9") {
+				w.WriteHeader(500)
+				w.Write([]byte(`{"error":"boom"}`))
+				return
+			}
+			w.Write([]byte(`{"output":"hello","exit_code":0}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/python/exec"):
+			w.Write([]byte(`{"output":"world","error":null}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer sbSrv.Close()
+	sbClient := &sandboxcaller.Client{
+		Config:     sandboxcaller.Config{BaseURL: sbSrv.URL},
+		HttpClient: sbSrv.Client(),
+	}
+
+	base := t.TempDir()
+	pe := NewPluginEngine(base, &fakeAdapter{}, nil, nil, nil, sbClient, nil, nil, &fakeLLM{reply: "x"})
+	writeTestPlugin(t, base, "sbxtest")
+	if err := os.WriteFile(filepath.Join(base, "sbxtest", "main.lua"), []byte(sandboxAsyncTestMain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	L := lua.NewState()
+	t.Cleanup(L.Close)
+	pe.injectSDK(L, "sbxtest")
+	pe.injectBaseAPI(L, "sbxtest", []string{"sandbox"})
+	L.DoString(fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "sbxtest")+"/?.lua"))
+	if err := L.DoFile(filepath.Join(base, "sbxtest", "main.lua")); err != nil {
+		t.Fatalf("加载测试插件失败: %v", err)
+	}
+	pe.mu.Lock()
+	pe.plugins["sbxtest"] = &LoadedPlugin{Manifest: Manifest{Name: "sbxtest"}, State: L, Dir: filepath.Join(base, "sbxtest")}
+	pe.mu.Unlock()
+
+	// 三个异步调用均返回 req_id > 0
+	for _, name := range []string{"sb_create_rid", "sb_shell_rid", "sb_py_rid"} {
+		if v := L.GetGlobal(name); v.Type() != lua.LTNumber || float64(v.(lua.LNumber)) <= 0 {
+			t.Fatalf("%s 应返回 req_id > 0, got %v", name, v)
+		}
+	}
+
+	// 等待全部 4 个回调（create/shell/py 成功 + sb-9 失败）
+	waitFor(t, func() bool {
+		v := L.GetGlobal("sb_done")
+		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 4
+	})
+
+	// create_async → {sandbox_id, status}
+	if v := L.GetGlobal("sb_create_id"); v.String() != "sb-1" {
+		t.Fatalf("on_sandbox_response create sandbox_id = %v, want sb-1", v)
+	}
+	if v := L.GetGlobal("sb_create_status"); v.String() != "running" {
+		t.Fatalf("on_sandbox_response create status = %v, want running", v)
+	}
+	// exec_shell_async → {output, exit_code}
+	if v := L.GetGlobal("sb_shell_output"); v.String() != "hello" {
+		t.Fatalf("on_sandbox_response shell output = %v, want hello", v)
+	}
+	if v := L.GetGlobal("sb_shell_exit"); float64(v.(lua.LNumber)) != 0 {
+		t.Fatalf("on_sandbox_response shell exit_code = %v, want 0", v)
+	}
+	// exec_python_async → {output, error}
+	if v := L.GetGlobal("sb_py_output"); v.String() != "world" {
+		t.Fatalf("on_sandbox_response python output = %v, want world", v)
+	}
+	// 错误路径：HTTP 500 → 回调 err 非 nil
+	if v := L.GetGlobal("sb_fail_err"); v.String() == "" || v.String() == "nil" {
+		t.Fatalf("HTTP 500 应回调 err, got %v", v)
 	}
 }

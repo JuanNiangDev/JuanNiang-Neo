@@ -187,12 +187,21 @@ M.t2i = t2i
 ---@field create fun(): table, string? 返回 {sandbox_id=string, status=string}
 ---@field exec_shell fun(sandbox_id: string, command: string): string, number|string  返回 (output, exit_code|err)
 ---@field exec_python fun(sandbox_id: string, code: string): string, string 返回 (output, error_str)
+---@field create_async fun(ctx?: table): number 异步创建，立即返回 req_id；完成后引擎调用插件入口 on_sandbox_response(req_id, ctx, result, err)
+---@field exec_shell_async fun(sandbox_id: string, command: string, ctx?: table): number 异步执行 shell（默认超时 120s）
+---@field exec_python_async fun(sandbox_id: string, code: string, ctx?: table): number 异步执行 python
 ---@field list fun(): table[], string? 列出已有沙箱实例
 ---@field delete fun(sandbox_id: string): boolean, string? 删除指定沙箱
 ---@field toggle fun(active: boolean): boolean, string? 启用/停用 Sandbox 服务
 ---@field is_active fun(): boolean
 ---@field get_config fun(): table, string?
 M.sandbox = sandbox
+
+-- 异步回调约定（引擎级异步注册表，kind "sandbox"）：
+-- 插件定义全局函数 on_sandbox_response(req_id, ctx, result, err)，引擎在执行完成后
+-- 串行调用（与事件派发互斥）。result 按调用方法不同：create→{sandbox_id,status}、
+-- exec_shell→{output,exit_code}、exec_python→{output,error}；err 为 nil 表示成功。
+-- ctx 为调用时传入的现场表（原样带回，未传则 nil）。
 
 -- ====================================================================
 -- agent Agent 操作接口 (需要 agent 权限)
