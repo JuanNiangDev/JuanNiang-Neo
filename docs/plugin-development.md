@@ -104,6 +104,7 @@ SDK 仅是 Go 注入全局表的再导出（`jn.log = log` 等），不引入额
 | `jn.t2i` | `t2i` | 文生图 |
 | `jn.sandbox` | `sandbox` | 代码沙箱 |
 | `jn.agent` | `agent` | Agent 操作接口 |
+| `jn.llm` | `llm` | LLM 调用（复用 Bot Provider 配置） |
 | `jn.file` | `file` | 插件目录内文本文件读写 |
 | `jn.command` | — | 命令注册 |
 
@@ -475,6 +476,54 @@ jn.agent.set_provider_active("uuid", true)   -- 启用
 |------|------|------|
 | `agent.get_current_chat_area() → table` | `{post_type, message_type, user_id, group_id, chat_area_id}` | 当前正在处理的消息所属 ChatArea |
 | `agent.compact_memory() → string [, err]` | | Compact 当前 ChatArea 短期记忆：LLM 压缩为摘要写入长期记忆，随后窗口清理为只保留最近 10 条消息（需 Text LLM Provider） |
+
+## SDK 模块: `jn.llm`
+
+权限：`llm`。通过 **Bot 自身启用的文本模型 Provider** 调用 LLM——模型、采样参数、密钥全部复用 Bot 配置，插件不接触任何密钥。适合内容审查、二次判断等场景。
+
+```lua
+local jn = require("jn")
+
+-- 同步调用（适合命令等低频路径）
+local content, err = jn.llm.chat("你好", { timeout = 30 })
+
+-- 异步调用（高频路径必须用异步：不阻塞事件循环与其它插件）
+local rid = jn.llm.chat_async(
+    { { role = "system", content = "你是审查员" }, { role = "user", content = "待审查消息" } },
+    { timeout = 60 }
+)  -- 立即返回 req_id（失败返回 0）
+
+-- 完成后引擎调用插件入口函数（引擎级异步注册表派发）：
+function on_chat_response(req_id, content, err)
+    if err then
+        log.warn("LLM 调用失败: " .. err)
+        return
+    end
+    log.info("LLM 返回: " .. content)
+end
+```
+
+| 函数 | 说明 |
+|------|------|
+| `llm.available() → bool` | 当前是否有可用的文本模型 Provider |
+| `llm.chat(messages, opts?) → string?, string?` | 同步调用，返回 `(content, err)`；err 为 nil 表示成功 |
+| `llm.chat_async(messages, opts?) → number` | 异步提交，立即返回 `req_id`（失败返回 `0`）；完成后引擎派发到插件入口 `on_chat_response(req_id, content, err)` |
+
+参数：
+
+- `messages`：单字符串（role=`user`）或数组。数组元素可为字符串（role=`user`）或 `{role="system|user|assistant", content="..."}`。
+- `opts`：`{temperature=?, max_tokens=?, timeout=?秒}`；**缺省采样参数回退 Bot Provider 配置**，`timeout` 缺省 60s。
+- `on_chat_response` 的 `req_id` 与 `chat_async` 返回值一致，用于关联请求上下文（例如维护 `req_id → 消息/关键词` 映射表，回调时取回）。
+
+### 异步 API 注册表
+
+`chat_async` 由引擎级**异步注册表**驱动（`PluginEngine.RegisterAsyncAPI`，kind `"chat"`）：
+
+- 提交后立即返回 `req_id`，阻塞操作（HTTP 调用）在独立 goroutine 完成，**不阻塞事件循环**；
+- 完成后引擎串行派发到插件 Lua 入口函数 `on_xxx_response`（与事件派发互斥，保证 LState 安全）；
+- 插件卸载后未派发的任务自动丢弃。
+
+后续新增异步 API（如 `t2i.generate_async` → `on_t2i_response`、`http.get_async` → `on_http_response`）只需在 Go 侧注册一个 kind，插件侧遵循同一约定：`xxx_async(...) → req_id`，`on_xxx_response(req_id, <结果...>)`。
 
 ## SDK 模块: `jn.command`
 

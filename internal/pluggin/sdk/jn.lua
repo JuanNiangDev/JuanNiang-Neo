@@ -232,6 +232,26 @@ M.sandbox = sandbox
 M.agent = agent
 
 -- ====================================================================
+-- llm LLM 调用 (需要 llm 权限)
+-- ====================================================================
+-- 通过 Bot 自身启用的文本模型 Provider 调用 LLM：模型 / 采样参数 / 密钥
+-- 全部复用 Bot 配置，插件不接触任何密钥。适合内容审查等二次判断场景。
+-- 高频路径请使用 chat_async（异步，不阻塞事件循环与其它插件）。
+
+---@class jn.LLM
+---@field available fun(): boolean 当前是否有可用的文本模型 Provider
+---@field chat fun(messages: string|table, opts?: table): string?, string? 同步调用，返回 (content, err)；适合命令等低频路径
+---@field chat_async fun(messages: string|table, opts?: table): number 异步提交，立即返回 req_id（失败返回 0）；完成后引擎调用插件入口 on_chat_response(req_id, content, err)
+---@field messages table 消息参数：单字符串（role=user）或数组，元素为字符串（role=user）或 {role="system|user|assistant", content="..."}
+---@field opts table 选项：{temperature=?, max_tokens=?, timeout=?秒}，缺省回退 Bot Provider 配置（默认超时 60s）
+---
+--- 异步回调约定（引擎级异步注册表，kind "chat"）：
+--- 插件定义全局函数 on_chat_response(req_id, content, err)，引擎在 LLM 返回后
+--- 串行调用（与事件派发互斥）。err 为 nil 表示成功；req_id 与 chat_async 的
+--- 返回值一致，可用于关联请求上下文（如查表取回本次审查的事件/关键词）。
+M.llm = llm
+
+-- ====================================================================
 -- config 动态配置 (无需权限，默认注入)
 -- ====================================================================
 
