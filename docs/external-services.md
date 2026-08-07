@@ -133,7 +133,7 @@ builtin 工具名（如 `send_group_msg`）可能与 MCP 工具同名并同时�
 
 1. 起一个 T2I 实现（HTTP 服务，提供 `/text2img/generate` 与 `/text2img/data/:id`）
 2. Web 面板"T2I"页填 `base_url`、`timeout`、勾"启用"
-3. Agent 内置工具 `text_to_image`（长任务，`builtin.go` 自动注册）、Lua 插件 `t2i.generate/html_url`
+3. Agent 内置工具 `text_to_image`（长任务，`builtin.go` 自动注册，ReAct 循环内同步执行）、Lua 插件 `t2i.generate/generate_url`（同步）与 `t2i.generate_async/generate_url_async`（异步，完成回调 `on_t2i_response`，不阻塞事件循环）
 
 ## Sandbox
 
@@ -162,7 +162,7 @@ builtin 工具名（如 `send_group_msg`）可能与 MCP 工具同名并同时�
 
 1. 起一个 Sandbox 实现（HTTP 服务，符合上述接口，建议带 APIKey 鉴权）
 2. Web 面板"Sandbox"页填 `base_url`、`api_key`、`timeout`、勾"启用"
-3. Agent 内置工具 `command_exec`/`code_exec`/`browser_search`/`create_sandbox`/`list_sandboxes` 与 MCP 工具一样在 Eino ReAct 循环内**同步执行**（无后台调度管道；`IsLongRunning` 仅作元数据标记，不影响执行方式）；Lua 插件 `sandbox.create/exec_shell/exec_python/list/delete`
+3. Agent 内置工具 `command_exec`/`code_exec`/`browser_search`/`create_sandbox`/`list_sandboxes` 与 MCP 工具一样在 Eino ReAct 循环内**同步执行**（无后台调度管道；`IsLongRunning` 仅作元数据标记，不影响执行方式）。Lua 插件 `sandbox.create/exec_shell/exec_python/list/delete`（同步）；耗时执行建议用 `create_async/exec_shell_async/exec_python_async`（异步，完成回调 `on_sandbox_response`，不阻塞事件循环）
 
 ## 一致性：HagoCenter 与 Service 共享同指针
 
