@@ -267,6 +267,25 @@ func (h *HagoCenter) SetSandboxActive(ctx context.Context, active bool) error {
 	return nil
 }
 
+// ---------- LLMAccess ----------
+
+var _ pluggin.LLMAccess = (*HagoCenter)(nil)
+
+// Chat 使用 Bot 当前启用的文本模型 Provider 调用 LLM。
+// 复用 Bot 的模型 / 采样参数 / 密钥配置（req 未设置的采样参数回退 Bot 配置）。
+func (h *HagoCenter) Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
+	pr := h.Providers.SelectModel(provider.ModelTypeText)
+	if pr == nil {
+		return nil, fmt.Errorf("无可用文本模型 Provider")
+	}
+	return pr.Chat(ctx, req)
+}
+
+// Available 当前是否有启用的文本模型 Provider。
+func (h *HagoCenter) Available() bool {
+	return h.Providers.SelectModel(provider.ModelTypeText) != nil
+}
+
 // ---------- ProviderGroupAccess ----------
 
 type providerGroupAccess struct{ h *HagoCenter }
