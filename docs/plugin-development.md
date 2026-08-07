@@ -60,12 +60,13 @@ jn.command.register("hello", function(args, event)
     return true, "你好，" .. (event.user_id or "陌生人") .. "！"
 end, { description = "打招呼", usage = "/hello" })
 
--- 消息事件回调
+-- 消息事件回调（仅返回 skip_reply；不能消费消息、不能修改事件）
+-- skip_reply=true → 跳过回复策略检查（at_only/never/relevance 过滤），强制进入 Agent
 function on_message(event)
     if event.raw_message == "ping" then
-        return true, event, false  -- consumed, modified_event, skip_reply
+        return true
     end
-    return false, event, false
+    return false
 end
 
 -- webhook 事件回调（需在 permissions 申请 webhook）
@@ -573,7 +574,7 @@ end, { description = "多级命令", usage = "/myplugin subcmd1 subcmd2 [args...
 ## 回调: `on_message`
 
 ```lua
-function on_message(event) → (consumed, modified_event, skip_reply)
+function on_message(event) → (skip_reply)
 ```
 
 | event 字段 | 类型 | 说明 |
@@ -587,10 +588,10 @@ function on_message(event) → (consumed, modified_event, skip_reply)
 | `sender` | table | 发送者信息 `{user_id, nickname, sex, age, card}` |
 | `admins` | []string | admin QQ 列表（透传 OB AdminQQNumbers） |
 
-**返回值：**
-- `consumed` (bool): `true` → 跳过 Agent 处理与后续插件
-- `modified_event` (table): 可返回修改后的 event 表供后续处理，传 `nil` 或原 event 表示不修改
-- `skip_reply` (bool): `true` → 跳过回复策略评估，即使 Agent 处理也不自动回复
+**返回值（仅一个）：**
+- `skip_reply` (bool): `true` → 跳过回复策略检查（`at_only` / `never` / relevance 过滤），**强制进入 Agent 处理**（相当于"这条必须处理"）；`false` 或不返回 → 按正常回复策略走。
+
+> **已移除**：`consumed`（消费消息）与 `modified_event`（修改事件）不再支持。消息事件只有命中 `/` 命令才不进 Agent，其余消息**一律进入 Agent**；插件也不得中途改写事件内容（防止上下文失真）。需要拦截/处理消息时，在 `on_message` 中直接调用 `jn.onebot11` API 产生副作用（如 `delete_msg` 撤回、`ban_group_member` 禁言）。
 
 > **命令优先**：`/` 开头的 RawMessage 会**先**进 `commands.Dispatch`，命中命令后直接 sendReply 并短路，`on_message` 不会被调用。插件应优先用 `jn.command.register` 注册命令式交互，将 `on_message` 用于纯事件监听。
 

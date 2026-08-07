@@ -482,60 +482,14 @@ type EventData struct {
 
 // DispatchResult 是 Plugin 引擎统一派发结果。
 type DispatchResult struct {
-	Consumed  bool          // Plugin 已消费事件
-	Event     adapter.Event // 可能被 Plugin 修改后的事件
-	SkipReply bool          // skip_reply_check 标记：跳过回复策略直接给 Agent
+	Consumed  bool          // Plugin 已消费事件（命令命中；消息事件不再被插件消费）
+	Event     adapter.Event // 透传事件（插件不再允许修改事件）
+	SkipReply bool          // skip_reply 标记：跳过回复策略检查直接给 Agent（强制必回）
 }
 
 // HasPluginCommand 检查消息是否匹配已注册的插件命令（不执行，仅供策略层判断）。
 func (pe *PluginEngine) HasPluginCommand(raw string) bool {
 	return pe.commands.HasCommand(raw)
-}
-
-func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-
-	pe.currentEv = event
-
-	// 1. 优先派发给命令注册表（/cmd subcmd ...）
-	if strings.HasPrefix(strings.TrimSpace(event.RawMessage), "/") {
-		c, reply, err := pe.commands.Dispatch(event.RawMessage, event)
-		if err != nil {
-			log.Error("命令派发错误", "raw", event.RawMessage, "err", err)
-		}
-		// 只要命令已消费或有回复内容，都视为已处理（避免消息流入 Agent）
-		if c || reply != "" {
-			if reply != "" {
-				pe.sendReply(event, reply)
-			}
-			return true
-		}
-	}
-
-	// 2. 没有命令命中，按原逻辑派发给插件的 on_message
-	for _, p := range pe.plugins {
-		if !p.HasPermission("onebot11") {
-			continue
-		}
-		fn := p.State.GetGlobal("on_message")
-		if fn.Type() != lua.LTFunction {
-			continue
-		}
-		table := eventToLuaTable(p.State, event)
-		p.State.Push(fn)
-		p.State.Push(table)
-		if err := p.State.PCall(1, 2, nil); err != nil {
-			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
-			continue
-		}
-		consumedRet := p.State.Get(-2)
-		p.State.Pop(2)
-		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
-			return true
-		}
-	}
-	return false
 }
 
 // sendReply 内部辅助：根据 event 的 message_type 回复到对应会话。
@@ -785,6 +739,10 @@ func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 }
 
 // dispatchMessageLocked 消息事件的统一派发（需在持有读锁时调用）。
+// 派发规则：
+//  1. 命令注册表优先：/cmd 命中即 Consumed（命令消息不进 Agent）
+//  2. 其余消息遍历各插件 on_message 回调，插件只能返回 skip_reply（跳过回复策略检查
+//     强制进 Agent），不能消费消息、不能修改事件——消息始终进入 Agent 处理
 func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 	msg := ev.Message
 	pluginEvent := EventData{
@@ -806,7 +764,7 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 
 	pe.currentEv = pluginEvent
 
-	// 1. 命令注册表
+	// 1. 命令注册表：命中即消费（命令消息不进 Agent）
 	if strings.HasPrefix(strings.TrimSpace(pluginEvent.RawMessage), "/") {
 		c, reply, err := pe.commands.Dispatch(pluginEvent.RawMessage, pluginEvent)
 		if err != nil {
@@ -820,7 +778,7 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 		}
 	}
 
-	// 2. 派发给各插件的 on_message
+	// 2. 派发给各插件的 on_message：只收集 skip_reply，不消费、不改事件
 	var anySkipReply bool
 	for _, p := range pe.plugins {
 		if !p.HasPermission("onebot11") {
@@ -833,34 +791,14 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 		table := eventToLuaTable(p.State, pluginEvent)
 		p.State.Push(fn)
 		p.State.Push(table)
-		if err := p.State.PCall(1, 3, nil); err != nil { // 3 return values
+		if err := p.State.PCall(1, 1, nil); err != nil { // 返回值: skip_reply
 			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
 			continue
 		}
 
-		// 返回值: consumed, modified_event, skip_reply
 		skipReplyRet := p.State.Get(-1)
-		modifiedRet := p.State.Get(-2)
-		consumedRet := p.State.Get(-3)
-		p.State.Pop(3)
-
-		consumed := consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool))
-		skipReply := skipReplyRet.Type() == lua.LTBool && bool(skipReplyRet.(lua.LBool))
-
-		// 解析修改后的事件
-		resultEvent := ev
-		if modifiedRet.Type() == lua.LTTable {
-			if t, ok := modifiedRet.(*lua.LTable); ok {
-				resultEvent = pe.luaTableToEvent(t, ev)
-			}
-		}
-
-		if consumed {
-			return DispatchResult{Consumed: true, Event: resultEvent, SkipReply: skipReply}
-		}
-		// 即使未消费，也保留修改后的事件和 skip_reply 标记
-		ev = resultEvent
-		if skipReply {
+		p.State.Pop(1)
+		if skipReplyRet.Type() == lua.LTBool && bool(skipReplyRet.(lua.LBool)) {
 			anySkipReply = true
 		}
 	}
@@ -987,18 +925,6 @@ func (pe *PluginEngine) onWebhookLocked(event EventData) (consumed bool, reply s
 func (pe *PluginEngine) sendWebhookReply(ev adapter.Event, reply string) {
 	// Webhook reply 由 webhook adapter 层处理，这里仅记录日志。
 	log.Info("Webhook reply", "reply_len", len(reply))
-}
-
-// luaTableToEvent 将 Lua 插件修改后的事件表转换回 adapter.Event。
-func (pe *PluginEngine) luaTableToEvent(t *lua.LTable, original adapter.Event) adapter.Event {
-	result := original
-	// 更新 RawMessage（如插件修改了消息内容）
-	if v := t.RawGetString("raw_message"); v.Type() == lua.LTString {
-		if result.Message != nil {
-			result.Message.RawMessage = string(v.(lua.LString))
-		}
-	}
-	return result
 }
 
 // SupportsCronJob 检查插件是否支持定时任务回调（定义了 on_cronjob 全局函数）。

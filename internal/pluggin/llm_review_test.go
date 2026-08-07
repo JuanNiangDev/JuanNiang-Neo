@@ -208,7 +208,9 @@ func loadPluginManual(t *testing.T, pe *PluginEngine, name string) *lua.LState {
 	return L
 }
 
-// runOnMessage 构造群消息事件并调用插件 on_message，返回是否被消费。
+// runOnMessage 构造群消息事件并调用插件 on_message，返回其第一个返回值（skip_reply）。
+// 注：on_message 新接口只返回 skip_reply，不再支持 consumed（消费消息）与
+// modified_event（修改事件）；消息始终进入 Agent（命令除外）。
 func runOnMessage(t *testing.T, L *lua.LState, groupID, userID int64, raw, msgID string) bool {
 	t.Helper()
 	fn := L.GetGlobal("on_message")
@@ -225,12 +227,12 @@ func runOnMessage(t *testing.T, L *lua.LState, groupID, userID int64, raw, msgID
 	L.SetField(ev, "message_id", lua.LString(msgID))
 	L.SetField(ev, "admins", L.NewTable())
 	L.Push(ev)
-	if err := L.PCall(1, 2, nil); err != nil {
+	if err := L.PCall(1, 1, nil); err != nil {
 		t.Fatalf("on_message 执行失败: %v", err)
 	}
-	consumed := bool(L.Get(-2).(lua.LBool))
-	L.Pop(2)
-	return consumed
+	skipReply := bool(L.Get(-1).(lua.LBool))
+	L.Pop(1)
+	return skipReply
 }
 
 func waitFor(t *testing.T, cond func() bool) {
@@ -349,33 +351,25 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 	pe, adp, _ := newTestEngine(t, llm)
 	L := loadPluginManual(t, pe, "redrock_group_manager")
 
-	// 1. 黑色地带：无本续贷（words/black.txt）→ 消费 + 撤回（第一次违规），不触发 LLM
-	consumed := runOnMessage(t, L, 10001, 20001, "对接全国 无本续贷 一手收单", "90001")
-	if !consumed {
-		t.Fatal("黑色词消息应被消费")
-	}
+	// 1. 黑色地带：无本续贷（words/black.txt）→ 撤回（第一次违规），不触发 LLM
+	// 注：on_message 新接口不再返回 consumed，此处仅验证副作用（撤回/LLM 调用）
+	runOnMessage(t, L, 10001, 20001, "对接全国 无本续贷 一手收单", "90001")
 	waitFor(t, func() bool { return adp.deletedCount() >= 1 })
 	if llm.callCount() != 0 {
 		t.Fatalf("黑色词不应触发 LLM, calls=%d", llm.callCount())
 	}
 
-	// 2. 敏感地带：操逼（cn_pornographic）→ 消费 + 撤回，不触发 LLM
+	// 2. 敏感地带：操逼（cn_pornographic）→ 撤回，不触发 LLM
 	before := adp.deletedCount()
-	consumed = runOnMessage(t, L, 10001, 20002, "你个操逼的", "90002")
-	if !consumed {
-		t.Fatal("敏感词消息应被消费")
-	}
+	runOnMessage(t, L, 10001, 20002, "你个操逼的", "90002")
 	waitFor(t, func() bool { return adp.deletedCount() > before })
 	if llm.callCount() != 0 {
 		t.Fatalf("敏感词不应触发 LLM, calls=%d", llm.callCount())
 	}
 
-	// 3. 灰色地带：命中 all.txt 灰色词（考研/加群）→ 不消费、不立即处罚，异步触发 LLM
+	// 3. 灰色地带：命中 all.txt 灰色词（考研/加群）→ 不立即处罚，异步触发 LLM
 	llm.setReply(`{"violation":"ad","reason":"以资料分享为幌子拉群引流"}`)
-	consumed = runOnMessage(t, L, 10001, 20003, "考研上岸的学长学姐，加群一起交流经验", "90003")
-	if consumed {
-		t.Fatal("灰色词消息不应被消费（先放行）")
-	}
+	runOnMessage(t, L, 10001, 20003, "考研上岸的学长学姐，加群一起交流经验", "90003")
 	waitFor(t, func() bool { return llm.callCount() >= 1 })
 	// 回调（LLM 判 ad）→ 撤回追罚
 	waitFor(t, func() bool { return adp.deletedCount() >= 3 })
@@ -383,10 +377,7 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 	// 4. 灰色地带：LLM 判 none → 不处罚
 	llm.setReply(`{"violation":"none","reason":"正常讨论考研"}`)
 	before = adp.deletedCount()
-	consumed = runOnMessage(t, L, 10001, 20004, "有没有考研上岸的学长学姐", "90004")
-	if consumed {
-		t.Fatal("灰色词消息不应被消费")
-	}
+	runOnMessage(t, L, 10001, 20004, "有没有考研上岸的学长学姐", "90004")
 	time.Sleep(300 * time.Millisecond)
 	if adp.deletedCount() != before {
 		t.Fatalf("LLM 判 none 不应撤回: before=%d after=%d", before, adp.deletedCount())
@@ -414,10 +405,7 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 		return false
 	})
 
-	consumed = runOnMessage(t, L, 10001, 20005, "对接全国 无本续贷", "90005")
-	if consumed {
-		t.Fatal("豁免用户发黑色词不应被消费")
-	}
+	runOnMessage(t, L, 10001, 20005, "对接全国 无本续贷", "90005")
 	waitFor(t, func() bool { return adp.deletedCount() >= 3 })
 	if adp.deletedCount() != 3 {
 		t.Fatalf("豁免用户消息不应被撤回: deleted=%d", adp.deletedCount())
@@ -429,10 +417,7 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 	if err != nil || !consumed {
 		t.Fatalf("/解除豁免 派发失败 consumed=%v err=%v", consumed, err)
 	}
-	consumed = runOnMessage(t, L, 10001, 20005, "无本续贷 全国一手收单", "90006")
-	if !consumed {
-		t.Fatal("解除豁免后黑色词应恢复被消费")
-	}
+	runOnMessage(t, L, 10001, 20005, "无本续贷 全国一手收单", "90006")
 	waitFor(t, func() bool { return adp.deletedCount() >= 4 })
 
 	// 7. 命令注册完整性
