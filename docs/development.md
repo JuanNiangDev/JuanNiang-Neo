@@ -11,11 +11,11 @@
   - `make vet` — `go vet ./...`
   - `make lint` — `go vet` + `web-typecheck` (`vue-tsc` ≥ 2.x)
   - `make dev` — Vite + Go 并行
-- **无 CI**，但有少量单元测试（5 个）：`internal/agent/event_memory_test.go`、`internal/agent/event_reply_test.go`、`internal/agent/skill/skill_test.go`、`internal/core/acl/acl_test.go`、`internal/core/dao/dao_test.go`；`make test` 直接跑它们
+- **CI**：GitHub Actions（`.github/workflows/`）`pr-check.yml` 在每个 PR 跑 go build/vet/test/gofmt/tidy + 前端 typecheck/build + Docker 镜像构建；`docker-build.yml` 在 main 合并后推送 `ghcr.io/juanniangdev/juan`。已有 17 个 `*_test.go`（多数用内存 SQLite），`make test` 直接跑它们
 
 ## 术语陷阱（别再被坑）
 
-- `docs/guidance.md` 把 infra 模块拼成了 `inferstructure`，真实路径是 `infrastructure/`。
+- 原始设计文档 `docs/guidance.md` / `docs/provider.md` 已合并进本文档，不再单独存在；其历史拼写错误（`inferstructure` 应为 `infrastructure/`、`internal/provider` 应为 `internal/adapter`）只保留在下方说明中。
 - `internal/adapter.Provider` ≠ `internal/agent/provider.ProviderGroup`：前者是 OneBot11 反向 WS 适配器，后者是 LLM Provider 组。永远按完整 import path 解析，别只看 "Provider" 这个词。
 - `pluggin`（双 g 单 n）是**有意**拼写：模块 `internal/pluggin`、配置 `pluggin.yaml`、插件目录 `data/pluggins`。不要"修复"为 `plugin`。
 - `web/dist` 不嵌入二进制；改前端不必重编 Go。
@@ -24,7 +24,7 @@
 
 | 你想做 | 起点 |
 |--------|------|
-| 加一条 Web API | `internal/api/router/router.go`（69 路由在此注册 + `/health`）、`internal/api/service/service.go`（handler）、`internal/api/dto/` |
+| 加一条 Web API | `internal/api/router/router.go`（121 路由在此注册 + `/health`）、`internal/api/service/service.go`（handler）、`internal/api/dto/` |
 | 加 Agent 内置工具 | `internal/agent/tool/builtin.go::RegisterBuiltinTools`；参考既有 `send_*_msg`/`browser_search` 等 |
 | 接新 LLM 协议 | `internal/agent/provider/provider.go`（现 OpenAI 兼容 + Eino ADK adapter），实现 `Provider` 接口 |
 | 加记忆类型 | `internal/agent/memory/` 子包：`shortterm/`（Redis 滑窗，默认 100 条 + AutoCompact）、`longterm/`（PG + HotArea）、`skillmem/`（技能记忆） |
@@ -34,7 +34,7 @@
 | 修改分段回复算法 | `internal/agent/event.go::splitMessages`（Maibot 式自然断句） |
 | 加 ACL 维度 | `internal/core/acl/acl.go::Check` + `models.ACLRule` |
 | 写 Lua 插件 | 读 [plugin-development.md](plugin-development.md) |
-| 改前端页面 | `web/src/views/*.vue`（22 页）、`web/src/api/*`（typed endpoints）、`web/src/router/index.ts` |
+| 改前端页面 | `web/src/views/*.vue`（28 页）、`web/src/api/*`（typed endpoints）、`web/src/router/index.ts` |
 | 改 Plugin SDK | `internal/pluggin/sdk/jn.lua`（`//go:embed`，带 LuaCATS 注解） |
 | 加数据模型 | `internal/core/models/` 加 GORM model + `core.go::AutoMigrate` 注册 + `internal/core/dao/` DAO + `dao.NewBundle` 接入 |
 | 加知识库内容/调匹配策略 | `internal/core/dao/knowledgeDao.go::Match`（关键词+ILIKE 匹配）；`internal/agent/knowledge.go`（LRU/异步提取/注入） |
@@ -94,8 +94,8 @@ docs/                   本文档树
 | Prompt (SystemLocked + BuildFullContext，工具感知走 Eino tools 参数不拼入提示词) | ✅ |
 | ToolRegistry + 内置工具 | ✅（除 `vision` builtin 只返回提示，真 Vision 走 reply_strategy.go）|
 | Lua 插件引擎 + 命令树 + 系统 SDK + 系统插件 | ✅ |
-| Web API 69 路由 (+`/health`) + JWT + SSE 日志 | ✅ |
-| 前端 22 页 (Vue 3 + Vuetify 3) | ✅ |
+| Web API 121 路由 (+`/health`) + JWT + SSE 日志 | ✅ |
+| 前端 28 页 (Vue 3 + Vuetify 3) | ✅ |
 | AgentLite 模式 / StripMarkdown / 分消息段 | ✅ |
 | relevance 判断优化（L1 规则快路径 / L2 批量判断+结果缓存+冷却 / L3 并发限流+超时 / L4 刷屏降级+失败策略） | ✅ |
 | 工具"仅管理员"开关（admin_only，Tools 页逐工具切换，防提示词注入） | ✅ |

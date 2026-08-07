@@ -109,6 +109,24 @@ tags:
     description: 日志
   - name: Health
     description: 健康检查
+  - name: AgentLoop
+    description: Agent 活跃循环监控
+  - name: CronJob
+    description: 定时任务（触发 Lua 插件）
+  - name: ReplyStrategy
+    description: 回复策略
+  - name: Knowledge
+    description: SQL 知识库
+  - name: Image
+    description: 图床
+  - name: Sticker
+    description: 表情包库
+  - name: FishCalendar
+    description: 摸鱼人日历
+  - name: ScheduledMessage
+    description: 定时消息（积木式编排）
+  - name: PluginStore
+    description: 插件商店
 
 security:
   - BearerAuth: []
@@ -1298,11 +1316,1311 @@ paths:
                 type: string
                 description: SSE 事件流
 
-# ============================================================
-# GET /health (注意不在 /api/v1 前缀下，无需认证)
-# 直接访问 http://localhost:8090/health 即可，响应: 200, body: {"status":"ok"}
-# 由于 OpenAPI servers 限定为 /api/v1，此处仅在描述中说明，未在 paths 中定义
-# ============================================================
+  /health:
+    get:
+      tags: [Health]
+      summary: 健康检查
+      description: |
+        根路径健康检查（实际 URL 为 http://localhost:8090/health，不在 /api/v1 前缀下），
+        无需认证。响应 `{"status":"ok"}`。
+      security: []
+      responses:
+        '200':
+          description: 服务健康
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /adapter/config:
+    get:
+      tags: [Adapter]
+      summary: 获取 Adapter 配置
+      description: 读取 OneBot11 适配器配置（不含运行状态）。数据库无配置时自动写入默认值。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/AdapterConfig'
+
+  /providers/presets:
+    get:
+      tags: [Provider]
+      summary: 列出 Provider 预设
+      description: 内置 LLM 厂商预设及其协议参数（供前端表单快速填充）。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ProviderPresetResp'
+
+  /providers/test:
+    post:
+      tags: [Provider]
+      summary: 测试 Provider 连通性
+      description: 用请求体配置（不落库）测试 LLM 端点连通性。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddProviderReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/TestProviderResp'
+
+  /mcp/{id}/check:
+    get:
+      tags: [MCP]
+      summary: 检查 MCP 服务器连通性
+      description: 按配置建立一次 SSE 连接后立即断开，返回健康状态。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MCPCheckResp'
+
+  /tools/{id}/admin-only:
+    put:
+      tags: [Tool]
+      summary: 设置工具仅管理员
+      description: 更新工具「仅管理员」标志（防提示词注入诱导敏感操作）。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateToolAdminOnlyReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /plugins/reload:
+    post:
+      tags: [Plugin]
+      summary: 重载全部插件
+      description: 依次卸载并重新加载 data/pluggins/ 下所有插件。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /plugins/{id}/reload:
+    post:
+      tags: [Plugin]
+      summary: 重载单个插件
+      parameters:
+        - $ref: '#/components/parameters/PathPluginID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /plugins/{id}/config:
+    get:
+      tags: [Plugin]
+      summary: 获取插件动态配置
+      description: 返回插件 config.yaml 的 schema 与当前 values（供 Web 面板动态渲染表单）。
+      parameters:
+        - $ref: '#/components/parameters/PathPluginID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PluginConfigResp'
+    put:
+      tags: [Plugin]
+      summary: 保存插件动态配置
+      description: 保存配置到 pluggin.yaml 并热重载插件。
+      parameters:
+        - $ref: '#/components/parameters/PathPluginID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: 任意键值对（按 config.yaml schema）
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /plugins/{id}/readme:
+    get:
+      tags: [Plugin]
+      summary: 获取插件 README
+      description: 返回插件 README.md 原文。
+      parameters:
+        - $ref: '#/components/parameters/PathPluginID'
+      responses:
+        '200':
+          description: README 原文
+          content:
+            text/markdown:
+              schema:
+                type: string
+
+  /plugins/{id}/avatar:
+    get:
+      tags: [Plugin]
+      summary: 获取插件头像
+      description: 返回插件 avatar.png 图片。
+      parameters:
+        - $ref: '#/components/parameters/PathPluginID'
+      responses:
+        '200':
+          description: 头像图片
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+
+  /plugin-store:
+    get:
+      tags: [PluginStore]
+      summary: 商店插件列表
+      description: 从插件仓库镜像源实时拉取并合并分片索引，按名称排序。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/StorePluginEntry'
+
+  /plugin-store/readme:
+    get:
+      tags: [PluginStore]
+      summary: 获取商店插件 README
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 插件目录路径（如 demo/hello）
+      responses:
+        '200':
+          description: README 原文
+          content:
+            text/markdown:
+              schema:
+                type: string
+
+  /plugin-store/avatar:
+    get:
+      tags: [PluginStore]
+      summary: 获取商店插件头像
+      description: "实时拉取（Cache-Control: no-store），仓库更新后刷新可见。"
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 插件目录路径（如 demo/hello）
+      responses:
+        '200':
+          description: 头像图片
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+
+  /plugin-store/install:
+    post:
+      tags: [PluginStore]
+      summary: 安装商店插件
+      description: 下载 dist/<name>.zip 并解压安装到 data/pluggins/<name>/。
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 插件目录路径（如 demo/hello）
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PluginUploadResp'
+
+  /plugin-store/config:
+    get:
+      tags: [PluginStore]
+      summary: 获取商店配置
+      description: 返回仓库配置与可用镜像列表。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StoreConfigResp'
+    put:
+      tags: [PluginStore]
+      summary: 更新商店仓库配置
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StoreConfigUpdateReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /plugin-store/mirror:
+    post:
+      tags: [PluginStore]
+      summary: 添加自定义镜像源
+      description: 镜像地址必须包含 {path} 占位符。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MirrorReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+    delete:
+      tags: [PluginStore]
+      summary: 删除自定义镜像源
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MirrorReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /plugin-store/mirror/test:
+    post:
+      tags: [PluginStore]
+      summary: 测试镜像源连通性
+      description: 返回测试延迟。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MirrorReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MirrorTestResp'
+
+  /plugin-store/mirror/select:
+    post:
+      tags: [PluginStore]
+      summary: 选择生效镜像源
+      description: 手动指定镜像源（空字符串 = 恢复默认自动按序尝试）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MirrorReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /overview/daily-token-usage:
+    get:
+      tags: [Overview]
+      summary: 每日 Token 用量
+      description: 返回连续日期序列（缺失日期补 0），供仪表盘折线图使用。
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 7
+            maximum: 30
+          description: 最近 N 天（默认 7，上限 30）
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/DailyTokenUsageResp'
+
+  /agent/loops:
+    get:
+      tags: [AgentLoop]
+      summary: 活跃 Agent 循环
+      description: 返回当前所有活跃的 Agent ReAct 循环（内存态监控，原后台任务页改造）。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/AgentLoopResp'
+
+  /cronjobs:
+    get:
+      tags: [CronJob]
+      summary: 列出所有 CronJob
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/CronJobResp'
+    post:
+      tags: [CronJob]
+      summary: 新增 CronJob
+      description: 6 字段秒级 cron，触发时调用绑定插件的 on_cronjob 回调（不经过 Agent）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddCronJobReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CronJobResp'
+
+  /cronjobs/{id}:
+    get:
+      tags: [CronJob]
+      summary: 获取单个 CronJob
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CronJobResp'
+    put:
+      tags: [CronJob]
+      summary: 更新 CronJob
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateCronJobReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+    delete:
+      tags: [CronJob]
+      summary: 删除 CronJob
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /cronjobs/{id}/toggle:
+    put:
+      tags: [CronJob]
+      summary: 启用/停用 CronJob
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /reply-strategy:
+    get:
+      tags: [ReplyStrategy]
+      summary: 获取回复策略
+      description: 首次 GET 不存在时自动创建默认配置（strategy=always, relevance_threshold=0.5）。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ReplyStrategyResp'
+    put:
+      tags: [ReplyStrategy]
+      summary: 更新回复策略
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateReplyStrategyReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /knowledge:
+    get:
+      tags: [Knowledge]
+      summary: 分页列出知识库
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+          description: 页码（从 1 开始）
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+          description: 每页数量
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KnowledgeListResp'
+    post:
+      tags: [Knowledge]
+      summary: 新增知识
+      description: 创建后异步提取关键词（keyword_status=pending）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddKnowledgeReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KnowledgeResp'
+
+  /knowledge/{id}:
+    get:
+      tags: [Knowledge]
+      summary: 获取单条知识
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KnowledgeResp'
+    put:
+      tags: [Knowledge]
+      summary: 更新知识
+      description: 更新后重新进入关键词提取（pending）。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateKnowledgeReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+    delete:
+      tags: [Knowledge]
+      summary: 删除知识
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /knowledge/{id}/re-extract:
+    post:
+      tags: [Knowledge]
+      summary: 重新提取关键词
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /images:
+    get:
+      tags: [Image]
+      summary: 分页列出图床图片
+      parameters:
+        - name: folder
+          in: query
+          schema:
+            type: string
+          description: 虚拟文件夹（默认 /）
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 48
+            maximum: 100
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ImageListResp'
+    post:
+      tags: [Image]
+      summary: 上传图片
+      description: multipart/form-data：file（必填，MIME 嗅探校验，≤10MB）+ name（可选）+ folder（可选，须存在）。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+                name:
+                  type: string
+                folder:
+                  type: string
+              required: [file]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ImageResp'
+
+  /images/{id}:
+    get:
+      tags: [Image]
+      summary: 获取图片元数据
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ImageResp'
+    put:
+      tags: [Image]
+      summary: 编辑图片（重命名/移动文件夹）
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateImageReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ImageResp'
+    delete:
+      tags: [Image]
+      summary: 删除图片
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /images/{id}/file:
+    get:
+      tags: [Image]
+      summary: 获取图片文件
+      description: 返回图片二进制（前端经 ?token= 携带 JWT 以绕过 <img> 无法带 Header 的限制）。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 图片文件
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+
+  /image-folders:
+    get:
+      tags: [Image]
+      summary: 列出全部虚拟文件夹
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ImageFolderResp'
+    post:
+      tags: [Image]
+      summary: 创建虚拟文件夹
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateImageFolderReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ImageFolderResp'
+
+  /image-folders/{id}:
+    delete:
+      tags: [Image]
+      summary: 删除虚拟文件夹
+      description: 其下图片自动移到根 /。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /stickers:
+    get:
+      tags: [Sticker]
+      summary: 分页列出表情
+      parameters:
+        - name: tag
+          in: query
+          schema:
+            type: string
+          description: 按标签过滤
+        - name: keyword
+          in: query
+          schema:
+            type: string
+          description: 名称/简介模糊搜索
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 24
+            maximum: 100
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StickerListResp'
+    post:
+      tags: [Sticker]
+      summary: 新建表情
+      description: 引用图床图片创建表情，生成短 UUID 供 stk:// 引用。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStickerReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StickerResp'
+
+  /stickers/{id}:
+    get:
+      tags: [Sticker]
+      summary: 获取表情详情
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StickerResp'
+    put:
+      tags: [Sticker]
+      summary: 编辑表情
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStickerReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+    delete:
+      tags: [Sticker]
+      summary: 删除表情
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /sticker-tags:
+    get:
+      tags: [Sticker]
+      summary: 列出全部标签
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/StickerTagResp'
+    post:
+      tags: [Sticker]
+      summary: 创建标签
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStickerTagReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StickerTagResp'
+
+  /sticker-tags/{id}:
+    delete:
+      tags: [Sticker]
+      summary: 删除标签
+      description: 所有表情中的该标签一并移除（系统「常用」标签不可删）。
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /fish-calendar/config:
+    get:
+      tags: [FishCalendar]
+      summary: 获取摸鱼日历配置
+      description: 未初始化时写入默认配置。
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FishCalendarConfigResp'
+    put:
+      tags: [FishCalendar]
+      summary: 更新摸鱼日历配置
+      description: 更新后重新调度。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateFishCalendarConfigReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /fish-calendar/trigger:
+    post:
+      tags: [FishCalendar]
+      summary: 立即触发一次摸鱼日历
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /fish-calendar/affairs:
+    get:
+      tags: [FishCalendar]
+      summary: 按月列出群务
+      parameters:
+        - name: month
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 月份 YYYY-MM
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/FishCalendarAffairResp'
+    put:
+      tags: [FishCalendar]
+      summary: 设置某天群务
+      description: content 为空则清除当天群务。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetFishCalendarAffairReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /scheduled-messages:
+    get:
+      tags: [ScheduledMessage]
+      summary: 分页列出定时消息
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ScheduledMessageListResp'
+    post:
+      tags: [ScheduledMessage]
+      summary: 新增定时消息任务
+      description: 积木式编排：触发器 + 消息块（文字/图片/CQ 表情）+ 延时块链。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddScheduledMessageReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ScheduledMessageResp'
+
+  /scheduled-messages/{id}:
+    get:
+      tags: [ScheduledMessage]
+      summary: 获取定时消息详情
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/FinalResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ScheduledMessageResp'
+    put:
+      tags: [ScheduledMessage]
+      summary: 更新定时消息
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateScheduledMessageReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+    delete:
+      tags: [ScheduledMessage]
+      summary: 删除定时消息
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /scheduled-messages/{id}/toggle:
+    put:
+      tags: [ScheduledMessage]
+      summary: 启用/停用定时消息
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToggleReq'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /scheduled-messages/{id}/trigger:
+    post:
+      tags: [ScheduledMessage]
+      summary: 立即触发定时消息
+      parameters:
+        - $ref: '#/components/parameters/PathID'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
 
 components:
   securitySchemes:
@@ -1326,6 +2644,13 @@ components:
       schema:
         type: string
       description: ChatArea UUID
+    PathPluginID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+      description: 插件目录名（非 UUID）
 
   schemas:
     # ---------- 通用 ----------
@@ -1408,6 +2733,11 @@ components:
             type: integer
             format: int64
           description: 已连接客户端 QQ 号列表
+        conns:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdapterConnDetail'
+          description: 已连接客户端详情
 
     UpdateAdapterConfigReq:
       type: object
@@ -1456,6 +2786,39 @@ components:
           format: float
         is_active:
           type: boolean
+        enable_thinking:
+          type: boolean
+          description: 模型思考开关（旧字段，兼容）
+        api_mode:
+          type: string
+          description: 协议模式：chat_completions/anthropic_messages/openai_responses/gemini_native
+        thinking_effort:
+          type: string
+          description: 思考强度 off/low/medium/high
+        thinking_budget:
+          type: integer
+        max_tokens:
+          type: integer
+        top_p:
+          type: number
+          format: float
+        top_k:
+          type: integer
+        frequency_penalty:
+          type: number
+          format: float
+        presence_penalty:
+          type: number
+          format: float
+        repetition_penalty:
+          type: number
+          format: float
+        provider_key:
+          type: string
+        auth_header:
+          type: string
+        url_mode:
+          type: string
 
     AddProviderReq:
       type: object
@@ -1476,6 +2839,36 @@ components:
           default: 0.7
         isActive:
           type: boolean
+        enable_thinking:
+          type: boolean
+        api_mode:
+          type: string
+        thinking_effort:
+          type: string
+        thinking_budget:
+          type: integer
+        max_tokens:
+          type: integer
+        top_p:
+          type: number
+          format: float
+        top_k:
+          type: integer
+        frequency_penalty:
+          type: number
+          format: float
+        presence_penalty:
+          type: number
+          format: float
+        repetition_penalty:
+          type: number
+          format: float
+        provider_key:
+          type: string
+        auth_header:
+          type: string
+        url_mode:
+          type: string
       required: [name, type, endpoint, token, model, isActive]
 
     UpdateProviderReq:
@@ -1761,6 +3154,9 @@ components:
           type: boolean
         is_builtin:
           type: boolean
+        admin_only:
+          type: boolean
+          description: 仅管理员可调用
         created_at:
           type: string
           format: date-time
@@ -1815,6 +3211,16 @@ components:
           items:
             type: string
           description: 目标用户列表（target_type=list 时有效）
+        tool_ids:
+          type: array
+          items:
+            type: string
+          description: 工具 ID 列表（Scope=tool 时有效，预留未生效）
+        mcp_ids:
+          type: array
+          items:
+            type: string
+          description: MCP 服务器 ID 列表（Scope=mcp 时有效，预留未生效）
         created_at:
           type: string
           format: date-time
@@ -1831,6 +3237,14 @@ components:
         target_type:
           $ref: '#/components/schemas/ACLTargetType'
         user_ids:
+          type: array
+          items:
+            type: string
+        tool_ids:
+          type: array
+          items:
+            type: string
+        mcp_ids:
           type: array
           items:
             type: string
@@ -1953,6 +3367,9 @@ components:
           description: 堆中正在使用
         go_version:
           type: string
+        adapter_running:
+          type: boolean
+          description: Adapter 当前是否在运行
         t2i_active:
           type: boolean
           description: T2I 客户端已加载
@@ -2060,15 +3477,724 @@ components:
         level:
           type: string
           description: INFO/WARN/ERROR 等
+        module:
+          type: string
+          description: 日志模块名
         message:
           type: string
         attrs:
           type: object
           additionalProperties: true
           description: 结构化字段（可选）
+        stack:
+          type: string
+          description: 调用栈（WARN+ 级别可能包含）
 
     # ---------- 通用 JSON 类型 ----------
     JSONMap:
       type: object
       additionalProperties: true
       description: 任意键值对
+
+    # ---------- Adapter ----------
+    AdapterConfig:
+      type: object
+      properties:
+        addr:
+          type: string
+        port:
+          type: integer
+        token:
+          type: string
+        admin_qq_numbers:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+
+    AdapterConnDetail:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: 连接序号
+        ip:
+          type: string
+          description: 客户端地址
+        self_id:
+          type: integer
+          format: int64
+          description: 已连接客户端 QQ 号
+
+    # ---------- Provider ----------
+    ProviderPresetResp:
+      type: object
+      properties:
+        key:
+          type: string
+          description: 预设标识
+        name:
+          type: string
+          description: 厂商/模型名称
+        protocols:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderProtocolResp'
+
+    ProviderProtocolResp:
+      type: object
+      properties:
+        api_mode:
+          type: string
+        base_url:
+          type: string
+        auth_header:
+          type: string
+        note:
+          type: string
+
+    TestProviderResp:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        message:
+          type: string
+
+    # ---------- MCP ----------
+    MCPCheckResp:
+      type: object
+      properties:
+        healthy:
+          type: boolean
+        error:
+          type: string
+
+    # ---------- Tool ----------
+    UpdateToolAdminOnlyReq:
+      type: object
+      properties:
+        admin_only:
+          type: boolean
+          description: true=仅管理员可调用
+      required: [admin_only]
+
+    # ---------- Plugin ----------
+    PluginConfigResp:
+      type: object
+      properties:
+        schema:
+          $ref: '#/components/schemas/JSONMap'
+          description: config.yaml 字段定义（供前端渲染表单）
+        values:
+          $ref: '#/components/schemas/JSONMap'
+          description: 当前配置值
+
+    # ---------- Plugin Store ----------
+    StorePluginEntry:
+      type: object
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        author:
+          type: string
+        description:
+          type: string
+        path:
+          type: string
+          description: 仓库内目录路径（安装/README/头像均用此参数）
+        image:
+          type: string
+        has_config:
+          type: boolean
+        has_readme:
+          type: boolean
+        download_url:
+          type: string
+
+    StoreConfigResp:
+      type: object
+      properties:
+        config:
+          $ref: '#/components/schemas/StoreConfig'
+        mirrors:
+          type: array
+          items:
+            type: string
+
+    StoreConfig:
+      type: object
+      properties:
+        repo_owner:
+          type: string
+        repo_name:
+          type: string
+        branch:
+          type: string
+        mirrors:
+          type: array
+          items:
+            type: string
+          description: 自定义镜像（不含内置默认）
+        selected_mirror:
+          type: string
+          description: 手动选择的镜像源（空 = 自动按序尝试）
+
+    StoreConfigUpdateReq:
+      type: object
+      properties:
+        repo_owner:
+          type: string
+        repo_name:
+          type: string
+        branch:
+          type: string
+        mirrors:
+          type: array
+          items:
+            type: string
+
+    MirrorReq:
+      type: object
+      properties:
+        mirror:
+          type: string
+          description: 镜像地址（需含 {path} 占位符）
+      required: [mirror]
+
+    MirrorTestResp:
+      type: object
+      properties:
+        latency_ms:
+          type: integer
+          description: 测试延迟（毫秒）
+
+    # ---------- Overview ----------
+    DailyTokenUsageResp:
+      type: object
+      properties:
+        date:
+          type: string
+          description: YYYY-MM-DD
+        token_count:
+          type: integer
+          format: int64
+
+    # ---------- AgentLoop ----------
+    AgentLoopResp:
+      type: object
+      properties:
+        id:
+          type: string
+        chat_area_id:
+          type: string
+        message_type:
+          type: string
+        target_id:
+          type: integer
+          format: int64
+        user_id:
+          type: integer
+          format: int64
+        user_msg:
+          type: string
+        current_tool:
+          type: string
+          description: 当前正在执行的工具名
+        started_at:
+          type: string
+          format: date-time
+
+    # ---------- CronJob ----------
+    CronJobResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        cron_expr:
+          type: string
+          description: 6 字段秒级 cron
+        message:
+          type: string
+          description: 已废弃（保留兼容）
+        message_type:
+          type: string
+          description: 已废弃（保留兼容）
+        target_id:
+          type: integer
+          format: int64
+        is_active:
+          type: boolean
+        plugin_ids:
+          type: array
+          items:
+            type: string
+          description: 触发时调用的插件目录名列表
+        payload:
+          type: string
+          description: JSON 字符串，传给 on_cronjob 的 payload
+        last_run_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    AddCronJobReq:
+      type: object
+      properties:
+        name:
+          type: string
+        cron_expr:
+          type: string
+        message:
+          type: string
+        message_type:
+          type: string
+        target_id:
+          type: integer
+          format: int64
+        is_active:
+          type: boolean
+        plugin_ids:
+          type: array
+          items:
+            type: string
+        payload:
+          type: string
+      required: [name, cron_expr]
+
+    UpdateCronJobReq:
+      allOf:
+        - $ref: '#/components/schemas/AddCronJobReq'
+
+    # ---------- ReplyStrategy ----------
+    ReplyStrategyResp:
+      type: object
+      properties:
+        strategy:
+          type: string
+          enum: [never, at_only, always, relevance]
+        relevance_threshold:
+          type: number
+          format: float
+        bot_name:
+          type: string
+        strip_markdown:
+          type: boolean
+        agent_lite:
+          type: boolean
+        relevance_prompt:
+          type: string
+          description: 相关性检测自定义提示词（空=默认）
+        relevance_model:
+          type: string
+          description: 相关性检测专用 Text Provider ID（空=默认）
+        relevance_timeout:
+          type: integer
+          description: 相关性检测超时秒数（0=默认 10s）
+        judge_fail_policy:
+          type: string
+          enum: [drop, reply]
+
+    UpdateReplyStrategyReq:
+      type: object
+      properties:
+        strategy:
+          type: string
+          enum: [never, at_only, always, relevance]
+        relevance_threshold:
+          type: number
+          format: float
+        bot_name:
+          type: string
+        strip_markdown:
+          type: boolean
+        agent_lite:
+          type: boolean
+        relevance_prompt:
+          type: string
+        relevance_model:
+          type: string
+        relevance_timeout:
+          type: integer
+        judge_fail_policy:
+          type: string
+          enum: [drop, reply]
+
+    # ---------- Knowledge ----------
+    KnowledgeResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        content:
+          type: string
+        keywords:
+          type: array
+          items:
+            type: string
+        keyword_status:
+          type: string
+          enum: [pending, ready, failed]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    KnowledgeListResp:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int64
+        list:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeResp'
+
+    AddKnowledgeReq:
+      type: object
+      properties:
+        title:
+          type: string
+        content:
+          type: string
+      required: [title, content]
+
+    UpdateKnowledgeReq:
+      type: object
+      properties:
+        title:
+          type: string
+        content:
+          type: string
+      required: [title, content]
+
+    # ---------- 图床 ----------
+    ImageResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        folder:
+          type: string
+          description: 虚拟文件夹路径（/ 或 /<name>）
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ImageListResp:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int64
+        list:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageResp'
+
+    ImageFolderResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    UpdateImageReq:
+      type: object
+      properties:
+        name:
+          type: string
+        folder:
+          type: string
+
+    CreateImageFolderReq:
+      type: object
+      properties:
+        name:
+          type: string
+          description: 不能含 /，重名返回 40037
+      required: [name]
+
+    # ---------- 表情包库 ----------
+    StickerResp:
+      type: object
+      properties:
+        id:
+          type: string
+          description: 对外短 UUID（stk:// 引用）
+        image_id:
+          type: string
+          description: 图床图片长 UUID
+        name:
+          type: string
+        desc:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    StickerListResp:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int64
+        list:
+          type: array
+          items:
+            $ref: '#/components/schemas/StickerResp'
+
+    StickerTagResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    CreateStickerReq:
+      type: object
+      properties:
+        image_id:
+          type: string
+          description: 图床图片长 UUID（必填）
+        name:
+          type: string
+          description: 表情名称（必填）
+        desc:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+      required: [image_id, name]
+
+    UpdateStickerReq:
+      type: object
+      properties:
+        name:
+          type: string
+        desc:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+      required: [name]
+
+    CreateStickerTagReq:
+      type: object
+      properties:
+        name:
+          type: string
+          description: 重名返回 40040
+      required: [name]
+
+    # ---------- 摸鱼人日历 ----------
+    FishCalendarConfigResp:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        cron_expr:
+          type: string
+          description: 6 字段秒级 cron
+        target_groups:
+          type: array
+          items:
+            type: string
+        last_run_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+
+    FishCalendarAffairResp:
+      type: object
+      properties:
+        date:
+          type: string
+          description: YYYY-MM-DD
+        content:
+          type: string
+
+    UpdateFishCalendarConfigReq:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        cron_expr:
+          type: string
+        target_groups:
+          type: array
+          items:
+            type: string
+
+    SetFishCalendarAffairReq:
+      type: object
+      properties:
+        date:
+          type: string
+          description: YYYY-MM-DD
+        content:
+          type: string
+          description: 当天群务内容（空则清除）
+      required: [date]
+
+    # ---------- 定时消息 ----------
+    ScheduledSegmentResp:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [text, image, face]
+        source:
+          type: string
+          description: image 段来源：t2i / url / imgstore
+        content:
+          type: string
+
+    ScheduledBlockResp:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [message, delay]
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledSegmentResp'
+        delay_seconds:
+          type: integer
+
+    ScheduledMessageResp:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        enabled:
+          type: boolean
+        cron_expr:
+          type: string
+        target_type:
+          type: string
+        target_id:
+          type: integer
+          format: int64
+        blocks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledBlockResp'
+        last_run_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ScheduledMessageListResp:
+      type: object
+      properties:
+        total:
+          type: integer
+          format: int64
+        list:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledMessageResp'
+
+    AddScheduledMessageReq:
+      type: object
+      properties:
+        name:
+          type: string
+        enabled:
+          type: boolean
+        cron_expr:
+          type: string
+          description: 触发器
+        target_type:
+          type: string
+        target_id:
+          type: integer
+          format: int64
+        blocks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledBlockResp'
+      required: [name, cron_expr, target_type, target_id, blocks]
+
+    UpdateScheduledMessageReq:
+      type: object
+      properties:
+        name:
+          type: string
+        enabled:
+          type: boolean
+        cron_expr:
+          type: string
+        target_type:
+          type: string
+        target_id:
+          type: integer
+          format: int64
+        blocks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduledBlockResp'
+      required: [name, cron_expr, target_type, target_id, blocks]
