@@ -1,6 +1,6 @@
 # http-tools
 
-HTTP 请求示例：`http.get` / `http.post`，对接一言 API、wttr.in 天气与 httpbin 回显。
+HTTP 请求示例（**异步版**）：`http.get_async` / `http.post_async`，对接一言 API、wttr.in 天气与 httpbin 回显。
 
 ## 文件结构
 
@@ -19,24 +19,34 @@ data/pluggins/http-tools/
 |------|------|
 | `/hitokoto [类型]` | 一言金句（`a`动画 `b`漫画 `c`游戏 `d`小说 `e`原创 `f`网络 `g`其他） |
 | `/weather <城市>` | wttr.in 简版天气（默认北京） |
-| `/http post <文本>` | 演示 `http.post` + JSON 编解码（httpbin 回显） |
+| `/http post <文本>` | 演示 `http.post_async` + JSON 编解码（httpbin 回显） |
 
-## 覆盖的 API
+## 覆盖的 API（异步）
+
+外部 HTTP 请求可能耗时（秒级），示例全部使用**异步版**，不阻塞事件循环：
 
 ```lua
--- GET：返回 {status=number, body=string}
-local res, err = jn.http.get("https://v1.hitokoto.cn/?encode=json")
-if res and res.status == 200 then
-    local data = json.decode(res.body)
-    log.info(data.hitokoto)
-end
+-- 提交：立即返回 req_id（失败返回 0），阻塞请求在后台 goroutine 完成
+local ctx = { action = "weather", target = { kind = "group", id = 123456 } }
+local rid = jn.http.get_async("https://wttr.in/北京?format=3", ctx)
 
--- POST：http.post(url, content_type, body)
-local res, err = jn.http.post("https://httpbin.org/post", "application/json", '{"k":"v"}')
+-- 完成回调：引擎串行调用 on_http_response(req_id, ctx, result, err)
+function on_http_response(req_id, ctx, result, err)
+    if err then return end
+    -- result = {status=number, body=string}；ctx 为调用时保存的现场表（原样带回）
+end
 ```
 
-- 超时 30 秒
-- `http` 权限才会注入该全局表
+同步版 `http.get(url)` / `http.post(url, ct, body)` 仍可用（适合命令等低频快路径），但会阻塞事件循环；耗时请求一律用 `xxx_async`。
+
+## 调用现场保存（ctx）
+
+调用 `xxx_async` 时把要保留的变量打包成一张表作为最后一个参数传入（`get_async(url, ctx)`），引擎按 `req_id` 关联保存，回调时**原样带回**（不序列化，可含函数）。示例中用 `ctx.action` 区分不同命令的响应，`ctx.target` 携带回复目标：
+
+```lua
+local ctx = { action = "hitokoto", target = { kind = "group", id = event.group_id } }
+local rid = jn.http.get_async(url, ctx)
+```
 
 ## 权限
 
