@@ -142,16 +142,14 @@ func (m *Manager) TriggerNow(ctx context.Context, id string) error {
 
 // renderMessage 把一个消息块的所有段拼成一条富文本消息（CQ 码字符串）。
 //
-// 多段 text 之间会自动插入换行符（用户在 Web 后台配两个 text 段，意图是分行显示）。
-// text 与 face/image 之间不插换行：face 是 inline 表情应跟随文字，image 是独立消息段
-// QQ 客户端会自动渲染。
+// 每个消息段（text/face/image）独占一行：除第一段外，每段前自动插入换行符。
+// 用户在 Web 后台配多个段时，意图是分行显示，无需手动在段内容里加 \n。
 func (m *Manager) renderMessage(ctx context.Context, segs models.ScheduledSegments) (string, error) {
 	var sb strings.Builder
-	var prevWasText bool // 跟踪上一段是否是 text，用于决定是否在当前 text 前加换行
 	for i := range segs {
 		seg := &segs[i]
-		// 连续两个 text 段之间加换行（保持多段文字的视觉分行）
-		if seg.Type == "text" && prevWasText {
+		// 除第一段外，每段前加换行（一个消息段就是一行）
+		if i > 0 {
 			sb.WriteString("\n")
 		}
 		switch seg.Type {
@@ -194,7 +192,6 @@ func (m *Manager) renderMessage(ctx context.Context, segs models.ScheduledSegmen
 		default:
 			return "", fmt.Errorf("未知消息段类型: %s", seg.Type)
 		}
-		prevWasText = seg.Type == "text"
 	}
 	return sb.String(), nil
 }
