@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"JuanNiang-Neo/internal/core/cache"
 	"JuanNiang-Neo/internal/logging"
 )
 
@@ -87,13 +86,20 @@ func (d *memoryDedup) SeenBefore(ctx context.Context, key string) bool {
 //
 // 降级策略：Redis 调用出错时返回 false（放行），避免去重器故障导致 Agent 整体不可用。
 // 此时下游 Layer 2（短期记忆 Lua 原子幂等）仍能兜住一部分重复消费。
+//
+// 依赖抽象：redisDedup 只需要 cache 的 SetNX 一个方法，故抽出 dedupStore 接口，
+// 便于测试用 fake 而非真实 Redis（无需 miniredis 等依赖）。
+type dedupStore interface {
+	SetNX(ctx context.Context, key string, val any, ttl time.Duration) (bool, error)
+}
+
 type redisDedup struct {
-	cache *cache.Cache
+	cache dedupStore
 	ttl   time.Duration
 }
 
-// newRedisDedup 创建 Redis 去重器。
-func newRedisDedup(c *cache.Cache, ttl time.Duration) *redisDedup {
+// newRedisDedup 创建 Redis 去重器。*cache.Cache 隐式实现 dedupStore 接口。
+func newRedisDedup(c dedupStore, ttl time.Duration) *redisDedup {
 	return &redisDedup{cache: c, ttl: ttl}
 }
 

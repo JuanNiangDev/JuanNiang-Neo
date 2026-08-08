@@ -1016,12 +1016,21 @@ var urlRegexp = regexp.MustCompile(`https?://\S+`)
 // splitMessages 用它把断句符后紧跟的 emoji 归入前一段，避免 emoji 被切到下一条消息开头。
 var emojiPrefixRe = regexp.MustCompile(`^[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}\x{200D}]+`)
 
+// replySegmentInterval 多段回复之间的发送间隔。
+// 用于规避 QQ 风控：Bot 在群内短时间连续发多条消息容易触发限速甚至封禁。
+// 200ms 在实测中既能避开风控，又不会让多段回复显得拖沓。
+const replySegmentInterval = 200 * time.Millisecond
+
 // sendReply 解析 CQ 码并组装消息段发送。
 // rs 从调用链传入，避免读取 HagoCenter 共享字段导致数据竞争。
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs ReplySettings) {
 	// AgentLite 与正常模式一致，同样支持分段回复
 	parts := splitMessages(content)
-	for _, part := range parts {
+	for i, part := range parts {
+		// 段间延迟：首段立即发，后续段之间间隔 replySegmentInterval，规避 QQ 风控
+		if i > 0 {
+			time.Sleep(replySegmentInterval)
+		}
 		if rs.StripMarkdown {
 			part = stripMarkdown(part)
 		}
@@ -1100,7 +1109,8 @@ func parseCQCode(s string) adapter.Segment {
 // 每个 block 内部再走 splitMessagesBlock 做软分段，最后统一硬限制到 3 段。
 // CQ 码和 URL 不计入有效字数；拆分点不会落在 CQ 码内部。
 func splitMessages(content string) []string {
-	blankLineRe := regexp.MustCompile(`\n[ \t]*\n+`)
+	// 兼容 \r\n（Windows 行尾，部分 LLM 偶尔输出）和 \n（Unix 行尾）两种情况
+	blankLineRe := regexp.MustCompile(`\r?\n[ \t]*\r?\n+`)
 	var blocks []string
 	for _, blk := range blankLineRe.Split(content, -1) {
 		if strings.TrimSpace(blk) != "" {
