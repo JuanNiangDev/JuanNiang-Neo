@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -210,6 +211,15 @@ const batchWindow = time.Second
 // acquireTimeout 并发令牌等待超时：同群上一子批次 ReAct 循环执行时间较长时，
 // 后续子批次不再无限排队，超时后直接派发处理（跳过令牌等待，让消息尽快得到响应）。
 const acquireTimeout = 30 * time.Second
+
+// globalAgentConcurrency 全局 Agent 并发上限：每个 ReAct 循环占用一个全局槽位，
+// 防止多群同时活跃时 goroutine 数随群数线性增长导致 OOM / LLM provider 限流。
+const globalAgentConcurrency = 64
+
+// agentRunTimeout Agent ReAct 循环超时：一次完整处理（多轮 LLM 调用 + 工具执行）
+// 正常在 1~3 分钟内。兜底 5 分钟，防止 LLM provider 挂起/不返回时 goroutine
+// 永久阻塞，占用并发令牌导致该群后续消息无法处理。
+const agentRunTimeout = 5 * time.Minute
 
 // 热聊检测（L2.2/L4.1）：1s 滑动窗口内消息数 ≥ floodThreshold 视为刷屏。
 // 刷屏时：批窗口拉长到 hotBatchWindow（合并更多消息），且相关性判断直接降级
@@ -446,6 +456,13 @@ func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs 
 		group := g
 		index := i
 		go func() {
+			// Agent 处理 goroutine 兜底：任一环节 panic（LLM 客户端 bug、工具实现缺陷、
+			// 数据异常）都不能让整个进程崩溃，只丢弃本条消息并记录堆栈。
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error("Agent 处理 goroutine panic", "panic", r, "stack", string(debug.Stack()), "area", chatArea.ID, "events", len(group))
+				}
+			}()
 			filtered := h.filterRelevant(ctx, group, rs)
 			if len(filtered) == 0 {
 				return
@@ -453,9 +470,12 @@ func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs 
 			acquireCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
 			defer cancel()
 			if err := h.Concurrency.Acquire(acquireCtx, chatArea.ID); err != nil {
+				// 等待超时直接放行处理（跳过排队），但此时未持有令牌，不能 Release，
+				// 否则会误释放其他 goroutine 占用的槽位（over-release）。
 				log.Warn("Agent 并发令牌等待超时，直接派发处理（跳过排队）", "err", err, "area", chatArea.ID, "events", len(group))
+			} else {
+				defer h.Concurrency.Release(chatArea.ID)
 			}
-			defer h.Concurrency.Release(chatArea.ID)
 			h.handleMessage(WithOrderedReplier(ctx, replier, index), filtered, chatArea, rs)
 		}()
 	}
@@ -887,8 +907,12 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		return
 	}
 
-	runner := adk.NewRunner(ctx, adk.RunnerConfig{Agent: h.EinoAgent})
-	iter := runner.Run(ctx, einoMsgs)
+	// ReAct 循环带超时保护：provider 挂起时取消迭代而非永久阻塞。
+	// 工具调用/发送等后处理（finish 闭包）仍使用外层 ctx，不受此超时影响。
+	agentCtx, agentCancel := context.WithTimeout(ctx, agentRunTimeout)
+	defer agentCancel()
+	runner := adk.NewRunner(agentCtx, adk.RunnerConfig{Agent: h.EinoAgent})
+	iter := runner.Run(agentCtx, einoMsgs)
 
 	// 收集 Agent 输出 + Token 用量 + 工具调用
 	var assistantContent string

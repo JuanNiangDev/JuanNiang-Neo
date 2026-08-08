@@ -144,8 +144,8 @@ vet: check-go ## go vet
 
 lint: vet web-typecheck ## 综合检查 (go vet + 前端 typecheck)
 
-test: check-go ## go test (当前无测试, 占位)
-	@cd $(ROOT_DIR) && $(GO) test ./... || printf "$(C_YELL)注意: 项目尚无 _test.go$(C_RESET)\n"
+test: check-go ## go test -race ./... (含数据竞争检测)
+	@cd $(ROOT_DIR) && $(GO) test -race ./... || printf "$(C_YELL)注意: 存在失败的测试$(C_RESET)\n"
 
 tidy: check-go ## go mod tidy
 	@cd $(ROOT_DIR) && $(GO) mod tidy

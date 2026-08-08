@@ -270,6 +270,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	}
 
 	h.Concurrency = NewConcurrencyManager(8)
+	// 全局并发上限：单群上限 8，但多群同时活跃时 goroutine 数会随群数线性增长，
+	// 统一封顶避免 OOM 与 LLM provider 限流（每个 Agent ReAct 循环占用一个全局槽位）。
+	h.Concurrency.SetGlobalLimit(globalAgentConcurrency)
 	h.CronJobManager = cronjob.New(h.DAO.CronJob, h.CronJobEvents)
 
 	// 构建 Eino ChatModelAgent（替代手写的 ReAct 循环）
