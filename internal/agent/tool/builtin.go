@@ -506,6 +506,8 @@ func RegisterBuiltinTools(
 			if err := adapter.KickGroupMember(p.GroupID, p.UserID, p.RejectAdd); err != nil {
 				return "", err
 			}
+			event := getCurrentMsg(ctx)
+			adapter.DeleteMsg(event.MessageID)
 			return fmt.Sprintf("已将 %d 踢出群 %d", p.UserID, p.GroupID), nil
 		},
 	})
@@ -534,6 +536,8 @@ func RegisterBuiltinTools(
 			if p.Duration == 0 {
 				return fmt.Sprintf("已将 %d 解除禁言（群 %d）", p.UserID, p.GroupID), nil
 			}
+			event := getCurrentMsg(ctx)
+			adapter.DeleteMsg(event.MessageID)
 			return fmt.Sprintf("已将 %d 禁言 %d 秒", p.UserID, p.Duration), nil
 		},
 	})
