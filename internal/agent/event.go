@@ -87,7 +87,7 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	// 群/私聊的 message_id 各自独立递增，key 需带上 message_type。
 	if ev.PostType == "message" && ev.Message != nil && ev.Message.MessageID > 0 {
 		key := ev.Message.MessageType + ":" + strconv.FormatInt(ev.Message.MessageID, 10)
-		if h.msgDedup.seenBefore(key) {
+		if h.msgDedup.SeenBefore(ctx, key) {
 			log.Info("重复消息已丢弃", "message_id", ev.Message.MessageID, "message_type", ev.Message.MessageType, "user_id", ev.Message.UserID)
 			return
 		}

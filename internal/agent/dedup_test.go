@@ -1,53 +1,60 @@
 package agent
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestMsgDedupSeenBefore(t *testing.T) {
-	d := newMsgDedup(time.Minute)
+// 内存去重器测试（redisDedup 需真实 Redis，由集成测试覆盖）。
 
-	if d.seenBefore("group:10086") {
+func TestMemoryDedupSeenBefore(t *testing.T) {
+	ctx := context.Background()
+	d := newMemoryDedup(time.Minute)
+
+	if d.SeenBefore(ctx, "group:10086") {
 		t.Fatal("首次出现不应判为重复")
 	}
-	if !d.seenBefore("group:10086") {
+	if !d.SeenBefore(ctx, "group:10086") {
 		t.Fatal("去重窗口内再次出现应判为重复")
 	}
 }
 
-func TestMsgDedupDistinctKeys(t *testing.T) {
-	d := newMsgDedup(time.Minute)
+func TestMemoryDedupDistinctKeys(t *testing.T) {
+	ctx := context.Background()
+	d := newMemoryDedup(time.Minute)
 
 	// 不同 message_id 互不影响
-	if d.seenBefore("group:10086") || d.seenBefore("group:10087") {
+	if d.SeenBefore(ctx, "group:10086") || d.SeenBefore(ctx, "group:10087") {
 		t.Fatal("不同 message_id 不应互斥")
 	}
 	// 群/私聊 message_id 空间独立，同号不互扰
-	if d.seenBefore("private:10086") {
+	if d.SeenBefore(ctx, "private:10086") {
 		t.Fatal("私聊与群聊的同号 message_id 不应互斥")
 	}
 	// 各自第二次出现才算重复
-	if !d.seenBefore("group:10086") || !d.seenBefore("private:10086") {
+	if !d.SeenBefore(ctx, "group:10086") || !d.SeenBefore(ctx, "private:10086") {
 		t.Fatal("各自的第二次出现应判为重复")
 	}
 }
 
-func TestMsgDedupExpiry(t *testing.T) {
-	d := newMsgDedup(50 * time.Millisecond)
+func TestMemoryDedupExpiry(t *testing.T) {
+	ctx := context.Background()
+	d := newMemoryDedup(50 * time.Millisecond)
 
-	if d.seenBefore("group:10086") {
+	if d.SeenBefore(ctx, "group:10086") {
 		t.Fatal("首次出现不应判为重复")
 	}
 	time.Sleep(80 * time.Millisecond)
-	if d.seenBefore("group:10086") {
+	if d.SeenBefore(ctx, "group:10086") {
 		t.Fatal("TTL 过期后应可再次处理")
 	}
 }
 
-func TestMsgDedupConcurrent(t *testing.T) {
-	d := newMsgDedup(time.Minute)
+func TestMemoryDedupConcurrent(t *testing.T) {
+	ctx := context.Background()
+	d := newMemoryDedup(time.Minute)
 
 	const workers = 16
 	var wg sync.WaitGroup
@@ -57,7 +64,7 @@ func TestMsgDedupConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			first <- !d.seenBefore("group:10086")
+			first <- !d.SeenBefore(ctx, "group:10086")
 		}()
 	}
 	wg.Wait()
@@ -72,4 +79,10 @@ func TestMsgDedupConcurrent(t *testing.T) {
 	if allowed != 1 {
 		t.Fatalf("并发投递同一 key 应有且仅有 1 个放行，实际 %d", allowed)
 	}
+}
+
+// TestDeduperInterface 编译期断言：memoryDedup / redisDedup 都实现 Deduper 接口。
+func TestDeduperInterface(t *testing.T) {
+	var _ Deduper = (*memoryDedup)(nil)
+	var _ Deduper = (*redisDedup)(nil)
 }

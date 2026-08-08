@@ -69,6 +69,11 @@ func (m *ShortTermMemory) Add(ctx context.Context, areaID string, msg ChatMessag
 // AddWithWindow 追加一条消息并按指定的窗口大小维护滑动窗口（最早在前）。
 // Per-ChatArea 配置解析后由调用方传入该 area 的窗口大小，避免全局实例的共享配置互相覆盖。
 // 幂等：携带 MsgID 的消息若已存在于窗口内则跳过（防止同一消息被重复消费写入）。
+//
+// 原子性：检查 MsgID + RPUSH + LTRIM 三步合并为单个 Lua 脚本（cache.RPushIfMsgIDAbsent），
+// Redis 单线程执行保证原子。原 LRange+containsMsgID+RPush+LTrim 四步分离实现存在
+// TOCTOU 竞态：两个并发 goroutine 同时 LRange 都未命中 → 同时 RPush → 短期记忆里出现
+// 两条相同 MsgID 的用户消息，下游 LLM 看到重复上下文导致连锁重复回复。
 func (m *ShortTermMemory) AddWithWindow(ctx context.Context, areaID string, msg ChatMessage, windowSize int64) error {
 	if m.cache == nil {
 		return fmt.Errorf("shortterm cache 未初始化")
@@ -76,32 +81,38 @@ func (m *ShortTermMemory) AddWithWindow(ctx context.Context, areaID string, msg 
 	if windowSize <= 0 {
 		windowSize = m.conf.WindowSize
 	}
-	// 幂等去重（仅对带 MsgID 的用户消息生效；assistant 回复无 MsgID 不检查）
-	if msg.MsgID != "" {
-		var msgs []ChatMessage
-		if err := m.cache.LRange(ctx, m.key(areaID), 0, -1, &msgs); err == nil && containsMsgID(msgs, msg.MsgID) {
-			return nil // 已存在，跳过
-		}
-	}
-	key := m.key(areaID)
-	if err := m.cache.RPush(ctx, key, msg); err != nil {
+	// 序列化方式须与原 cache.RPush 内部 json.Marshal 一致，保证脚本写入的
+	// 字节流与历史数据格式相同（GetAll 反序列化时不会出错）。
+	data, err := json.Marshal(msg)
+	if err != nil {
+		log.Error("序列化失败", "area_id", areaID, "role", msg.Role, "msg_id", msg.MsgID, "err", err)
 		return err
 	}
-	// 仅保留最近 windowSize 条
-	return m.cache.LTrim(ctx, key, -windowSize, -1)
-}
-
-// containsMsgID 检查消息列表中是否存在相同 MsgID 的消息（幂等去重判定，纯函数）。
-func containsMsgID(msgs []ChatMessage, msgID string) bool {
-	if msgID == "" {
-		return false
+	written, err := m.cache.RPushIfMsgIDAbsent(ctx, m.key(areaID), string(data), msg.MsgID, windowSize)
+	if err != nil {
+		log.Warn("Lua 脚本执行失败",
+			"area_id", areaID, "role", msg.Role, "msg_id", msg.MsgID, "window_size", windowSize, "err", err)
+		return err
 	}
-	for _, mm := range msgs {
-		if mm.MsgID == msgID {
-			return true
-		}
+	if !written {
+		// MsgID 已存在被脚本跳过——并发去重命中的关键事件。
+		// 出现这条日志说明：上游 redisDedup 也漏了（Redis 故障 / TTL 已过期 / 多实例独立内存），
+		// Layer 2 兜底生效，避免了短期记忆里出现两条相同 MsgID 的用户消息。
+		log.Info("Lua 幂等命中跳过",
+			"area_id", areaID,
+			"role", msg.Role,
+			"msg_id", msg.MsgID,
+			"window_size", windowSize,
+		)
+		return nil
 	}
-	return false
+	log.Debug("短期记忆写入成功",
+		"area_id", areaID,
+		"role", msg.Role,
+		"msg_id", msg.MsgID,
+		"window_size", windowSize,
+	)
+	return nil
 }
 
 // GetAll 返回该 ChatArea 当前窗口内的全部消息（按时间最早→最新）。
