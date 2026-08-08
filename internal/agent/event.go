@@ -1094,11 +1094,43 @@ func parseCQCode(s string) adapter.Segment {
 	return adapter.Segment{Type: segType, Data: data}
 }
 
-// splitMessages 将 Agent 输出拆分为最多 3 段消息。
-// 算法参考 Maibot：在自然断句处（。！？；）与换行处拆分，每段有效文字 ≤60 字。
-// CQ 码和 URL 不计入有效字数。拆分点不会落在 CQ 码内部：带 query 参数的图片 URL（含 ?）
-// 或 CQ 码内的标点不能成为断句点，否则 CQ 码会被切成两段导致表情/图片发送失败。
+// splitMessages 将回复文本拆分为多条消息（最多 3 段）。
+// 优先按空行（≥2 个连续换行）做"强分段"——LLM 用空行表示独立回复意图，
+// 无论字数多少都应拆分（避免把"@A 回复1\n\n@B 回复2"合并成一条发送）。
+// 每个 block 内部再走 splitMessagesBlock 做软分段，最后统一硬限制到 3 段。
+// CQ 码和 URL 不计入有效字数；拆分点不会落在 CQ 码内部。
 func splitMessages(content string) []string {
+	blankLineRe := regexp.MustCompile(`\n[ \t]*\n+`)
+	var blocks []string
+	for _, blk := range blankLineRe.Split(content, -1) {
+		if strings.TrimSpace(blk) != "" {
+			blocks = append(blocks, blk)
+		}
+	}
+	if len(blocks) <= 1 {
+		// 无空行分段信号，走原逻辑（保留单段 ≤60 字原样返回等行为）
+		return splitMessagesBlock(content)
+	}
+	var out []string
+	for _, blk := range blocks {
+		out = append(out, splitMessagesBlock(blk)...)
+	}
+	// 硬限制 3 段：合并尾部多余的段（与 prompt 契约"最多 3 段"一致）
+	for len(out) > 3 {
+		last := out[len(out)-1]
+		prev := out[len(out)-2]
+		out = out[:len(out)-2]
+		out = append(out, prev+last)
+	}
+	if len(out) == 0 {
+		return []string{content}
+	}
+	return out
+}
+
+// splitMessagesBlock 对单段文本（无空行分隔）做软分段：
+// 总有效字数 ≤60 字原样返回；否则按句号/感叹号/问号/分号/换行拆分，贪心合并到 ≤3 段。
+func splitMessagesBlock(content string) []string {
 	effectiveLen := func(s string) int {
 		s = cqCodeRegexp.ReplaceAllString(s, "")
 		s = urlRegexp.ReplaceAllString(s, "")
