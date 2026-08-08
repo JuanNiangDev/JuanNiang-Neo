@@ -10,13 +10,6 @@ on:
         default: 'latest'
         type: string
 
-  # main 分支 PR 合并时自动触发
-  pull_request:
-    branches:
-      - main
-    types:
-      - closed
-
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}   # TuF3i/JuanNiang-Neo -> ghcr.io/tuf3i/juanniang-neo
