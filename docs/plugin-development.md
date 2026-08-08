@@ -285,7 +285,7 @@ jn.onebot11.send_group_msg(123456, {
 | 函数 | 说明 |
 |------|------|
 | `onebot11.kick_group_member(group_id, user_id [, reject_add]) → bool [, err]` | reject_add 默认 false |
-| `onebot11.ban_group_member(group_id, user_id, duration) → bool [, err]` | duration 秒 |
+| `onebot11.ban_group_member(group_id, user_id, duration) → bool [, err]` | duration 秒，0 表示解除禁言 |
 | `onebot11.set_group_whole_ban(group_id, enable) → bool [, err]` | 全员禁言开关 |
 | `onebot11.set_group_card(group_id, user_id, card) → bool [, err]` | 设群名片 |
 

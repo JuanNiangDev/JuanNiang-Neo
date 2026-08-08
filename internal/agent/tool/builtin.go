@@ -517,7 +517,7 @@ func RegisterBuiltinTools(
 				"properties": map[string]any{
 					"group_id": map[string]any{"type": "integer", "description": "群号"},
 					"user_id":  map[string]any{"type": "integer", "description": "目标用户 QQ 号"},
-					"duration": map[string]any{"type": "integer", "description": "禁言时长(秒)"},
+					"duration": map[string]any{"type": "integer", "description": "禁言时长(秒)，0 表示解除禁言"},
 				},
 				"required": []string{"group_id", "user_id", "duration"},
 			}, true, false),
@@ -530,6 +530,9 @@ func RegisterBuiltinTools(
 			json.Unmarshal(args, &p)
 			if err := adapter.BanGroupMember(p.GroupID, p.UserID, p.Duration); err != nil {
 				return "", err
+			}
+			if p.Duration == 0 {
+				return fmt.Sprintf("已将 %d 解除禁言（群 %d）", p.UserID, p.GroupID), nil
 			}
 			return fmt.Sprintf("已将 %d 禁言 %d 秒", p.UserID, p.Duration), nil
 		},
