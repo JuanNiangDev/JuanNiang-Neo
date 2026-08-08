@@ -133,24 +133,24 @@ M.http = http
 -- ====================================================================
 
 ---@class jn.Database
----@field query fun(sql: string): table[], string?
----@field exec fun(sql: string): number, string?
+---@field query fun(sql: string, params?: any[]): table[], string? 执行 SELECT。params 为可选绑定参数（SQL 中用 ? 占位），传入后自动参数化，杜绝 SQL 注入
+---@field exec fun(sql: string, params?: any[]): number, string? 执行 INSERT/UPDATE/DELETE，返回影响行数。params 为可选绑定参数（SQL 中用 ? 占位）
 M.database = database
 
 -- ====================================================================
 -- sql 工具：直接拼接 SQL 时的字符串转义
 -- ====================================================================
--- jn.database 只暴露裸 SQL 接口（query/exec），不会自动转义。
--- 凡把用户输入拼进 SQL 字符串字面量，都必须先用 sql_escape 转义，
--- 否则存在 SQL 注入风险。数字字段（user_id/group_id 等）用 %d 格式
--- 即可保证安全，无需转义。
+-- 拼字符串字面量时若不能使用参数化（params），必须先转义用户输入：
+--   jn.database.query("SELECT * FROM t WHERE name = ?", {name})   ✅ 推荐·参数化
+--   jn.database.query("SELECT * FROM t WHERE name = '" .. jn.sql.escape(name) .. "'")  ⚠️ 兜底·转义
+-- 数字字段（user_id/group_id 等）用 %d 格式即可保证安全，无需转义。
 
 ---@class jn.SQL
 ---@field escape fun(s: any): string PostgreSQL 字符串字面量单引号转义（'→''），返回可直接放进 '...' 的安全字符串
 M.sql = {
-    escape = function(s)
-        return tostring(s):gsub("'", "''")
-    end,
+	escape = function(s)
+		return tostring(s):gsub("'", "''")
+	end,
 }
 
 -- ====================================================================
