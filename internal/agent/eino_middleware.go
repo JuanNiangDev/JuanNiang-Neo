@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"JuanNiang-Neo/internal/adapter"
@@ -17,6 +18,8 @@ import (
 // 注：ACL 现仅管理聊天黑名单（在 handleMessage 阶段过滤消息），不再对工具调用做
 // ACL 检查；但高危工具（群管理/请求处理/撤回）在 WrapInvokableToolCall 中强制
 // 校验调用者为 Admins 列表内，防止 Agent 被提示词注入诱导执行敏感操作。
+// 例外：机器人自主决策调用用户定向的 admin_only 工具时，若目标就是当前消息
+// 发送者本人（自防御/自处理，如禁言骂它的人），同样放行——见 isAdminToolCallAllowed。
 type JuanNiangMiddleware struct {
 	*adk.BaseChatModelAgentMiddleware
 
@@ -113,6 +116,8 @@ func GetMsgSessionCtx(ctx context.Context) *MsgSessionCtx {
 // （首次创建时生效），Web Tools 页可对任意工具单独开关。
 // 这些工具对应 OneBot11 群管理/请求处理/撤回等敏感 API，一旦被提示词注入
 // 诱导调用会引发严重后果（踢人/禁言/全员禁言/改群名片/通过加群等）。
+// 注意：ban/kick/set_group_card 三个"用户定向"工具支持自目标例外
+// （非管理员调用时目标=本人可放行），见 adminToolSelfTarget。
 var adminOnlyToolNames = map[string]bool{
 	"kick_group_member":     true, // 踢出群成员
 	"ban_group_member":      true, // 禁言群成员
@@ -123,23 +128,52 @@ var adminOnlyToolNames = map[string]bool{
 	"delete_msg":            true, // 撤回消息（含他人消息）
 }
 
-// isAdminOnlyToolAllowed 工具管理员校验判定：adminOnly=true 时仅 Admins 列表内
-// 用户可调用，否则一律拒绝（防提示词注入诱导执行敏感操作）。
-func isAdminOnlyToolAllowed(adminOnly bool, userID int64, admins []string) bool {
+// adminToolSelfTarget 解析 admin_only 工具参数中的目标用户 QQ（user_id 字段）。
+// 仅覆盖"用户定向"的高危工具（禁言/踢人/改群名片）；无 user_id 目标的工具
+// （全员禁言/处理请求/撤回）返回 ok=false，不适用自目标放行。
+func adminToolSelfTarget(toolName, argsJSON string) (int64, bool) {
+	switch toolName {
+	case "ban_group_member", "kick_group_member", "set_group_card":
+		var args struct {
+			UserID int64 `json:"user_id"`
+		}
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return 0, false
+		}
+		return args.UserID, args.UserID != 0
+	default:
+		return 0, false
+	}
+}
+
+// isAdminToolCallAllowed 工具管理员校验判定：
+//   - adminOnly=false：一律放行
+//   - adminOnly=true 且调用者是管理员：放行
+//   - adminOnly=true 且调用者非管理员：仅当工具目标是调用者本人（自防御/自处理，
+//     如机器人禁言正在骂它的人）时放行；对第三方目标或无用户目标的工具（全员禁言、
+//     处理申请、撤回）一律拒绝，防止提示词注入诱导执行敏感操作。
+func isAdminToolCallAllowed(adminOnly bool, toolName, argsJSON string, userID int64, admins []string) bool {
 	if !adminOnly {
 		return true
 	}
-	return isAdmin(userID, admins)
+	if isAdmin(userID, admins) {
+		return true
+	}
+	// 非管理员自目标放行：目标必须是调用者本人（且非 0，规避无发送者上下文）
+	target, hasTarget := adminToolSelfTarget(toolName, argsJSON)
+	return hasTarget && target != 0 && target == userID
 }
 
 // WrapInvokableToolCall 包装每个工具的同步调用：
 //   - 标记为"仅管理员"的工具（ToolConfig.admin_only，DB 可配）执行前校验调用者
-//     是否为管理员，非管理员直接拒绝
+//     是否为管理员；非管理员仅当工具目标是其本人（自防御/自处理）时放行，
+//     其余直接拒绝
 //   - 更新活跃循环的当前工具（供 Web 监控页展示）
 //   - 所有工具前台同步执行并记录日志
 //
 // 注：ACL 只管理聊天黑名单，工具调用不再受 ACL 限制；"仅管理员"工具的权限由
-// 本处基于当前消息发送者 + Admins 列表做强制校验（防提示词注入）。
+// 本处基于当前消息发送者 + Admins 列表做强制校验（防提示词注入诱导对第三方
+// 执行敏感操作；机器人自主禁言/踢出当前对话者本人属于自防御，予以放行）。
 func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 	ctx context.Context,
 	endpoint adk.InvokableToolCallEndpoint,
@@ -159,8 +193,9 @@ func (m *JuanNiangMiddleware) WrapInvokableToolCall(
 			return "操作已被系统拒绝，无需继续调用工具。", nil
 		}
 
-		// 仅管理员工具权限校验：admin_only 开启的工具只允许 Admins 内用户调用
-		if !isAdminOnlyToolAllowed(m.h.isToolAdminOnly(toolName), msgUserID(ctx), msgAdmins(ctx)) {
+		// 仅管理员工具权限校验：admin_only 开启的工具只允许管理员调用；
+		// 非管理员例外：工具目标是调用者本人（自防御/自处理，如机器人禁言骂它的人）时放行
+		if !isAdminToolCallAllowed(m.h.isToolAdminOnly(toolName), toolName, argsJSON, msgUserID(ctx), msgAdmins(ctx)) {
 			permMsg := "该操作仅限管理员执行，已被系统拒绝，未执行任何操作。请如实告知用户没有权限。"
 			if sc != nil {
 				sc.PermDenied = permMsg

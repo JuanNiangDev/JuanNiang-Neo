@@ -546,11 +546,12 @@ end, {
 -- ====================================================================
 -- 兼容旧的 on_message：捕获 /system 不带子命令的情况
 -- 命令系统已经处理了 "/system" 开头的消息，此处仅作日志
+-- 注：on_message 仅返回 skip_reply（不消费消息、不修改事件）
 -- ====================================================================
 function on_message(event)
     -- 所有 /system* 命令已由 jn.command 注册表处理
     -- 此处仅用于不匹配任何命令时的兜底
-    return false, event
+    return false, false  -- consumed, skip_reply
 end
 
 log.info("system 插件已加载")

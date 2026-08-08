@@ -19,7 +19,7 @@ flowchart TB
     OB["adapter/: OneBot11 反向 WS + Webhook<br/>事件接收 / API 调用 / 消息段构造"]
   end
   subgraph Core["核心层"]
-    API["api/: Hertz Web 引擎 + JWT + 路由 + Service(69 handler)"]
+    API["api/: Hertz Web 引擎 + JWT + 路由 + Service(121 handler)"]
     Plugin["pluggin/: gopher-lua 引擎<br/>生命周期 / API 暴露 / 命令树 / 事件拦截"]
     Agent["agent/: HagoCenter + Eino ADK ChatModelAgent<br/>Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL<br/>ConcurrencyManager (每 ChatArea 8 goroutine)"]
     CoreLib["core/: models(23表) / dao.Bundle / cache / acl"]
@@ -32,7 +32,7 @@ flowchart TB
   end
   subgraph Web["前端服务"]
     SPA["internal/web: SPAHandler (Hertz NoRoute 兜底)"]
-    FE["web/: Vue 3 + Vuetify 3 仪表板 (22 views)"]
+    FE["web/: Vue 3 + Vuetify 3 仪表板 (28 views)"]
   end
   subgraph Logging["日志"]
     LogHub["logging: fatih/color 彩色输出 + JSON 格式化<br/>WARN+ 调用栈 + 模块日志器 + Hub(SSE)"]
@@ -61,7 +61,7 @@ flowchart TB
 | **适配器** | `internal/adapter/` | OneBot11 反向 WS 服务端 + Webhook HTTP 服务端：事件解析、API 封装、消息段构造 |
 | **Agent** | `internal/agent/` | Agent 核心：`HagoCenter` 聚合 Provider/MCP/Memory/Prompt/Session/Skill/Tool/ACL + Eino ADK ChatModelAgent (ReAct loop) + ConcurrencyManager (每 ChatArea 8 goroutine)，事件循环、CronJob、回复策略 |
 | **核心库** | `internal/core/` | 数据模型 (GORM)、DAO Bundle、Redis 缓存、ACL |
-| **Web API** | `internal/api/` | Hertz Web 引擎、JWT 中间件、路由、Service（69 个 handler + 根路径 `/health`） |
+| **Web API** | `internal/api/` | Hertz Web 引擎、JWT 中间件、路由、Service（121 个 handler + 根路径 `/health`） |
 | **插件** | `internal/pluggin/` | gopher-lua 引擎：生命周期、Lua API 暴露、命令树、事件拦截 |
 | **基础设施** | `infrastructure/` | postgres、redis、sandbox、t2i 客户端（每个含 `handler` 子包，功能选项风格） |
 | **前端服务** | `internal/web/` | `SPAHandler` 通过 Hertz `NoRoute` 兜底服务 `web/dist` |
@@ -71,7 +71,7 @@ flowchart TB
 
 ## 数据模型
 
-共 23 个 GORM 表（见 `internal/core/core.go::AutoMigrate`）。
+共 31 个 GORM 表（见 `internal/core/core.go::AutoMigrate`）。
 
 ```mermaid
 classDiagram
@@ -174,11 +174,11 @@ flowchart LR
 | 始终 | `log` (`jn.log`) | 3 | info/warn/error → slog |
 | 始终 | `json` (`jn.json`) | 2 | encode/decode |
 | `onebot11` | `onebot11` (`jn.onebot11`) | 23 | 消息发送（异步/同步）+ 群管理 + 信息查询 + 请求处理 + 登录/状态/版本 + read_file_base64 |
-| `http` | `http` (`jn.http`) | 2 | get/post（30s 超时） |
+| `http` | `http` (`jn.http`) | 4 | get/post（30s 超时）+ get_async/post_async（异步回调 `on_http_response`） |
 | `database` | `database` (`jn.database`) | 2 | query/exec（共享 DB，前缀桩未生效，⚠ 权限敏感） |
 | `cache` | `cache` (`jn.cache`) | 4 | get/set/del/exists（`pluggin:<name>:` 命名空间） |
-| `t2i` | `t2i` (`jn.t2i`) | 5 | generate/generate_url + toggle/is_active/get_config |
-| `sandbox` | `sandbox` (`jn.sandbox`) | 8 | create/exec_shell/exec_python/list/delete + toggle/is_active/get_config |
+| `t2i` | `t2i` (`jn.t2i`) | 7 | generate/generate_url + generate_async/generate_url_async（异步回调 `on_t2i_response`）+ toggle/is_active/get_config |
+| `sandbox` | `sandbox` (`jn.sandbox`) | 11 | create/exec_shell/exec_python + create_async/exec_shell_async/exec_python_async（异步回调 `on_sandbox_response`）+ toggle/is_active/get_config/list/delete |
 | `agent` | `agent` (`jn.agent`) | 17 | 配置查询 + Provider/MCP/Tool 切换 + switch_provider + compact_memory + get_current_chat_area |
 | 内置 | `jn.command` | 1 | `register(path, handler, opts)` 多级命令注册 |
 
@@ -214,9 +214,9 @@ cmd/server/main.go:41 main()
 ├─ postgres.NewPostgresClient(WithHost...)     main.go:98        ← infrastructure/postgres/client.go
 ├─ redis.NewRedisSentinelClient(WithAddr...)   main.go:111       ← infrastructure/redis/client.go (实为单节点)
 ├─ core.Init(ctx,db,redis)                     main.go:122       ← internal/core/core.go
-│   ├─ AutoMigrate(db)                         core.go:23        ← 注册 23 张表
+│   ├─ AutoMigrate(db)                         core.go:23        ← 注册 31 张表
 │   ├─ cache.NewCache(redisClient, $REDIS_PREFIX) core.go:97     ← "juan:" 前缀
-│   ├─ dao.NewBundle(db)                        core.go:105      ← internal/core/dao/dao.go (20 个 DAO)
+│   ├─ dao.NewBundle(db)                        core.go:105      ← internal/core/dao/dao.go (28 个 DAO)
 │   ├─ acl.NewACL(bundle.ACL)                  core.go:110      ← internal/core/acl/acl.go
 │   └─ InitAdminUser(ctx, UserDAO)             core.go:113      ← core.go (无 admin 时建 admin/Admin123 bcrypt)
 ├─ middleware.JWTSecret = []byte($JWT_SECRET)  main.go:129-131
@@ -403,7 +403,7 @@ API 侧变更: AddCronJob/UpdateCronJob/DeleteCronJob/ToggleCronJob
 Hertz server (engine.go:18)
 └─ middleware.Recovery → middleware.CORS → router.RegisterRoutes
    └─ /api/v1 组: 中间件 JWTAuth? (各路由按需)
-      └─ svc.<Handler> (69 个, 内部走 DTO transfer + DAO)
+      └─ svc.<Handler> (121 个, 内部走 DTO transfer + DAO)
         成功 → dto.GenFinalResponse(OK, data) → 200
         失败 → GenFinalResponse(<错误码>, nil) → 200
 未命中路由:

@@ -16,10 +16,13 @@ import (
 var log = logging.NewModule("shortterm")
 
 // ChatMessage 聊天消息模型。
+// MsgID 是消息唯一标识（OneBot11 message_id，仅用户消息携带），
+// 用于幂等去重：同一消息重复写入短期记忆时跳过，防止并发/重试路径重复消费。
 type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 	Name    string `json:"name,omitempty"`
+	MsgID   string `json:"msg_id,omitempty"`
 }
 
 // Config 短期记忆配置。
@@ -65,6 +68,7 @@ func (m *ShortTermMemory) Add(ctx context.Context, areaID string, msg ChatMessag
 
 // AddWithWindow 追加一条消息并按指定的窗口大小维护滑动窗口（最早在前）。
 // Per-ChatArea 配置解析后由调用方传入该 area 的窗口大小，避免全局实例的共享配置互相覆盖。
+// 幂等：携带 MsgID 的消息若已存在于窗口内则跳过（防止同一消息被重复消费写入）。
 func (m *ShortTermMemory) AddWithWindow(ctx context.Context, areaID string, msg ChatMessage, windowSize int64) error {
 	if m.cache == nil {
 		return fmt.Errorf("shortterm cache 未初始化")
@@ -72,12 +76,32 @@ func (m *ShortTermMemory) AddWithWindow(ctx context.Context, areaID string, msg 
 	if windowSize <= 0 {
 		windowSize = m.conf.WindowSize
 	}
+	// 幂等去重（仅对带 MsgID 的用户消息生效；assistant 回复无 MsgID 不检查）
+	if msg.MsgID != "" {
+		var msgs []ChatMessage
+		if err := m.cache.LRange(ctx, m.key(areaID), 0, -1, &msgs); err == nil && containsMsgID(msgs, msg.MsgID) {
+			return nil // 已存在，跳过
+		}
+	}
 	key := m.key(areaID)
 	if err := m.cache.RPush(ctx, key, msg); err != nil {
 		return err
 	}
 	// 仅保留最近 windowSize 条
 	return m.cache.LTrim(ctx, key, -windowSize, -1)
+}
+
+// containsMsgID 检查消息列表中是否存在相同 MsgID 的消息（幂等去重判定，纯函数）。
+func containsMsgID(msgs []ChatMessage, msgID string) bool {
+	if msgID == "" {
+		return false
+	}
+	for _, mm := range msgs {
+		if mm.MsgID == msgID {
+			return true
+		}
+	}
+	return false
 }
 
 // GetAll 返回该 ChatArea 当前窗口内的全部消息（按时间最早→最新）。

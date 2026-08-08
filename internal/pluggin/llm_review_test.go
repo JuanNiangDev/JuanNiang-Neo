@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
+	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/agent/provider"
 
 	lua "github.com/yuin/gopher-lua"
@@ -208,7 +212,9 @@ func loadPluginManual(t *testing.T, pe *PluginEngine, name string) *lua.LState {
 	return L
 }
 
-// runOnMessage 构造群消息事件并调用插件 on_message，返回是否被消费。
+// runOnMessage 构造群消息事件并调用插件 on_message，返回其第一个返回值（consumed）。
+// on_message 返回 (consumed, skip_reply)：consumed=true 消息不进 Agent（不短路）；
+// modified_event 已移除，插件不能修改事件。
 func runOnMessage(t *testing.T, L *lua.LState, groupID, userID int64, raw, msgID string) bool {
 	t.Helper()
 	fn := L.GetGlobal("on_message")
@@ -349,10 +355,10 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 	pe, adp, _ := newTestEngine(t, llm)
 	L := loadPluginManual(t, pe, "redrock_group_manager")
 
-	// 1. 黑色地带：无本续贷（words/black.txt）→ 消费 + 撤回（第一次违规），不触发 LLM
+	// 1. 黑色地带：无本续贷（words/black.txt）→ 消费（不进 Agent）+ 撤回（第一次违规），不触发 LLM
 	consumed := runOnMessage(t, L, 10001, 20001, "对接全国 无本续贷 一手收单", "90001")
 	if !consumed {
-		t.Fatal("黑色词消息应被消费")
+		t.Fatal("黑色词消息应被消费（不进 Agent）")
 	}
 	waitFor(t, func() bool { return adp.deletedCount() >= 1 })
 	if llm.callCount() != 0 {
@@ -445,3 +451,247 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 
 // 防未使用告警（io 保留给后续扩展）
 var _ = io.Discard
+
+// ---------- 测试: t2i/http 异步 API（xxx_async → on_xxx_response，带调用现场 ctx） ----------
+
+// t2iHTTPAsyncTestMain 异步机制测试插件：{{HTTP_URL}} 由 Go 侧替换为 httptest server。
+const t2iHTTPAsyncTestMain = `-- t2i/http 异步机制测试
+-- 成功路径（带 ctx）
+t2i_rid = t2i.generate_async("<h1>hi</h1>", nil, { tag = "ctx-t2i", group = 10001 })
+http_rid = http.get_async("{{HTTP_URL}}/echo", { tag = "ctx-http" })
+-- 同步阶段错误：opts 含未知键
+opts_rid, opts_err = t2i.generate_async("<h1>x</h1>", { bad_key = 1 })
+-- 异步回调错误路径：连接拒绝
+http.get_async("http://127.0.0.1:1/")
+
+function on_t2i_response(req_id, ctx, result, err)
+    t2i_result = tostring(result)
+    t2i_err = tostring(err)
+    if ctx then
+        t2i_ctx_tag = tostring(ctx.tag)
+        t2i_ctx_group = ctx.group
+    end
+    t2i_done = (t2i_done or 0) + 1
+end
+
+function on_http_response(req_id, ctx, result, err)
+    if err then
+        http_fail_err = tostring(err)
+    else
+        http_status = result.status
+        http_body = tostring(result.body)
+        if ctx then http_ctx_tag = tostring(ctx.tag) end
+    end
+    http_done = (http_done or 0) + 1
+end
+`
+
+func TestT2IAndHTTPAsync(t *testing.T) {
+	// HTTP 测试 server（GET /echo 返回固定 JSON）
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/echo" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"path":%q}`, r.URL.Path)
+	}))
+	defer httpSrv.Close()
+
+	// T2I 测试 server（模拟 POST /text2img/generate）
+	t2iSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/text2img/generate" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":{"id":"data/rendered.png"}}`))
+	}))
+	defer t2iSrv.Close()
+	t2iClient := &t2icaller.Client{
+		Config:     t2icaller.Config{BaseURL: t2iSrv.URL, Timeout: 5 * time.Second},
+		HttpClient: t2iSrv.Client(),
+	}
+
+	base := t.TempDir()
+	pe := NewPluginEngine(base, &fakeAdapter{}, nil, nil, t2iClient, nil, nil, nil, &fakeLLM{reply: "x"})
+	writeTestPlugin(t, base, "t2ihttp")
+	main := strings.ReplaceAll(t2iHTTPAsyncTestMain, "{{HTTP_URL}}", httpSrv.URL)
+	if err := os.WriteFile(filepath.Join(base, "t2ihttp", "main.lua"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	L := lua.NewState()
+	t.Cleanup(L.Close)
+	pe.injectSDK(L, "t2ihttp")
+	pe.injectBaseAPI(L, "t2ihttp", []string{"t2i", "http"})
+	L.DoString(fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "t2ihttp")+"/?.lua"))
+	if err := L.DoFile(filepath.Join(base, "t2ihttp", "main.lua")); err != nil {
+		t.Fatalf("加载测试插件失败: %v", err)
+	}
+	pe.mu.Lock()
+	pe.plugins["t2ihttp"] = &LoadedPlugin{Manifest: Manifest{Name: "t2ihttp"}, State: L, Dir: filepath.Join(base, "t2ihttp")}
+	pe.mu.Unlock()
+
+	// 1. t2i 异步成功：req_id > 0，回调拿到结果与 ctx
+	rid := L.GetGlobal("t2i_rid")
+	if rid.Type() != lua.LTNumber || float64(rid.(lua.LNumber)) <= 0 {
+		t.Fatalf("t2i.generate_async 应返回 req_id > 0, got %v", rid)
+	}
+	waitFor(t, func() bool {
+		v := L.GetGlobal("t2i_done")
+		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 1
+	})
+	if v := L.GetGlobal("t2i_result"); v.String() != "data/rendered.png" {
+		t.Fatalf("on_t2i_response result = %v, want data/rendered.png", v)
+	}
+	if v := L.GetGlobal("t2i_err"); v.String() != "nil" {
+		t.Fatalf("on_t2i_response err = %v, want nil", v)
+	}
+	if v := L.GetGlobal("t2i_ctx_tag"); v.String() != "ctx-t2i" {
+		t.Fatalf("ctx.tag = %v, want ctx-t2i", v)
+	}
+	if v := L.GetGlobal("t2i_ctx_group"); float64(v.(lua.LNumber)) != 10001 {
+		t.Fatalf("ctx.group = %v, want 10001", v)
+	}
+
+	// 2. http 异步成功：req_id > 0，回调拿到 {status, body} 与 ctx
+	rid = L.GetGlobal("http_rid")
+	if rid.Type() != lua.LTNumber || float64(rid.(lua.LNumber)) <= 0 {
+		t.Fatalf("http.get_async 应返回 req_id > 0, got %v", rid)
+	}
+	waitFor(t, func() bool {
+		v := L.GetGlobal("http_done")
+		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 2 // 成功 + 连接失败两个回调
+	})
+	if v := L.GetGlobal("http_status"); float64(v.(lua.LNumber)) != 200 {
+		t.Fatalf("on_http_response status = %v, want 200", v)
+	}
+	if v := L.GetGlobal("http_body"); !strings.Contains(v.String(), "/echo") {
+		t.Fatalf("on_http_response body = %v, want 包含 /echo", v)
+	}
+	if v := L.GetGlobal("http_ctx_tag"); v.String() != "ctx-http" {
+		t.Fatalf("ctx.tag = %v, want ctx-http", v)
+	}
+
+	// 3. 异步回调错误路径：连接拒绝 → err 非 nil
+	if v := L.GetGlobal("http_fail_err"); v.String() == "" || v.String() == "nil" {
+		t.Fatalf("连接失败应回调 err, got %v", v)
+	}
+
+	// 4. 同步阶段错误：opts 含未知键 → 返回 (0, err)
+	if v := L.GetGlobal("opts_rid"); float64(v.(lua.LNumber)) != 0 {
+		t.Fatalf("opts 解析错误应返回 req_id 0, got %v", v)
+	}
+	if v := L.GetGlobal("opts_err"); !strings.Contains(v.String(), "未知 T2I 选项") {
+		t.Fatalf("opts 解析错误串 = %v, want 包含 未知 T2I 选项", v)
+	}
+}
+
+// ---------- 测试: sandbox 异步 API（create/exec_shell/exec_python 异步化） ----------
+
+// sandboxAsyncTestMain 异步机制测试插件。
+const sandboxAsyncTestMain = `-- sandbox 异步机制测试
+sb_create_rid = sandbox.create_async({ tag = "ctx-create" })
+sb_shell_rid = sandbox.exec_shell_async("sb-1", "echo hi", { tag = "ctx-shell" })
+sb_py_rid = sandbox.exec_python_async("sb-1", "print('world')", { tag = "ctx-py" })
+-- 异步回调错误路径：sb-9 在测试 server 返回 500
+sandbox.exec_shell_async("sb-9", "boom")
+
+function on_sandbox_response(req_id, ctx, result, err)
+    if err then
+        sb_fail_err = tostring(err)
+    elseif ctx and ctx.tag == "ctx-shell" then
+        sb_shell_output = result.output
+        sb_shell_exit = result.exit_code
+    elseif ctx and ctx.tag == "ctx-create" then
+        sb_create_id = result.sandbox_id
+        sb_create_status = result.status
+    elseif ctx and ctx.tag == "ctx-py" then
+        sb_py_output = result.output
+    end
+    sb_done = (sb_done or 0) + 1
+end
+`
+
+func TestSandboxAsync(t *testing.T) {
+	// 模拟 sandbox 服务：/v1/sandboxes（create）、/{sid}/shell/exec、/{sid}/python/exec
+	sbSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/sandboxes":
+			w.Write([]byte(`{"id":"sb-1","status":"running"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/shell/exec"):
+			if strings.Contains(r.URL.Path, "sb-9") {
+				w.WriteHeader(500)
+				w.Write([]byte(`{"error":"boom"}`))
+				return
+			}
+			w.Write([]byte(`{"output":"hello","exit_code":0}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/python/exec"):
+			w.Write([]byte(`{"output":"world","error":null}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer sbSrv.Close()
+	sbClient := &sandboxcaller.Client{
+		Config:     sandboxcaller.Config{BaseURL: sbSrv.URL},
+		HttpClient: sbSrv.Client(),
+	}
+
+	base := t.TempDir()
+	pe := NewPluginEngine(base, &fakeAdapter{}, nil, nil, nil, sbClient, nil, nil, &fakeLLM{reply: "x"})
+	writeTestPlugin(t, base, "sbxtest")
+	if err := os.WriteFile(filepath.Join(base, "sbxtest", "main.lua"), []byte(sandboxAsyncTestMain), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	L := lua.NewState()
+	t.Cleanup(L.Close)
+	pe.injectSDK(L, "sbxtest")
+	pe.injectBaseAPI(L, "sbxtest", []string{"sandbox"})
+	L.DoString(fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "sbxtest")+"/?.lua"))
+	if err := L.DoFile(filepath.Join(base, "sbxtest", "main.lua")); err != nil {
+		t.Fatalf("加载测试插件失败: %v", err)
+	}
+	pe.mu.Lock()
+	pe.plugins["sbxtest"] = &LoadedPlugin{Manifest: Manifest{Name: "sbxtest"}, State: L, Dir: filepath.Join(base, "sbxtest")}
+	pe.mu.Unlock()
+
+	// 三个异步调用均返回 req_id > 0
+	for _, name := range []string{"sb_create_rid", "sb_shell_rid", "sb_py_rid"} {
+		if v := L.GetGlobal(name); v.Type() != lua.LTNumber || float64(v.(lua.LNumber)) <= 0 {
+			t.Fatalf("%s 应返回 req_id > 0, got %v", name, v)
+		}
+	}
+
+	// 等待全部 4 个回调（create/shell/py 成功 + sb-9 失败）
+	waitFor(t, func() bool {
+		v := L.GetGlobal("sb_done")
+		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 4
+	})
+
+	// create_async → {sandbox_id, status}
+	if v := L.GetGlobal("sb_create_id"); v.String() != "sb-1" {
+		t.Fatalf("on_sandbox_response create sandbox_id = %v, want sb-1", v)
+	}
+	if v := L.GetGlobal("sb_create_status"); v.String() != "running" {
+		t.Fatalf("on_sandbox_response create status = %v, want running", v)
+	}
+	// exec_shell_async → {output, exit_code}
+	if v := L.GetGlobal("sb_shell_output"); v.String() != "hello" {
+		t.Fatalf("on_sandbox_response shell output = %v, want hello", v)
+	}
+	if v := L.GetGlobal("sb_shell_exit"); float64(v.(lua.LNumber)) != 0 {
+		t.Fatalf("on_sandbox_response shell exit_code = %v, want 0", v)
+	}
+	// exec_python_async → {output, error}
+	if v := L.GetGlobal("sb_py_output"); v.String() != "world" {
+		t.Fatalf("on_sandbox_response python output = %v, want world", v)
+	}
+	// 错误路径：HTTP 500 → 回调 err 非 nil
+	if v := L.GetGlobal("sb_fail_err"); v.String() == "" || v.String() == "nil" {
+		t.Fatalf("HTTP 500 应回调 err, got %v", v)
+	}
+}

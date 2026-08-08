@@ -60,12 +60,14 @@ jn.command.register("hello", function(args, event)
     return true, "你好，" .. (event.user_id or "陌生人") .. "！"
 end, { description = "打招呼", usage = "/hello" })
 
--- 消息事件回调
+-- 消息事件回调（返回 consumed, skip_reply）
+-- consumed=true → 消息不进 Agent（不短路，其余插件仍会执行）
+-- skip_reply=true → 跳过回复策略检查，强制进入 Agent
 function on_message(event)
     if event.raw_message == "ping" then
-        return true, event, false  -- consumed, modified_event, skip_reply
+        return true, false  -- 消费：不进 Agent
     end
-    return false, event, false
+    return false, false
 end
 
 -- webhook 事件回调（需在 permissions 申请 webhook）
@@ -318,13 +320,22 @@ local info, err = jn.onebot11.get_group_info(987654321)
 
 | 函数 | 返回 | 说明 |
 |------|------|------|
-| `http.get(url) → table` | `{status=number, body=string}` | GET |
+| `http.get(url) → table` | `{status=number, body=string}` | GET，30s 超时 |
 | `http.post(url [, content_type, body]) → table` | `{status, body}` | POST，30s 超时 |
+| `http.get_async(url [, ctx]) → number` | `req_id` | GET 异步版：立即返回，完成回调 `on_http_response`（不阻塞事件循环） |
+| `http.post_async(url [, content_type, body, ctx]) → number` | `req_id` | POST 异步版 |
 
 ```lua
 local r, err = jn.http.get("https://api.github.com/repos/x/y")
 local r, err = jn.http.post("https://httpbin.org/post", "application/json",
                             '{"k":"v"}')
+
+-- 异步：立即返回 req_id，完成回调 on_http_response
+local rid = jn.http.get_async("https://api.github.com/repos/x/y")
+function on_http_response(req_id, ctx, result, err)
+    if err then jn.log.warn("HTTP 请求失败: " .. err) return end
+    jn.log.info("status=" .. result.status .. " body=" .. result.body)
+end
 ```
 
 ## 全局表: `database`
@@ -376,6 +387,8 @@ if jn.cache.exists("last_seen") then ... end
 |------|------|------|
 | `t2i.generate(html) → string [, err]` | 图片 ID | HTML→图片 |
 | `t2i.generate_url(html) → string [, err]` | 公开 URL | |
+| `t2i.generate_async(html [, opts, ctx]) → number` | `req_id` | 异步版：立即返回，完成回调 `on_t2i_response`（不阻塞事件循环） |
+| `t2i.generate_url_async(html [, opts, ctx]) → number` | `req_id` | 异步版，回调返回 URL |
 | `t2i.toggle(active) → bool [, err]` | bool | 启用/停用，委托 `SetT2IActive`（同步 DB + 重建客户端） |
 | `t2i.is_active() → bool` | bool | 从 DB 读配置；`dao` 不可用时 false |
 | `t2i.get_config() → table [, err]` | base_url/timeout/is_active 等 | |
@@ -386,6 +399,15 @@ local url = jn.t2i.generate_url(...)
 jn.onebot11.send_group_msg(987654321, "[CQ:image,file=" .. url .. "]")
 local active = jn.t2i.is_active()
 local cfg = jn.t2i.get_config()
+
+-- 异步：立即返回 req_id，完成回调 on_t2i_response（渲染较慢，适合异步）
+local rid = jn.t2i.generate_async("<h1>卷娘</h1>", nil, { group_id = 987654321 })
+function on_t2i_response(req_id, ctx, result, err)
+    if err then jn.log.warn("T2I 渲染失败: " .. err) return end
+    if ctx and ctx.group_id then
+        jn.onebot11.send_group_msg(ctx.group_id, "[CQ:image,file=" .. result .. "]")
+    end
+end
 ```
 
 ## 全局表: `sandbox`
@@ -397,6 +419,9 @@ local cfg = jn.t2i.get_config()
 | `sandbox.create() → table [, err]` | `{sandbox_id, status}` | 新沙箱 |
 | `sandbox.exec_shell(sandbox_id, command) → (output, exit_code) \| (nil, err)` | | |
 | `sandbox.exec_python(sandbox_id, code) → (output, error) \| (nil, err)` | | |
+| `sandbox.create_async([ctx]) → number` | `req_id` | 异步版：立即返回，完成回调 `on_sandbox_response`（不阻塞事件循环） |
+| `sandbox.exec_shell_async(sandbox_id, command [, ctx]) → number` | `req_id` | 异步执行 shell（默认超时 120s），回调 result=`{output, exit_code}` |
+| `sandbox.exec_python_async(sandbox_id, code [, ctx]) → number` | `req_id` | 异步执行 python，回调 result=`{output, error}` |
 | `sandbox.toggle(active) → bool [, err]` | 启停：`SetSandboxActive` |
 | `sandbox.is_active() → bool` | 从 DB 读配置 |
 | `sandbox.get_config() → table [, err]` | base_url/api_key/timeout/is_active 等 |
@@ -409,6 +434,13 @@ local sid = sb.sandbox_id
 local out, exit = jn.sandbox.exec_shell(sid, "ls -la /")
 local out, e = jn.sandbox.exec_python(sid, "print(1+1)")
 jn.sandbox.delete(sid)
+
+-- 异步（执行代码可能很慢，建议异步）：完成回调 on_sandbox_response
+local rid = jn.sandbox.exec_shell_async(sid, "ls -la /", { sid = sid })
+function on_sandbox_response(req_id, ctx, result, err)
+    if err then jn.log.warn("沙箱执行失败: " .. err) return end
+    jn.log.info("exit=" .. result.exit_code .. " output=" .. result.output)
+end
 ```
 
 ## 全局表: `agent`
@@ -517,13 +549,24 @@ end
 
 ### 异步 API 注册表
 
-`chat_async` 由引擎级**异步注册表**驱动（`PluginEngine.RegisterAsyncAPI`，kind `"chat"`）：
+`xxx_async` 由引擎级**异步注册表**驱动（`PluginEngine.RegisterAsyncAPI`）：
 
-- 提交后立即返回 `req_id`，阻塞操作（HTTP 调用）在独立 goroutine 完成，**不阻塞事件循环**；
+- 提交后立即返回 `req_id`，阻塞操作（HTTP 调用 / T2I 渲染 / LLM）在独立 goroutine 完成，**不阻塞事件循环**；
 - 完成后引擎串行派发到插件 Lua 入口函数 `on_xxx_response`（与事件派发互斥，保证 LState 安全）；
 - 插件卸载后未派发的任务自动丢弃。
 
-后续新增异步 API（如 `t2i.generate_async` → `on_t2i_response`、`http.get_async` → `on_http_response`）只需在 Go 侧注册一个 kind，插件侧遵循同一约定：`xxx_async(...) → req_id`，`on_xxx_response(req_id, <结果...>)`。
+**异步 API 一览**（`xxx_async(...) → req_id`，完成后引擎调用对应回调）：
+
+| kind | 异步函数 | 回调入口 | 回调参数 |
+|------|---------|---------|---------|
+| `chat` | `llm.chat_async(messages, opts?)` | `on_chat_response` | `(req_id, content, err)` |
+| `t2i` | `t2i.generate_async` / `t2i.generate_url_async` | `on_t2i_response` | `(req_id, ctx, result, err)` |
+| `http` | `http.get_async` / `http.post_async` | `on_http_response` | `(req_id, ctx, result, err)` |
+| `sandbox` | `sandbox.create_async` / `exec_shell_async` / `exec_python_async` | `on_sandbox_response` | `(req_id, ctx, result, err)` |
+
+> **调用现场保存（ctx）**：`t2i` / `http` 异步回调带 `ctx` 参数——调用时把要保留的变量打包成一张表作为最后一个参数传入（如 `generate_async(html, opts, ctx)`），引擎按 `req_id` 关联保存，回调时**原样带回**（不序列化，可含函数）。用于延续调用前的业务状态（待处理消息、群号、临时标记等）；不传则为 `nil`。`llm.chat_async` 不带 `ctx`（回调签名保持 `(req_id, content, err)`，兼容现有插件）。
+>
+> **顺序语义**：多个异步任务并发提交时，回调按**完成顺序**派发（FIFO），不保证与提交顺序一致，插件勿依赖提交顺序。
 
 ## SDK 模块: `jn.command`
 
@@ -573,7 +616,7 @@ end, { description = "多级命令", usage = "/myplugin subcmd1 subcmd2 [args...
 ## 回调: `on_message`
 
 ```lua
-function on_message(event) → (consumed, modified_event, skip_reply)
+function on_message(event) → (consumed, skip_reply)
 ```
 
 | event 字段 | 类型 | 说明 |
@@ -588,9 +631,10 @@ function on_message(event) → (consumed, modified_event, skip_reply)
 | `admins` | []string | admin QQ 列表（透传 OB AdminQQNumbers） |
 
 **返回值：**
-- `consumed` (bool): `true` → 跳过 Agent 处理与后续插件
-- `modified_event` (table): 可返回修改后的 event 表供后续处理，传 `nil` 或原 event 表示不修改
-- `skip_reply` (bool): `true` → 跳过回复策略评估，即使 Agent 处理也不自动回复
+- `consumed` (bool): `true` → 消息**不进 Agent**。注意：**不短路**——即使某个插件返回 `true`，其余插件的 `on_message` 仍会全部执行完（适合"多个监听插件都要看到消息"的场景）。
+- `skip_reply` (bool): `true` → 跳过回复策略检查（`at_only` / `never` / relevance 过滤），**强制进入 Agent 处理**；当 `consumed=true` 时以 `consumed` 为准（消息不进 Agent）。
+
+> **已移除**：`modified_event`（修改事件）不再支持——插件不得中途改写事件内容（防止上下文失真）。需要拦截/处理消息时，在 `on_message` 中直接调用 `jn.onebot11` API 产生副作用（如 `delete_msg` 撤回、`ban_group_member` 禁言）。
 
 > **命令优先**：`/` 开头的 RawMessage 会**先**进 `commands.Dispatch`，命中命令后直接 sendReply 并短路，`on_message` 不会被调用。插件应优先用 `jn.command.register` 注册命令式交互，将 `on_message` 用于纯事件监听。
 
@@ -716,6 +760,45 @@ function on_request(event)
     if event.request_type == "friend" and event.comment == "暗号" then
         jn.onebot11.handle_friend_request(event.flag, true, "欢迎")
     end
+end
+```
+
+## 回调: `on_xxx_response`（异步 API 完成回调）
+
+`xxx_async` 提交的阻塞操作完成后，引擎派发到插件入口回调（与事件派发互斥，保证 LState 安全）。`req_id` 与 `xxx_async` 返回值一致；`ctx` 为调用时保存的现场表（原样带回，未传则 `nil`）。
+
+```lua
+function on_t2i_response(req_id, ctx, result, err)
+    -- result: 图片 ID（generate_async）或公开 URL（generate_url_async）；err 非 nil 表示失败
+end
+
+function on_http_response(req_id, ctx, result, err)
+    -- result: {status=number, body=string}；err 非 nil 表示失败
+end
+
+function on_sandbox_response(req_id, ctx, result, err)
+    -- result: create→{sandbox_id, status}、exec_shell→{output, exit_code}、
+    --         exec_python→{output, error}；err 非 nil 表示失败
+end
+```
+
+| 回调 | req_id 来源 | ctx | result |
+|------|-----------|-----|--------|
+| `on_t2i_response(req_id, ctx, result, err)` | `t2i.generate_async` / `t2i.generate_url_async` | 调用现场表（原样带回） | 图片 ID / URL |
+| `on_http_response(req_id, ctx, result, err)` | `http.get_async` / `http.post_async` | 同上 | `{status, body}` |
+| `on_sandbox_response(req_id, ctx, result, err)` | `sandbox.create_async` / `exec_shell_async` / `exec_python_async` | 同上 | 见上注释 |
+
+```lua
+-- 示例：http 异步 + 现场保存（url 与回调目标一起带到回调）
+function on_message(event)
+    local ctx = { url = "https://api.github.com/repos/x/y", group_id = event.group_id }
+    local rid = jn.http.get_async(ctx.url, ctx)
+    return false, false
+end
+
+function on_http_response(req_id, ctx, result, err)
+    if err or not ctx then return end
+    jn.onebot11.send_group_msg(ctx.group_id, "仓库信息: " .. result.body)
 end
 ```
 

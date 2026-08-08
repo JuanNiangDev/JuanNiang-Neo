@@ -9,7 +9,7 @@
       <v-btn color="primary" prepend-icon="mdi-plus" @click="openAdd">新增知识</v-btn>
     </div>
 
-    <v-data-table :headers="headers" :items="items" :loading="loading" :items-per-page="pageSize" :items-per-page-options="[10, 20, 50]" @update:options="onPageChange">
+    <v-data-table :headers="headers" :items="items" :loading="loading" :page="page" :items-per-page="pageSize" :items-length="total" :items-per-page-options="[10, 20, 50]" @update:options="onPageChange">
       <template #item.title="{ item }">
         <span class="font-weight-medium">{{ item.title || '(无标题)' }}</span>
       </template>

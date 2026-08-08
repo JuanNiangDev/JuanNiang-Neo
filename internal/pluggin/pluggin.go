@@ -191,6 +191,10 @@ type AsyncAPI struct {
 	// Encode 在锁内把 Go 结果转成 Lua 返回值（req_id 已由派发器先压入）。
 	// 成功：err 为 nil、result 为业务结果；失败：result 为 nil、err 非 nil。
 	Encode func(L *lua.LState, result any, err error) []lua.LValue
+	// WithCtx 为 true 时，回调入口签名带调用现场：on_xxx_response(req_id, ctx, <结果...>)。
+	// ctx 由 xxx_async 的最后一个 table 参数提供（可选），按 req_id 关联保存在
+	// Lua 侧 jn_async_ctx 注册表，回调时原样带回（不序列化，可含函数）并删除。
+	WithCtx bool
 }
 
 // asyncTask 一次异步调用的完成事件（runAsyncCallbacks 消费）。
@@ -230,6 +234,51 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
 			}
 			return []lua.LValue{lua.LString(result.(string)), lua.LNil}
+		},
+	})
+	// t2i → on_t2i_response（带调用现场 ctx）；结果：图片 ID / URL 字符串
+	pe.RegisterAsyncAPI("t2i", AsyncAPI{
+		Entry:   "on_t2i_response",
+		WithCtx: true,
+		Encode: func(L *lua.LState, result any, err error) []lua.LValue {
+			if err != nil {
+				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
+			}
+			return []lua.LValue{lua.LString(result.(string)), lua.LNil}
+		},
+	})
+	// http → on_http_response（带调用现场 ctx）；结果：{status, body}
+	pe.RegisterAsyncAPI("http", AsyncAPI{
+		Entry:   "on_http_response",
+		WithCtx: true,
+		Encode: func(L *lua.LState, result any, err error) []lua.LValue {
+			if err != nil {
+				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
+			}
+			hr, ok := result.(*httpResult)
+			if !ok {
+				return []lua.LValue{lua.LNil, lua.LString("http: 未知结果类型")}
+			}
+			t := L.NewTable()
+			t.RawSetString("status", lua.LNumber(hr.Status))
+			t.RawSetString("body", lua.LString(hr.Body))
+			return []lua.LValue{t, lua.LNil}
+		},
+	})
+	// sandbox → on_sandbox_response（带调用现场 ctx）；结果：标量字段表
+	// （create→{sandbox_id,status}、exec_shell→{output,exit_code}、exec_python→{output,error}）
+	pe.RegisterAsyncAPI("sandbox", AsyncAPI{
+		Entry:   "on_sandbox_response",
+		WithCtx: true,
+		Encode: func(L *lua.LState, result any, err error) []lua.LValue {
+			if err != nil {
+				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
+			}
+			m, ok := result.(map[string]any)
+			if !ok {
+				return []lua.LValue{lua.LNil, lua.LString("sandbox: 未知结果类型")}
+			}
+			return []lua.LValue{luaTableFromMap(L, m), lua.LNil}
 		},
 	})
 	// 注册内置 /help 命令
@@ -482,60 +531,14 @@ type EventData struct {
 
 // DispatchResult 是 Plugin 引擎统一派发结果。
 type DispatchResult struct {
-	Consumed  bool          // Plugin 已消费事件
-	Event     adapter.Event // 可能被 Plugin 修改后的事件
-	SkipReply bool          // skip_reply_check 标记：跳过回复策略直接给 Agent
+	Consumed  bool          // 任一插件 consumed=true：消息不进 Agent（所有 on_message 仍全部执行，不短路）
+	Event     adapter.Event // 透传事件（插件不允许修改事件）
+	SkipReply bool          // skip_reply 标记：跳过回复策略检查直接给 Agent（强制必回）
 }
 
 // HasPluginCommand 检查消息是否匹配已注册的插件命令（不执行，仅供策略层判断）。
 func (pe *PluginEngine) HasPluginCommand(raw string) bool {
 	return pe.commands.HasCommand(raw)
-}
-
-func (pe *PluginEngine) OnMessage(event EventData) (consumed bool) {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-
-	pe.currentEv = event
-
-	// 1. 优先派发给命令注册表（/cmd subcmd ...）
-	if strings.HasPrefix(strings.TrimSpace(event.RawMessage), "/") {
-		c, reply, err := pe.commands.Dispatch(event.RawMessage, event)
-		if err != nil {
-			log.Error("命令派发错误", "raw", event.RawMessage, "err", err)
-		}
-		// 只要命令已消费或有回复内容，都视为已处理（避免消息流入 Agent）
-		if c || reply != "" {
-			if reply != "" {
-				pe.sendReply(event, reply)
-			}
-			return true
-		}
-	}
-
-	// 2. 没有命令命中，按原逻辑派发给插件的 on_message
-	for _, p := range pe.plugins {
-		if !p.HasPermission("onebot11") {
-			continue
-		}
-		fn := p.State.GetGlobal("on_message")
-		if fn.Type() != lua.LTFunction {
-			continue
-		}
-		table := eventToLuaTable(p.State, event)
-		p.State.Push(fn)
-		p.State.Push(table)
-		if err := p.State.PCall(1, 2, nil); err != nil {
-			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
-			continue
-		}
-		consumedRet := p.State.Get(-2)
-		p.State.Pop(2)
-		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
-			return true
-		}
-	}
-	return false
 }
 
 // sendReply 内部辅助：根据 event 的 message_type 回复到对应会话。
@@ -785,6 +788,12 @@ func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 }
 
 // dispatchMessageLocked 消息事件的统一派发（需在持有读锁时调用）。
+// 派发规则：
+//  1. 命令注册表优先：/cmd 命中即 Consumed（命令消息不进 Agent）
+//  2. 其余消息遍历各插件 on_message 回调，返回 (consumed, skip_reply)：
+//     - consumed=true → 消息不进 Agent，但**不短路**，所有插件 on_message 仍全部执行
+//     - skip_reply=true → 跳过回复策略检查强制进 Agent（consumed 优先）
+//  3. 插件不能修改事件（modified_event 已移除）
 func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 	msg := ev.Message
 	pluginEvent := EventData{
@@ -806,7 +815,7 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 
 	pe.currentEv = pluginEvent
 
-	// 1. 命令注册表
+	// 1. 命令注册表：命中即消费（命令消息不进 Agent）
 	if strings.HasPrefix(strings.TrimSpace(pluginEvent.RawMessage), "/") {
 		c, reply, err := pe.commands.Dispatch(pluginEvent.RawMessage, pluginEvent)
 		if err != nil {
@@ -820,8 +829,8 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 		}
 	}
 
-	// 2. 派发给各插件的 on_message
-	var anySkipReply bool
+	// 2. 派发给各插件的 on_message：不短路，全部执行；收集 consumed 与 skip_reply
+	var anyConsumed, anySkipReply bool
 	for _, p := range pe.plugins {
 		if !p.HasPermission("onebot11") {
 			continue
@@ -833,39 +842,24 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 		table := eventToLuaTable(p.State, pluginEvent)
 		p.State.Push(fn)
 		p.State.Push(table)
-		if err := p.State.PCall(1, 3, nil); err != nil { // 3 return values
+		if err := p.State.PCall(1, 2, nil); err != nil { // 返回值: consumed, skip_reply
 			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
 			continue
 		}
 
-		// 返回值: consumed, modified_event, skip_reply
+		consumedRet := p.State.Get(-2)
 		skipReplyRet := p.State.Get(-1)
-		modifiedRet := p.State.Get(-2)
-		consumedRet := p.State.Get(-3)
-		p.State.Pop(3)
+		p.State.Pop(2)
 
-		consumed := consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool))
-		skipReply := skipReplyRet.Type() == lua.LTBool && bool(skipReplyRet.(lua.LBool))
-
-		// 解析修改后的事件
-		resultEvent := ev
-		if modifiedRet.Type() == lua.LTTable {
-			if t, ok := modifiedRet.(*lua.LTable); ok {
-				resultEvent = pe.luaTableToEvent(t, ev)
-			}
+		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
+			anyConsumed = true
 		}
-
-		if consumed {
-			return DispatchResult{Consumed: true, Event: resultEvent, SkipReply: skipReply}
-		}
-		// 即使未消费，也保留修改后的事件和 skip_reply 标记
-		ev = resultEvent
-		if skipReply {
+		if skipReplyRet.Type() == lua.LTBool && bool(skipReplyRet.(lua.LBool)) {
 			anySkipReply = true
 		}
 	}
 
-	return DispatchResult{Consumed: false, Event: ev, SkipReply: anySkipReply}
+	return DispatchResult{Consumed: anyConsumed, Event: ev, SkipReply: anySkipReply}
 }
 
 // onCronJobLocked 派发 cronjob 事件给插件（需在持有读锁时调用）。
@@ -989,18 +983,6 @@ func (pe *PluginEngine) sendWebhookReply(ev adapter.Event, reply string) {
 	log.Info("Webhook reply", "reply_len", len(reply))
 }
 
-// luaTableToEvent 将 Lua 插件修改后的事件表转换回 adapter.Event。
-func (pe *PluginEngine) luaTableToEvent(t *lua.LTable, original adapter.Event) adapter.Event {
-	result := original
-	// 更新 RawMessage（如插件修改了消息内容）
-	if v := t.RawGetString("raw_message"); v.Type() == lua.LTString {
-		if result.Message != nil {
-			result.Message.RawMessage = string(v.(lua.LString))
-		}
-	}
-	return result
-}
-
 // SupportsCronJob 检查插件是否支持定时任务回调（定义了 on_cronjob 全局函数）。
 // 注意：CronJob 实际调用的回调是 on_cronjob，而非 on_timer_call。
 func (p *LoadedPlugin) SupportsCronJob() bool {
@@ -1048,6 +1030,10 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 		}
 		return false
 	}
+
+	// 异步调用现场注册表：req_id → ctx table（WithCtx 异步 API 使用）。
+	// 每个 LState 独立，插件重载/卸载时随 LState 销毁自动清理。
+	L.SetGlobal("jn_async_ctx", L.NewTable())
 
 	// Logger
 	logTable := L.NewTable()
@@ -1548,6 +1534,9 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 
 // ---------- HTTP ----------
 
+// httpAsyncTimeout http 异步任务总超时（httpClient 内建 30s，此处兜底）。
+const httpAsyncTimeout = 60 * time.Second
+
 func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
@@ -1591,6 +1580,75 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 			L.SetField(result, "status", lua.LNumber(resp.StatusCode))
 			L.SetField(result, "body", lua.LString(string(body)))
 			L.Push(result)
+			return 1
+		},
+		// 异步版：立即返回 req_id（失败返回 0 + 错误串），完成回调 on_http_response(req_id, ctx, result, err)
+		"get_async": func(L *lua.LState) int {
+			url := L.CheckString(1)
+			run := func(ctx context.Context) (any, error) {
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+				if err != nil {
+					return nil, err
+				}
+				resp, err := httpClient.Do(req)
+				if err != nil {
+					return nil, err
+				}
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				return &httpResult{Status: resp.StatusCode, Body: string(body)}, nil
+			}
+			id, err := pe.submitAsync(pluginName, "http", httpAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 2) // 第 2 位：可选 ctx 现场表
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+		"post_async": func(L *lua.LState) int {
+			url := L.CheckString(1)
+			contentType := "application/json"
+			var bodyStr string
+			top := L.GetTop()
+			ctxIdx := 0
+			// 尾部 table 参数视为调用现场 ctx（与 body 字符串区分）
+			if top >= 2 && L.Get(top).Type() == lua.LTTable {
+				ctxIdx = top
+				top--
+			}
+			if top >= 3 {
+				contentType = L.CheckString(2)
+				bodyStr = L.CheckString(3)
+			} else if top >= 2 {
+				bodyStr = L.CheckString(2)
+			}
+			run := func(ctx context.Context) (any, error) {
+				req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString(bodyStr))
+				if err != nil {
+					return nil, err
+				}
+				req.Header.Set("Content-Type", contentType)
+				resp, err := httpClient.Do(req)
+				if err != nil {
+					return nil, err
+				}
+				defer resp.Body.Close()
+				body, _ := io.ReadAll(resp.Body)
+				return &httpResult{Status: resp.StatusCode, Body: string(body)}, nil
+			}
+			id, err := pe.submitAsync(pluginName, "http", httpAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			if ctxIdx > 0 {
+				saveAsyncCtx(L, id, ctxIdx)
+			}
+			L.Push(lua.LNumber(id))
 			return 1
 		},
 	})
@@ -1717,6 +1775,9 @@ func (pe *PluginEngine) injectCache(L *lua.LState, pluginName string) {
 
 // ---------- T2I ----------
 
+// t2iAsyncTimeout t2i 异步任务默认总超时（T2I 渲染较慢；opts.timeout 可覆盖）。
+const t2iAsyncTimeout = 120 * time.Second
+
 // luaTableToT2IOptions 解析 t2i.generate / t2i.generate_url 的可选 options 表
 // （键名与 T2I 服务 GenerateOptions 的 JSON 字段一致）；未传或为 nil 时返回 nil。
 // 未知键返回错误，便于插件尽早发现拼写问题。
@@ -1831,6 +1892,86 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 			L.Push(lua.LString(url))
 			return 1
 		},
+		// 异步版：立即返回 req_id（失败返回 0 + 错误串），完成回调 on_t2i_response(req_id, ctx, result, err)
+		"generate_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("T2I 服务未启用"))
+				return 2
+			}
+			html := L.CheckString(1)
+			opts, optErr := luaTableToT2IOptions(L, 2)
+			if optErr != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(optErr.Error()))
+				return 2
+			}
+			// 异步任务总超时：opts.timeout（秒）优先，缺省 120s
+			timeout := t2iAsyncTimeout
+			if opts != nil && opts.Timeout > 0 {
+				timeout = time.Duration(opts.Timeout * float64(time.Second))
+			}
+			run := func(ctx context.Context) (any, error) {
+				resp, err := client.Generate(ctx, t2icaller.GenerateRequest{
+					HTML:    html,
+					AsJSON:  true,
+					Options: opts,
+				})
+				if err != nil {
+					return nil, err
+				}
+				return resp.Data.ID, nil
+			}
+			id, err := pe.submitAsync(pluginName, "t2i", timeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 3) // 第 3 位：可选 ctx 现场表（html, opts, ctx）
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+		"generate_url_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("T2I 服务未启用"))
+				return 2
+			}
+			html := L.CheckString(1)
+			opts, optErr := luaTableToT2IOptions(L, 2)
+			if optErr != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(optErr.Error()))
+				return 2
+			}
+			timeout := t2iAsyncTimeout
+			if opts != nil && opts.Timeout > 0 {
+				timeout = time.Duration(opts.Timeout * float64(time.Second))
+			}
+			run := func(ctx context.Context) (any, error) {
+				url, err := client.GenerateURL(ctx, t2icaller.GenerateRequest{
+					HTML:    html,
+					AsJSON:  true,
+					Options: opts,
+				})
+				if err != nil {
+					return nil, err
+				}
+				return url, nil
+			}
+			id, err := pe.submitAsync(pluginName, "t2i", timeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 3)
+			L.Push(lua.LNumber(id))
+			return 1
+		},
 		// 开关管理
 		"toggle": func(L *lua.LState) int {
 			if pe.agentOp == nil {
@@ -1865,6 +2006,9 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 }
 
 // ---------- Sandbox ----------
+
+// sandboxAsyncTimeout sandbox 异步任务默认总超时（沙箱执行代码可能较慢）。
+const sandboxAsyncTimeout = 120 * time.Second
 
 func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 	sbTable := L.NewTable()
@@ -1942,6 +2086,91 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(""))
 			}
 			return 2
+		},
+		// 异步版：立即返回 req_id（失败返回 0 + 错误串），完成回调 on_sandbox_response(req_id, ctx, result, err)
+		"create_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("Sandbox 服务未启用"))
+				return 2
+			}
+			run := func(ctx context.Context) (any, error) {
+				sbox, err := client.CreateSandbox(ctx, sandboxcaller.CreateSandboxRequest{})
+				if err != nil {
+					return nil, err
+				}
+				return map[string]any{"sandbox_id": sbox.ID, "status": string(sbox.Status)}, nil
+			}
+			id, err := pe.submitAsync(pluginName, "sandbox", sandboxAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 1) // 第 1 位：可选 ctx 现场表
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+		"exec_shell_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("Sandbox 服务未启用"))
+				return 2
+			}
+			sid := L.CheckString(1)
+			cmd := L.CheckString(2)
+			run := func(ctx context.Context) (any, error) {
+				result, err := client.ExecShell(ctx, sid, sandboxcaller.ShellExecRequest{Command: cmd})
+				if err != nil {
+					return nil, err
+				}
+				exitCode := 0
+				if result.ExitCode != nil {
+					exitCode = *result.ExitCode
+				}
+				return map[string]any{"output": result.Output, "exit_code": exitCode}, nil
+			}
+			id, err := pe.submitAsync(pluginName, "sandbox", sandboxAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 3) // 第 3 位：可选 ctx 现场表（sid, cmd, ctx）
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+		"exec_python_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("Sandbox 服务未启用"))
+				return 2
+			}
+			sid := L.CheckString(1)
+			code := L.CheckString(2)
+			run := func(ctx context.Context) (any, error) {
+				result, err := client.ExecPython(ctx, sid, sandboxcaller.PythonExecRequest{Code: code})
+				if err != nil {
+					return nil, err
+				}
+				errStr := ""
+				if result.Error != nil {
+					errStr = *result.Error
+				}
+				return map[string]any{"output": result.Output, "error": errStr}, nil
+			}
+			id, err := pe.submitAsync(pluginName, "sandbox", sandboxAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 3)
+			L.Push(lua.LNumber(id))
+			return 1
 		},
 		// 开关管理
 		"toggle": func(L *lua.LState) int {
@@ -2269,8 +2498,9 @@ func (pe *PluginEngine) submitAsync(pluginName, kind string, timeout time.Durati
 }
 
 // runAsyncCallbacks 消费异步任务队列，串行派发到插件 Lua 入口函数
-// on_<kind>_response(req_id, <Encode 返回值...>)。与事件派发通过 pe.mu
+// on_<kind>_response(req_id, [ctx,] <Encode 返回值...>)。与事件派发通过 pe.mu
 // 互斥（写锁），保证同一 LState 不会并发执行 Lua。插件已卸载则丢弃任务。
+// WithCtx 的 API 回调前从 jn_async_ctx 取出调用现场（一次性消费）。
 func (pe *PluginEngine) runAsyncCallbacks() {
 	for task := range pe.asyncCh {
 		pe.mu.Lock()
@@ -2280,18 +2510,75 @@ func (pe *PluginEngine) runAsyncCallbacks() {
 			fn := L.GetGlobal(task.api.Entry)
 			if fn.Type() == lua.LTFunction {
 				vals := task.api.Encode(L, task.result, task.err)
+				nargs := 1 // req_id
 				L.Push(fn)
 				L.Push(lua.LNumber(task.reqID))
+				if task.api.WithCtx {
+					// 取出调用现场（req_id → ctx table），回调后即删，防泄漏
+					ctxVal := lua.LNil
+					if t := L.GetGlobal("jn_async_ctx"); t.Type() == lua.LTTable {
+						key := lua.LNumber(task.reqID)
+						if v := t.(*lua.LTable).RawGet(key); v != lua.LNil {
+							ctxVal = v
+							t.(*lua.LTable).RawSet(key, lua.LNil)
+						}
+					}
+					L.Push(ctxVal)
+					nargs++
+				}
 				for _, v := range vals {
 					L.Push(v)
 				}
-				if err := L.PCall(1+len(vals), 0, nil); err != nil {
+				if err := L.PCall(nargs+len(vals), 0, nil); err != nil {
 					log.Error("插件异步回调错误", "plugin", task.pluginName, "kind", task.kind, "err", err)
 				}
 			}
 		}
 		pe.mu.Unlock()
 	}
+}
+
+// saveAsyncCtx 保存异步调用的调用现场表（可选）：jn_async_ctx[req_id] = ctx。
+// ctx 缺省（非 table）时不保存；回调时由 runAsyncCallbacks 取出并删除。
+func saveAsyncCtx(L *lua.LState, reqID uint64, ctxIdx int) {
+	ctx := L.Get(ctxIdx)
+	if ctx.Type() != lua.LTTable {
+		return
+	}
+	t := L.GetGlobal("jn_async_ctx")
+	if t.Type() != lua.LTTable {
+		return
+	}
+	t.(*lua.LTable).RawSet(lua.LNumber(reqID), ctx)
+}
+
+// httpResult http 异步请求结果（Encode 阶段转成 Lua {status, body} 表）。
+type httpResult struct {
+	Status int
+	Body   string
+}
+
+// luaTableFromMap 把标量字段的 map 转成 Lua table（异步 Encode 阶段使用，
+// 回调前在锁内执行，L 可用）。仅支持 string/int/int64/float64/bool，其余置 nil。
+func luaTableFromMap(L *lua.LState, m map[string]any) *lua.LTable {
+	t := L.NewTable()
+	for k, v := range m {
+		switch vv := v.(type) {
+		case string:
+			t.RawSetString(k, lua.LString(vv))
+		case int:
+			t.RawSetString(k, lua.LNumber(vv))
+		case int64:
+			t.RawSetString(k, lua.LNumber(vv))
+		case float64:
+			t.RawSetString(k, lua.LNumber(vv))
+		case bool:
+			t.RawSetString(k, lua.LBool(vv))
+		default:
+			t.RawSetString(k, lua.LNil)
+		}
+	}
+	return t
 }
 
 // luaChatRequest 将 Lua 参数转换为 provider.ChatRequest。
