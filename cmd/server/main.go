@@ -61,6 +61,9 @@ func main() {
 		os.Setenv("OB_ADMINS", strings.Join(devCfg.OneBot11.Admins, ","))
 	}
 
+	// ---------- Banner ----------
+	printBanner()
+
 	// ---------- 日志 ----------
 	// 初始化新日志系统（彩色输出 + JSON 格式化 + 调用栈 + Hub 推送）
 	logging.Init(logging.Config{
