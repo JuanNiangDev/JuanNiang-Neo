@@ -1026,9 +1026,19 @@ const replySegmentInterval = 200 * time.Millisecond
 func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs ReplySettings) {
 	// AgentLite 与正常模式一致，同样支持分段回复
 	parts := splitMessages(content)
+	log.Debug("sendReply 入口",
+		"parts", len(parts),
+		"content_len", len([]rune(content)),
+		"message_type", msg.MessageType,
+		"strip_markdown", rs.StripMarkdown,
+	)
 	for i, part := range parts {
 		// 段间延迟：首段立即发，后续段之间间隔 replySegmentInterval，规避 QQ 风控
 		if i > 0 {
+			log.Debug("sendReply 段间延迟",
+				"interval_ms", replySegmentInterval.Milliseconds(),
+				"next_part", i+1,
+			)
 			time.Sleep(replySegmentInterval)
 		}
 		if rs.StripMarkdown {
@@ -1036,6 +1046,13 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs Rep
 		}
 		// 解析 CQ 码并组装消息段
 		segments := parseCQToSegments(part)
+		log.Debug("sendReply 发送段",
+			"part", i+1,
+			"total_parts", len(parts),
+			"part_len", len([]rune(part)),
+			"segments", len(segments),
+			"message_type", msg.MessageType,
+		)
 		var err error
 		switch msg.MessageType {
 		case "private":
@@ -1044,7 +1061,12 @@ func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs Rep
 			_, err = h.Adapter.SendGroupMsg(msg.GroupID, segments)
 		}
 		if err != nil {
-			log.Error("发送消息失败", "err", err)
+			log.Error("发送消息失败",
+				"part", i+1,
+				"total_parts", len(parts),
+				"message_type", msg.MessageType,
+				"err", err,
+			)
 		}
 	}
 }
@@ -1109,6 +1131,7 @@ func parseCQCode(s string) adapter.Segment {
 // 每个 block 内部再走 splitMessagesBlock 做软分段，最后统一硬限制到 3 段。
 // CQ 码和 URL 不计入有效字数；拆分点不会落在 CQ 码内部。
 func splitMessages(content string) []string {
+	contentLen := len([]rune(content))
 	// 兼容 \r\n（Windows 行尾，部分 LLM 偶尔输出）和 \n（Unix 行尾）两种情况
 	blankLineRe := regexp.MustCompile(`\r?\n[ \t]*\r?\n+`)
 	var blocks []string
@@ -1119,22 +1142,38 @@ func splitMessages(content string) []string {
 	}
 	if len(blocks) <= 1 {
 		// 无空行分段信号，走原逻辑（保留单段 ≤60 字原样返回等行为）
+		log.Debug("splitMessages 无强分段", "content_len", contentLen)
 		return splitMessagesBlock(content)
 	}
+	// 强分段触发：LLM 用空行表示独立回复意图，每段独立软分段后拼接
+	log.Info("splitMessages 强分段触发", "blocks", len(blocks), "content_len", contentLen)
 	var out []string
-	for _, blk := range blocks {
-		out = append(out, splitMessagesBlock(blk)...)
+	for i, blk := range blocks {
+		sub := splitMessagesBlock(blk)
+		log.Debug("splitMessages block 处理",
+			"block_idx", i+1,
+			"block_len", len([]rune(blk)),
+			"sub_parts", len(sub),
+		)
+		out = append(out, sub...)
 	}
 	// 硬限制 3 段：合并尾部多余的段（与 prompt 契约"最多 3 段"一致）
+	mergedCount := 0
 	for len(out) > 3 {
 		last := out[len(out)-1]
 		prev := out[len(out)-2]
 		out = out[:len(out)-2]
 		out = append(out, prev+last)
+		mergedCount++
+	}
+	if mergedCount > 0 {
+		log.Info("splitMessages 硬限 3 段合并尾部", "merged", mergedCount, "final_parts", len(out))
 	}
 	if len(out) == 0 {
+		log.Warn("splitMessages 输出为空回退原样", "content_len", contentLen)
 		return []string{content}
 	}
+	log.Debug("splitMessages 完成", "parts", len(out), "blocks", len(blocks))
 	return out
 }
 
@@ -1149,6 +1188,7 @@ func splitMessagesBlock(content string) []string {
 
 	total := effectiveLen(content)
 	if total <= 60 {
+		log.Debug("splitMessagesBlock 短路原样返回", "effective_len", total, "reason", "≤60")
 		return []string{content}
 	}
 
@@ -1181,6 +1221,7 @@ func splitMessagesBlock(content string) []string {
 		matches = append(matches, []int{loc[0], end})
 	}
 	if len(matches) == 0 {
+		log.Debug("splitMessagesBlock 无断点原样返回", "effective_len", total, "cq_spans", len(cqSpans))
 		return []string{content}
 	}
 	var parts []string
@@ -1204,6 +1245,7 @@ func splitMessagesBlock(content string) []string {
 		}
 	}
 	if len(nonEmpty) <= 1 {
+		log.Debug("splitMessagesBlock 过滤后仅 1 段原样返回", "effective_len", total, "raw_parts", len(parts))
 		return []string{content}
 	}
 
@@ -1236,8 +1278,15 @@ func splitMessagesBlock(content string) []string {
 	}
 
 	if len(segments) <= 1 {
+		log.Debug("splitMessagesBlock 合并后仅 1 段", "effective_len", total, "max_segs", maxSegs)
 		return []string{content}
 	}
+	log.Debug("splitMessagesBlock 完成",
+		"effective_len", total,
+		"raw_parts", len(parts),
+		"final_parts", len(segments),
+		"max_segs", maxSegs,
+	)
 	return segments
 }
 
