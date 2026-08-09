@@ -11,8 +11,8 @@ import (
 func TestBuildEinoToolsSkipsUnavailable(t *testing.T) {
 	registry := NewToolRegistry()
 
-	ok := &onebotTool{BaseTool: NewTool("", "ok_tool", "可用工具", openai.FunctionParameters{"type": "object"}, true, false)}
-	bad := &onebotTool{BaseTool: NewTool("", "bad_tool", "服务已停用", openai.FunctionParameters{"type": "object"}, true, false)}
+	ok := &onebotTool{BaseTool: NewTool(NewToolInput{id: "", name: "ok_tool", desc: "可用工具", params: openai.FunctionParameters{"type": "object"}, builtin: true})}
+	bad := &onebotTool{BaseTool: NewTool(NewToolInput{id: "", name: "bad_tool", desc: "服务已停用", params: openai.FunctionParameters{"type": "object"}, builtin: true})}
 	bad.SetAvailable(func() bool { return false }) // 模拟 T2I/Sandbox 未启用
 
 	registry.Register(ok)
@@ -30,7 +30,7 @@ func TestBuildEinoToolsSkipsUnavailable(t *testing.T) {
 
 // TestIsAvailableDefault 验证未设置可用性回调的工具默认始终可用。
 func TestIsAvailableDefault(t *testing.T) {
-	bt := NewTool("", "plain", "普通工具", openai.FunctionParameters{"type": "object"}, true, false)
+	bt := NewTool(NewToolInput{id: "", name: "plain", desc: "普通工具", params: openai.FunctionParameters{"type": "object"}, builtin: true})
 	if !bt.IsAvailable() {
 		t.Error("未设置 available 的工具应始终可用")
 	}
