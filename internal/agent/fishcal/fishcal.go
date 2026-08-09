@@ -6,11 +6,12 @@ package fishcal
 
 import (
 	"context"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,6 +28,22 @@ import (
 )
 
 var log = logging.NewModule("fishcal")
+
+//go:embed fonts/lxgwwenkai-regular.woff2
+var wenkaiFonts embed.FS
+
+// 内嵌霞鹜文楷 woff2（全量汉字 U+4E00-9FFF + 西文/全角/CJK 标点），以 data URI 注入模板，
+// T2I 渲染器无需外网或共享文件系统即可使用楷体；子集外字形回退 font-family 后续字体。
+
+// buildFontFaces 返回 @font-face 定义（base64 data URI）。
+func buildFontFaces() string {
+	b, err := wenkaiFonts.ReadFile("fonts/lxgwwenkai-regular.woff2")
+	if err != nil {
+		return ""
+	}
+	return "@font-face{font-family:'LXGW WenKai';font-weight:400;font-style:normal;" +
+		"src:url(data:font/woff2;base64," + base64.StdEncoding.EncodeToString(b) + ")}"
+}
 
 // Scheduler 摸鱼人日历调度器（独立 cron，不依赖 CronJob Manager）。
 type Scheduler struct {
@@ -184,7 +201,24 @@ var holidaysByYear = map[int][]holiday{
 
 var weekdayCN = []string{"日", "一", "二", "三", "四", "五", "六"}
 
-// buildCalendarHTML 组装摸鱼日历 HTML 模板（800×720，黑白纸张质感，T2I 渲染成图片）。
+// solarMonthCN 公历月份中文（1-12 月 → 一~十二）。
+var solarMonthCN = []string{"一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"}
+
+// buildProgressSegs 生成周进度 5 格横条（已过实心，未过空心）。
+func buildProgressSegs(passed int) string {
+	var b strings.Builder
+	for i := 1; i <= 5; i++ {
+		if i <= passed {
+			b.WriteString(`<span class="seg"></span>`)
+		} else {
+			b.WriteString(`<span class="seg empty"></span>`)
+		}
+	}
+	return b.String()
+}
+
+// buildCalendarHTML 组装摸鱼日历 HTML 模板（682×757，纸张朱印质感 + 洛谷式日历卡，T2I 渲染成图片）。
+// 楷体以 woff2 data URI 内嵌（fonts/lxgwwenkai-regular.woff2），渲染器无需外网；子集外字形回退 KaiTi/SimSun。
 func buildCalendarHTML(t time.Time, affair string) string {
 	// 农历
 	lunarStr := ""
@@ -201,16 +235,17 @@ func buildCalendarHTML(t time.Time, affair string) string {
 	if passed > 5 {
 		passed = 5
 	}
-	weekLine := fmt.Sprintf("⏰ 本周已过去 [%d/5] 天！再坚持 %d 天就周末啦！", passed, 5-passed)
+	progressTxt := fmt.Sprintf("再坚持 %d 天就周末啦！", 5-passed)
 	if passed >= 5 {
-		weekLine = "⏰ 本周已过去 [5/5] 天！今天就是周末啦！"
+		progressTxt = "今天就是周末啦！"
 	}
+	weekendLine := fmt.Sprintf("距周末还有 %d 天", 5-passed)
 
 	// 最近法定假日
 	holidayName, holidayDays := nextStatutoryHoliday(t)
-	holidayLine := fmt.Sprintf("🎉 距离下一个法定假日（%s）还有：[%d] 天", holidayName, holidayDays)
+	holidayLine := fmt.Sprintf("距%s还有 %d 天", holidayName, holidayDays)
 	if holidayName == "" {
-		holidayLine = "🎉 暂无后续法定假日数据，专心摸鱼吧！"
+		holidayLine = "暂无后续法定假日数据，专心摸鱼吧！"
 	}
 
 	// 金句
@@ -221,41 +256,93 @@ func buildCalendarHTML(t time.Time, affair string) string {
 		affair = "今日无群务安排，安心摸鱼～"
 	}
 
-	// 黑白纸张质感：米白底 + 深灰字 + 衬线字体 + 细边框虚线分隔 + 顶部粗线装饰。
-	// 内容纵向 flex 铺满固定 720px 高度。
-	return fmt.Sprintf(`<div style="font-family:'KaiTi','STKaiti','SimSun',serif;width:800px;height:720px;box-sizing:border-box;margin:0;padding:44px 56px 36px;background:#f7f4ec;color:#2b2b2b;display:flex;flex-direction:column;position:relative;">
-<div style="position:absolute;top:0;left:0;right:0;height:10px;background:#2b2b2b;"></div>
-<div style="position:absolute;bottom:0;left:0;right:0;height:10px;background:#2b2b2b;"></div>
-<div style="text-align:center;border-bottom:2px solid #2b2b2b;padding-bottom:14px;">
-<h1 style="margin:0;font-size:46px;letter-spacing:14px;font-weight:700;">摸鱼人日历</h1>
-<div style="margin-top:8px;font-size:20px;letter-spacing:6px;color:#555;">今日宜划水 · 忌内卷</div>
+	// 纸张朱印质感：米白底 + 墨色 + 唯一朱红强调 + 楷体；日历卡采用洛谷式「月/超大日/星期」纵向堆叠。
+	// 字体以 data URI 内嵌（buildFontFaces），渲染器无需外网；子集外字形回退 KaiTi/SimSun。
+	return fmt.Sprintf(`<meta charset="utf-8">
+<style>
+%s
+html,body{margin:0;padding:0;}
+.page{position:relative;width:682px;height:757px;box-sizing:border-box;background:#f7f4ec;overflow:hidden;font-family:'LXGW WenKai','KaiTi','STKaiti','SimSun',serif;color:#2b2b2b;}
+.frame{position:absolute;inset:22px;border:1px solid #2b2b2b;padding:26px 40px 18px;display:flex;flex-direction:column;}
+.header{text-align:center;}
+h1{margin:0;font-size:46px;font-weight:700;letter-spacing:12px;}
+.seals{display:flex;justify-content:center;gap:30px;margin-top:12px;}
+.seal{background:#c0392b;color:#f7f4ec;font-size:22px;font-weight:700;letter-spacing:4px;padding:5px 18px;border-radius:5px;}
+.seal.a{transform:rotate(-4deg);}
+.seal.b{transform:rotate(3deg);}
+.rule{margin:12px 0 12px;border-top:1px solid #2b2b2b;}
+.cal-card{margin:0 auto;border:1px solid #2b2b2b;border-top:4px solid #c0392b;padding:10px 30px 8px;text-align:center;}
+.cal-month{font-size:22px;font-weight:700;letter-spacing:8px;}
+.cal-day{font-size:118px;font-weight:700;line-height:1.06;margin:0;}
+.cal-week{font-size:22px;font-weight:700;letter-spacing:6px;}
+.cal-lines{margin-top:10px;}
+.cal-lines div{font-size:19px;color:#8a8578;line-height:1.6;}
+.mid{flex:1;display:flex;flex-direction:column;justify-content:space-evenly;padding:6px 2px 0;}
+.row-label{font-size:20px;color:#8a8578;letter-spacing:3px;}
+.progress{display:flex;align-items:center;gap:10px;margin-top:8px;}
+.seg{width:34px;height:16px;background:#2b2b2b;}
+.seg.empty{background:transparent;border:1px solid #2b2b2b;}
+.progress .txt{font-size:26px;font-weight:700;color:#c0392b;margin-left:8px;}
+.quote p,.affair p{margin:4px 0 0 22px;font-size:23px;line-height:1.5;}
+.footer{text-align:center;border-top:1px solid #2b2b2b;padding-top:9px;font-size:18px;color:#8a8578;letter-spacing:5px;}
+</style>
+<div class="page">
+<div class="frame">
+<div class="header">
+<h1>摸鱼人日历</h1>
+<div class="seals">
+<span class="seal a">宜划水</span>
+<span class="seal b">忌内卷</span>
 </div>
-<div style="flex:1;display:flex;flex-direction:column;justify-content:space-evenly;padding:18px 8px;font-size:21px;line-height:1.8;">
-<p style="margin:0;">📅 今天是 %d年%d月%d日，星期%s</p>
-<p style="margin:0;">🌙 农历 %s</p>
-<p style="margin:0;">%s</p>
-<p style="margin:0;">%s</p>
-<div style="border-top:1px dashed #9a937f;margin:6px 0;"></div>
-<p style="margin:0;">🔥 今日金句</p>
-<p style="margin:2px 0 0 18px;font-size:19px;color:#333;">“%s”</p>
-<div style="border-top:1px dashed #9a937f;margin:6px 0;"></div>
-<p style="margin:0;">🚩 今日群务</p>
-<p style="margin:2px 0 0 18px;font-size:19px;color:#333;">%s</p>
 </div>
-<div style="text-align:center;border-top:2px solid #2b2b2b;padding-top:14px;font-size:16px;color:#666;letter-spacing:3px;">🤖 想我了？随时 @卷娘 🤖</div>
+<div class="rule"></div>
+<div class="cal-card">
+<div class="cal-month">%s月</div>
+<div class="cal-day">%s</div>
+<div class="cal-week">星期%s · 农历%s</div>
+<div class="cal-lines">
+<div>%s</div>
+<div>%s</div>
+</div>
+</div>
+<div class="mid">
+<div>
+<div class="row-label">本周进度</div>
+<div class="progress">
+%s
+<span class="txt">%s</span>
+</div>
+</div>
+<div class="quote">
+<div class="row-label">今日金句</div>
+<p>“%s”</p>
+</div>
+<div class="affair">
+<div class="row-label">今日群务</div>
+<p>%s</p>
+</div>
+</div>
+<div class="footer">想我了？随时 @卷娘</div>
+</div>
 </div>`,
-		t.Year(), int(t.Month()), t.Day(), weekdayCN[int(t.Weekday())],
-		lunarStr, weekLine, holidayLine, quote, affair)
+		buildFontFaces(),
+		solarMonthCN[int(t.Month())-1], fmt.Sprintf("%02d", t.Day()),
+		weekdayCN[int(t.Weekday())], lunarStr,
+		weekendLine, holidayLine,
+		buildProgressSegs(passed), progressTxt,
+		quote, affair)
 }
 
 // nextStatutoryHoliday 返回距离今天最近的未来法定假日名称与天数。
 func nextStatutoryHoliday(t time.Time) (name string, days int) {
+	// 按日期归一化再求差，避免当天时间戳导致的截断误差（如 09:00 触发少算 1 天）。
+	today := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
 	best := -1
 	for year := t.Year(); year <= t.Year()+1; year++ {
 		for _, h := range holidaysByYear[year] {
 			d := time.Date(year, time.Month(h.month), h.day, 0, 0, 0, 0, t.Location())
-			if d.After(t) {
-				diff := int(d.Sub(t).Hours() / 24)
+			if d.After(today) {
+				diff := int(d.Sub(today).Hours() / 24)
 				if best == -1 || diff < best {
 					best = diff
 					name = h.name
@@ -297,5 +384,5 @@ var fallbackQuotes = []string{
 
 // fallbackQuote 随机返回一条内置金句。
 func fallbackQuote() string {
-	return fallbackQuotes[rand.Intn(len(fallbackQuotes))]
+	return fallbackQuotes[rand.IntN(len(fallbackQuotes))]
 }

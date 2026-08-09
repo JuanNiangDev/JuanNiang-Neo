@@ -63,7 +63,7 @@
               </v-col>
             </v-row>
             <div class="text-caption text-medium-emphasis">
-              发送内容为富文本：「今日份摸鱼人日历来了~」+ 日历图片（800×720，黑白纸张风格），不 @全体成员。
+              发送内容为富文本：「今日份摸鱼人日历来了~」+ 日历图片（682×757，纸张朱印风格），不 @全体成员。
             </div>
           </v-card-text>
           <v-card-actions class="pa-4 pt-0">
