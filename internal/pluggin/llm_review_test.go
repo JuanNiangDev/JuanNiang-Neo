@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -215,7 +216,11 @@ func loadPluginManual(t *testing.T, pe *PluginEngine, name string) *lua.LState {
 // runOnMessage 构造群消息事件并调用插件 on_message，返回其第一个返回值（consumed）。
 // on_message 返回 (consumed, skip_reply)：consumed=true 消息不进 Agent（不短路）；
 // modified_event 已移除，插件不能修改事件。
-func runOnMessage(t *testing.T, L *lua.LState, groupID, userID int64, raw, msgID string) bool {
+func runOnMessage(t *testing.T, pe *PluginEngine, L *lua.LState, groupID, userID int64, raw, msgID string) bool {
+	// on_message 内可能触发 *_async 任务，引擎 goroutine 会持写锁回调同一 LState；
+	// 这里持读锁串行化，避免 -race 竞争（读锁可重入，回调投递发生在锁外）。
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
 	t.Helper()
 	fn := L.GetGlobal("on_message")
 	if fn.Type() != lua.LTFunction {
@@ -249,6 +254,36 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("等待条件超时")
+}
+
+// luaGetGlobal / luaDoString 在引擎读锁内访问 LState：异步回调由引擎 goroutine 持 pe.mu 写锁执行 PCall，
+// LState 非线程安全，测试侧全局读写必须与回调互斥，否则 -race 下报数据竞争。
+// 用 RLock：Lua 内的 *_async 调用会经 submitAsync 再次 RLock，读锁可重入；任务实际投递发生在
+// 本函数释放锁之后，引擎写锁不会与嵌套读锁交错，避免自锁/死锁。
+func luaGetGlobal(pe *PluginEngine, L *lua.LState, name string) lua.LValue {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	return L.GetGlobal(name)
+}
+
+func luaDoString(pe *PluginEngine, L *lua.LState, src string) error {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	return L.DoString(src)
+}
+
+func luaDoFile(pe *PluginEngine, L *lua.LState, path string) error {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	return L.DoFile(path)
+}
+
+// dispatchCommand 在引擎读锁内派发命令（与生产 PluginEngine.Dispatch 的锁语义一致，
+// 命令 handler 会执行 Lua，须与异步回调的写锁互斥）。
+func dispatchCommand(pe *PluginEngine, raw string, ev EventData) (consumed bool, reply string, err error) {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	return pe.commands.Dispatch(raw, ev)
 }
 
 // ---------- 测试: jn.llm Go 机制（同步 / 异步 / 回调 / 错误） ----------
@@ -297,36 +332,37 @@ func TestLLMInjectSyncAndAsync(t *testing.T) {
 	t.Cleanup(L.Close)
 	pe.injectSDK(L, "llmtest")
 	pe.injectBaseAPI(L, "llmtest", []string{"llm"})
-	L.DoString(fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "llmtest")+"/?.lua"))
-	if err := L.DoFile(filepath.Join(base, "llmtest", "main.lua")); err != nil {
-		t.Fatalf("加载测试插件失败: %v", err)
-	}
 	pe.mu.Lock()
 	pe.plugins["llmtest"] = &LoadedPlugin{Manifest: Manifest{Name: "llmtest"}, State: L, Dir: filepath.Join(base, "llmtest")}
 	pe.mu.Unlock()
 
-	if v := L.GetGlobal("avail"); v.Type() != lua.LTBool || !bool(v.(lua.LBool)) {
+	luaDoString(pe, L, fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "llmtest")+"/?.lua"))
+	if err := luaDoFile(pe, L, filepath.Join(base, "llmtest", "main.lua")); err != nil {
+		t.Fatalf("加载测试插件失败: %v", err)
+	}
+
+	if v := luaGetGlobal(pe, L, "avail"); v.Type() != lua.LTBool || !bool(v.(lua.LBool)) {
 		t.Fatalf("llm.available() 应为 true, got %v", v)
 	}
-	if v := L.GetGlobal("synced"); v.Type() != lua.LTString || v.String() != `{"violation":"none"}` {
+	if v := luaGetGlobal(pe, L, "synced"); v.Type() != lua.LTString || v.String() != `{"violation":"none"}` {
 		t.Fatalf("llm.chat 同步结果 = %v", v)
 	}
 	// 异步：chat_async 立即返回 req_id > 0，完成后引擎派发 on_chat_response
-	submitted := L.GetGlobal("cb_submitted")
+	submitted := luaGetGlobal(pe, L, "cb_submitted")
 	if submitted.Type() != lua.LTNumber || float64(submitted.(lua.LNumber)) <= 0 {
 		t.Fatalf("chat_async 应返回 req_id > 0, got %v", submitted)
 	}
 	waitFor(t, func() bool {
-		v := L.GetGlobal("done_count")
+		v := luaGetGlobal(pe, L, "done_count")
 		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 1
 	})
-	if v := L.GetGlobal("last_rid"); v.String() != submitted.String() {
+	if v := luaGetGlobal(pe, L, "last_rid"); v.String() != submitted.String() {
 		t.Fatalf("on_chat_response req_id = %v, want 与提交返回值一致 %v", v, submitted)
 	}
-	if v := L.GetGlobal("last_content"); v.String() != `{"violation":"none"}` {
+	if v := luaGetGlobal(pe, L, "last_content"); v.String() != `{"violation":"none"}` {
 		t.Fatalf("异步回调 content = %v", v.String())
 	}
-	if v := L.GetGlobal("last_err"); v.String() != "nil" {
+	if v := luaGetGlobal(pe, L, "last_err"); v.String() != "nil" {
 		t.Fatalf("成功回调 err 应为 nil（tostring 为 \"nil\"）, got %v", v.String())
 	}
 	if llm.callCount() < 2 {
@@ -338,13 +374,13 @@ func TestLLMInjectSyncAndAsync(t *testing.T) {
 	llm.mu.Lock()
 	llm.err = fmt.Errorf("boom")
 	llm.mu.Unlock()
-	L.DoString(`err_submitted = llm.chat_async("hi", {})`)
+	luaDoString(pe, L, `err_submitted = llm.chat_async("hi", {})`)
 	waitFor(t, func() bool {
-		v := L.GetGlobal("done_count")
+		v := luaGetGlobal(pe, L, "done_count")
 		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 2
 	})
-	if !strings.Contains(L.GetGlobal("last_err").String(), "boom") {
-		t.Fatalf("错误回调 err = %v, want 包含 boom", L.GetGlobal("last_err"))
+	if !strings.Contains(luaGetGlobal(pe, L, "last_err").String(), "boom") {
+		t.Fatalf("错误回调 err = %v, want 包含 boom", luaGetGlobal(pe, L, "last_err"))
 	}
 }
 
@@ -356,7 +392,7 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 	L := loadPluginManual(t, pe, "redrock_group_manager")
 
 	// 1. 黑色地带：无本续贷（words/black.txt）→ 消费（不进 Agent）+ 撤回（第一次违规），不触发 LLM
-	consumed := runOnMessage(t, L, 10001, 20001, "对接全国 无本续贷 一手收单", "90001")
+	consumed := runOnMessage(t, pe, L, 10001, 20001, "对接全国 无本续贷 一手收单", "90001")
 	if !consumed {
 		t.Fatal("黑色词消息应被消费（不进 Agent）")
 	}
@@ -367,7 +403,7 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 
 	// 2. 敏感地带：操逼（cn_pornographic）→ 消费 + 撤回，不触发 LLM
 	before := adp.deletedCount()
-	consumed = runOnMessage(t, L, 10001, 20002, "你个操逼的", "90002")
+	consumed = runOnMessage(t, pe, L, 10001, 20002, "你个操逼的", "90002")
 	if !consumed {
 		t.Fatal("敏感词消息应被消费")
 	}
@@ -378,7 +414,7 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 
 	// 3. 灰色地带：命中 all.txt 灰色词（考研/加群）→ 不消费、不立即处罚，异步触发 LLM
 	llm.setReply(`{"violation":"ad","reason":"以资料分享为幌子拉群引流"}`)
-	consumed = runOnMessage(t, L, 10001, 20003, "考研上岸的学长学姐，加群一起交流经验", "90003")
+	consumed = runOnMessage(t, pe, L, 10001, 20003, "考研上岸的学长学姐，加群一起交流经验", "90003")
 	if consumed {
 		t.Fatal("灰色词消息不应被消费（先放行）")
 	}
@@ -389,7 +425,7 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 	// 4. 灰色地带：LLM 判 none → 不处罚
 	llm.setReply(`{"violation":"none","reason":"正常讨论考研"}`)
 	before = adp.deletedCount()
-	consumed = runOnMessage(t, L, 10001, 20004, "有没有考研上岸的学长学姐", "90004")
+	consumed = runOnMessage(t, pe, L, 10001, 20004, "有没有考研上岸的学长学姐", "90004")
 	if consumed {
 		t.Fatal("灰色词消息不应被消费")
 	}
@@ -407,7 +443,7 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 		GroupID: 10001, UserID: 99999, RawMessage: "/豁免 20005",
 		Admins: []string{"99999"}, MessageID: 1,
 	}
-	consumed, reply, err := pe.commands.Dispatch("/豁免 20005", cmdEvent)
+	consumed, reply, err := dispatchCommand(pe, "/豁免 20005", cmdEvent)
 	if err != nil || !consumed {
 		t.Fatalf("/豁免 派发失败 consumed=%v reply=%q err=%v", consumed, reply, err)
 	}
@@ -420,7 +456,7 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 		return false
 	})
 
-	consumed = runOnMessage(t, L, 10001, 20005, "对接全国 无本续贷", "90005")
+	consumed = runOnMessage(t, pe, L, 10001, 20005, "对接全国 无本续贷", "90005")
 	if consumed {
 		t.Fatal("豁免用户发黑色词不应被消费")
 	}
@@ -431,11 +467,11 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 
 	// 6. 解除豁免（/取消豁免 别名同样注册）→ 恢复检测
 	cmdEvent.RawMessage = "/解除豁免 20005"
-	consumed, _, err = pe.commands.Dispatch("/解除豁免 20005", cmdEvent)
+	consumed, _, err = dispatchCommand(pe, "/解除豁免 20005", cmdEvent)
 	if err != nil || !consumed {
 		t.Fatalf("/解除豁免 派发失败 consumed=%v err=%v", consumed, err)
 	}
-	consumed = runOnMessage(t, L, 10001, 20005, "无本续贷 全国一手收单", "90006")
+	consumed = runOnMessage(t, pe, L, 10001, 20005, "无本续贷 全国一手收单", "90006")
 	if !consumed {
 		t.Fatal("解除豁免后黑色词应恢复被消费")
 	}
@@ -462,7 +498,7 @@ http_rid = http.get_async("{{HTTP_URL}}/echo", { tag = "ctx-http" })
 -- 同步阶段错误：opts 含未知键
 opts_rid, opts_err = t2i.generate_async("<h1>x</h1>", { bad_key = 1 })
 -- 异步回调错误路径：连接拒绝
-http.get_async("http://127.0.0.1:1/")
+http.get_async("{{REFUSED_URL}}/")
 
 function on_t2i_response(req_id, ctx, result, err)
     t2i_result = tostring(result)
@@ -513,10 +549,19 @@ func TestT2IAndHTTPAsync(t *testing.T) {
 		HttpClient: t2iSrv.Client(),
 	}
 
+	// 确定会被拒绝的端口：绑定后立即关闭（127.0.0.1:1 在部分网络栈（如 WSL）不会拒绝而是挂起）。
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedURL := "http://" + ln.Addr().String()
+	ln.Close()
+
 	base := t.TempDir()
 	pe := NewPluginEngine(base, &fakeAdapter{}, nil, nil, t2iClient, nil, nil, nil, &fakeLLM{reply: "x"})
 	writeTestPlugin(t, base, "t2ihttp")
 	main := strings.ReplaceAll(t2iHTTPAsyncTestMain, "{{HTTP_URL}}", httpSrv.URL)
+	main = strings.ReplaceAll(main, "{{REFUSED_URL}}", refusedURL)
 	if err := os.WriteFile(filepath.Join(base, "t2ihttp", "main.lua"), []byte(main), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -525,65 +570,66 @@ func TestT2IAndHTTPAsync(t *testing.T) {
 	t.Cleanup(L.Close)
 	pe.injectSDK(L, "t2ihttp")
 	pe.injectBaseAPI(L, "t2ihttp", []string{"t2i", "http"})
-	L.DoString(fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "t2ihttp")+"/?.lua"))
-	if err := L.DoFile(filepath.Join(base, "t2ihttp", "main.lua")); err != nil {
-		t.Fatalf("加载测试插件失败: %v", err)
-	}
 	pe.mu.Lock()
 	pe.plugins["t2ihttp"] = &LoadedPlugin{Manifest: Manifest{Name: "t2ihttp"}, State: L, Dir: filepath.Join(base, "t2ihttp")}
 	pe.mu.Unlock()
 
+	luaDoString(pe, L, fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "t2ihttp")+"/?.lua"))
+	if err := luaDoFile(pe, L, filepath.Join(base, "t2ihttp", "main.lua")); err != nil {
+		t.Fatalf("加载测试插件失败: %v", err)
+	}
+
 	// 1. t2i 异步成功：req_id > 0，回调拿到结果与 ctx
-	rid := L.GetGlobal("t2i_rid")
+	rid := luaGetGlobal(pe, L, "t2i_rid")
 	if rid.Type() != lua.LTNumber || float64(rid.(lua.LNumber)) <= 0 {
 		t.Fatalf("t2i.generate_async 应返回 req_id > 0, got %v", rid)
 	}
 	waitFor(t, func() bool {
-		v := L.GetGlobal("t2i_done")
+		v := luaGetGlobal(pe, L, "t2i_done")
 		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 1
 	})
-	if v := L.GetGlobal("t2i_result"); v.String() != "data/rendered.png" {
+	if v := luaGetGlobal(pe, L, "t2i_result"); v.String() != "data/rendered.png" {
 		t.Fatalf("on_t2i_response result = %v, want data/rendered.png", v)
 	}
-	if v := L.GetGlobal("t2i_err"); v.String() != "nil" {
+	if v := luaGetGlobal(pe, L, "t2i_err"); v.String() != "nil" {
 		t.Fatalf("on_t2i_response err = %v, want nil", v)
 	}
-	if v := L.GetGlobal("t2i_ctx_tag"); v.String() != "ctx-t2i" {
+	if v := luaGetGlobal(pe, L, "t2i_ctx_tag"); v.String() != "ctx-t2i" {
 		t.Fatalf("ctx.tag = %v, want ctx-t2i", v)
 	}
-	if v := L.GetGlobal("t2i_ctx_group"); float64(v.(lua.LNumber)) != 10001 {
+	if v := luaGetGlobal(pe, L, "t2i_ctx_group"); float64(v.(lua.LNumber)) != 10001 {
 		t.Fatalf("ctx.group = %v, want 10001", v)
 	}
 
 	// 2. http 异步成功：req_id > 0，回调拿到 {status, body} 与 ctx
-	rid = L.GetGlobal("http_rid")
+	rid = luaGetGlobal(pe, L, "http_rid")
 	if rid.Type() != lua.LTNumber || float64(rid.(lua.LNumber)) <= 0 {
 		t.Fatalf("http.get_async 应返回 req_id > 0, got %v", rid)
 	}
 	waitFor(t, func() bool {
-		v := L.GetGlobal("http_done")
+		v := luaGetGlobal(pe, L, "http_done")
 		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 2 // 成功 + 连接失败两个回调
 	})
-	if v := L.GetGlobal("http_status"); float64(v.(lua.LNumber)) != 200 {
+	if v := luaGetGlobal(pe, L, "http_status"); float64(v.(lua.LNumber)) != 200 {
 		t.Fatalf("on_http_response status = %v, want 200", v)
 	}
-	if v := L.GetGlobal("http_body"); !strings.Contains(v.String(), "/echo") {
+	if v := luaGetGlobal(pe, L, "http_body"); !strings.Contains(v.String(), "/echo") {
 		t.Fatalf("on_http_response body = %v, want 包含 /echo", v)
 	}
-	if v := L.GetGlobal("http_ctx_tag"); v.String() != "ctx-http" {
+	if v := luaGetGlobal(pe, L, "http_ctx_tag"); v.String() != "ctx-http" {
 		t.Fatalf("ctx.tag = %v, want ctx-http", v)
 	}
 
 	// 3. 异步回调错误路径：连接拒绝 → err 非 nil
-	if v := L.GetGlobal("http_fail_err"); v.String() == "" || v.String() == "nil" {
+	if v := luaGetGlobal(pe, L, "http_fail_err"); v.String() == "" || v.String() == "nil" {
 		t.Fatalf("连接失败应回调 err, got %v", v)
 	}
 
 	// 4. 同步阶段错误：opts 含未知键 → 返回 (0, err)
-	if v := L.GetGlobal("opts_rid"); float64(v.(lua.LNumber)) != 0 {
+	if v := luaGetGlobal(pe, L, "opts_rid"); float64(v.(lua.LNumber)) != 0 {
 		t.Fatalf("opts 解析错误应返回 req_id 0, got %v", v)
 	}
-	if v := L.GetGlobal("opts_err"); !strings.Contains(v.String(), "未知 T2I 选项") {
+	if v := luaGetGlobal(pe, L, "opts_err"); !strings.Contains(v.String(), "未知 T2I 选项") {
 		t.Fatalf("opts 解析错误串 = %v, want 包含 未知 T2I 选项", v)
 	}
 }
@@ -651,47 +697,48 @@ func TestSandboxAsync(t *testing.T) {
 	t.Cleanup(L.Close)
 	pe.injectSDK(L, "sbxtest")
 	pe.injectBaseAPI(L, "sbxtest", []string{"sandbox"})
-	L.DoString(fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "sbxtest")+"/?.lua"))
-	if err := L.DoFile(filepath.Join(base, "sbxtest", "main.lua")); err != nil {
-		t.Fatalf("加载测试插件失败: %v", err)
-	}
 	pe.mu.Lock()
 	pe.plugins["sbxtest"] = &LoadedPlugin{Manifest: Manifest{Name: "sbxtest"}, State: L, Dir: filepath.Join(base, "sbxtest")}
 	pe.mu.Unlock()
 
+	luaDoString(pe, L, fmt.Sprintf(`package.path = %q .. ";" .. package.path`, filepath.Join(base, "sbxtest")+"/?.lua"))
+	if err := luaDoFile(pe, L, filepath.Join(base, "sbxtest", "main.lua")); err != nil {
+		t.Fatalf("加载测试插件失败: %v", err)
+	}
+
 	// 三个异步调用均返回 req_id > 0
 	for _, name := range []string{"sb_create_rid", "sb_shell_rid", "sb_py_rid"} {
-		if v := L.GetGlobal(name); v.Type() != lua.LTNumber || float64(v.(lua.LNumber)) <= 0 {
+		if v := luaGetGlobal(pe, L, name); v.Type() != lua.LTNumber || float64(v.(lua.LNumber)) <= 0 {
 			t.Fatalf("%s 应返回 req_id > 0, got %v", name, v)
 		}
 	}
 
 	// 等待全部 4 个回调（create/shell/py 成功 + sb-9 失败）
 	waitFor(t, func() bool {
-		v := L.GetGlobal("sb_done")
+		v := luaGetGlobal(pe, L, "sb_done")
 		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 4
 	})
 
 	// create_async → {sandbox_id, status}
-	if v := L.GetGlobal("sb_create_id"); v.String() != "sb-1" {
+	if v := luaGetGlobal(pe, L, "sb_create_id"); v.String() != "sb-1" {
 		t.Fatalf("on_sandbox_response create sandbox_id = %v, want sb-1", v)
 	}
-	if v := L.GetGlobal("sb_create_status"); v.String() != "running" {
+	if v := luaGetGlobal(pe, L, "sb_create_status"); v.String() != "running" {
 		t.Fatalf("on_sandbox_response create status = %v, want running", v)
 	}
 	// exec_shell_async → {output, exit_code}
-	if v := L.GetGlobal("sb_shell_output"); v.String() != "hello" {
+	if v := luaGetGlobal(pe, L, "sb_shell_output"); v.String() != "hello" {
 		t.Fatalf("on_sandbox_response shell output = %v, want hello", v)
 	}
-	if v := L.GetGlobal("sb_shell_exit"); float64(v.(lua.LNumber)) != 0 {
+	if v := luaGetGlobal(pe, L, "sb_shell_exit"); float64(v.(lua.LNumber)) != 0 {
 		t.Fatalf("on_sandbox_response shell exit_code = %v, want 0", v)
 	}
 	// exec_python_async → {output, error}
-	if v := L.GetGlobal("sb_py_output"); v.String() != "world" {
+	if v := luaGetGlobal(pe, L, "sb_py_output"); v.String() != "world" {
 		t.Fatalf("on_sandbox_response python output = %v, want world", v)
 	}
 	// 错误路径：HTTP 500 → 回调 err 非 nil
-	if v := L.GetGlobal("sb_fail_err"); v.String() == "" || v.String() == "nil" {
+	if v := luaGetGlobal(pe, L, "sb_fail_err"); v.String() == "" || v.String() == "nil" {
 		t.Fatalf("HTTP 500 应回调 err, got %v", v)
 	}
 }
