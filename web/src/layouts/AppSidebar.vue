@@ -4,7 +4,7 @@
     app
     width="260"
     elevation="0"
-    class="app-sidebar"
+    class="app-sidebar overflow-hidden"
     color="sidebar-bg"
     :temporary="$vuetify.display.mobile"
   >
@@ -19,31 +19,34 @@
     <v-divider class="mx-3" style="border-color: rgba(255,255,255,0.06); flex-shrink: 0" />
 
     <!-- Collapsible nav groups -->
-    <v-list nav density="compact" class="sidebar-nav" color="sidebar-text" v-model:opened="openedGroups" open-strategy="multiple">
-      <v-list-group
-        v-for="group in navGroups"
-        :key="group.title"
-        :value="group.title"
-      >
-        <template #activator="{ props }">
-          <v-list-item
-            v-bind="props"
-            :prepend-icon="group.icon"
-            :title="group.title"
-          />
-        </template>
+    <!-- Navigation scrolls independently so flex sizing does not clip it. -->
+    <div class="sidebar-scroll">
+      <v-list nav density="compact" class="sidebar-nav" color="sidebar-text" v-model:opened="openedGroups" open-strategy="multiple">
+        <v-list-group
+          v-for="group in navGroups"
+          :key="group.title"
+          :value="group.title"
+        >
+          <template #activator="{ props }">
+            <v-list-item
+              v-bind="props"
+              :prepend-icon="group.icon"
+              :title="group.title"
+            />
+          </template>
 
-        <v-list-item
-          v-for="item in group.items"
-          :key="item.to"
-          :to="item.to"
-          :title="item.title"
-          :prepend-icon="item.icon"
-          active-color="primary"
-          :exact="item.to === '/dashboard'"
-        />
-      </v-list-group>
-    </v-list>
+          <v-list-item
+            v-for="item in group.items"
+            :key="item.to"
+            :to="item.to"
+            :title="item.title"
+            :prepend-icon="item.icon"
+            active-color="primary"
+            :exact="item.to === '/dashboard'"
+          />
+        </v-list-group>
+      </v-list>
+    </div>
 
     <div class="px-3 py-2 flex-shrink-0">
       <v-divider style="border-color: rgba(255,255,255,0.06)" class="mb-2" />
