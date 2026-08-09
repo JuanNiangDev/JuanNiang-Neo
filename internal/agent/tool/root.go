@@ -59,14 +59,27 @@ func (b BaseTool) IsAvailable() bool {
 
 // ---------- 便利构造 ----------
 
-func NewTool(id, name, desc string, params openai.FunctionParameters, builtin bool, longRunning bool) BaseTool {
+type NewToolInput struct {
+	id          string
+	name        string
+	params      openai.FunctionParameters
+	desc        string
+	builtin     bool
+	longRunning bool
+}
+
+type NewToolBuild interface {
+	NewTool(input NewToolInput) BaseTool
+}
+
+func NewTool(input NewToolInput) BaseTool {
 	return BaseTool{
-		id:          id,
-		name:        name,
-		description: desc,
-		parameters:  params,
-		builtin:     builtin,
-		longRunning: longRunning,
+		id:          input.id,
+		name:        input.name,
+		description: input.desc,
+		parameters:  input.params,
+		builtin:     input.builtin,
+		longRunning: input.longRunning,
 	}
 }
 

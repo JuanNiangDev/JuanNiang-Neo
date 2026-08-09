@@ -10,6 +10,7 @@ import (
 	"JuanNiang-Neo/internal/agent/provider"
 
 	"JuanNiang-Neo/internal/logging"
+
 	"github.com/openai/openai-go/v3"
 )
 
