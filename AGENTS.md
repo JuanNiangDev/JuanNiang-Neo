@@ -146,3 +146,50 @@ Top-level:
 - Comments and identifiers are mixed Chinese/English — keep that style in the
   file you are editing; do not translate.
 - 开发时 `cp dev.yaml.example dev.yaml`; `make run` 自动读取 dev.yaml 中的基础设施连接端点。
+
+## 分支保护与贡献规则
+
+主分支（`main`）已启用严格分支保护，**禁止直接向主分支提交代码**：
+
+- **仓库内贡献者（读写权限）**：所有代码修改必须在**新建的分支**（如 `feature/xxx`、`fix/xxx`、`docs/xxx`）上进行，然后通过 **Pull Request** 合并到主分支；直接 push 到 `main` 会被拒绝。
+- **Fork 贡献者**：请在自 fork 的仓库中**新建分支**开发，再向本仓库发起 Pull Request；**禁止从 fork 仓库的主分支（`main`/`master`）直接发起 PR**，此类 PR 将被拒绝。
+- 主分支的合并只能通过 Pull Request 完成（详见 README「贡献指南」）。
+
+## 提交信息规范（重要）
+
+遵循 [Conventional Commits 约定式提交](https://www.conventionalcommits.org/zh-hans/v1.0.0/)。
+
+- **格式**：`<type>(<scope>): <subject>`，subject 后空一行接 body，末尾可选 footer
+- **type**（必选）：
+
+  | type | 用途 |
+  |---|---|
+  | `feat` | 新功能 |
+  | `fix` | 缺陷修复 |
+  | `docs` | 仅文档变更 |
+  | `style` | 格式/样式，不影响逻辑 |
+  | `refactor` | 重构，不改行为 |
+  | `perf` | 性能优化 |
+  | `test` | 测试 |
+  | `build` | 构建系统/依赖 |
+  | `ci` | CI 配置 |
+  | `chore` | 其他不修改 src/test 的变更 |
+  | `revert` | 回退先前的提交 |
+
+- **scope**（可选）：影响范围（模块/组件/文件名）。本项目常用：
+  `web`（前端面板）、`agent`（Agent 核心）、`api`（Web API）、`pluggin`（Lua 插件系统）、
+  `docs`（文档内容）、`config`（工程配置）、`deps`（依赖）
+- **subject**：中文、简短（≤50 字），概括本次提交的动机而非过程
+- **body**：说明改动点、影响范围与必要背景；用**多个独立 `-m`** 组织
+  （第一个 `-m` 为标题，后续每个 `-m` 一段无序列表项）；
+  **禁止**用 `\n` 把多条说明塞进单个 `-m` 伪装多段
+- **footer**（可选）：`BREAKING CHANGE:` 等；如需决策记录可用
+  `Constraint:` / `Rejected:` / `Directive:` / `Tested:` trailer
+- 示例：
+
+  ```bash
+  git commit \
+    -m "fix(web): 修复登录页在暗色模式下对比度不足" \
+    -m "- 调整按钮与背景色阶" \
+    -m "- 补充 hover 态边框"
+  ```
