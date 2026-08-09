@@ -1007,11 +1007,12 @@ func code_exec(getSandbox func() *sandboxcaller.Client) *onebotTool {
 // --- 文生图 ---
 
 // text_to_image 根据 HTML/模板生成图片，返回图片 URL。图片不会自动发送，请你在要发送的消息中用 [CQ:image,file=URL] 拼接图片，可与文字组成一条富文本消息。
+// 若对输出图片尺寸有要求，请通过 width/height 参数指定（像素），会决定生成图片的实际宽高。
 func text_to_image(getT2I func() *t2icaller.Client) *onebotTool {
 	input := NewToolInput{
 		id:   "",
 		name: "text_to_image",
-		desc: "根据 HTML/模板生成图片，返回图片 URL。图片不会自动发送，请你在要发送的消息中用 [CQ:image,file=URL] 拼接图片，可与文字组成一条富文本消息。",
+		desc: "根据 HTML/模板生成图片，返回图片 URL。需要指定输出图片尺寸时传入 width/height（像素）。图片不会自动发送，请你在要发送的消息中用 [CQ:image,file=URL] 拼接图片，可与文字组成一条富文本消息。",
 		params: openai.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
