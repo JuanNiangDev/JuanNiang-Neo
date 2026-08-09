@@ -47,8 +47,8 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test ./...
+      - name: Test (with race detector)
+        run: go test -race ./...
 
       - name: Check formatting
         run: |

@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"database/sql"
+
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
 
@@ -1661,45 +1663,73 @@ func (pe *PluginEngine) injectDatabase(L *lua.LState, pluginName string) {
 	prefix := "pluggin_" + pluginName + "_"
 	db := pe.db
 
+	// 读取可选的绑定参数（第 2 个参数，Lua 数组表）。
+	// 未传或非数组时返回 nil，表示走裸 SQL（无参数化）。
+	readParams := func(L *lua.LState) []any {
+		if L.GetTop() < 2 {
+			return nil
+		}
+		params, ok := luaValueToGo(L.Get(2)).([]any)
+		if !ok {
+			return nil
+		}
+		return params
+	}
+
+	// 把结果集 Rows 扫描为 []map[string]any 并作为唯一返回值推回 Lua。
+	scanRows := func(L *lua.LState, rows *sql.Rows) int {
+		defer rows.Close()
+		cols, _ := rows.Columns()
+		var result []map[string]any
+		for rows.Next() {
+			values := make([]any, len(cols))
+			valuePtrs := make([]any, len(cols))
+			for i := range values {
+				valuePtrs[i] = &values[i]
+			}
+			rows.Scan(valuePtrs...)
+			row := make(map[string]any)
+			for i, col := range cols {
+				row[col] = values[i]
+			}
+			result = append(result, row)
+		}
+		L.Push(goToLuaValue(L, result))
+		return 1
+	}
+
 	dbTable := L.NewTable()
 	L.SetFuncs(dbTable, map[string]lua.LGFunction{
 		"query": func(L *lua.LState) int {
-			sql := L.CheckString(1)
-			sql = prefixSQL(sql, prefix)
+			sqlStr := L.CheckString(1)
+			sqlStr = prefixSQL(sqlStr, prefix)
 
-			rows, err := db.Raw(sql).Rows()
+			args := readParams(L)
+			var rows *sql.Rows
+			var err error
+			if args == nil {
+				rows, err = db.Raw(sqlStr).Rows()
+			} else {
+				rows, err = db.Raw(sqlStr, args...).Rows()
+			}
 			if err != nil {
 				L.Push(lua.LNil)
 				L.Push(lua.LString(err.Error()))
 				return 2
 			}
-			defer rows.Close()
-
-			cols, _ := rows.Columns()
-			var result []map[string]any
-
-			for rows.Next() {
-				values := make([]any, len(cols))
-				valuePtrs := make([]any, len(cols))
-				for i := range values {
-					valuePtrs[i] = &values[i]
-				}
-				rows.Scan(valuePtrs...)
-
-				row := make(map[string]any)
-				for i, col := range cols {
-					row[col] = values[i]
-				}
-				result = append(result, row)
-			}
-
-			L.Push(goToLuaValue(L, result))
-			return 1
+			return scanRows(L, rows)
 		},
 		"exec": func(L *lua.LState) int {
-			sql := L.CheckString(1)
-			sql = prefixSQL(sql, prefix)
-			result := db.Exec(sql)
+			sqlStr := L.CheckString(1)
+			sqlStr = prefixSQL(sqlStr, prefix)
+
+			args := readParams(L)
+			var result *gorm.DB
+			if args == nil {
+				result = db.Exec(sqlStr)
+			} else {
+				result = db.Exec(sqlStr, args...)
+			}
 			if result.Error != nil {
 				L.Push(lua.LNil)
 				L.Push(lua.LString(result.Error.Error()))

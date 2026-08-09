@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -116,6 +117,54 @@ func (c *Cache) LTrim(ctx context.Context, key string, start, stop int64) error 
 func (c *Cache) LLen(ctx context.Context, key string) (int64, error) {
 	return c.client.LLen(ctx, c.key(key)).Result()
 }
+
+// RPushIfMsgIDAbsent 原子地"检查 msg_id 是否已存在 → 不存在则 RPUSH + LTRIM"。
+// 用 Lua 脚本保证三步原子，避免并发 goroutine 之间的 TOCTOU 竞态
+// （两个 goroutine 同时 LRange 发现没有 → 同时 RPush → 短期记忆里出现两条相同 MsgID）。
+// 返回 true 表示已写入；false 表示因 MsgID 已存在而跳过（assistant 回复无 MsgID 时永远 true）。
+//
+// 入参：
+//   - key: 业务 key（不含 prefix，函数内部补全）
+//   - msgJSON: 已序列化的 ChatMessage JSON 字符串（与 RPush 序列化结果一致）
+//   - msgID: 幂等键，空串表示不做幂等检查（assistant 回复走此路径）
+//   - windowSize: 滑动窗口大小，<=0 表示不截断
+func (c *Cache) RPushIfMsgIDAbsent(ctx context.Context, key, msgJSON, msgID string, windowSize int64) (bool, error) {
+	res, err := rPushIfAbsentScript.Run(ctx, c.client, []string{c.key(key)}, msgJSON, msgID, windowSize).Result()
+	if err != nil {
+		return false, err
+	}
+	n, ok := res.(int64)
+	if !ok {
+		return false, fmt.Errorf("rPushIfAbsentScript: unexpected result type %T", res)
+	}
+	return n == 1, nil
+}
+
+// rPushIfAbsentScript 原子幂等追加脚本。返回 1=已写入，0=MsgID 已存在跳过。
+// 用 cjson.decode 解析每条消息的 msg_id 字段做精确比较（而非字符串子串匹配，
+// 避免 MsgID 恰好是某条消息 content 子串的误判）。
+var rPushIfAbsentScript = redis.NewScript(`
+local key = KEYS[1]
+local msgJSON = ARGV[1]
+local msgID = ARGV[2]
+local windowSize = tonumber(ARGV[3])
+
+if msgID ~= "" then
+	local msgs = redis.call('LRANGE', key, 0, -1)
+	for _, m in ipairs(msgs) do
+		local ok, decoded = pcall(cjson.decode, m)
+		if ok and type(decoded) == "table" and decoded.msg_id == msgID then
+			return 0
+		end
+	end
+end
+
+redis.call('RPUSH', key, msgJSON)
+if windowSize > 0 then
+	redis.call('LTRIM', key, -windowSize, -1)
+end
+return 1
+`)
 
 // ---------- PubSub (任务结果通知) ----------
 

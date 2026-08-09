@@ -81,6 +81,7 @@
                   <span class="font-weight-bold">消息块</span>
                   <span class="text-caption text-medium-emphasis ms-2">一条消息（含 {{ block.segments?.length || 0 }} 段）</span>
                   <v-spacer />
+                  <v-btn icon="mdi-eye-outline" size="x-small" variant="text" color="info" title="预览渲染效果" @click="togglePreview(bi)" />
                   <v-btn size="x-small" variant="tonal" prepend-icon="mdi-plus" @click="addSegment(bi)">加段</v-btn>
                   <v-btn icon="mdi-arrow-up" size="x-small" variant="text" :disabled="bi === 0" @click="moveBlock(bi, -1)" />
                   <v-btn icon="mdi-arrow-down" size="x-small" variant="text" :disabled="bi === form.blocks.length - 1" @click="moveBlock(bi, 1)" />
@@ -131,6 +132,29 @@
                     </template>
                   </template>
                   <v-btn icon="mdi-delete" size="x-small" variant="text" color="error" class="ms-1" @click="block.segments?.splice(si, 1)" />
+                </div>
+                <!-- 渲染预览面板：按发送时「一段一行」规则展示效果 -->
+                <div v-if="previewBlockIdx === bi" class="preview-panel">
+                  <div class="preview-header">
+                    <span class="text-caption text-medium-emphasis">渲染预览（每段独占一行）</span>
+                    <v-btn icon="mdi-close" size="x-small" variant="text" title="关闭预览" @click="previewBlockIdx = null" />
+                  </div>
+                  <div class="preview-content">
+                    <template v-for="(seg, si) in block.segments" :key="`p${si}`">
+                      <div v-if="seg.type === 'text' && seg.content" class="preview-line preview-text">{{ seg.content }}</div>
+                      <div v-else-if="seg.type === 'face' && seg.content" class="preview-line preview-face">
+                        <img v-if="faceUrl(seg.content)" :src="faceUrl(seg.content) || ''" :alt="seg.content" />
+                        <span v-else class="text-caption text-error">未知表情: {{ seg.content }}</span>
+                      </div>
+                      <div v-else-if="seg.type === 'image'" class="preview-line preview-image">
+                        <img v-if="seg.source === 'url' && seg.content" :src="seg.content" />
+                        <img v-else-if="seg.source === 'imgstore' && seg.content" :src="imageFileUrl(extractImgId(seg.content))" />
+                        <iframe v-else-if="seg.source === 't2i' && seg.content" :srcdoc="seg.content" class="preview-t2i-frame" sandbox="allow-scripts" />
+                        <span v-else class="text-caption text-medium-emphasis">（空图片段）</span>
+                      </div>
+                    </template>
+                    <div v-if="!block.segments?.length" class="text-caption text-medium-emphasis">（空消息块）</div>
+                  </div>
                 </div>
               </div>
 
@@ -332,6 +356,26 @@ const deleteDialog = ref(false)
 const deleteTarget = ref<ScheduledMessageResp | null>(null)
 const deleting = ref(false)
 
+// 渲染预览：哪个 block 的预览面板打开了（null=全部关闭）
+const previewBlockIdx = ref<number | null>(null)
+function togglePreview(bi: number) {
+  previewBlockIdx.value = previewBlockIdx.value === bi ? null : bi
+}
+
+// 从 [CQ:face,id=66] 提取 66，返回本地对应的 face avif 资源 URL
+function faceUrl(content: string): string | null {
+  const m = content.match(/id=(\d+)/)
+  if (!m) return null
+  const face = faces.find(f => f.id === m![1])
+  return face?.url || null
+}
+
+// 从 imgs://abc 提取图片 id（用于 imageFileUrl 拼接预览 URL）
+function extractImgId(content: string): string {
+  const m = content.match(/^imgs:\/\/(.+)$/)
+  return m ? m[1] : content
+}
+
 async function fetchTasks() {
   loading.value = true
   try {
@@ -455,6 +499,7 @@ async function confirmPicker() {
 }
 
 function openCreate() {
+  previewBlockIdx.value = null
   editingId.value = null
   form.value = {
     name: '', enabled: true, cron_expr: '0 0 9 * * *',
@@ -467,6 +512,7 @@ function openCreate() {
 }
 
 function openEdit(t: ScheduledMessageResp) {
+  previewBlockIdx.value = null
   editingId.value = t.id
   form.value = {
     name: t.name,
@@ -671,5 +717,53 @@ onMounted(fetchTasks)
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 渲染预览面板 */
+.preview-panel {
+  margin-top: 8px;
+  border: 1px dashed rgba(var(--v-theme-info), 0.5);
+  border-radius: 8px;
+  background: rgba(var(--v-theme-info), 0.04);
+  padding: 8px 12px;
+}
+.preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.preview-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.preview-line {
+  display: flex;
+  align-items: flex-start;
+  min-height: 28px;
+  padding: 2px 0;
+}
+.preview-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  width: 100%;
+}
+.preview-face img {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+.preview-image img {
+  max-width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: 6px;
+}
+.preview-t2i-frame {
+  width: 100%;
+  height: 220px;
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 6px;
+  background: white;
 }
 </style>

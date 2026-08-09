@@ -93,7 +93,8 @@ type HagoCenter struct {
 	EinoAgent *adk.ChatModelAgent
 
 	// msgDedup 消息去重器：过滤 WS 断线重连/多连接导致的同一条消息重复投递。
-	msgDedup *msgDedup
+	// 接口类型，由 Init 时按 cfg.Cache 是否可用选 memory/redis 实现。
+	msgDedup Deduper
 
 	// 回复策略内存缓存（TTL 20min）：策略为单例配置且极少变更，
 	// 避免每条消息都同步查 DB 阻塞事件循环；Web 面板更新策略时通过
@@ -140,12 +141,14 @@ func NewHagoCenter() *HagoCenter {
 		relevanceSem:    make(chan struct{}, relevanceSemLimit),
 		toolAdminOnly:   make(map[string]bool),
 		knowledgeLRU:    newKnowledgeLRU(50),
-		msgDedup:        newMsgDedup(dedupWindow),
+		msgDedup:        newMemoryDedup(dedupWindow), // 占位，Init 时按 Cache 可用性覆盖为 redisDedup
 	}
 }
 
 // dedupWindow 消息去重窗口：需大于 WS 断线重连 + 重推积压的最长间隔。
-const dedupWindow = 60 * time.Second
+// 5 分钟覆盖一次 Agent ReAct 处理周期（数十秒到数分钟）+ WS 重连重推窗口；
+// 原值 60s 过短，Agent 还在跑时 entry 已过期，重推穿透导致重复消费。
+const dedupWindow = 5 * time.Minute
 
 // Init 从 DB 加载配置并初始化所有子模块。
 func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
@@ -156,6 +159,16 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Providers = cfg.Providers
 	h.MCP = cfg.MCPGroup
 	h.Cache = cfg.Cache
+
+	// 去重器升级：Cache 可用时切换为 Redis 实现（持久化 + 多实例共享 + 原子无锁），
+	// 不可用时保留 NewHagoCenter 里默认的 memoryDedup（降级）。
+	// 必须在事件循环启动前完成切换，避免运行时类型断言竞态。
+	if cfg.Cache != nil {
+		h.msgDedup = newRedisDedup(cfg.Cache, dedupWindow)
+		log.Info("消息去重器已启用 Redis 模式", "ttl", dedupWindow)
+	} else {
+		log.Warn("Cache 未注入，消息去重器降级为内存模式（重启即丢失）")
+	}
 
 	// 缓存机器人自己的 QQ 号和昵称
 	h.SelfQQ = h.Adapter.SelfID()
@@ -257,6 +270,9 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	}
 
 	h.Concurrency = NewConcurrencyManager(8)
+	// 全局并发上限：单群上限 8，但多群同时活跃时 goroutine 数会随群数线性增长，
+	// 统一封顶避免 OOM 与 LLM provider 限流（每个 Agent ReAct 循环占用一个全局槽位）。
+	h.Concurrency.SetGlobalLimit(globalAgentConcurrency)
 	h.CronJobManager = cronjob.New(h.DAO.CronJob, h.CronJobEvents)
 
 	// 构建 Eino ChatModelAgent（替代手写的 ReAct 循环）

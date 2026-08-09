@@ -141,10 +141,17 @@ func (m *Manager) TriggerNow(ctx context.Context, id string) error {
 }
 
 // renderMessage 把一个消息块的所有段拼成一条富文本消息（CQ 码字符串）。
+//
+// 每个消息段（text/face/image）独占一行：除第一段外，每段前自动插入换行符。
+// 用户在 Web 后台配多个段时，意图是分行显示，无需手动在段内容里加 \n。
 func (m *Manager) renderMessage(ctx context.Context, segs models.ScheduledSegments) (string, error) {
 	var sb strings.Builder
 	for i := range segs {
 		seg := &segs[i]
+		// 除第一段外，每段前加换行（一个消息段就是一行）
+		if i > 0 {
+			sb.WriteString("\n")
+		}
 		switch seg.Type {
 		case "text":
 			if seg.Content == "" {

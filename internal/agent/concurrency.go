@@ -6,12 +6,14 @@ import (
 )
 
 // ConcurrencyManager 控制每个 ChatArea 同时运行的 Agent ReAct 循环数量。
-// 使用 buffered channel 作为信号量。
+// 使用 buffered channel 作为信号量。支持可选的全局上限（防止多群同时活跃时
+// goroutine 数无限增长导致 OOM / LLM provider 限流）。
 type ConcurrencyManager struct {
 	mu       sync.RWMutex
 	limits   map[string]int           // chatAreaID → max concurrent
 	chans    map[string]chan struct{} // chatAreaID → semaphore
 	default_ int
+	global   chan struct{} // 全局信号量（nil 表示不限制全局并发）
 }
 
 // NewConcurrencyManager 创建并发管理器，defaultLimit 为默认并发上限。
@@ -23,6 +25,20 @@ func NewConcurrencyManager(defaultLimit int) *ConcurrencyManager {
 		limits:   make(map[string]int),
 		chans:    make(map[string]chan struct{}),
 		default_: defaultLimit,
+	}
+}
+
+// SetGlobalLimit 设置全局并发上限（0 或负数 = 不限制）。
+// 仅应在启动阶段（事件流开始前）调用，运行中调整会导致正在等待的 goroutine
+// 无法感知新信号量。
+func (cm *ConcurrencyManager) SetGlobalLimit(limit int) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.global != nil {
+		return // 已设置，忽略重复调用
+	}
+	if limit > 0 {
+		cm.global = make(chan struct{}, limit)
 	}
 }
 
@@ -51,7 +67,34 @@ func (cm *ConcurrencyManager) getOrCreateSem(chatAreaID string) chan struct{} {
 }
 
 // Acquire 获取执行令牌。阻塞直到有空位或 ctx 取消。
+// 若配置了全局上限，先获取全局令牌，再获取 ChatArea 令牌；
+// 后者失败（ctx 取消）时归还已获取的全局令牌。
 func (cm *ConcurrencyManager) Acquire(ctx context.Context, chatAreaID string) error {
+	cm.mu.RLock()
+	global := cm.global
+	cm.mu.RUnlock()
+	if global != nil {
+		select {
+		case global <- struct{}{}:
+			log.Debug("获取全局并发令牌", "available", len(global), "cap", cap(global))
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := cm.acquireArea(ctx, chatAreaID); err != nil {
+			// 区域令牌获取失败，归还全局令牌
+			select {
+			case <-global:
+			default:
+			}
+			return err
+		}
+		return nil
+	}
+	return cm.acquireArea(ctx, chatAreaID)
+}
+
+// acquireArea 获取指定 ChatArea 的令牌。
+func (cm *ConcurrencyManager) acquireArea(ctx context.Context, chatAreaID string) error {
 	sem := cm.getOrCreateSem(chatAreaID)
 	select {
 	case sem <- struct{}{}:
@@ -62,14 +105,34 @@ func (cm *ConcurrencyManager) Acquire(ctx context.Context, chatAreaID string) er
 	}
 }
 
-// Release 释放执行令牌。
+// Release 释放执行令牌（先区域后全局）。
 func (cm *ConcurrencyManager) Release(chatAreaID string) {
+	cm.releaseArea(chatAreaID)
+	cm.releaseGlobal()
+}
+
+// releaseArea 释放指定 ChatArea 的令牌。
+func (cm *ConcurrencyManager) releaseArea(chatAreaID string) {
 	sem := cm.getOrCreateSem(chatAreaID)
 	select {
 	case <-sem:
 		log.Debug("释放并发令牌", "area", chatAreaID, "available", len(sem), "cap", cap(sem))
 	default:
 		// 防止重复 Release
+	}
+}
+
+// releaseGlobal 释放全局令牌。
+func (cm *ConcurrencyManager) releaseGlobal() {
+	cm.mu.RLock()
+	global := cm.global
+	cm.mu.RUnlock()
+	if global != nil {
+		select {
+		case <-global:
+		default:
+			// 防止重复 Release
+		}
 	}
 }
 

@@ -15,6 +15,9 @@ client.interceptors.request.use((config) => {
   return config
 })
 
+// 401 跳转防抖：多个并发请求同时过期时只触发一次跳转
+let redirectingToLogin = false
+
 // Response interceptor - handle errors
 client.interceptors.response.use(
   (res) => {
@@ -28,9 +31,14 @@ client.interceptors.response.use(
     return res
   },
   (err) => {
+    // JWT 过期/无效：清理登录态并跳转登录页
     if (err.response?.status === 401) {
       localStorage.removeItem('token')
-      window.location.hash = '#/login'
+      localStorage.removeItem('username')
+      if (!redirectingToLogin) {
+        redirectingToLogin = true
+        window.location.hash = '#/login'
+      }
     }
     return Promise.reject(err)
   }
