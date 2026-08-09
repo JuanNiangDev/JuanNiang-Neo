@@ -29,6 +29,15 @@ import (
 
 var log = logging.NewModule("fishcal")
 
+// 日历画布尺寸：模板 .page 与 T2I 渲染视口必须一致（GenerateImage 显式传 ViewportWidth/Height），
+// 否则渲染器用默认视口宽（如 800）会把 682 宽的画布左对齐排出右侧空白。
+const (
+	fishCalCanvasWidth  = 682
+	fishCalCanvasHeight = 757
+)
+
+func ptrBool(b bool) *bool { return &b }
+
 //go:embed fonts/lxgwwenkai-regular.woff2
 var wenkaiFonts embed.FS
 
@@ -139,8 +148,11 @@ func (s *Scheduler) TriggerNow(ctx context.Context) error {
 	img, err := t2i.GenerateImage(ctx, t2icaller.GenerateRequest{
 		HTML: html,
 		Options: &t2icaller.GenerateOptions{
-			Type:    t2icaller.ImageTypeJPEG,
-			Quality: 85,
+			Type:           t2icaller.ImageTypeJPEG,
+			Quality:        85,
+			ViewportWidth:  fishCalCanvasWidth,
+			ViewportHeight: fishCalCanvasHeight,
+			FullPage:       ptrBool(false),
 		},
 	})
 	if err != nil {
@@ -262,7 +274,7 @@ func buildCalendarHTML(t time.Time, affair string) string {
 <style>
 %s
 html,body{margin:0;padding:0;}
-.page{position:relative;width:682px;height:757px;box-sizing:border-box;background:#f7f4ec;overflow:hidden;font-family:'LXGW WenKai','KaiTi','STKaiti','SimSun',serif;color:#2b2b2b;}
+.page{position:relative;width:%dpx;height:%dpx;box-sizing:border-box;background:#f7f4ec;overflow:hidden;font-family:'LXGW WenKai','KaiTi','STKaiti','SimSun',serif;color:#2b2b2b;}
 .frame{position:absolute;inset:22px;border:1px solid #2b2b2b;padding:26px 40px 18px;display:flex;flex-direction:column;}
 .header{text-align:center;}
 h1{margin:0;font-size:46px;font-weight:700;letter-spacing:12px;}
@@ -326,6 +338,7 @@ h1{margin:0;font-size:46px;font-weight:700;letter-spacing:12px;}
 </div>
 </div>`,
 		buildFontFaces(),
+		fishCalCanvasWidth, fishCalCanvasHeight,
 		solarMonthCN[int(t.Month())-1], fmt.Sprintf("%02d", t.Day()),
 		weekdayCN[int(t.Weekday())], lunarStr,
 		weekendLine, holidayLine,
