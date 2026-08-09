@@ -1015,7 +1015,9 @@ func text_to_image(getT2I func() *t2icaller.Client) *onebotTool {
 		params: openai.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
-				"html": map[string]any{"type": "string", "description": "HTML 内容"},
+				"html":   map[string]any{"type": "string", "description": "HTML 内容"},
+				"width":  map[string]any{"type": "integer", "description": "图片宽度（像素）。不传则使用页面默认宽度"},
+				"height": map[string]any{"type": "integer", "description": "图片高度（像素）。不传则使用页面默认高度"},
 			},
 			"required": []string{"html"},
 		},
@@ -1028,19 +1030,30 @@ func text_to_image(getT2I func() *t2icaller.Client) *onebotTool {
 			return "", fmt.Errorf("T2I 服务未启用")
 		}
 		var p struct {
-			HTML string `json:"html"`
+			HTML   string `json:"html"`
+			Width  *int   `json:"width"`
+			Height *int   `json:"height"`
 		}
 		if err := json.Unmarshal(args, &p); err != nil {
 			return "", fmt.Errorf("参数解析失败: %w", err)
 		}
 
+		opts := &t2icaller.GenerateOptions{
+			Type:    t2icaller.ImageTypeJPEG,
+			Quality: 80,
+		}
+		// 仅当显式传入宽高时才覆盖，避免把默认值强行覆盖为 0
+		if p.Width != nil {
+			opts.ViewportWidth = *p.Width
+		}
+		if p.Height != nil {
+			opts.ViewportHeight = *p.Height
+		}
+
 		// 使用 Generate 获取图片 ID（而非 GenerateImage 返回的原始字节）
 		genResp, err := t2i.Generate(ctx, t2icaller.GenerateRequest{
-			HTML: p.HTML,
-			Options: &t2icaller.GenerateOptions{
-				Type:    t2icaller.ImageTypeJPEG,
-				Quality: 80,
-			},
+			HTML:    p.HTML,
+			Options: opts,
 		})
 		if err != nil {
 			return "", fmt.Errorf("T2I 生成失败: %w", err)
