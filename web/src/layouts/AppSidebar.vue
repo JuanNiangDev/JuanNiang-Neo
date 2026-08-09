@@ -138,13 +138,3 @@ const navGroups = [
 	},
 ]
 </script>
-<style scoped>
-.app-sidebar {
-  overflow: hidden;
-}
-
-.sidebar-scroll {
-  height: calc(100% - 120px);
-  overflow-y: auto;
-}
-</style>
