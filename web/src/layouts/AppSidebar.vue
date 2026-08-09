@@ -4,7 +4,7 @@
     app
     width="260"
     elevation="0"
-    class="app-sidebar"
+    class="app-sidebar overflow-hidden"
     color="sidebar-bg"
     :temporary="$vuetify.display.mobile"
   >
@@ -19,6 +19,8 @@
     <v-divider class="mx-3" style="border-color: rgba(255,255,255,0.06); flex-shrink: 0" />
 
     <!-- Collapsible nav groups -->
+     <!-- Add scroll space-->
+      <div class="sidebar-scroll">
     <v-list nav density="compact" class="sidebar-nav" color="sidebar-text" v-model:opened="openedGroups" open-strategy="multiple">
       <v-list-group
         v-for="group in navGroups"
@@ -44,6 +46,7 @@
         />
       </v-list-group>
     </v-list>
+    </div>
 
     <div class="px-3 py-2 flex-shrink-0">
       <v-divider style="border-color: rgba(255,255,255,0.06)" class="mb-2" />
@@ -135,3 +138,13 @@ const navGroups = [
 	},
 ]
 </script>
+<style scoped>
+.app-sidebar {
+  overflow: hidden;
+}
+
+.sidebar-scroll {
+  height: calc(100% - 120px);
+  overflow-y: auto;
+}
+</style>
