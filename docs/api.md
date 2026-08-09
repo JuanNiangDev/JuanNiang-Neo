@@ -879,8 +879,8 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 独立于 CronJob 系统的每日定时任务（`internal/agent/fishcal`）：按配置的 cron 表达式触发，
 用模板组装日历内容 → 通过 T2I 服务渲染成 JPEG 图片 → 发送到目标群。
 
-日历图片内容：标题 / 今日宜划水·忌内卷 / 日期与星期 / 农历（lunar-go）/ 本周进度 /
-距下一个法定假日倒计时（内置 2025-2026 节假日表）/ 今日金句（[一言 API](https://v1.hitokoto.cn/)，失败回退内置句子）/ 今日群务 / 落款。
+日历图片内容：标题 / 宜划水·忌内卷朱印 / 洛谷式「月·超大日期·星期」日历卡（含农历，lunar-go）/ 本周进度 /
+距周末与距法定假日倒计时（内置 2025-2026 节假日表）/ 今日金句（[一言 API](https://v1.hitokoto.cn/)，失败回退内置句子）/ 今日群务 / 落款。
 
 ### GET /fish-calendar/config
 读取配置（未初始化时写入默认配置）。**data** `FishCalendarConfigResp`。
@@ -900,7 +900,7 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 `FishCalendarConfigResp`: `enabled`、`cron_expr`、`target_groups` string[]、`last_run_at`（可空）、`last_error`。
 `FishCalendarAffairResp`: `date`、`content`。
 
-发送消息为富文本：`今日份摸鱼人日历来了~` + 日历图片（800×720，黑白纸张质感模板，内容铺满）。
+发送消息为富文本：`今日份摸鱼人日历来了~` + 日历图片（682×757，纸张朱印质感模板）。
 
 ---
 
