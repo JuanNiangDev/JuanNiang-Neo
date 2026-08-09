@@ -8,6 +8,14 @@
 
 核心由 LLM 驱动的对话 Agent（`HagoCenter` 聚合 Provider / MCP / Memory / Prompt / Session / Skill / Tool）与 OneBot11 反向 WebSocket 适配器组成，基于 [Eino ADK](https://github.com/cloudwego/eino) 框架构建 `ChatModelAgent`，工具调用在 ReAct 循环内同步执行，每个聊天区域最多 8 个 Agent goroutine 并发处理（由 `ConcurrencyManager` 控制）。事件流经三阶段管线：Plugin 拦截 → 回复策略检查 → 异步派发 Agent。项目同时包含 Lua 插件引擎、Vue 3 管理面板，以及 Postgres + Redis + Sandbox + T2I 等可插拔基础设施，并内置知识库、图床、表情包库、摸鱼人日历、定时消息（积木式编排）等开箱即用的功能模块。所有持久化状态落 Postgres + Redis，配置与运行时状态均可在 Web 面板热切换。
 
+## 贡献指南（分支保护）
+
+本仓库对主分支（`main`）启用了严格分支保护，**禁止直接向主分支提交代码**：
+
+- **仓库内贡献者（读写权限）**：所有代码修改必须在**新建的分支**（如 `feature/xxx`、`fix/xxx`、`docs/xxx`）上进行，然后通过 **Pull Request** 合并到主分支；直接 push 到 `main` 会被拒绝。
+- **Fork 贡献者**：请在自 fork 的仓库中**新建分支**开发，再向本仓库发起 Pull Request；**禁止从 fork 仓库的主分支（`main`/`master`）直接发起 PR**，此类 PR 将被拒绝。
+- 主分支的合并只能通过 Pull Request 完成。
+
 ## 主要特性
 
 - **Agent 系统**：基于 Eino ADK 的 `ChatModelAgent`（OpenAI 兼容），支持 Provider / MCP / Tool / Skill / Prompt / Plugin 多模块组合，工具调用在 ReAct 循环内同步完成
@@ -23,7 +31,7 @@
 - **SQL 驱动知识库**：Web 存知识 → Agent 异步提取关键词 → 对话前模糊匹配注入提示词；50 条 LRU 加速检索
 - **图床服务**：`data/imgs` 存储 + MIME/大小校验 + 虚拟文件夹；`imgs://<ID>` 引用由发送层自动转 base64（Plugin / Agent 无感）
 - **表情包库**：图床二次封装（名称/简介/标签）；短 UUID 对外，`stk://` 引用自动映射图床长 UUID（表情段 subType=1）；Agent 工具 + Plugin API 齐备
-- **摸鱼人日历**：独立每日定时任务，模板 → T2I 渲染 800×720 黑白纸张质感图片 → 富文本发送（不 @全体成员）；多群、按天群务、一言金句、农历/法定假日倒计时
+- **摸鱼人日历**：独立每日定时任务，模板 → T2I 渲染 682×757 纸张朱印质感图片（洛谷式日历卡）→ 富文本发送（不 @全体成员）；多群、按天群务、一言金句、农历/法定假日倒计时
 - **定时消息（积木式编排）**：触发器 → 消息块（一条消息多段：文字 / 图片[T2I·URL·图床] / CQ 表情）→ 延时块链；Web 可视化编排 + 325 个 CQ 表情缩略图
 - **示例插件库**：`data/pluggins/` 下 10 个示例插件覆盖全部插件功能（含 `xxx_async` 异步调用示范），每个含 README.md
 - **开发配置**：`dev.yaml` 本地开发配置文件（数据库、Redis、OneBot11 等），`make run` 自动读取
