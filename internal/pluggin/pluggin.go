@@ -283,6 +283,18 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 			return []lua.LValue{luaTableFromMap(L, m), lua.LNil}
 		},
 	})
+	// timer → on_timer_response（带调用现场 ctx）；jn.timer.after(秒) 到点触发，
+	// 无业务结果；err 为 nil 表示正常到点（context 超时/取消时返回错误）
+	pe.RegisterAsyncAPI("timer", AsyncAPI{
+		Entry:   "on_timer_response",
+		WithCtx: true,
+		Encode: func(L *lua.LState, result any, err error) []lua.LValue {
+			if err != nil {
+				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
+			}
+			return []lua.LValue{lua.LNil, lua.LNil}
+		},
+	})
 	// 注册内置 /help 命令
 	pe.registerBuiltinCommands()
 	// 异步任务消费者：与事件派发互斥执行 Lua，保证 LState 安全
@@ -1096,6 +1108,11 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 	// LLM：调用 Bot 自身 LLM（复用 Bot Provider 配置，需要 llm 权限）
 	if hasPerm("llm") && pe.llmAccess != nil {
 		pe.injectLLM(L, pluginName)
+	}
+
+	// Timer：异步延时（需要 timer 权限）
+	if hasPerm("timer") {
+		pe.injectTimer(L, pluginName)
 	}
 
 	// File：插件目录内文本文件读写（需要 file 权限）
@@ -2494,6 +2511,47 @@ func (pe *PluginEngine) injectLLM(L *lua.LState, pluginName string) {
 	}
 	L.SetFuncs(llmTable, funcs)
 	L.SetGlobal("llm", llmTable)
+}
+
+// ---------- Timer ----------
+
+// injectTimer 注入 timer 全局表：插件可用 jn.timer 做异步延时（不阻塞事件循环）。
+//   - timer.after(seconds, ctx?) -> req_id    到点后回调 on_timer_response(req_id, ctx, result, err)
+//
+// seconds 支持小数（秒）；可选 ctx 表作为调用现场，回调时原样取回。
+// 与 chat_async 等其它异步 API 一致：任务在独立 goroutine 计时，完成后经
+// 引擎异步注册表（kind "timer"）串行派发回插件，不阻塞事件派发与其它插件。
+func (pe *PluginEngine) injectTimer(L *lua.LState, pluginName string) {
+	timerTable := L.NewTable()
+	funcs := map[string]lua.LGFunction{
+		"after": func(L *lua.LState) int {
+			secs := L.CheckNumber(1)
+			d := time.Duration(float64(secs) * float64(time.Second))
+			if d < 0 {
+				d = 0
+			}
+			run := func(ctx context.Context) (any, error) {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(d):
+					return nil, nil
+				}
+			}
+			// 兜底超时比目标延时多留 5s，确保正常到点走 time.After 而非 context 取消
+			id, err := pe.submitAsync(pluginName, "timer", d+5*time.Second, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 2) // 第 2 位：可选 ctx 现场表
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+	}
+	L.SetFuncs(timerTable, funcs)
+	L.SetGlobal("timer", timerTable)
 }
 
 // RegisterAsyncAPI 注册一类异步 API（如 "chat" → 插件入口 on_chat_response）。

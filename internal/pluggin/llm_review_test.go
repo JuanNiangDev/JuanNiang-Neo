@@ -184,7 +184,7 @@ func loadPluginManual(t *testing.T, pe *PluginEngine, name string) *lua.LState {
 	t.Cleanup(L.Close)
 
 	pe.injectSDK(L, name)
-	pe.injectBaseAPI(L, name, []string{"onebot11", "database", "file", "llm"})
+	pe.injectBaseAPI(L, name, []string{"onebot11", "database", "file", "llm", "timer"})
 	// database 需要 gorm db（测试环境不提供），手写空实现（插件 init_db 用）
 	dbTable := L.NewTable()
 	L.SetFuncs(dbTable, map[string]lua.LGFunction{
@@ -210,6 +210,16 @@ func loadPluginManual(t *testing.T, pe *PluginEngine, name string) *lua.LState {
 	pe.mu.Lock()
 	pe.plugins[name] = &LoadedPlugin{Manifest: Manifest{Name: name}, State: L, Dir: pluginDir}
 	pe.mu.Unlock()
+
+	// 测试结束先卸载插件（从 map 移除），再关闭 LState：避免长延时异步任务
+	// （如 jn.timer.after 的 5~30 秒延时）在 LState 关闭后仍被 runAsyncCallbacks
+	// 派发而对已关闭 LState 做 PCall 而 panic。与真实 Unload 语义一致（卸载后
+	// 遗留任务因 ok=false 被丢弃）。
+	t.Cleanup(func() {
+		pe.mu.Lock()
+		delete(pe.plugins, name)
+		pe.mu.Unlock()
+	})
 	return L
 }
 
@@ -391,36 +401,46 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 	pe, adp, _ := newTestEngine(t, llm)
 	L := loadPluginManual(t, pe, "redrock_group_manager")
 
-	// 1. 黑色地带：无本续贷（words/black.txt）→ 消费（不进 Agent）+ 撤回（第一次违规），不触发 LLM
+	// 1. 黑色地带：命中 black.txt → 送 LLM 高危复核（不消费）；判 none → 放行不撤回
 	consumed := runOnMessage(t, pe, L, 10001, 20001, "对接全国 无本续贷 一手收单", "90001")
-	if !consumed {
-		t.Fatal("黑色词消息应被消费（不进 Agent）")
+	if consumed {
+		t.Fatal("黑色词消息应送 LLM 高危复核（不消费）")
+	}
+	waitFor(t, func() bool { return llm.callCount() >= 1 })
+	time.Sleep(300 * time.Millisecond) // 等回调（none → 不撤回）
+	if adp.deletedCount() != 0 {
+		t.Fatalf("黑词 LLM 判 none 不应撤回, deleted=%d", adp.deletedCount())
+	}
+
+	// 1b. 黑色地带：LLM 判 ad → 高危复核确认后撤回处罚
+	llm.setReply(`{"violation":"ad","reason":"无本续贷为高利贷广告"}`)
+	consumed = runOnMessage(t, pe, L, 10001, 20001, "对接全国 无本续贷 一手收单", "90008")
+	if consumed {
+		t.Fatal("黑色词消息应送 LLM 高危复核（不消费）")
 	}
 	waitFor(t, func() bool { return adp.deletedCount() >= 1 })
-	if llm.callCount() != 0 {
-		t.Fatalf("黑色词不应触发 LLM, calls=%d", llm.callCount())
-	}
 
-	// 2. 敏感地带：操逼（cn_pornographic）→ 消费 + 撤回，不触发 LLM
+	// 2. 敏感地带：操逼（cn_pornographic）→ 高危复核；判 none → 放行不撤回
+	llm.setReply(`{"violation":"none","reason":"正常语境"}`)
 	before := adp.deletedCount()
 	consumed = runOnMessage(t, pe, L, 10001, 20002, "你个操逼的", "90002")
-	if !consumed {
-		t.Fatal("敏感词消息应被消费")
+	if consumed {
+		t.Fatal("敏感词消息应送 LLM 高危复核（不消费）")
 	}
-	waitFor(t, func() bool { return adp.deletedCount() > before })
-	if llm.callCount() != 0 {
-		t.Fatalf("敏感词不应触发 LLM, calls=%d", llm.callCount())
+	waitFor(t, func() bool { return llm.callCount() >= 1 })
+	time.Sleep(300 * time.Millisecond)
+	if adp.deletedCount() != before {
+		t.Fatalf("敏感词 LLM 判 none 不应撤回: before=%d after=%d", before, adp.deletedCount())
 	}
 
-	// 3. 灰色地带：命中 all.txt 灰色词（考研/加群）→ 不消费、不立即处罚，异步触发 LLM
+	// 3. 灰色地带：命中 all.txt 灰色词（考研/加群）→ 不消费、不立即处罚，异步常规审查；判 ad → 追罚撤回
 	llm.setReply(`{"violation":"ad","reason":"以资料分享为幌子拉群引流"}`)
+	before = adp.deletedCount()
 	consumed = runOnMessage(t, pe, L, 10001, 20003, "考研上岸的学长学姐，加群一起交流经验", "90003")
 	if consumed {
 		t.Fatal("灰色词消息不应被消费（先放行）")
 	}
-	waitFor(t, func() bool { return llm.callCount() >= 1 })
-	// 回调（LLM 判 ad）→ 撤回追罚
-	waitFor(t, func() bool { return adp.deletedCount() >= 3 })
+	waitFor(t, func() bool { return adp.deletedCount() > before })
 
 	// 4. 灰色地带：LLM 判 none → 不处罚
 	llm.setReply(`{"violation":"none","reason":"正常讨论考研"}`)
@@ -434,7 +454,8 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 		t.Fatalf("LLM 判 none 不应撤回: before=%d after=%d", before, adp.deletedCount())
 	}
 
-	// 5. 豁免：/豁免 20005（管理员）→ 黑色词放行；被禁言用户豁免时自动解除禁言
+	// 5. 管理命令：/豁免 20005 解除禁言（不加白名单）；/白名单 20005 加入白名单
+	//    → 白名单用户发黑色词不参与检测（不触发 LLM）
 	adp.mu.Lock()
 	adp.mutedUsers[20005] = true
 	adp.mu.Unlock()
@@ -456,26 +477,34 @@ func TestRedrockBlackGraySensitive(t *testing.T) {
 		return false
 	})
 
+	// /白名单 20005：加入白名单（当前 /豁免 已不再加入白名单）
+	consumed, _, err = dispatchCommand(pe, "/白名单 20005", cmdEvent)
+	if err != nil || !consumed {
+		t.Fatalf("/白名单 派发失败 consumed=%v err=%v", consumed, err)
+	}
+	llmBefore := llm.callCount()
 	consumed = runOnMessage(t, pe, L, 10001, 20005, "对接全国 无本续贷", "90005")
 	if consumed {
-		t.Fatal("豁免用户发黑色词不应被消费")
+		t.Fatal("白名单用户发黑色词不应被消费")
 	}
-	waitFor(t, func() bool { return adp.deletedCount() >= 3 })
-	if adp.deletedCount() != 3 {
-		t.Fatalf("豁免用户消息不应被撤回: deleted=%d", adp.deletedCount())
+	time.Sleep(200 * time.Millisecond)
+	if llm.callCount() != llmBefore {
+		t.Fatalf("白名单用户发黑色词不应触发 LLM")
 	}
+	before = adp.deletedCount()
 
-	// 6. 解除豁免（/取消豁免 别名同样注册）→ 恢复检测
+	// 6. 解除豁免（/取消豁免 别名同样注册）→ 移出白名单 → 恢复检测，黑词送 LLM 复核
 	cmdEvent.RawMessage = "/解除豁免 20005"
 	consumed, _, err = dispatchCommand(pe, "/解除豁免 20005", cmdEvent)
 	if err != nil || !consumed {
 		t.Fatalf("/解除豁免 派发失败 consumed=%v err=%v", consumed, err)
 	}
+	llm.setReply(`{"violation":"ad","reason":"恢复检测"}`)
 	consumed = runOnMessage(t, pe, L, 10001, 20005, "无本续贷 全国一手收单", "90006")
-	if !consumed {
-		t.Fatal("解除豁免后黑色词应恢复被消费")
+	if consumed {
+		t.Fatal("解除豁免后黑色词应送 LLM 复核（不消费）")
 	}
-	waitFor(t, func() bool { return adp.deletedCount() >= 4 })
+	waitFor(t, func() bool { return adp.deletedCount() > before })
 
 	// 7. 命令注册完整性
 	for _, cmd := range []string{"/豁免", "/解除豁免", "/取消豁免", "/groupstats"} {
