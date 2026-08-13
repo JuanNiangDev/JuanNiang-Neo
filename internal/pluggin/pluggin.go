@@ -198,6 +198,10 @@ type PluginEngine struct {
 	// submitAsync 无锁读取——插件 Lua 回调（持 stateMu）内调用 *_async API
 	// 不得再请求 pe.mu（否则写锁下 RLock 自死锁 / 读锁下与 writer 互锁）。
 	asyncAPIs atomic.Pointer[map[string]*AsyncAPI]
+	// registerMu 串行化 RegisterAsyncAPI 的 load-copy-store：并发 writer 时防止
+	// 后注册的 Store 覆盖先注册的 kind（静默丢失）。读者（submitAsync）无锁
+	// Load，不受影响；重复注册 panic 行为保留。
+	registerMu sync.Mutex
 	// asyncCh 异步任务完成后的回调队列（runAsyncCallbacks 消费）。
 	asyncCh chan asyncTask
 	// asyncSeq req_id 自增序号。
@@ -2704,6 +2708,10 @@ func (pe *PluginEngine) injectTimer(L *lua.LState, pluginName string) {
 // 以 copy-on-write 更新 atomic map：submitAsync 无锁读取，插件 Lua 回调内
 // 调用 *_async 不再与引擎锁交互（消除持锁回调内提交异步任务的死锁）。
 func (pe *PluginEngine) RegisterAsyncAPI(kind string, api AsyncAPI) {
+	// 持专用写锁跨 dup 检查 + map 复制 + Store：并发注册不同 kind 时，
+	// 后注册者必须基于最新 map 构建，否则会覆盖丢失先注册的 kind
+	pe.registerMu.Lock()
+	defer pe.registerMu.Unlock()
 	old := pe.asyncAPIs.Load()
 	if _, dup := (*old)[kind]; dup {
 		panic("pluggin: 异步 API 重复注册: " + kind)

@@ -449,11 +449,13 @@ end
 }
 
 // TestRegisterAsyncAPIConcurrentReadWrite atomic 注册表 copy-on-write：
-// 并发注册 + 读取无 data race（-race 下运行）。
+// 并发注册（load-copy-store 由 registerMu 串行化）+ 并发读取（无锁）。
+// 无 data race（-race 下运行），且并发注册的 kind 全部保留（无静默丢失）。
 func TestRegisterAsyncAPIConcurrentReadWrite(t *testing.T) {
 	pe, _ := newMiniTestEngine(t, nil)
+	const writers = 8
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
+	for i := 0; i < writers; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -472,8 +474,15 @@ func TestRegisterAsyncAPIConcurrentReadWrite(t *testing.T) {
 	}()
 	wg.Wait()
 	// 内置注册不受影响
-	if _, ok := (*pe.asyncAPIs.Load())["chat"]; !ok {
+	m := *pe.asyncAPIs.Load()
+	if _, ok := m["chat"]; !ok {
 		t.Fatal("内置 chat kind 丢失")
+	}
+	// 并发注册的 kind 全部保留（修复前：后 Store 的 writer 覆盖先注册的 kind，静默丢失）
+	for i := 0; i < writers; i++ {
+		if _, ok := m[fmt.Sprintf("custom-%d", i)]; !ok {
+			t.Fatalf("并发注册的 kind custom-%d 丢失（writer 未串行化）", i)
+		}
 	}
 }
 
