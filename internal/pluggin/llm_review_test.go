@@ -110,24 +110,42 @@ type fakeLLM struct {
 	reply string
 	err   error
 	calls int
+	delay time.Duration // 每次 Chat 的模拟耗时（测试在途任务场景）
 }
 
 func (f *fakeLLM) Available() bool { return true }
 
 func (f *fakeLLM) Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls++
 	if f.err != nil {
-		return nil, f.err
+		err := f.err
+		d := f.delay
+		f.mu.Unlock()
+		if d > 0 {
+			time.Sleep(d)
+		}
+		return nil, err
 	}
-	return &provider.ChatResponse{Message: provider.ChatMessage{Role: "assistant", Content: f.reply}}, nil
+	reply := f.reply
+	d := f.delay
+	f.mu.Unlock()
+	if d > 0 {
+		time.Sleep(d)
+	}
+	return &provider.ChatResponse{Message: provider.ChatMessage{Role: "assistant", Content: reply}}, nil
 }
 
 func (f *fakeLLM) setReply(s string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reply = s
+}
+
+func (f *fakeLLM) setDelay(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.delay = d
 }
 
 func (f *fakeLLM) callCount() int {
