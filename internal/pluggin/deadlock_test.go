@@ -21,7 +21,7 @@ import (
 //     handler，注册命令需要写锁 = 读锁升级写锁死锁
 //  3. 生命周期：Unload 丢弃在途异步任务 / 等待在途回调完成，不触碰已关闭 LState
 //  4. execCommand 插件已卸载时不执行 handler（Match 与执行之间的 Unload 窗口）
-//  5. C 方案：onebot11 写操作 _async API 立即返回且异步生效
+//  5. 处罚写操作同步 API：成功生效且失败可感知（返回 false+err）
 //  6. onCronJob 按插件目录名过滤（修复 p.Manifest.Name 显示名误用）
 //  7. per-plugin stateMu 隔离：慢回调不阻塞其它插件
 //  8. atomic 注册表 copy-on-write 并发读写无 data race
@@ -296,44 +296,70 @@ end)
 	}
 }
 
-// TestOneBot11AsyncWriteAPIs C 方案：_async 写操作立即返回 true 且异步生效。
-func TestOneBot11AsyncWriteAPIs(t *testing.T) {
+// TestOneBot11WriteAPIs 处罚写操作同步 API：成功返回 (true, nil) 且调用生效。
+// 插件侧处罚动作（撤回/禁言/踢人）用同步版——踢人不频繁，同步等待可接受，
+// 且失败必须即时感知（见 TestOneBot11WriteAPIError）。
+func TestOneBot11WriteAPIs(t *testing.T) {
 	pe, adp := newMiniTestEngine(t, nil)
-	L := loadMiniPlugin(t, pe, "asyncwrite", `
+	L := loadMiniPlugin(t, pe, "syncwrite", `
 local jn = require("jn")
 function on_message(event)
-    local ok1 = jn.onebot11.delete_msg_async("90001")
-    local ok2 = jn.onebot11.ban_group_member_async(12345, 67890, 60)
-    local ok3 = jn.onebot11.kick_group_member_async(12345, 67890, false)
-    assert(ok1 == true and ok2 == true and ok3 == true, "async API 应立即返回 true")
+    local ok1, err1 = jn.onebot11.delete_msg("90001")
+    local ok2, err2 = jn.onebot11.ban_group_member(12345, 67890, 60)
+    local ok3, err3 = jn.onebot11.kick_group_member(12345, 67890, false)
+    assert(ok1 == true and ok2 == true and ok3 == true, "同步 API 应返回 true: " .. tostring(err1) .. tostring(err2) .. tostring(err3))
     return false, nil
 end
 `)
 	if runOnMessage(t, pe, L, 10001, 20001, "go", "90000") {
 		t.Fatal("on_message 应返回 consumed=false")
 	}
-	// 异步调用应已生效（fakeAdapter 记录到调用）
-	waitFor(t, func() bool {
-		adp.mu.Lock()
-		defer adp.mu.Unlock()
-		foundDel, foundBan, foundKick := false, false, false
-		for _, id := range adp.deleted {
-			if id == 90001 {
-				foundDel = true
-			}
+	// 调用已同步生效（fakeAdapter 记录到调用）
+	adp.mu.Lock()
+	defer adp.mu.Unlock()
+	foundDel, foundBan, foundKick := false, false, false
+	for _, id := range adp.deleted {
+		if id == 90001 {
+			foundDel = true
 		}
-		for _, m := range adp.muted {
-			if m == "12345:67890:60" {
-				foundBan = true
-			}
+	}
+	for _, m := range adp.muted {
+		if m == "12345:67890:60" {
+			foundBan = true
 		}
-		for _, k := range adp.kicked {
-			if k == "12345:67890" {
-				foundKick = true
-			}
+	}
+	for _, k := range adp.kicked {
+		if k == "12345:67890" {
+			foundKick = true
 		}
-		return foundDel && foundBan && foundKick
-	})
+	}
+	if !foundDel || !foundBan || !foundKick {
+		t.Fatalf("同步 API 未生效: del=%v ban=%v kick=%v", foundDel, foundBan, foundKick)
+	}
+}
+
+// TestOneBot11WriteAPIError 同步 API 失败可感知：返回 (false, err)，
+// 插件据此做失败处理（不重置违规次数、通知管理员）。
+func TestOneBot11WriteAPIError(t *testing.T) {
+	pe, adp := newMiniTestEngine(t, nil)
+	adp.kickErr = fmt.Errorf("no permission")
+	L := loadMiniPlugin(t, pe, "syncerr", `
+local jn = require("jn")
+function on_message(event)
+    local ok, err = jn.onebot11.kick_group_member(12345, 67890, false)
+    assert(ok == false and err ~= nil and err ~= "", "失败应返回 (false, err), got (" .. tostring(ok) .. ", " .. tostring(err) .. ")")
+    return false, nil
+end
+`)
+	if runOnMessage(t, pe, L, 10001, 20001, "go", "90000") {
+		t.Fatal("on_message 应返回 consumed=false")
+	}
+	// 失败时不应记录踢人
+	adp.mu.Lock()
+	defer adp.mu.Unlock()
+	if len(adp.kicked) != 0 {
+		t.Fatalf("失败调用不应记录, got %v", adp.kicked)
+	}
 }
 
 // TestCronJobDirectoryNameFilter onCronJob 按插件目录名过滤

@@ -31,6 +31,7 @@ type fakeAdapter struct {
 	muted      []string
 	kicked     []string
 	mutedUsers map[int64]bool // 模拟处于禁言中的用户
+	kickErr    error          // 非 nil 时 KickGroupMember 返回该错误（模拟踢人失败）
 }
 
 func (f *fakeAdapter) SendPrivateMsg(userID int64, message any) (int64, error) { return 0, nil }
@@ -54,6 +55,9 @@ func (f *fakeAdapter) GetGroupMemberList(groupID int64) ([]map[string]any, error
 func (f *fakeAdapter) KickGroupMember(groupID, userID int64, rejectAdd bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.kickErr != nil {
+		return f.kickErr
+	}
 	f.kicked = append(f.kicked, fmt.Sprintf("%d:%d", groupID, userID))
 	return nil
 }

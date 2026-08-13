@@ -1594,22 +1594,6 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			err = sendAdp.DeleteMsg(id)
 			return pushResult(L, err)
 		},
-		// delete_msg_async 异步撤回：立即返回，不阻塞插件回调（结果仅记日志）。
-		// 适合违规撤回等 fire-and-forget 场景；需要确认结果的场景用 delete_msg。
-		"delete_msg_async": func(L *lua.LState) int {
-			id, err := luaMsgID(L.Get(1))
-			if err != nil {
-				L.Push(lua.LBool(false))
-				L.Push(lua.LString(err.Error()))
-				return 2
-			}
-			go func() {
-				if err := sendAdp.DeleteMsg(id); err != nil {
-					log.Warn("插件异步撤回消息失败", "plugin", pluginName, "message_id", id, "err", err)
-				}
-			}()
-			return pushOk(L)
-		},
 		"get_msg": func(L *lua.LState) int {
 			id, err := luaMsgID(L.Get(1))
 			if err != nil {
@@ -1645,37 +1629,9 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			err := sendAdp.KickGroupMember(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)), reject)
 			return pushResult(L, err)
 		},
-		// kick_group_member_async 异步踢人：立即返回，不阻塞插件回调。
-		"kick_group_member_async": func(L *lua.LState) int {
-			n := L.GetTop()
-			reject := false
-			if n >= 3 {
-				reject = bool(L.CheckBool(3))
-			}
-			groupID := int64(L.CheckNumber(1))
-			userID := int64(L.CheckNumber(2))
-			go func() {
-				if err := sendAdp.KickGroupMember(groupID, userID, reject); err != nil {
-					log.Warn("插件异步踢人失败", "plugin", pluginName, "group_id", groupID, "user_id", userID, "err", err)
-				}
-			}()
-			return pushOk(L)
-		},
 		"ban_group_member": func(L *lua.LState) int {
 			err := sendAdp.BanGroupMember(int64(L.CheckNumber(1)), int64(L.CheckNumber(2)), int(L.CheckInt(3)))
 			return pushResult(L, err)
-		},
-		// ban_group_member_async 异步禁言：立即返回，不阻塞插件回调。
-		"ban_group_member_async": func(L *lua.LState) int {
-			groupID := int64(L.CheckNumber(1))
-			userID := int64(L.CheckNumber(2))
-			duration := int(L.CheckInt(3))
-			go func() {
-				if err := sendAdp.BanGroupMember(groupID, userID, duration); err != nil {
-					log.Warn("插件异步禁言失败", "plugin", pluginName, "group_id", groupID, "user_id", userID, "duration", duration, "err", err)
-				}
-			}()
-			return pushOk(L)
 		},
 		"set_group_whole_ban": func(L *lua.LState) int {
 			err := sendAdp.SetGroupWholeBan(int64(L.CheckNumber(1)), bool(L.CheckBool(2)))
