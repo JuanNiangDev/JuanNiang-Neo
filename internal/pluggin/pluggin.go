@@ -638,17 +638,22 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 
 // ListWebhookPlugins 返回所有启用 webhook 的插件及其 URL 路径（GET /webhook 列表用）。
 // 判定条件：已加载 + 拥有 webhook 权限 + 定义了 on_webhook 回调。
+// GetGlobal 在插件 stateMu 下执行（与异步回调互斥，LState 非线程安全）。
 func (pe *PluginEngine) ListWebhookPlugins() []adapter.WebhookPluginInfo {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-
 	var out []adapter.WebhookPluginInfo
-	for _, p := range pe.plugins {
+	for _, p := range pe.snapshot() {
 		if !p.HasPermission("webhook") {
 			continue
 		}
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
 		fn := p.State.GetGlobal("on_webhook")
-		if fn.Type() != lua.LTFunction {
+		hasFn := fn.Type() == lua.LTFunction
+		p.stateMu.Unlock()
+		if !hasFn {
 			continue
 		}
 		out = append(out, adapter.WebhookPluginInfo{
@@ -775,11 +780,13 @@ func (pe *PluginEngine) pluginByName(name string) *LoadedPlugin {
 
 // execCommand 在插件 stateMu 下执行命令 handler（保证 LState 串行，且不再持有
 // pe.mu / commands 锁——handler 内动态注册命令不会触发读锁升级写锁死锁）。
-// 插件未加载时直接执行：仅内置命令（如 /help，纯 Go 闭包）会走到该分支。
+// 插件未加载/已卸载时**不执行**：命令 handler 闭包捕获插件 LState，若插件已被
+// Unload 关闭（Match 与执行之间存在窗口），执行会 panic。内置命令（/help）
+// 注册在 system 插件名下，正常总是加载（内嵌资源），此处不执行只影响极端场景。
 func (pe *PluginEngine) execCommand(node *CommandNode, args []string, event EventData) (bool, string, error) {
 	p := pe.pluginByName(node.PluginName)
 	if p == nil {
-		return node.Handler(args, event)
+		return false, "", nil
 	}
 	p.stateMu.Lock()
 	defer p.stateMu.Unlock()
@@ -972,11 +979,12 @@ func (pe *PluginEngine) dispatchMessage(ev adapter.Event) DispatchResult {
 }
 
 // onCronJob 派发 cronjob 事件给插件（锁外执行）。
-// pluginIDs 指定要通知的插件目录名列表；为空则通知所有插件。
+// pluginIDs 指定要通知的插件目录名列表（与 map key / p.Dir 目录名一致，
+// 不是 Manifest.Name 显示名）；为空则通知所有插件。
 func (pe *PluginEngine) onCronJob(event EventData, pluginIDs []string) bool {
 	for _, p := range pe.snapshot() {
 		// 按 CronJob 配置的插件列表过滤
-		if len(pluginIDs) > 0 && !containsString(pluginIDs, p.Manifest.Name) {
+		if len(pluginIDs) > 0 && !containsString(pluginIDs, filepath.Base(p.Dir)) {
 			continue
 		}
 		p.stateMu.Lock()
@@ -1125,8 +1133,13 @@ func (pe *PluginEngine) sendWebhookReply(ev adapter.Event, reply string) {
 }
 
 // SupportsCronJob 检查插件是否支持定时任务回调（定义了 on_cronjob 全局函数）。
-// 注意：CronJob 实际调用的回调是 on_cronjob，而非 on_timer_call。
+// 在插件 stateMu 下读取 LState（与异步回调互斥，LState 非线程安全）。
 func (p *LoadedPlugin) SupportsCronJob() bool {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.closed {
+		return false
+	}
 	fn := p.State.GetGlobal("on_cronjob")
 	return fn.Type() == lua.LTFunction
 }
@@ -2735,9 +2748,15 @@ func (pe *PluginEngine) injectTimer(L *lua.LState, pluginName string) {
 // 以 copy-on-write 更新 atomic map：submitAsync 无锁读取，插件 Lua 回调内
 // 调用 *_async 不再与引擎锁交互（消除持锁回调内提交异步任务的死锁）。
 func (pe *PluginEngine) RegisterAsyncAPI(kind string, api AsyncAPI) {
-	m := *pe.asyncAPIs.Load()
-	if _, dup := m[kind]; dup {
+	old := pe.asyncAPIs.Load()
+	if _, dup := (*old)[kind]; dup {
 		panic("pluggin: 异步 API 重复注册: " + kind)
+	}
+	// 注意必须真正复制 map：Go map 是引用类型，直接改共享 map 会与
+	// submitAsync 的并发读取产生 data race
+	m := make(map[string]*AsyncAPI, len(*old)+1)
+	for k, v := range *old {
+		m[k] = v
 	}
 	m[kind] = &api
 	pe.asyncAPIs.Store(&m)

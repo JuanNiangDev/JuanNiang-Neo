@@ -225,8 +225,10 @@ func (r *CommandRegistry) Match(raw string) (node *CommandNode, args []string, h
 }
 
 // Dispatch 匹配并执行命令 handler（handler 在锁外执行）。
-// 保留旧签名以兼容调用方；新代码建议用 Match + PluginEngine.execCommand，
-// 让 handler 在插件 stateMu 下执行以保证 LState 串行。
+// Deprecated: 保留旧签名以兼容外部调用者；handler 会执行 Lua，调用方必须
+// 保证在对应插件的 stateMu 下调用（生产代码用 PluginEngine.Match +
+// PluginEngine.execCommand，测试辅助 dispatchCommand 同）。直接调用本方法
+// 会在无 stateMu 互斥的情况下执行 Lua，与事件派发并发导致数据竞争。
 func (r *CommandRegistry) Dispatch(raw string, event EventData) (consumed bool, reply string, err error) {
 	node, args, hint := r.Match(raw)
 	if node != nil {
