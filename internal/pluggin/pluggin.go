@@ -347,10 +347,12 @@ func (pe *PluginEngine) IsSystem(name string) bool {
 }
 
 // registerBuiltinCommands 注册内置命令（/help）。
+// Builtin 标记：handler 是纯 Go 闭包（不触碰 LState），执行不依赖 system 插件加载状态。
 func (pe *PluginEngine) registerBuiltinCommands() {
 	pe.commands.Register("system", []string{"help"}, CommandOpts{
 		Description: "查看所有可用命令，或查看某个命令的子命令与用法",
 		Usage:       "/help [命令路径...]",
+		Builtin:     true,
 	}, func(args []string, event EventData) (bool, string, error) {
 		// /help 或 /help <cmd> [sub...]
 		reply := pe.commands.FormatHelp(args)
@@ -789,9 +791,12 @@ func (pe *PluginEngine) pluginByName(name string) *LoadedPlugin {
 // execCommand 在插件 stateMu 下执行命令 handler（保证 LState 串行，且不再持有
 // pe.mu / commands 锁——handler 内动态注册命令不会触发读锁升级写锁死锁）。
 // 插件未加载/已卸载时**不执行**：命令 handler 闭包捕获插件 LState，若插件已被
-// Unload 关闭（Match 与执行之间存在窗口），执行会 panic。内置命令（/help）
-// 注册在 system 插件名下，正常总是加载（内嵌资源），此处不执行只影响极端场景。
+// Unload 关闭（Match 与执行之间存在窗口），执行会 panic。
+// 内置命令（Builtin）是纯 Go 闭包，不触碰 LState，直接执行、不依赖插件加载状态。
 func (pe *PluginEngine) execCommand(node *CommandNode, args []string, event EventData) (bool, string, error) {
+	if node.Builtin {
+		return node.Handler(args, event)
+	}
 	p := pe.pluginByName(node.PluginName)
 	if p == nil {
 		return false, "", nil
