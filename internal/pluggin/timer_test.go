@@ -12,18 +12,30 @@ import (
 //  1. 声明 timer 权限后 jn.timer 表被注入
 //  2. after(秒, ctx) 立即返回有效 req_id
 //  3. 到点后引擎经异步注册表（kind "timer"）派发 on_timer_response，且 ctx 现场原样取回
+//
+// 直接 L 操作均在插件 stateMu 下进行（与 runAsyncCallbacks 的派发互斥）；
+// 等待回调期间不持锁，否则回调永远无法拿到 stateMu。
 func TestTimerAfterDispatch(t *testing.T) {
 	pe, _, _ := newTestEngine(t, nil)
 	L := loadPluginManual(t, pe, "redrock_group_manager")
+	p := pluginForL(pe, L)
+	if p == nil {
+		t.Fatal("插件未加载")
+	}
+
+	var fired atomic.Bool
+
+	// 覆盖全局 on_timer_response + 调用 jn.timer.after（持锁，与引擎派发互斥）
+	p.stateMu.Lock()
 
 	// jn.timer 应已注入（loadPluginManual 权限含 timer）
 	timer := L.GetGlobal("timer")
 	if timer.Type() != lua.LTTable {
+		p.stateMu.Unlock()
 		t.Fatalf("jn.timer 未注入, got %s", timer.Type())
 	}
 
 	// 覆盖全局 on_timer_response，捕获派发与 ctx 传递
-	var fired atomic.Bool
 	L.SetGlobal("on_timer_response", L.NewFunction(func(LL *lua.LState) int {
 		ctxv := LL.Get(2)
 		if ctxv.Type() == lua.LTTable {
@@ -41,15 +53,18 @@ func TestTimerAfterDispatch(t *testing.T) {
 	ctx.RawSetString("tag", lua.LString("x"))
 	L.Push(ctx)
 	if err := L.PCall(2, 1, nil); err != nil {
+		p.stateMu.Unlock()
 		t.Fatalf("jn.timer.after 调用失败: %v", err)
 	}
 	reqID := L.Get(-1)
 	L.Pop(1)
+	p.stateMu.Unlock()
+
 	if reqID == lua.LNil || reqID == lua.LNumber(0) {
 		t.Fatalf("after 返回无效 req_id: %v", reqID)
 	}
 
-	// 等待异步派发
+	// 等待异步派发（不持锁，让引擎回调能拿到 stateMu）
 	deadline := time.After(3 * time.Second)
 	for !fired.Load() {
 		select {
@@ -60,8 +75,11 @@ func TestTimerAfterDispatch(t *testing.T) {
 		}
 	}
 
-	// ctx 现场应原样取回
-	if v := L.GetGlobal("timer_ctx_tag"); v != lua.LString("x") {
+	// ctx 现场应原样取回（持锁读）
+	p.stateMu.Lock()
+	v := L.GetGlobal("timer_ctx_tag")
+	p.stateMu.Unlock()
+	if v != lua.LString("x") {
 		t.Fatalf("on_timer_response 未取回 ctx.tag, got %v", v)
 	}
 }

@@ -151,19 +151,28 @@ func (r *CommandRegistry) HasCommand(raw string) bool {
 // Dispatch 解析 raw 消息并派发到对应命令。
 // raw 应为以 "/" 开头的消息。返回 (consumed, reply, err)。
 // 若找不到匹配命令，consumed=false 让上层 fallback 到 on_message。
-func (r *CommandRegistry) Dispatch(raw string, event EventData) (consumed bool, reply string, err error) {
+// Match 匹配命令树但不执行 handler（锁内短临界区，不触碰 Lua）。
+// 返回：
+//
+//	node != nil → 命中可执行 handler，args 为命中路径之后的剩余参数
+//	hint != ""  → 停在分组节点，hint 为该节点的子命令提示
+//	否则 → 未命中
+//
+// handler 由调用方在插件 stateMu 下执行（见 PluginEngine.execCommand）——
+// 若在锁内直接执行，handler 内动态注册命令会触发读锁升级写锁死锁。
+func (r *CommandRegistry) Match(raw string) (node *CommandNode, args []string, hint string) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(raw, "/") {
-		return false, "", nil
+		return nil, nil, ""
 	}
 	tokens := strings.Fields(raw)
 	if len(tokens) == 0 {
-		return false, "", nil
+		return nil, nil, ""
 	}
 	// tokens[0] = "/cmd" 形式，去掉前导 "/"
 	tokens[0] = strings.TrimPrefix(tokens[0], "/")
 	if tokens[0] == "" {
-		return false, "", nil
+		return nil, nil, ""
 	}
 
 	r.mu.RLock()
@@ -186,13 +195,8 @@ func (r *CommandRegistry) Dispatch(raw string, event EventData) (consumed bool, 
 	}
 
 	if matched != nil {
-		// 调用 handler，args = 命中路径之后的所有 token
-		args := tokens[matchedPathLen:]
-		consumed, reply, err = matched.Handler(args, event)
-		if !consumed && reply == "" && err == nil {
-			return false, "", nil
-		}
-		return consumed, reply, err
+		// args = 命中路径之后的所有 token
+		return matched, tokens[matchedPathLen:], ""
 	}
 
 	// 没有命中可执行 handler；但若停在某个非根节点，则提示该节点的子命令
@@ -214,8 +218,28 @@ func (r *CommandRegistry) Dispatch(raw string, event EventData) (consumed bool, 
 			for _, s := range subs {
 				lines = append(lines, formatHelpLine(s))
 			}
-			return true, strings.Join(lines, "\n"), nil
+			return nil, nil, strings.Join(lines, "\n")
 		}
+	}
+	return nil, nil, ""
+}
+
+// Dispatch 匹配并执行命令 handler（handler 在锁外执行）。
+// Deprecated: 保留旧签名以兼容外部调用者；handler 会执行 Lua，调用方必须
+// 保证在对应插件的 stateMu 下调用（生产代码用 PluginEngine.Match +
+// PluginEngine.execCommand，测试辅助 dispatchCommand 同）。直接调用本方法
+// 会在无 stateMu 互斥的情况下执行 Lua，与事件派发并发导致数据竞争。
+func (r *CommandRegistry) Dispatch(raw string, event EventData) (consumed bool, reply string, err error) {
+	node, args, hint := r.Match(raw)
+	if node != nil {
+		consumed, reply, err = node.Handler(args, event)
+		if !consumed && reply == "" && err == nil {
+			return false, "", nil
+		}
+		return consumed, reply, err
+	}
+	if hint != "" {
+		return true, hint, nil
 	}
 	return false, "", nil
 }
