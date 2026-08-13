@@ -88,13 +88,16 @@ M.json = json
 ---@field send_private_msg_sync fun(user_id: number, message: string|table): boolean, string? 同步发送私聊消息，等待结果
 ---@field send_group_msg_sync fun(group_id: number, message: string|table): boolean, string? 同步发送群消息，等待结果
 ---@field delete_msg fun(message_id: number|string): boolean, string? 撤回消息（事件表的 message_id 为字符串）
+---@field delete_msg_async fun(message_id: number|string): boolean 异步撤回消息，立即返回，不阻塞插件回调（结果仅记日志）
 ---@field get_msg fun(message_id: number|string): table, string? 根据消息 ID 获取消息完整内容
 ---@field get_group_info fun(group_id: number): table, string?
 ---@field get_group_member_list fun(group_id: number): table[], string?
 ---@field get_group_member_info fun(group_id: number, user_id: number): table, string?
 ---@field get_group_honor_info fun(group_id: number): table, string?
 ---@field kick_group_member fun(group_id: number, user_id: number, reject_add?: boolean): boolean, string?
+---@field kick_group_member_async fun(group_id: number, user_id: number, reject_add?: boolean): boolean 异步踢人，立即返回，不阻塞插件回调（结果仅记日志）
 ---@field ban_group_member fun(group_id: number, user_id: number, duration: number): boolean, string?
+---@field ban_group_member_async fun(group_id: number, user_id: number, duration: number): boolean 异步禁言，立即返回，不阻塞插件回调（结果仅记日志）
 ---@field set_group_whole_ban fun(group_id: number, enable: boolean): boolean, string?
 ---@field set_group_card fun(group_id: number, user_id: number, card: string): boolean, string?
 ---@field handle_friend_request fun(flag: string, approve: boolean, remark: string): boolean, string?
