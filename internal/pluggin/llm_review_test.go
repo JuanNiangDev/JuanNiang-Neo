@@ -230,7 +230,9 @@ func loadPluginManual(t *testing.T, pe *PluginEngine, name string) *lua.LState {
 	}
 
 	pe.mu.Lock()
-	pe.plugins[name] = &LoadedPlugin{Manifest: Manifest{Name: name}, State: L, Dir: pluginDir}
+	p := &LoadedPlugin{Manifest: Manifest{Name: name}, State: L, Dir: pluginDir}
+	attachPluginRef(L, p)
+	pe.plugins[name] = p
 	pe.mu.Unlock()
 
 	// 测试结束先卸载插件（从 map 移除），再关闭 LState：避免长延时异步任务
@@ -271,6 +273,15 @@ func runOnMessage(t *testing.T, pe *PluginEngine, L *lua.LState, groupID, userID
 	defer p.stateMu.Unlock()
 	if p.closed {
 		t.Fatal("插件已关闭")
+	}
+	// 模拟 dispatchMessage：设置该插件当前事件（异步任务快照/agent API 读取用）
+	p.currentEv = EventData{
+		PostType:    "message",
+		MessageType: "group",
+		UserID:      userID,
+		GroupID:     groupID,
+		RawMessage:  raw,
+		Admins:      []string{},
 	}
 	t.Helper()
 	fn := L.GetGlobal("on_message")

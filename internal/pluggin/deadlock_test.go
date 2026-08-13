@@ -63,7 +63,7 @@ func loadMiniPlugin(t *testing.T, pe *PluginEngine, name, src string) *lua.LStat
 
 	L := lua.NewState()
 	pe.injectSDK(L, name)
-	pe.injectBaseAPI(L, name, []string{"onebot11", "database", "file", "llm", "timer"})
+	pe.injectBaseAPI(L, name, []string{"onebot11", "database", "file", "llm", "timer", "agent"})
 	// database 需要 gorm db（测试环境不提供），手写空实现
 	dbTable := L.NewTable()
 	L.SetFuncs(dbTable, map[string]lua.LGFunction{
@@ -78,6 +78,10 @@ func loadMiniPlugin(t *testing.T, pe *PluginEngine, name, src string) *lua.LStat
 	})
 	L.SetGlobal("database", dbTable)
 	pe.injectCommandAPI(L, name)
+	// injectBaseAPI 要求 pe.dao != nil 才注入 agent；测试引擎 dao 为 nil，
+	// 手动补注入（get_current_chat_area 仅依赖 agentOp，nil 时返回事件字段、
+	// 不带 chat_area_id；其余 agent API 内部均有 nil 防御）
+	pe.injectAgent(L)
 	if err := L.DoString(fmt.Sprintf(`package.path = %q .. ";" .. package.path`, pluginDir+"/?.lua")); err != nil {
 		t.Fatalf("设置 package.path 失败: %v", err)
 	}
@@ -86,7 +90,9 @@ func loadMiniPlugin(t *testing.T, pe *PluginEngine, name, src string) *lua.LStat
 	}
 
 	pe.mu.Lock()
-	pe.plugins[name] = &LoadedPlugin{Manifest: Manifest{Name: name}, State: L, Dir: pluginDir}
+	p := &LoadedPlugin{Manifest: Manifest{Name: name}, State: L, Dir: pluginDir}
+	attachPluginRef(L, p)
+	pe.plugins[name] = p
 	pe.mu.Unlock()
 	// 清理：先删 map（runAsyncCallbacks 拿不到新任务），再 p.close()——
 	// 在 stateMu 下关闭并与在途异步回调互斥；已被 Unload 关闭时幂等跳过。
@@ -507,28 +513,44 @@ func TestRegisterAsyncAPIConcurrentReadWrite(t *testing.T) {
 	}
 }
 
-// TestCurrentEvConcurrentAccess currentEv 改 atomic.Value 后并发读写安全。
-func TestCurrentEvConcurrentAccess(t *testing.T) {
-	pe, _ := newMiniTestEngine(t, nil)
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 2000; i++ {
-			pe.currentEv.Store(EventData{PostType: "message", UserID: int64(i)})
-		}
-	}()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < 2000; i++ {
-			ev, ok := pe.currentEv.Load().(EventData)
-			if ok {
-				_ = ev.UserID
-			}
-		}
-	}()
-	wg.Wait()
+// TestAsyncCallbackSeesTriggerEvent 回归：事件 A 触发的异步任务，即使事件 B
+// 随后派发，回调（on_chat_response）内 jn.agent.get_current_chat_area 仍读到
+// 任务触发时的事件 A（修复前读共享全局 currentEv 会读到 B 的会话）。
+func TestAsyncCallbackSeesTriggerEvent(t *testing.T) {
+	llm := &fakeLLM{reply: "ok"}
+	llm.setDelay(200 * time.Millisecond) // 任务 A 在途期间让事件 B 派发
+	pe, _ := newMiniTestEngine(t, llm)
+	loadMiniPlugin(t, pe, "evctx", `
+local jn = require("jn")
+function on_message(event)
+    -- 仅事件 A（"hello"）触发异步任务，事件 B（"world"）只派发不提交，
+    -- 避免多个任务完成顺序不定导致断言抖动
+    if event.raw_message == "hello" then
+        jn.llm.chat_async({ { role = "user", content = "x" } }, { timeout = 5 })
+    end
+    return false, nil
+end
+function on_chat_response(req_id, content, err)
+    local area = jn.agent.get_current_chat_area()
+    _G.cb_group = area.group_id
+    _G.cb_user = area.user_id
+end
+`)
+	L := pe.plugins["evctx"].State
+
+	// 事件 A：群 10001 / 用户 20001（触发异步任务）
+	runOnMessage(t, pe, L, 10001, 20001, "hello", "90001")
+	// 事件 B 立即派发：群 10002 / 用户 20002（修复前会覆盖全局 currentEv）
+	runOnMessage(t, pe, L, 10002, 20002, "world", "90002")
+
+	// 任务 A 的回调必须读到事件 A 的会话（事件 B 派发不影响）
+	waitFor(t, func() bool { return luaGetGlobal(pe, L, "cb_group") != lua.LNil })
+	if v := luaGetGlobal(pe, L, "cb_group"); v != lua.LNumber(10001) {
+		t.Fatalf("回调应读到事件 A 的 group_id=10001, got %v", v)
+	}
+	if v := luaGetGlobal(pe, L, "cb_user"); v != lua.LNumber(20001) {
+		t.Fatalf("回调应读到事件 A 的 user_id=20001, got %v", v)
+	}
 }
 
 // ---------- 测试辅助 ----------
