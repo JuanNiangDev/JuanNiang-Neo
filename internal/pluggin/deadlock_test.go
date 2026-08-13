@@ -268,6 +268,27 @@ end
 	waitFor(t, func() bool { return hasGroupMsg(adp, "inflight-done") })
 }
 
+// TestBuiltinHelpNotRequireSystemPlugin 内置 /help 命令的执行不依赖 system 插件
+// 是否加载（handler 是纯 Go 闭包，不触碰 LState）。修复前 execCommand 按
+// pluginByName(node.PluginName) 查找，system 未加载时 /help 静默不可用。
+func TestBuiltinHelpNotRequireSystemPlugin(t *testing.T) {
+	pe, _ := newMiniTestEngine(t, nil) // 未加载任何插件（含 system）
+	ev := EventData{PostType: "message", MessageType: "group", UserID: 1, GroupID: 2}
+
+	c, reply, err := dispatchCommand(pe, "/help", ev)
+	if err != nil || !c {
+		t.Fatalf("/help 应被消费且无错误, got (consumed=%v, err=%v)", c, err)
+	}
+	if !strings.Contains(reply, "可用命令") {
+		t.Fatalf("/help 应返回帮助文本, got %q", reply)
+	}
+
+	// 内置命令不参与插件命令列表（无插件归属）
+	if pe.commands.HasCommand("/help") == false {
+		t.Fatal("/help 应存在于命令注册表")
+	}
+}
+
 // TestExecCommandSkipsUnloadedPlugin execCommand 安全分支：命令已匹配但插件
 // 已卸载（Match 与执行之间的 Unload 窗口）→ 不执行 handler、不 panic。
 func TestExecCommandSkipsUnloadedPlugin(t *testing.T) {
@@ -307,7 +328,7 @@ function on_message(event)
     local ok1, err1 = jn.onebot11.delete_msg("90001")
     local ok2, err2 = jn.onebot11.ban_group_member(12345, 67890, 60)
     local ok3, err3 = jn.onebot11.kick_group_member(12345, 67890, false)
-    assert(ok1 == true and ok2 == true and ok3 == true, "同步 API 应返回 true: " .. tostring(err1) .. tostring(err2) .. tostring(err3))
+    assert(ok1 == true and err1 == nil and ok2 == true and err2 == nil and ok3 == true and err3 == nil, "同步 API 应返回 (true, nil): " .. tostring(err1) .. tostring(err2) .. tostring(err3))
     return false, nil
 end
 `)

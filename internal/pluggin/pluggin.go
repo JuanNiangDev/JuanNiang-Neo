@@ -347,10 +347,12 @@ func (pe *PluginEngine) IsSystem(name string) bool {
 }
 
 // registerBuiltinCommands 注册内置命令（/help）。
+// Builtin 标记：handler 是纯 Go 闭包（不触碰 LState），执行不依赖 system 插件加载状态。
 func (pe *PluginEngine) registerBuiltinCommands() {
 	pe.commands.Register("system", []string{"help"}, CommandOpts{
 		Description: "查看所有可用命令，或查看某个命令的子命令与用法",
 		Usage:       "/help [命令路径...]",
+		Builtin:     true,
 	}, func(args []string, event EventData) (bool, string, error) {
 		// /help 或 /help <cmd> [sub...]
 		reply := pe.commands.FormatHelp(args)
@@ -716,6 +718,8 @@ func (pe *PluginEngine) RouteWebhook(pluginName string, path string, method stri
 
 // OnNotice 通知事件（群成员增减、禁言、文件上传等）。
 func (pe *PluginEngine) OnNotice(event EventData) {
+	// 更新当前事件（与 Dispatch 派发路径一致）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		p.stateMu.Lock()
 		if p.closed {
@@ -739,6 +743,8 @@ func (pe *PluginEngine) OnNotice(event EventData) {
 
 // OnRequest 请求事件（加好友、加群邀请）。
 func (pe *PluginEngine) OnRequest(event EventData) {
+	// 更新当前事件（与 Dispatch 派发路径一致）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		p.stateMu.Lock()
 		if p.closed {
@@ -785,9 +791,12 @@ func (pe *PluginEngine) pluginByName(name string) *LoadedPlugin {
 // execCommand 在插件 stateMu 下执行命令 handler（保证 LState 串行，且不再持有
 // pe.mu / commands 锁——handler 内动态注册命令不会触发读锁升级写锁死锁）。
 // 插件未加载/已卸载时**不执行**：命令 handler 闭包捕获插件 LState，若插件已被
-// Unload 关闭（Match 与执行之间存在窗口），执行会 panic。内置命令（/help）
-// 注册在 system 插件名下，正常总是加载（内嵌资源），此处不执行只影响极端场景。
+// Unload 关闭（Match 与执行之间存在窗口），执行会 panic。
+// 内置命令（Builtin）是纯 Go 闭包，不触碰 LState，直接执行、不依赖插件加载状态。
 func (pe *PluginEngine) execCommand(node *CommandNode, args []string, event EventData) (bool, string, error) {
+	if node.Builtin {
+		return node.Handler(args, event)
+	}
 	p := pe.pluginByName(node.PluginName)
 	if p == nil {
 		return false, "", nil
@@ -986,6 +995,9 @@ func (pe *PluginEngine) dispatchMessage(ev adapter.Event) DispatchResult {
 // pluginIDs 指定要通知的插件目录名列表（与 map key / p.Dir 目录名一致，
 // 不是 Manifest.Name 显示名）；为空则通知所有插件。
 func (pe *PluginEngine) onCronJob(event EventData, pluginIDs []string) bool {
+	// 更新当前事件：插件回调内 jn.agent.get_current_chat_area / compact_memory
+	// 应观察到当前派发的事件，而不是上一个消息事件
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		// 按 CronJob 配置的插件列表过滤
 		if len(pluginIDs) > 0 && !containsString(pluginIDs, filepath.Base(p.Dir)) {
@@ -1031,6 +1043,8 @@ func containsString(list []string, target string) bool {
 
 // onNotice 派发 notice 事件给插件（锁外执行，per-plugin stateMu 串行）。
 func (pe *PluginEngine) onNotice(event EventData) bool {
+	// 更新当前事件（见 onCronJob 注释）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		p.stateMu.Lock()
 		if p.closed {
@@ -1062,6 +1076,8 @@ func (pe *PluginEngine) onNotice(event EventData) bool {
 
 // onRequest 派发 request 事件给插件（锁外执行，per-plugin stateMu 串行）。
 func (pe *PluginEngine) onRequest(event EventData) bool {
+	// 更新当前事件（见 onCronJob 注释）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		p.stateMu.Lock()
 		if p.closed {
@@ -1093,6 +1109,8 @@ func (pe *PluginEngine) onRequest(event EventData) bool {
 
 // onWebhook 派发 webhook 事件给插件（锁外执行，per-plugin stateMu 串行）。
 func (pe *PluginEngine) onWebhook(event EventData) (consumed bool, reply string) {
+	// 更新当前事件（见 onCronJob 注释）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		if !p.HasPermission("webhook") {
 			continue

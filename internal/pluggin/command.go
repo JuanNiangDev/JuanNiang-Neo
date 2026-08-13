@@ -21,6 +21,7 @@ type CommandHandler func(args []string, event EventData) (consumed bool, reply s
 type CommandOpts struct {
 	Description string // 一句话描述
 	Usage       string // 用法示例（如 "/system provider switch <id>"）
+	Builtin     bool   // 内置命令（纯 Go 闭包，不触碰 LState，不依赖插件加载状态）
 }
 
 // CommandNode 命令树节点。叶节点（Handler != nil）可执行；非叶节点仅作为分组。
@@ -29,6 +30,7 @@ type CommandNode struct {
 	Opts       CommandOpts
 	Handler    CommandHandler
 	PluginName string // 注册该命令的插件名
+	Builtin    bool   // 内置命令标记（见 CommandOpts.Builtin），随 Handler 一并更新
 	Children   map[string]*CommandNode
 }
 
@@ -70,6 +72,7 @@ func (r *CommandRegistry) Register(plugin string, path []string, opts CommandOpt
 			next.Opts = opts
 			next.Handler = handler
 			next.PluginName = plugin
+			next.Builtin = opts.Builtin
 		}
 		cur = next
 	}
