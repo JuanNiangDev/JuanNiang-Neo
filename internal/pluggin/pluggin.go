@@ -716,6 +716,8 @@ func (pe *PluginEngine) RouteWebhook(pluginName string, path string, method stri
 
 // OnNotice 通知事件（群成员增减、禁言、文件上传等）。
 func (pe *PluginEngine) OnNotice(event EventData) {
+	// 更新当前事件（与 Dispatch 派发路径一致）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		p.stateMu.Lock()
 		if p.closed {
@@ -739,6 +741,8 @@ func (pe *PluginEngine) OnNotice(event EventData) {
 
 // OnRequest 请求事件（加好友、加群邀请）。
 func (pe *PluginEngine) OnRequest(event EventData) {
+	// 更新当前事件（与 Dispatch 派发路径一致）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		p.stateMu.Lock()
 		if p.closed {
@@ -986,6 +990,9 @@ func (pe *PluginEngine) dispatchMessage(ev adapter.Event) DispatchResult {
 // pluginIDs 指定要通知的插件目录名列表（与 map key / p.Dir 目录名一致，
 // 不是 Manifest.Name 显示名）；为空则通知所有插件。
 func (pe *PluginEngine) onCronJob(event EventData, pluginIDs []string) bool {
+	// 更新当前事件：插件回调内 jn.agent.get_current_chat_area / compact_memory
+	// 应观察到当前派发的事件，而不是上一个消息事件
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		// 按 CronJob 配置的插件列表过滤
 		if len(pluginIDs) > 0 && !containsString(pluginIDs, filepath.Base(p.Dir)) {
@@ -1031,6 +1038,8 @@ func containsString(list []string, target string) bool {
 
 // onNotice 派发 notice 事件给插件（锁外执行，per-plugin stateMu 串行）。
 func (pe *PluginEngine) onNotice(event EventData) bool {
+	// 更新当前事件（见 onCronJob 注释）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		p.stateMu.Lock()
 		if p.closed {
@@ -1062,6 +1071,8 @@ func (pe *PluginEngine) onNotice(event EventData) bool {
 
 // onRequest 派发 request 事件给插件（锁外执行，per-plugin stateMu 串行）。
 func (pe *PluginEngine) onRequest(event EventData) bool {
+	// 更新当前事件（见 onCronJob 注释）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		p.stateMu.Lock()
 		if p.closed {
@@ -1093,6 +1104,8 @@ func (pe *PluginEngine) onRequest(event EventData) bool {
 
 // onWebhook 派发 webhook 事件给插件（锁外执行，per-plugin stateMu 串行）。
 func (pe *PluginEngine) onWebhook(event EventData) (consumed bool, reply string) {
+	// 更新当前事件（见 onCronJob 注释）
+	pe.currentEv.Store(event)
 	for _, p := range pe.snapshot() {
 		if !p.HasPermission("webhook") {
 			continue
