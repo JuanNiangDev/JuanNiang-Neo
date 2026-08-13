@@ -79,8 +79,9 @@ func loadMiniPlugin(t *testing.T, pe *PluginEngine, name, src string) *lua.LStat
 	L.SetGlobal("database", dbTable)
 	pe.injectCommandAPI(L, name)
 	// injectBaseAPI 要求 pe.dao != nil 才注入 agent；测试引擎 dao 为 nil，
-	// 手动补注入（get_current_chat_area 仅依赖 agentOp，nil 时返回事件字段、
-	// 不带 chat_area_id；其余 agent API 内部均有 nil 防御）
+	// 手动补注入。注意：get_providers/get_mcps 等查询类 agent API 依赖 dao，
+	// dao 为 nil 时调用会 panic——测试插件只应使用 get_current_chat_area /
+	// compact_memory（依赖 agentOp，nil 时返回事件字段或报错，均有防御）
 	pe.injectAgent(L)
 	if err := L.DoString(fmt.Sprintf(`package.path = %q .. ";" .. package.path`, pluginDir+"/?.lua")); err != nil {
 		t.Fatalf("设置 package.path 失败: %v", err)
@@ -290,7 +291,7 @@ func TestBuiltinHelpNotRequireSystemPlugin(t *testing.T) {
 	}
 
 	// 内置命令不参与插件命令列表（无插件归属）
-	if pe.commands.HasCommand("/help") == false {
+	if !pe.commands.HasCommand("/help") {
 		t.Fatal("/help 应存在于命令注册表")
 	}
 }

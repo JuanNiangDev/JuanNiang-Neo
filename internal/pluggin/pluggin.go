@@ -705,12 +705,12 @@ func (pe *PluginEngine) RouteWebhook(pluginName string, path string, method stri
 			"payload": payload,
 		},
 	}
-	// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
-	p.currentEv = event
 	fn := p.State.GetGlobal("on_webhook")
 	if fn.Type() != lua.LTFunction {
 		return false, "plugin has no on_webhook handler"
 	}
+	// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
+	p.currentEv = event
 	table := eventToLuaTable(p.State, event)
 	p.State.Push(fn)
 	p.State.Push(table)
@@ -822,6 +822,15 @@ func pluginRef(L *lua.LState) *LoadedPlugin {
 		}
 	}
 	return nil
+}
+
+// currentEventOf 返回 LState 所属插件的当前事件（Lua 执行期间调用，持 stateMu）。
+// 未挂插件引用时返回零值 EventData（不影响调用方）。
+func currentEventOf(L *lua.LState) EventData {
+	if p := pluginRef(L); p != nil {
+		return p.currentEv
+	}
+	return EventData{}
 }
 
 // execCommand 在插件 stateMu 下执行命令 handler（保证 LState 串行，且不再持有
@@ -2609,10 +2618,7 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 		// 当前 Chat-Area（读该插件 currentEv：事件派发/异步回调执行前写入，
 		// 异步回调读到的是任务触发时的会话，而非派发时最新的其他事件）
 		"get_current_chat_area": func(L *lua.LState) int {
-			ev := EventData{}
-			if p := pluginRef(L); p != nil {
-				ev = p.currentEv
-			}
+			ev := currentEventOf(L)
 			result := L.NewTable()
 			L.SetField(result, "post_type", lua.LString(ev.PostType))
 			L.SetField(result, "message_type", lua.LString(ev.MessageType))
@@ -2631,10 +2637,7 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 			if agentOp == nil {
 				return pushResult(L, fmt.Errorf("agent operator 不可用"))
 			}
-			ev := EventData{}
-			if p := pluginRef(L); p != nil {
-				ev = p.currentEv
-			}
+			ev := currentEventOf(L)
 			areaID := agentOp.GetChatAreaID(ev.UserID, ev.GroupID, ev.MessageType)
 			if areaID == "" {
 				return pushResult(L, fmt.Errorf("无法获取当前 Chat-Area ID"))
@@ -2790,9 +2793,6 @@ func (pe *PluginEngine) RegisterAsyncAPI(kind string, api AsyncAPI) {
 // submitAsync 提交一个异步任务：run 在独立 goroutine 中执行（不得触碰任何 LState），
 // 完成后派发到插件的 Entry 入口函数。返回 req_id；kind 未注册返回 error。
 // 无锁：asyncAPIs 注册表是 atomic 只读 map（构造期填充），此处不请求 pe.mu。
-// submitAsync 提交一个异步任务：run 在独立 goroutine 中执行（不得触碰任何 LState），
-// 完成后派发到插件的 Entry 入口函数。返回 req_id；kind 未注册返回 error。
-// 无锁：asyncAPIs 注册表是 atomic 只读 map（构造期填充），此处不请求 pe.mu。
 // L 用于取回该插件当前事件快照（pluginRef 无锁，Lua 执行期间调用）。
 func (pe *PluginEngine) submitAsync(L *lua.LState, pluginName, kind string, timeout time.Duration, run func(ctx context.Context) (any, error)) (uint64, error) {
 	api, ok := (*pe.asyncAPIs.Load())[kind]
@@ -2800,10 +2800,7 @@ func (pe *PluginEngine) submitAsync(L *lua.LState, pluginName, kind string, time
 		return 0, fmt.Errorf("pluggin: 异步 API %q 未注册", kind)
 	}
 	// 快照触发事件（持 stateMu 执行 Lua 期间读取，无需额外锁）
-	var ev EventData
-	if p := pluginRef(L); p != nil {
-		ev = p.currentEv
-	}
+	ev := currentEventOf(L)
 	id := atomic.AddUint64(&pe.asyncSeq, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
