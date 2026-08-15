@@ -176,6 +176,12 @@ type PluginEngine struct {
 	// Lua 入口函数（如 on_chat_response）。注册表集中管理，后续新增
 	// t2i/http/agent 等异步只需注册一个 kind。
 	asyncAPIs map[string]*AsyncAPI
+	// asyncAPIMu 保护 asyncAPIs 注册表。独立于 pe.mu：runAsyncCallbacks 持
+	// pe.mu 写锁执行 Lua 回调期间，插件仍可能再次提交异步任务（链式调用，
+	// 如 repo-intro 的 meta → README 流水线），此时若查表仍取 pe.mu 读锁，
+	// 会与已持有的写锁构成 Go RWMutex 不可重入死锁，永久冻结事件派发。
+	// 注册表仅构建期（NewPluginEngine）写入，之后只读。
+	asyncAPIMu sync.RWMutex
 	// asyncCh 异步任务完成后的回调队列（runAsyncCallbacks 消费）。
 	asyncCh chan asyncTask
 	// asyncSeq req_id 自增序号。
@@ -361,10 +367,10 @@ func (pe *PluginEngine) LoadAll() error {
 }
 
 func (pe *PluginEngine) Load(name string) error {
-	pe.mu.Lock()
-	defer pe.mu.Unlock()
-
-	if _, ok := pe.plugins[name]; ok {
+	pe.mu.RLock()
+	_, loaded := pe.plugins[name]
+	pe.mu.RUnlock()
+	if loaded {
 		return fmt.Errorf("plugin %q already loaded", name)
 	}
 
@@ -391,12 +397,22 @@ func (pe *PluginEngine) Load(name string) error {
 	// 注入命令注册 API（依赖当前 plugin name）
 	pe.injectCommandAPI(L, name)
 
+	// 执行插件入口不持锁：LState 尚未发布到 plugins 表，其它 goroutine 不可见；
+	// 插件入口内提交异步任务（如 http.get_async）不会与 Load 的写锁互相嵌套
+	// （写锁内取读锁 = RWMutex 不可重入死锁）。
 	entryFile := filepath.Join(pluginDir, manifest.Entry)
 	if err := L.DoFile(entryFile); err != nil {
 		L.Close()
 		return fmt.Errorf("执行 entry 失败: %w", err)
 	}
 
+	// 发布到插件表（写锁，双检防并发重复加载）
+	pe.mu.Lock()
+	defer pe.mu.Unlock()
+	if _, ok := pe.plugins[name]; ok {
+		L.Close()
+		return fmt.Errorf("plugin %q already loaded", name)
+	}
 	pe.plugins[name] = &LoadedPlugin{Manifest: *manifest, State: L, Dir: pluginDir}
 	log.Info("插件加载成功", "name", name, "version", manifest.Version, "system", manifest.System)
 	return nil
@@ -2558,8 +2574,8 @@ func (pe *PluginEngine) injectTimer(L *lua.LState, pluginName string) {
 // 注册表集中管理 xxx_async 类接口的派发规格，后续新增 t2i/http/agent 等异步
 // 只需注册一个 kind。重复注册 panic（内置 kind 在 NewPluginEngine 注册）。
 func (pe *PluginEngine) RegisterAsyncAPI(kind string, api AsyncAPI) {
-	pe.mu.Lock()
-	defer pe.mu.Unlock()
+	pe.asyncAPIMu.Lock()
+	defer pe.asyncAPIMu.Unlock()
 	if _, dup := pe.asyncAPIs[kind]; dup {
 		panic("pluggin: 异步 API 重复注册: " + kind)
 	}
@@ -2569,9 +2585,9 @@ func (pe *PluginEngine) RegisterAsyncAPI(kind string, api AsyncAPI) {
 // submitAsync 提交一个异步任务：run 在独立 goroutine 中执行（不得触碰任何 LState），
 // 完成后派发到插件的 Entry 入口函数。返回 req_id；kind 未注册返回 error。
 func (pe *PluginEngine) submitAsync(pluginName, kind string, timeout time.Duration, run func(ctx context.Context) (any, error)) (uint64, error) {
-	pe.mu.RLock()
+	pe.asyncAPIMu.RLock()
 	api, ok := pe.asyncAPIs[kind]
-	pe.mu.RUnlock()
+	pe.asyncAPIMu.RUnlock()
 	if !ok {
 		return 0, fmt.Errorf("pluggin: 异步 API %q 未注册", kind)
 	}
@@ -2593,33 +2609,44 @@ func (pe *PluginEngine) runAsyncCallbacks() {
 	for task := range pe.asyncCh {
 		pe.mu.Lock()
 		p, ok := pe.plugins[task.pluginName]
-		if ok {
-			L := p.State
-			fn := L.GetGlobal(task.api.Entry)
-			if fn.Type() == lua.LTFunction {
-				vals := task.api.Encode(L, task.result, task.err)
-				nargs := 1 // req_id
-				L.Push(fn)
-				L.Push(lua.LNumber(task.reqID))
-				if task.api.WithCtx {
-					// 取出调用现场（req_id → ctx table），回调后即删，防泄漏
-					ctxVal := lua.LNil
-					if t := L.GetGlobal("jn_async_ctx"); t.Type() == lua.LTTable {
-						key := lua.LNumber(task.reqID)
-						if v := t.(*lua.LTable).RawGet(key); v != lua.LNil {
-							ctxVal = v
-							t.(*lua.LTable).RawSet(key, lua.LNil)
-						}
+		if !ok {
+			// 插件可能仍在加载中（Load 在 DoFile 完成前未发布到 plugins 表），
+			// 加载期提交的异步任务可能在发布前完成。短暂等待后重试一次，
+			// 避免任务被误丢弃；重试仍不存在（插件确已卸载）则丢弃。
+			pe.mu.Unlock()
+			time.Sleep(100 * time.Millisecond)
+			pe.mu.Lock()
+			p, ok = pe.plugins[task.pluginName]
+			if !ok {
+				pe.mu.Unlock()
+				continue
+			}
+		}
+		L := p.State
+		fn := L.GetGlobal(task.api.Entry)
+		if fn.Type() == lua.LTFunction {
+			vals := task.api.Encode(L, task.result, task.err)
+			nargs := 1 // req_id
+			L.Push(fn)
+			L.Push(lua.LNumber(task.reqID))
+			if task.api.WithCtx {
+				// 取出调用现场（req_id → ctx table），回调后即删，防泄漏
+				ctxVal := lua.LNil
+				if t := L.GetGlobal("jn_async_ctx"); t.Type() == lua.LTTable {
+					key := lua.LNumber(task.reqID)
+					if v := t.(*lua.LTable).RawGet(key); v != lua.LNil {
+						ctxVal = v
+						t.(*lua.LTable).RawSet(key, lua.LNil)
 					}
-					L.Push(ctxVal)
-					nargs++
 				}
-				for _, v := range vals {
-					L.Push(v)
-				}
-				if err := L.PCall(nargs+len(vals), 0, nil); err != nil {
-					log.Error("插件异步回调错误", "plugin", task.pluginName, "kind", task.kind, "err", err)
-				}
+				L.Push(ctxVal)
+				nargs++
+			}
+			for _, v := range vals {
+				L.Push(v)
+			}
+			if err := L.PCall(nargs+len(vals), 0, nil); err != nil {
+				log.Error("插件异步回调错误", "plugin", task.pluginName, "kind", task.kind, "err", err)
 			}
 		}
 		pe.mu.Unlock()

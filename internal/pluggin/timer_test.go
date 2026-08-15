@@ -17,13 +17,14 @@ func TestTimerAfterDispatch(t *testing.T) {
 	L := loadPluginManual(t, pe, "redrock_group_manager")
 
 	// jn.timer 应已注入（loadPluginManual 权限含 timer）
-	timer := L.GetGlobal("timer")
+	timer := luaGetGlobal(pe, L, "timer")
 	if timer.Type() != lua.LTTable {
 		t.Fatalf("jn.timer 未注入, got %s", timer.Type())
 	}
 
 	// 覆盖全局 on_timer_response，捕获派发与 ctx 传递
 	var fired atomic.Bool
+	pe.mu.RLock()
 	L.SetGlobal("on_timer_response", L.NewFunction(func(LL *lua.LState) int {
 		ctxv := LL.Get(2)
 		if ctxv.Type() == lua.LTTable {
@@ -41,10 +42,12 @@ func TestTimerAfterDispatch(t *testing.T) {
 	ctx.RawSetString("tag", lua.LString("x"))
 	L.Push(ctx)
 	if err := L.PCall(2, 1, nil); err != nil {
+		pe.mu.RUnlock()
 		t.Fatalf("jn.timer.after 调用失败: %v", err)
 	}
 	reqID := L.Get(-1)
 	L.Pop(1)
+	pe.mu.RUnlock()
 	if reqID == lua.LNil || reqID == lua.LNumber(0) {
 		t.Fatalf("after 返回无效 req_id: %v", reqID)
 	}
@@ -61,7 +64,7 @@ func TestTimerAfterDispatch(t *testing.T) {
 	}
 
 	// ctx 现场应原样取回
-	if v := L.GetGlobal("timer_ctx_tag"); v != lua.LString("x") {
+	if v := luaGetGlobal(pe, L, "timer_ctx_tag"); v != lua.LString("x") {
 		t.Fatalf("on_timer_response 未取回 ctx.tag, got %v", v)
 	}
 }
