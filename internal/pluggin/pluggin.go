@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"crypto/tls"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"crypto/tls"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -213,8 +213,8 @@ type PluginEngine struct {
 	// asyncSeq req_id 自增序号。
 	asyncSeq uint64
 	// loadMu 保护 loading 表：并发 Load(name) 去重（singleflight 语义）。
-	loadMu  sync.Mutex
-	loading map[string]*pluginLoad
+	loadMu   sync.Mutex
+	loading  map[string]*pluginLoad
 	commands *CommandRegistry
 }
 
