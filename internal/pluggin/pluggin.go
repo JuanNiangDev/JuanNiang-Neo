@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"crypto/tls"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1573,7 +1574,13 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 const httpAsyncTimeout = 60 * time.Second
 
 func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	// 强制 HTTP/1.1：Go 默认 HTTP/2 与部分站点（api.github.com、mp.weixin.qq.com）
+	// 的连接偶发挂起（30s 等不到响应头，wget/HTTP/1.1 秒回），降级为 1.1 稳定。
+	transport := &http.Transport{
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+	}
+	httpClient := &http.Client{Timeout: 30 * time.Second, Transport: transport}
 
 	httpTable := L.NewTable()
 	L.SetFuncs(httpTable, map[string]lua.LGFunction{
