@@ -1818,10 +1818,22 @@ const httpAsyncTimeout = 60 * time.Second
 func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 	// 强制 HTTP/1.1：Go 默认 HTTP/2 与部分站点（api.github.com、mp.weixin.qq.com）
 	// 的连接偶发挂起（30s 等不到响应头，wget/HTTP/1.1 秒回），降级为 1.1 稳定。
-	// 基于 DefaultTransport.Clone()：保留代理、TLS 等默认设置，仅覆盖 HTTP/2 协商。
+	// 基于 DefaultTransport.Clone()：保留代理等默认设置，仅覆盖 HTTP/2 协商。
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ForceAttemptHTTP2 = false
 	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	// Clone() 会先触发 DefaultTransport 的 h2 初始化（http2configureTransports 把
+	// "h2" 写进其 TLSClientConfig.NextProtos）。TLSNextProto 置空后必须同步从 ALPN
+	// 清掉 h2，否则 TLS 协商出 h2 却无处理器，请求直接 EOF。
+	if tcc := transport.TLSClientConfig; tcc != nil {
+		protos := tcc.NextProtos[:0]
+		for _, p := range tcc.NextProtos {
+			if p != "h2" {
+				protos = append(protos, p)
+			}
+		}
+		tcc.NextProtos = protos
+	}
 	httpClient := &http.Client{Timeout: 30 * time.Second, Transport: transport}
 
 	httpTable := L.NewTable()
