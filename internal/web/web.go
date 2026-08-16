@@ -61,12 +61,18 @@ func SPAHandler(webDir string) app.HandlerFunc {
 
 		// 文件存在且非目录 -> 直接 serve。
 		if info, err := os.Stat(full); err == nil && !info.IsDir() {
+			if rel == "index.html" {
+				// index.html 每次重新验证，保证前端构建更新后刷新即生效
+				// （hash 命名的 JS/CSS 由浏览器长缓存，天然带版本）。
+				c.Header("Cache-Control", "no-cache")
+			}
 			c.File(full)
 			return
 		}
 
 		// SPA 兜底: 回退到 index.html, 由前端路由处理。
 		if _, err := os.Stat(indexHTML); err == nil {
+			c.Header("Cache-Control", "no-cache")
 			c.File(indexHTML)
 			return
 		}
