@@ -1618,12 +1618,27 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 			return 1
 		},
 		// 异步版：立即返回 req_id（失败返回 0 + 错误串），完成回调 on_http_response(req_id, ctx, result, err)
+		// 可选第 3 位 headers 表：{ ["User-Agent"]="...", ["Referer"]="..." }，用于反爬/风控站点（如微信公众号）
 		"get_async": func(L *lua.LState) int {
 			url := L.CheckString(1)
+			var headers map[string]string
+			if L.GetTop() >= 3 && L.Get(3).Type() == lua.LTTable {
+				headers = make(map[string]string)
+				L.Get(3).(*lua.LTable).ForEach(func(k, v lua.LValue) {
+					if ks, ok := k.(lua.LString); ok {
+						if vs, ok2 := v.(lua.LString); ok2 {
+							headers[string(ks)] = string(vs)
+						}
+					}
+				})
+			}
 			run := func(ctx context.Context) (any, error) {
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 				if err != nil {
 					return nil, err
+				}
+				for k, v := range headers {
+					req.Header.Set(k, v)
 				}
 				resp, err := httpClient.Do(req)
 				if err != nil {
