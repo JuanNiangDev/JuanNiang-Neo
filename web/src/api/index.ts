@@ -147,7 +147,7 @@ export const pluginApi = {
   config: (id: string) => client.get(`/plugins/${id}/config`),
   saveConfig: (id: string, values: Record<string, any>) => client.put(`/plugins/${id}/config`, { values }),
   readme: (id: string) => client.get(`/plugins/${id}/readme`),
-  avatar: (id: string) => client.get(`/plugins/${id}/avatar`, { responseType: 'blob' }),
+  avatar: (id: string, v?: number) => client.get(`/plugins/${id}/avatar`, { params: { v: v ?? Date.now() }, responseType: 'blob' }),
 }
 
 export const storeApi = {

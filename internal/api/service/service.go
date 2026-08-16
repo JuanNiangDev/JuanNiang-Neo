@@ -1334,7 +1334,7 @@ func (s *Service) GetPluginAvatar(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginNotExist, dto.ErrorDetail{ErrorDetail: "该插件没有 avatar.png"}))
 		return
 	}
-	c.Header("Cache-Control", "public, max-age=86400")
+	c.Header("Cache-Control", "public, max-age=300")
 	c.Data(consts.StatusOK, "image/png", data)
 }
 

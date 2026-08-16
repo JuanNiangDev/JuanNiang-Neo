@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
+	"crypto/tls"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -211,7 +212,17 @@ type PluginEngine struct {
 	asyncCh chan asyncTask
 	// asyncSeq req_id 自增序号。
 	asyncSeq uint64
+	// loadMu 保护 loading 表：并发 Load(name) 去重（singleflight 语义）。
+	loadMu   sync.Mutex
+	loading  map[string]*pluginLoad
 	commands *CommandRegistry
+}
+
+// pluginLoad 一次进行中的插件加载（并发 Load 去重：等待者复用同一次
+// entry 执行结果，避免重复 L.DoFile 造成的命令注册/异步提交副作用）。
+type pluginLoad struct {
+	done chan struct{} // 加载结束（成功或失败）时关闭
+	err  error         // 加载结果错误（成功为 nil）
 }
 
 // AsyncAPI 描述一类可异步执行的 API（注册进引擎异步注册表）。
@@ -259,6 +270,7 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 		agentOp:   ag,
 		llmAccess: llm,
 		asyncCh:   make(chan asyncTask, 128),
+		loading:   make(map[string]*pluginLoad),
 		commands:  NewCommandRegistry(),
 	}
 	// 异步注册表初始为空 map；RegisterAsyncAPI 以 copy-on-write 方式填充
@@ -397,7 +409,35 @@ func (pe *PluginEngine) LoadAll() error {
 	return nil
 }
 
-func (pe *PluginEngine) Load(name string) error {
+func (pe *PluginEngine) Load(name string) (retErr error) {
+	// 并发 Load 去重（singleflight 语义）：同名加载进行中时等待其完成并复用
+	// 结果，避免重复执行 entry（L.DoFile 的命令注册/异步提交等副作用）。
+	// 已加载的预检保留：快速失败，避免无谓的 manifest 读取。
+	pe.loadMu.Lock()
+	if l, ok := pe.loading[name]; ok {
+		pe.loadMu.Unlock()
+		<-l.done
+		return l.err
+	}
+	pe.mu.RLock()
+	_, loaded := pe.plugins[name]
+	pe.mu.RUnlock()
+	if loaded {
+		pe.loadMu.Unlock()
+		return fmt.Errorf("plugin %q already loaded", name)
+	}
+	l := &pluginLoad{done: make(chan struct{})}
+	pe.loading[name] = l
+	pe.loadMu.Unlock()
+	// 注册完成后统一收尾：记录结果、删除 loading、唤醒等待者。
+	defer func() {
+		l.err = retErr
+		pe.loadMu.Lock()
+		delete(pe.loading, name)
+		pe.loadMu.Unlock()
+		close(l.done)
+	}()
+
 	pluginDir := filepath.Join(pe.basePath, name)
 	manifest, err := pe.readManifest(pluginDir)
 	if err != nil {
@@ -426,7 +466,9 @@ func (pe *PluginEngine) Load(name string) error {
 	// 注入命令注册 API（依赖当前 plugin name）
 	pe.injectCommandAPI(L, name)
 
-	// 执行 entry 在锁外进行：此时插件尚未进入 map，不存在并发执行者
+	// 执行插件入口不持锁：LState 尚未发布到 plugins 表，其它 goroutine 不可见；
+	// 插件入口内提交异步任务（如 http.get_async）不会与 Load 的写锁互相嵌套
+	// （写锁内取读锁 = RWMutex 不可重入死锁）。
 	entryFile := filepath.Join(pluginDir, manifest.Entry)
 	if err := L.DoFile(entryFile); err != nil {
 		L.Close()
@@ -508,6 +550,11 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 			"is_system":        m.System,
 			"is_active":        true, // 已加载即视为 active
 			"supports_cronjob": p.SupportsCronJob(),
+		}
+		// 头像文件修改时间（Unix 秒）：前端用作头像 URL 版本参数，
+		// 头像变更后 URL 变化、浏览器缓存自动失效；无头像时不带该字段。
+		if info, err := os.Stat(filepath.Join(pe.basePath, name, "avatar.png")); err == nil {
+			entry["avatar_mtime"] = info.ModTime().Unix()
 		}
 		// 使用 Load 时的 name（目录名）查找命令，而非 manifest.Name
 		// 因为命令注册使用的 plugin 参数是 Load 的 name 参数
@@ -1769,7 +1816,25 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 const httpAsyncTimeout = 60 * time.Second
 
 func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	// 强制 HTTP/1.1：Go 默认 HTTP/2 与部分站点（api.github.com、mp.weixin.qq.com）
+	// 的连接偶发挂起（30s 等不到响应头，wget/HTTP/1.1 秒回），降级为 1.1 稳定。
+	// 基于 DefaultTransport.Clone()：保留代理等默认设置，仅覆盖 HTTP/2 协商。
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	// Clone() 会先触发 DefaultTransport 的 h2 初始化（http2configureTransports 把
+	// "h2" 写进其 TLSClientConfig.NextProtos）。TLSNextProto 置空后必须同步从 ALPN
+	// 清掉 h2，否则 TLS 协商出 h2 却无处理器，请求直接 EOF。
+	if tcc := transport.TLSClientConfig; tcc != nil {
+		protos := tcc.NextProtos[:0]
+		for _, p := range tcc.NextProtos {
+			if p != "h2" {
+				protos = append(protos, p)
+			}
+		}
+		tcc.NextProtos = protos
+	}
+	httpClient := &http.Client{Timeout: 30 * time.Second, Transport: transport}
 
 	httpTable := L.NewTable()
 	L.SetFuncs(httpTable, map[string]lua.LGFunction{
@@ -1814,12 +1879,27 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 			return 1
 		},
 		// 异步版：立即返回 req_id（失败返回 0 + 错误串），完成回调 on_http_response(req_id, ctx, result, err)
+		// 可选第 3 位 headers 表：{ ["User-Agent"]="...", ["Referer"]="..." }，用于反爬/风控站点（如微信公众号）
 		"get_async": func(L *lua.LState) int {
 			url := L.CheckString(1)
+			var headers map[string]string
+			if L.GetTop() >= 3 && L.Get(3).Type() == lua.LTTable {
+				headers = make(map[string]string)
+				L.Get(3).(*lua.LTable).ForEach(func(k, v lua.LValue) {
+					if ks, ok := k.(lua.LString); ok {
+						if vs, ok2 := v.(lua.LString); ok2 {
+							headers[string(ks)] = string(vs)
+						}
+					}
+				})
+			}
 			run := func(ctx context.Context) (any, error) {
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 				if err != nil {
 					return nil, err
+				}
+				for k, v := range headers {
+					req.Header.Set(k, v)
 				}
 				resp, err := httpClient.Do(req)
 				if err != nil {
@@ -2820,7 +2900,18 @@ func (pe *PluginEngine) runAsyncCallbacks() {
 	for task := range pe.asyncCh {
 		p := pe.pluginByName(task.pluginName)
 		if p == nil {
-			continue // 插件已卸载，丢弃任务
+			// 插件可能仍在加载中（entry 提交的异步任务先于发布完成）。
+			// 等待该次加载结束（成功则发布、失败则无插件）再决定派发/丢弃。
+			pe.loadMu.Lock()
+			l, loading := pe.loading[task.pluginName]
+			pe.loadMu.Unlock()
+			if loading {
+				<-l.done
+				p = pe.pluginByName(task.pluginName)
+			}
+			if p == nil {
+				continue // 加载失败或插件已卸载，丢弃任务
+			}
 		}
 		p.stateMu.Lock()
 		if p.closed {

@@ -299,11 +299,11 @@ async function fetch() {
   try {
     const list = (await pluginApi.list()).data.data || []
     items.value = list
-    // 预取启用插件的头像
+    // 预取启用插件的头像（带 avatar_mtime 版本，头像变更后 URL 自动失效）
     for (const item of list) {
       const id = item.id || item.name
       if (!avatarSrc.value[id]) {
-        loadAvatar(id)
+        loadAvatar(id, item.avatar_mtime)
       }
     }
   }
@@ -311,9 +311,9 @@ async function fetch() {
   finally { loading.value = false }
 }
 
-async function loadAvatar(id: string) {
+async function loadAvatar(id: string, version?: number) {
   try {
-    const res = await pluginApi.avatar(id)
+    const res = await pluginApi.avatar(id, version)
     // 无头像时后端返回 JSON blob，需过滤，仅接受图片
     if (!res.data || typeof res.data !== 'object' || !res.data.type || !String(res.data.type).startsWith('image/')) return
     const url = URL.createObjectURL(res.data)

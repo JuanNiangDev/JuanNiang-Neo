@@ -28,7 +28,7 @@ func TestTimerAfterDispatch(t *testing.T) {
 	// 覆盖全局 on_timer_response + 调用 jn.timer.after（持锁，与引擎派发互斥）
 	p.stateMu.Lock()
 
-	// jn.timer 应已注入（loadPluginManual 权限含 timer）
+	// jn.timer 应已注入（loadPluginManual 权限含 timer）；已持 stateMu 直接读
 	timer := L.GetGlobal("timer")
 	if timer.Type() != lua.LTTable {
 		p.stateMu.Unlock()
@@ -36,6 +36,7 @@ func TestTimerAfterDispatch(t *testing.T) {
 	}
 
 	// 覆盖全局 on_timer_response，捕获派发与 ctx 传递
+
 	L.SetGlobal("on_timer_response", L.NewFunction(func(LL *lua.LState) int {
 		ctxv := LL.Get(2)
 		if ctxv.Type() == lua.LTTable {
@@ -59,7 +60,6 @@ func TestTimerAfterDispatch(t *testing.T) {
 	reqID := L.Get(-1)
 	L.Pop(1)
 	p.stateMu.Unlock()
-
 	if reqID == lua.LNil || reqID == lua.LNumber(0) {
 		t.Fatalf("after 返回无效 req_id: %v", reqID)
 	}
