@@ -60,6 +60,30 @@ type LoadedPlugin struct {
 	Manifest Manifest
 	State    *lua.LState
 	Dir      string
+
+	// stateMu 串行化该插件 LState 的所有执行（事件回调 / 异步回调 / 命令 handler）。
+	// 引擎全局锁 pe.mu 只保护数据结构，不再在持锁时执行 Lua——一个插件的
+	// 慢调用（如同步 OneBot11 API）不会阻塞其它插件与 Web API。
+	stateMu sync.Mutex
+	// closed 在 stateMu 下读写：标记 LState 已关闭，执行方检查后跳过。
+	closed bool
+	// currentEv 该插件当前正在处理的事件（stateMu 下读写）。
+	// 事件派发/异步回调执行该插件 Lua 前写入；jn.agent.get_current_chat_area /
+	// compact_memory 在 Lua 中读取。异步任务触发时快照事件、回调前恢复——
+	// 事件 A 触发的回调即使在其他事件派发后仍读到 A 的会话数据。
+	currentEv EventData
+}
+
+// close 关闭插件 LState。与执行互斥：等待在途回调完成后关闭，
+// 并置 closed 标记让后续执行方跳过已关闭的 LState。
+func (p *LoadedPlugin) close() {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.closed {
+		return
+	}
+	p.closed = true
+	p.State.Close()
 }
 
 // ---------- 适配器接口 ----------
@@ -176,19 +200,29 @@ type PluginEngine struct {
 	// 提交后立即返回 req_id，阻塞操作在独立 goroutine 完成，完成后派发到插件
 	// Lua 入口函数（如 on_chat_response）。注册表集中管理，后续新增
 	// t2i/http/agent 等异步只需注册一个 kind。
-	asyncAPIs map[string]*AsyncAPI
-	// asyncAPIMu 保护 asyncAPIs 注册表。独立于 pe.mu：runAsyncCallbacks 持
-	// pe.mu 写锁执行 Lua 回调期间，插件仍可能再次提交异步任务（链式调用，
-	// 如 repo-intro 的 meta → README 流水线），此时若查表仍取 pe.mu 读锁，
-	// 会与已持有的写锁构成 Go RWMutex 不可重入死锁，永久冻结事件派发。
-	// 注册表仅构建期（NewPluginEngine）写入，之后只读。
-	asyncAPIMu sync.RWMutex
+	// 用 atomic 指针存储：注册表只在引擎构造期写入（RegisterAsyncAPI），
+	// submitAsync 无锁读取——插件 Lua 回调（持 stateMu）内调用 *_async API
+	// 不得再请求 pe.mu（否则写锁下 RLock 自死锁 / 读锁下与 writer 互锁）。
+	asyncAPIs atomic.Pointer[map[string]*AsyncAPI]
+	// registerMu 串行化 RegisterAsyncAPI 的 load-copy-store：并发 writer 时防止
+	// 后注册的 Store 覆盖先注册的 kind（静默丢失）。读者（submitAsync）无锁
+	// Load，不受影响；重复注册 panic 行为保留。
+	registerMu sync.Mutex
 	// asyncCh 异步任务完成后的回调队列（runAsyncCallbacks 消费）。
 	asyncCh chan asyncTask
 	// asyncSeq req_id 自增序号。
-	asyncSeq  uint64
-	currentEv EventData
-	commands  *CommandRegistry
+	asyncSeq uint64
+	// loadMu 保护 loading 表：并发 Load(name) 去重（singleflight 语义）。
+	loadMu  sync.Mutex
+	loading map[string]*pluginLoad
+	commands *CommandRegistry
+}
+
+// pluginLoad 一次进行中的插件加载（并发 Load 去重：等待者复用同一次
+// entry 执行结果，避免重复 L.DoFile 造成的命令注册/异步提交副作用）。
+type pluginLoad struct {
+	done chan struct{} // 加载结束（成功或失败）时关闭
+	err  error         // 加载结果错误（成功为 nil）
 }
 
 // AsyncAPI 描述一类可异步执行的 API（注册进引擎异步注册表）。
@@ -207,6 +241,9 @@ type AsyncAPI struct {
 }
 
 // asyncTask 一次异步调用的完成事件（runAsyncCallbacks 消费）。
+// event 为任务触发时该插件的当前事件快照：回调执行前恢复插件 currentEv，
+// 保证 on_xxx_response 内 jn.agent.get_current_chat_area / compact_memory
+// 读到任务触发时的会话，而不是派发时最新的其他事件。
 type asyncTask struct {
 	pluginName string
 	kind       string
@@ -214,6 +251,7 @@ type asyncTask struct {
 	reqID      uint64
 	result     any
 	err        error
+	event      EventData
 }
 
 func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache.Cache, t2i *t2icaller.Client, sb *sandboxcaller.Client, d *dao.Bundle, ag AgentOperator, llm LLMAccess) *PluginEngine {
@@ -231,10 +269,12 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 		dao:       d,
 		agentOp:   ag,
 		llmAccess: llm,
-		asyncAPIs: make(map[string]*AsyncAPI),
 		asyncCh:   make(chan asyncTask, 128),
+		loading:   make(map[string]*pluginLoad),
 		commands:  NewCommandRegistry(),
 	}
+	// 异步注册表初始为空 map；RegisterAsyncAPI 以 copy-on-write 方式填充
+	pe.asyncAPIs.Store(&map[string]*AsyncAPI{})
 	// 注册内置异步 API：chat → 插件入口 on_chat_response
 	pe.RegisterAsyncAPI("chat", AsyncAPI{
 		Entry: "on_chat_response",
@@ -324,10 +364,12 @@ func (pe *PluginEngine) IsSystem(name string) bool {
 }
 
 // registerBuiltinCommands 注册内置命令（/help）。
+// Builtin 标记：handler 是纯 Go 闭包（不触碰 LState），执行不依赖 system 插件加载状态。
 func (pe *PluginEngine) registerBuiltinCommands() {
 	pe.commands.Register("system", []string{"help"}, CommandOpts{
 		Description: "查看所有可用命令，或查看某个命令的子命令与用法",
 		Usage:       "/help [命令路径...]",
+		Builtin:     true,
 	}, func(args []string, event EventData) (bool, string, error) {
 		// /help 或 /help <cmd> [sub...]
 		reply := pe.commands.FormatHelp(args)
@@ -367,13 +409,34 @@ func (pe *PluginEngine) LoadAll() error {
 	return nil
 }
 
-func (pe *PluginEngine) Load(name string) error {
+func (pe *PluginEngine) Load(name string) (retErr error) {
+	// 并发 Load 去重（singleflight 语义）：同名加载进行中时等待其完成并复用
+	// 结果，避免重复执行 entry（L.DoFile 的命令注册/异步提交等副作用）。
+	// 已加载的预检保留：快速失败，避免无谓的 manifest 读取。
+	pe.loadMu.Lock()
+	if l, ok := pe.loading[name]; ok {
+		pe.loadMu.Unlock()
+		<-l.done
+		return l.err
+	}
 	pe.mu.RLock()
 	_, loaded := pe.plugins[name]
 	pe.mu.RUnlock()
 	if loaded {
+		pe.loadMu.Unlock()
 		return fmt.Errorf("plugin %q already loaded", name)
 	}
+	l := &pluginLoad{done: make(chan struct{})}
+	pe.loading[name] = l
+	pe.loadMu.Unlock()
+	// 注册完成后统一收尾：记录结果、删除 loading、唤醒等待者。
+	defer func() {
+		l.err = retErr
+		pe.loadMu.Lock()
+		delete(pe.loading, name)
+		pe.loadMu.Unlock()
+		close(l.done)
+	}()
 
 	pluginDir := filepath.Join(pe.basePath, name)
 	manifest, err := pe.readManifest(pluginDir)
@@ -392,6 +455,11 @@ func (pe *PluginEngine) Load(name string) error {
 	}
 
 	L := lua.NewState()
+	// 先创建插件对象并挂到 LState（userdata 引用）：injectAgent / submitAsync 等
+	// 在 Lua 执行期间经 pluginRef 无锁取回插件指针（读 per-plugin currentEv），
+	// 不引入 pe.mu → stateMu 的锁序依赖。
+	p := &LoadedPlugin{State: L, Dir: pluginDir}
+	attachPluginRef(L, p)
 	// 先注入 SDK：让插件可以使用 require("jn")
 	pe.injectSDK(L, name)
 	pe.injectBaseAPI(L, name, manifest.Permissions)
@@ -407,34 +475,37 @@ func (pe *PluginEngine) Load(name string) error {
 		return fmt.Errorf("执行 entry 失败: %w", err)
 	}
 
-	// 发布到插件表（写锁，双检防并发重复加载）
+	p.Manifest = *manifest
 	pe.mu.Lock()
-	defer pe.mu.Unlock()
-	if _, ok := pe.plugins[name]; ok {
+	if _, dup := pe.plugins[name]; dup {
+		pe.mu.Unlock()
 		L.Close()
 		return fmt.Errorf("plugin %q already loaded", name)
 	}
-	pe.plugins[name] = &LoadedPlugin{Manifest: *manifest, State: L, Dir: pluginDir}
+	pe.plugins[name] = p
+	pe.mu.Unlock()
 	log.Info("插件加载成功", "name", name, "version", manifest.Version, "system", manifest.System)
 	return nil
 }
 
 func (pe *PluginEngine) Unload(name string) error {
 	pe.mu.Lock()
-	defer pe.mu.Unlock()
 	p, ok := pe.plugins[name]
 	if !ok {
+		pe.mu.Unlock()
 		return fmt.Errorf("plugin %q not loaded", name)
 	}
 	// 系统插件禁止卸载
 	if p.Manifest.System {
+		pe.mu.Unlock()
 		return fmt.Errorf("system 插件 %q 不允许卸载", name)
 	}
-	// 移除该插件注册的所有命令
-	pe.commands.UnregisterPlugin(name)
-
-	p.State.Close()
+	// 先从 map 移除（新执行/回调拿不到引用），再移除命令，最后锁外关闭 LState
 	delete(pe.plugins, name)
+	pe.commands.UnregisterPlugin(name)
+	pe.mu.Unlock()
+
+	p.close()
 	log.Info("插件已卸载", "name", name)
 	return nil
 }
@@ -479,6 +550,11 @@ func (pe *PluginEngine) ListMaps() []map[string]any {
 			"is_system":        m.System,
 			"is_active":        true, // 已加载即视为 active
 			"supports_cronjob": p.SupportsCronJob(),
+		}
+		// 头像文件修改时间（Unix 秒）：前端用作头像 URL 版本参数，
+		// 头像变更后 URL 变化、浏览器缓存自动失效；无头像时不带该字段。
+		if info, err := os.Stat(filepath.Join(pe.basePath, name, "avatar.png")); err == nil {
+			entry["avatar_mtime"] = info.ModTime().Unix()
 		}
 		// 使用 Load 时的 name（目录名）查找命令，而非 manifest.Name
 		// 因为命令注册使用的 plugin 参数是 Load 的 name 参数
@@ -590,17 +666,20 @@ func (pe *PluginEngine) sendReply(event EventData, content string) {
 // 当 webhook adapter 收到事件时调用此方法。
 // 插件可以在 on_webhook 中返回 true 表示已消费事件。
 func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-
-	pe.currentEv = event
-
-	for _, p := range pe.plugins {
+	for _, p := range pe.snapshot() {
 		if !p.HasPermission("webhook") {
 			continue
 		}
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
+		// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
+		p.currentEv = event
 		fn := p.State.GetGlobal("on_webhook")
 		if fn.Type() != lua.LTFunction {
+			p.stateMu.Unlock()
 			continue
 		}
 		table := eventToLuaTable(p.State, event)
@@ -608,10 +687,12 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 		p.State.Push(table)
 		if err := p.State.PCall(1, 2, nil); err != nil {
 			log.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
+			p.stateMu.Unlock()
 			continue
 		}
 		consumedRet := p.State.Get(-2)
 		p.State.Pop(2)
+		p.stateMu.Unlock()
 		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
 			return true
 		}
@@ -621,17 +702,22 @@ func (pe *PluginEngine) OnWebhook(event EventData) (consumed bool) {
 
 // ListWebhookPlugins 返回所有启用 webhook 的插件及其 URL 路径（GET /webhook 列表用）。
 // 判定条件：已加载 + 拥有 webhook 权限 + 定义了 on_webhook 回调。
+// GetGlobal 在插件 stateMu 下执行（与异步回调互斥，LState 非线程安全）。
 func (pe *PluginEngine) ListWebhookPlugins() []adapter.WebhookPluginInfo {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-
 	var out []adapter.WebhookPluginInfo
-	for _, p := range pe.plugins {
+	for _, p := range pe.snapshot() {
 		if !p.HasPermission("webhook") {
 			continue
 		}
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
 		fn := p.State.GetGlobal("on_webhook")
-		if fn.Type() != lua.LTFunction {
+		hasFn := fn.Type() == lua.LTFunction
+		p.stateMu.Unlock()
+		if !hasFn {
 			continue
 		}
 		out = append(out, adapter.WebhookPluginInfo{
@@ -646,55 +732,63 @@ func (pe *PluginEngine) ListWebhookPlugins() []adapter.WebhookPluginInfo {
 // RouteWebhook routes a webhook request to a specific plugin by name.
 // Returns (consumed, reply).
 func (pe *PluginEngine) RouteWebhook(pluginName string, path string, method string, payload map[string]any) (consumed bool, reply string) {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-
-	for _, p := range pe.plugins {
-		if p.Manifest.Name != pluginName {
-			continue
-		}
-		if !p.HasPermission("webhook") {
-			return false, "plugin does not have webhook permission"
-		}
-		fn := p.State.GetGlobal("on_webhook")
-		if fn.Type() != lua.LTFunction {
-			return false, "plugin has no on_webhook handler"
-		}
-		event := EventData{
-			PostType: "webhook",
-			Webhook: map[string]any{
-				"path":    path,
-				"method":  method,
-				"payload": payload,
-			},
-		}
-		table := eventToLuaTable(p.State, event)
-		p.State.Push(fn)
-		p.State.Push(table)
-		if err := p.State.PCall(1, 2, nil); err != nil {
-			return false, err.Error()
-		}
-		replyRet := p.State.Get(-1)
-		consumedRet := p.State.Get(-2)
-		p.State.Pop(2)
-
-		r := ""
-		if replyRet.Type() == lua.LTString {
-			r = string(replyRet.(lua.LString))
-		}
-		c := consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool))
-		return c, r
+	p := pe.pluginByName(pluginName)
+	if p == nil {
+		return false, "plugin not found"
 	}
-	return false, "plugin not found"
+	if !p.HasPermission("webhook") {
+		return false, "plugin does not have webhook permission"
+	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.closed {
+		return false, "plugin is closed"
+	}
+	event := EventData{
+		PostType: "webhook",
+		Webhook: map[string]any{
+			"path":    path,
+			"method":  method,
+			"payload": payload,
+		},
+	}
+	fn := p.State.GetGlobal("on_webhook")
+	if fn.Type() != lua.LTFunction {
+		return false, "plugin has no on_webhook handler"
+	}
+	// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
+	p.currentEv = event
+	table := eventToLuaTable(p.State, event)
+	p.State.Push(fn)
+	p.State.Push(table)
+	if err := p.State.PCall(1, 2, nil); err != nil {
+		return false, err.Error()
+	}
+	replyRet := p.State.Get(-1)
+	consumedRet := p.State.Get(-2)
+	p.State.Pop(2)
+
+	r := ""
+	if replyRet.Type() == lua.LTString {
+		r = string(replyRet.(lua.LString))
+	}
+	c := consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool))
+	return c, r
 }
 
 // OnNotice 通知事件（群成员增减、禁言、文件上传等）。
 func (pe *PluginEngine) OnNotice(event EventData) {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-	for _, p := range pe.plugins {
+	for _, p := range pe.snapshot() {
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
+		// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
+		p.currentEv = event
 		fn := p.State.GetGlobal("on_notice")
 		if fn.Type() != lua.LTFunction {
+			p.stateMu.Unlock()
 			continue
 		}
 		table := eventToLuaTable(p.State, event)
@@ -703,16 +797,23 @@ func (pe *PluginEngine) OnNotice(event EventData) {
 		if err := p.State.PCall(1, 0, nil); err != nil {
 			log.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
 		}
+		p.stateMu.Unlock()
 	}
 }
 
 // OnRequest 请求事件（加好友、加群邀请）。
 func (pe *PluginEngine) OnRequest(event EventData) {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-	for _, p := range pe.plugins {
+	for _, p := range pe.snapshot() {
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
+		// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
+		p.currentEv = event
 		fn := p.State.GetGlobal("on_request")
 		if fn.Type() != lua.LTFunction {
+			p.stateMu.Unlock()
 			continue
 		}
 		table := eventToLuaTable(p.State, event)
@@ -721,15 +822,88 @@ func (pe *PluginEngine) OnRequest(event EventData) {
 		if err := p.State.PCall(1, 0, nil); err != nil {
 			log.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
 		}
+		p.stateMu.Unlock()
 	}
 }
 
 // Dispatch 统一派发所有事件类型给 Plugin。
 // Plugin 可以消费事件、修改事件内容、或标记 skip_reply_check。
-func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
+// snapshot 返回当前已加载插件的快照（短临界区）。
+// 调用方在锁外逐个持 p.stateMu 执行 Lua——不再有「持全局锁执行 Lua」的路径，
+// 插件的慢调用（同步 OneBot11 API、LLM 等）只阻塞自身，不影响 Web API 与其它插件。
+func (pe *PluginEngine) snapshot() []*LoadedPlugin {
 	pe.mu.RLock()
 	defer pe.mu.RUnlock()
+	out := make([]*LoadedPlugin, 0, len(pe.plugins))
+	for _, p := range pe.plugins {
+		out = append(out, p)
+	}
+	return out
+}
 
+// pluginByName 返回指定目录名的已加载插件；未加载返回 nil。
+func (pe *PluginEngine) pluginByName(name string) *LoadedPlugin {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	return pe.plugins[name]
+}
+
+// pluginRefKey LState 全局 userdata 键：Load 时把插件指针挂到 LState。
+// 供 Lua 执行期间（injectAgent 读 per-plugin currentEv）无锁取回，
+// 不引入 pe.mu → stateMu 的锁序依赖。
+const pluginRefKey = "__jn_plugin_ref"
+
+// attachPluginRef 把插件指针挂到 LState 全局（Load 创建 LState 后立即调用）。
+func attachPluginRef(L *lua.LState, p *LoadedPlugin) {
+	ud := L.NewUserData()
+	ud.Value = p
+	L.SetGlobal(pluginRefKey, ud)
+}
+
+// pluginRef 从 LState 取回插件指针（Lua 执行期间调用；无锁）。
+// 手动构造的 LState（如测试辅助）未挂引用时返回 nil。
+func pluginRef(L *lua.LState) *LoadedPlugin {
+	if ud, ok := L.GetGlobal(pluginRefKey).(*lua.LUserData); ok {
+		if p, ok := ud.Value.(*LoadedPlugin); ok {
+			return p
+		}
+	}
+	return nil
+}
+
+// currentEventOf 返回 LState 所属插件的当前事件（Lua 执行期间调用，持 stateMu）。
+// 未挂插件引用时返回零值 EventData（不影响调用方）。
+func currentEventOf(L *lua.LState) EventData {
+	if p := pluginRef(L); p != nil {
+		return p.currentEv
+	}
+	return EventData{}
+}
+
+// execCommand 在插件 stateMu 下执行命令 handler（保证 LState 串行，且不再持有
+// pe.mu / commands 锁——handler 内动态注册命令不会触发读锁升级写锁死锁）。
+// 插件未加载/已卸载时**不执行**：命令 handler 闭包捕获插件 LState，若插件已被
+// Unload 关闭（Match 与执行之间存在窗口），执行会 panic。
+// 内置命令（Builtin）是纯 Go 闭包，不触碰 LState，直接执行、不依赖插件加载状态。
+func (pe *PluginEngine) execCommand(node *CommandNode, args []string, event EventData) (bool, string, error) {
+	if node.Builtin {
+		return node.Handler(args, event)
+	}
+	p := pe.pluginByName(node.PluginName)
+	if p == nil {
+		return false, "", nil
+	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.closed {
+		return false, "", nil
+	}
+	// 设置该插件当前事件（命令 handler 内 jn.agent API 可读到本事件）
+	p.currentEv = event
+	return node.Handler(args, event)
+}
+
+func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 	switch ev.PostType {
 	case "webhook":
 		if ev.Webhook != nil {
@@ -742,7 +916,7 @@ func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 					"payload": ev.Webhook.Payload,
 				},
 			}
-			consumed, reply := pe.onWebhookLocked(pluginEvent)
+			consumed, reply := pe.onWebhook(pluginEvent)
 			if reply != "" {
 				pe.sendWebhookReply(ev, reply)
 			}
@@ -768,7 +942,7 @@ func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 					"size": n.File.Size, "busid": n.File.BusID,
 				}
 			}
-			consumed := pe.onNoticeLocked(pluginEvent)
+			consumed := pe.onNotice(pluginEvent)
 			return DispatchResult{Consumed: consumed, Event: ev}
 		}
 	case "request":
@@ -784,7 +958,7 @@ func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 				Flag:        r.Flag,
 				Admins:      ev.Admins,
 			}
-			consumed := pe.onRequestLocked(pluginEvent)
+			consumed := pe.onRequest(pluginEvent)
 			return DispatchResult{Consumed: consumed, Event: ev}
 		}
 	case "cronjob":
@@ -807,25 +981,25 @@ func (pe *PluginEngine) Dispatch(ev adapter.Event) DispatchResult {
 				log.Warn("CronJob: payload 解析失败", "payload", ev.CronJobPayload, "err", err)
 			}
 		}
-		consumed := pe.onCronJobLocked(pluginEvent, ev.CronJobPluginIDs)
+		consumed := pe.onCronJob(pluginEvent, ev.CronJobPluginIDs)
 		return DispatchResult{Consumed: consumed, Event: ev}
 	case "message":
 		if ev.Message != nil {
-			return pe.dispatchMessageLocked(ev)
+			return pe.dispatchMessage(ev)
 		}
 	}
 
 	return DispatchResult{Event: ev}
 }
 
-// dispatchMessageLocked 消息事件的统一派发（需在持有读锁时调用）。
+// dispatchMessage 消息事件的统一派发（锁外执行，per-plugin stateMu 串行）。
 // 派发规则：
 //  1. 命令注册表优先：/cmd 命中即 Consumed（命令消息不进 Agent）
 //  2. 其余消息遍历各插件 on_message 回调，返回 (consumed, skip_reply)：
 //     - consumed=true → 消息不进 Agent，但**不短路**，所有插件 on_message 仍全部执行
 //     - skip_reply=true → 跳过回复策略检查强制进 Agent（consumed 优先）
 //  3. 插件不能修改事件（modified_event 已移除）
-func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
+func (pe *PluginEngine) dispatchMessage(ev adapter.Event) DispatchResult {
 	msg := ev.Message
 	pluginEvent := EventData{
 		PostType:    "message",
@@ -844,11 +1018,19 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 		},
 	}
 
-	pe.currentEv = pluginEvent
-
-	// 1. 命令注册表：命中即消费（命令消息不进 Agent）
+	// 1. 命令注册表：命中即消费（命令消息不进 Agent）。
+	// 匹配在 commands 锁内完成（不执行 Lua），handler 在插件 stateMu 下执行。
 	if strings.HasPrefix(strings.TrimSpace(pluginEvent.RawMessage), "/") {
-		c, reply, err := pe.commands.Dispatch(pluginEvent.RawMessage, pluginEvent)
+		node, args, hint := pe.commands.Match(pluginEvent.RawMessage)
+		var c bool
+		var reply string
+		var err error
+		switch {
+		case node != nil:
+			c, reply, err = pe.execCommand(node, args, pluginEvent)
+		case hint != "":
+			c, reply = true, hint
+		}
 		if err != nil {
 			log.Error("命令派发错误", "raw", pluginEvent.RawMessage, "err", err)
 		}
@@ -862,12 +1044,20 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 
 	// 2. 派发给各插件的 on_message：不短路，全部执行；收集 consumed 与 skip_reply
 	var anyConsumed, anySkipReply bool
-	for _, p := range pe.plugins {
+	for _, p := range pe.snapshot() {
 		if !p.HasPermission("onebot11") {
 			continue
 		}
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
+		// 设置该插件当前事件：回调内 jn.agent.get_current_chat_area 读到本事件
+		p.currentEv = pluginEvent
 		fn := p.State.GetGlobal("on_message")
 		if fn.Type() != lua.LTFunction {
+			p.stateMu.Unlock()
 			continue
 		}
 		table := eventToLuaTable(p.State, pluginEvent)
@@ -875,12 +1065,14 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 		p.State.Push(table)
 		if err := p.State.PCall(1, 2, nil); err != nil { // 返回值: consumed, skip_reply
 			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
+			p.stateMu.Unlock()
 			continue
 		}
 
 		consumedRet := p.State.Get(-2)
 		skipReplyRet := p.State.Get(-1)
 		p.State.Pop(2)
+		p.stateMu.Unlock()
 
 		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
 			anyConsumed = true
@@ -893,16 +1085,25 @@ func (pe *PluginEngine) dispatchMessageLocked(ev adapter.Event) DispatchResult {
 	return DispatchResult{Consumed: anyConsumed, Event: ev, SkipReply: anySkipReply}
 }
 
-// onCronJobLocked 派发 cronjob 事件给插件（需在持有读锁时调用）。
-// pluginIDs 指定要通知的插件目录名列表；为空则通知所有插件。
-func (pe *PluginEngine) onCronJobLocked(event EventData, pluginIDs []string) bool {
-	for pluginName, p := range pe.plugins {
+// onCronJob 派发 cronjob 事件给插件（锁外执行）。
+// pluginIDs 指定要通知的插件目录名列表（与 map key / p.Dir 目录名一致，
+// 不是 Manifest.Name 显示名）；为空则通知所有插件。
+func (pe *PluginEngine) onCronJob(event EventData, pluginIDs []string) bool {
+	for _, p := range pe.snapshot() {
 		// 按 CronJob 配置的插件列表过滤
-		if len(pluginIDs) > 0 && !containsString(pluginIDs, pluginName) {
+		if len(pluginIDs) > 0 && !containsString(pluginIDs, filepath.Base(p.Dir)) {
 			continue
 		}
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
+		// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
+		p.currentEv = event
 		fn := p.State.GetGlobal("on_cronjob")
 		if fn.Type() != lua.LTFunction {
+			p.stateMu.Unlock()
 			continue
 		}
 		table := eventToLuaTable(p.State, event)
@@ -910,10 +1111,12 @@ func (pe *PluginEngine) onCronJobLocked(event EventData, pluginIDs []string) boo
 		p.State.Push(table)
 		if err := p.State.PCall(1, 1, nil); err != nil {
 			log.Error("插件 on_cronjob 错误", "plugin", p.Manifest.Name, "err", err)
+			p.stateMu.Unlock()
 			continue
 		}
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
+		p.stateMu.Unlock()
 		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
 			return true
 		}
@@ -931,11 +1134,19 @@ func containsString(list []string, target string) bool {
 	return false
 }
 
-// onNoticeLocked 派发 notice 事件给插件（需在持有读锁时调用）。
-func (pe *PluginEngine) onNoticeLocked(event EventData) bool {
-	for _, p := range pe.plugins {
+// onNotice 派发 notice 事件给插件（锁外执行，per-plugin stateMu 串行）。
+func (pe *PluginEngine) onNotice(event EventData) bool {
+	for _, p := range pe.snapshot() {
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
+		// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
+		p.currentEv = event
 		fn := p.State.GetGlobal("on_notice")
 		if fn.Type() != lua.LTFunction {
+			p.stateMu.Unlock()
 			continue
 		}
 		table := eventToLuaTable(p.State, event)
@@ -943,10 +1154,12 @@ func (pe *PluginEngine) onNoticeLocked(event EventData) bool {
 		p.State.Push(table)
 		if err := p.State.PCall(1, 1, nil); err != nil {
 			log.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
+			p.stateMu.Unlock()
 			continue
 		}
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
+		p.stateMu.Unlock()
 		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
 			return true
 		}
@@ -954,11 +1167,19 @@ func (pe *PluginEngine) onNoticeLocked(event EventData) bool {
 	return false
 }
 
-// onRequestLocked 派发 request 事件给插件（需在持有读锁时调用）。
-func (pe *PluginEngine) onRequestLocked(event EventData) bool {
-	for _, p := range pe.plugins {
+// onRequest 派发 request 事件给插件（锁外执行，per-plugin stateMu 串行）。
+func (pe *PluginEngine) onRequest(event EventData) bool {
+	for _, p := range pe.snapshot() {
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
+		// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
+		p.currentEv = event
 		fn := p.State.GetGlobal("on_request")
 		if fn.Type() != lua.LTFunction {
+			p.stateMu.Unlock()
 			continue
 		}
 		table := eventToLuaTable(p.State, event)
@@ -966,10 +1187,12 @@ func (pe *PluginEngine) onRequestLocked(event EventData) bool {
 		p.State.Push(table)
 		if err := p.State.PCall(1, 1, nil); err != nil {
 			log.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
+			p.stateMu.Unlock()
 			continue
 		}
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
+		p.stateMu.Unlock()
 		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
 			return true
 		}
@@ -977,14 +1200,22 @@ func (pe *PluginEngine) onRequestLocked(event EventData) bool {
 	return false
 }
 
-// onWebhookLocked 派发 webhook 事件给插件（需在持有读锁时调用）。
-func (pe *PluginEngine) onWebhookLocked(event EventData) (consumed bool, reply string) {
-	for _, p := range pe.plugins {
+// onWebhook 派发 webhook 事件给插件（锁外执行，per-plugin stateMu 串行）。
+func (pe *PluginEngine) onWebhook(event EventData) (consumed bool, reply string) {
+	for _, p := range pe.snapshot() {
 		if !p.HasPermission("webhook") {
 			continue
 		}
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
+		// 设置该插件当前事件（回调内 jn.agent API 读到本事件）
+		p.currentEv = event
 		fn := p.State.GetGlobal("on_webhook")
 		if fn.Type() != lua.LTFunction {
+			p.stateMu.Unlock()
 			continue
 		}
 		table := eventToLuaTable(p.State, event)
@@ -992,11 +1223,13 @@ func (pe *PluginEngine) onWebhookLocked(event EventData) (consumed bool, reply s
 		p.State.Push(table)
 		if err := p.State.PCall(1, 2, nil); err != nil {
 			log.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
+			p.stateMu.Unlock()
 			continue
 		}
 		replyRet := p.State.Get(-1)
 		consumedRet := p.State.Get(-2)
 		p.State.Pop(2)
+		p.stateMu.Unlock()
 		if consumedRet.Type() == lua.LTBool && bool(consumedRet.(lua.LBool)) {
 			r := ""
 			if replyRet.Type() == lua.LTString {
@@ -1015,14 +1248,20 @@ func (pe *PluginEngine) sendWebhookReply(ev adapter.Event, reply string) {
 }
 
 // SupportsCronJob 检查插件是否支持定时任务回调（定义了 on_cronjob 全局函数）。
-// 注意：CronJob 实际调用的回调是 on_cronjob，而非 on_timer_call。
+// 在插件 stateMu 下读取 LState（与异步回调互斥，LState 非线程安全）。
 func (p *LoadedPlugin) SupportsCronJob() bool {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.closed {
+		return false
+	}
 	fn := p.State.GetGlobal("on_cronjob")
 	return fn.Type() == lua.LTFunction
 }
 
 // ReloadAll 卸载所有非系统插件后重新加载全部插件。
 func (pe *PluginEngine) ReloadAll() error {
+	var toClose []*LoadedPlugin
 	pe.mu.Lock()
 	// 先卸载非系统插件
 	for name, p := range pe.plugins {
@@ -1030,12 +1269,15 @@ func (pe *PluginEngine) ReloadAll() error {
 			continue
 		}
 		pe.commands.UnregisterPlugin(name)
-		p.State.Close()
 		delete(pe.plugins, name)
+		toClose = append(toClose, p)
 	}
 	pe.mu.Unlock()
 
-	// LoadAll 在内部会重新取锁并加载所有插件
+	// 锁外逐个关闭 LState（等待在途回调完成），再加载全部插件
+	for _, p := range toClose {
+		p.close()
+	}
 	return pe.LoadAll()
 }
 
@@ -1576,10 +1818,10 @@ const httpAsyncTimeout = 60 * time.Second
 func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 	// 强制 HTTP/1.1：Go 默认 HTTP/2 与部分站点（api.github.com、mp.weixin.qq.com）
 	// 的连接偶发挂起（30s 等不到响应头，wget/HTTP/1.1 秒回），降级为 1.1 稳定。
-	transport := &http.Transport{
-		ForceAttemptHTTP2: false,
-		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
-	}
+	// 基于 DefaultTransport.Clone()：保留代理、TLS 等默认设置，仅覆盖 HTTP/2 协商。
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
 	httpClient := &http.Client{Timeout: 30 * time.Second, Transport: transport}
 
 	httpTable := L.NewTable()
@@ -1655,7 +1897,7 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 				body, _ := io.ReadAll(resp.Body)
 				return &httpResult{Status: resp.StatusCode, Body: string(body)}, nil
 			}
-			id, err := pe.submitAsync(pluginName, "http", httpAsyncTimeout, run)
+			id, err := pe.submitAsync(L, pluginName, "http", httpAsyncTimeout, run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -1696,7 +1938,7 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 				body, _ := io.ReadAll(resp.Body)
 				return &httpResult{Status: resp.StatusCode, Body: string(body)}, nil
 			}
-			id, err := pe.submitAsync(pluginName, "http", httpAsyncTimeout, run)
+			id, err := pe.submitAsync(L, pluginName, "http", httpAsyncTimeout, run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -2008,7 +2250,7 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 				}
 				return resp.Data.ID, nil
 			}
-			id, err := pe.submitAsync(pluginName, "t2i", timeout, run)
+			id, err := pe.submitAsync(L, pluginName, "t2i", timeout, run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -2047,7 +2289,7 @@ func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
 				}
 				return url, nil
 			}
-			id, err := pe.submitAsync(pluginName, "t2i", timeout, run)
+			id, err := pe.submitAsync(L, pluginName, "t2i", timeout, run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -2187,7 +2429,7 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 				}
 				return map[string]any{"sandbox_id": sbox.ID, "status": string(sbox.Status)}, nil
 			}
-			id, err := pe.submitAsync(pluginName, "sandbox", sandboxAsyncTimeout, run)
+			id, err := pe.submitAsync(L, pluginName, "sandbox", sandboxAsyncTimeout, run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -2217,7 +2459,7 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 				}
 				return map[string]any{"output": result.Output, "exit_code": exitCode}, nil
 			}
-			id, err := pe.submitAsync(pluginName, "sandbox", sandboxAsyncTimeout, run)
+			id, err := pe.submitAsync(L, pluginName, "sandbox", sandboxAsyncTimeout, run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -2247,7 +2489,7 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 				}
 				return map[string]any{"output": result.Output, "error": errStr}, nil
 			}
-			id, err := pe.submitAsync(pluginName, "sandbox", sandboxAsyncTimeout, run)
+			id, err := pe.submitAsync(L, pluginName, "sandbox", sandboxAsyncTimeout, run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -2312,7 +2554,6 @@ func (pe *PluginEngine) injectSandbox(L *lua.LState, pluginName string) {
 func (pe *PluginEngine) injectAgent(L *lua.LState) {
 	daoBundle := pe.dao
 	agentOp := pe.agentOp
-	engine := pe
 
 	agentTable := L.NewTable()
 
@@ -2442,9 +2683,10 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 			return pushResult(L, err)
 		},
 
-		// 当前 Chat-Area
+		// 当前 Chat-Area（读该插件 currentEv：事件派发/异步回调执行前写入，
+		// 异步回调读到的是任务触发时的会话，而非派发时最新的其他事件）
 		"get_current_chat_area": func(L *lua.LState) int {
-			ev := engine.currentEv
+			ev := currentEventOf(L)
 			result := L.NewTable()
 			L.SetField(result, "post_type", lua.LString(ev.PostType))
 			L.SetField(result, "message_type", lua.LString(ev.MessageType))
@@ -2463,7 +2705,7 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 			if agentOp == nil {
 				return pushResult(L, fmt.Errorf("agent operator 不可用"))
 			}
-			ev := engine.currentEv
+			ev := currentEventOf(L)
 			areaID := agentOp.GetChatAreaID(ev.UserID, ev.GroupID, ev.MessageType)
 			if areaID == "" {
 				return pushResult(L, fmt.Errorf("无法获取当前 Chat-Area ID"))
@@ -2536,7 +2778,7 @@ func (pe *PluginEngine) injectLLM(L *lua.LState, pluginName string) {
 				}
 				return resp.Message.Content, nil
 			}
-			id, err := pe.submitAsync(pluginName, "chat", llmTimeoutFromOpts(L, 2), run)
+			id, err := pe.submitAsync(L, pluginName, "chat", llmTimeoutFromOpts(L, 2), run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -2577,7 +2819,7 @@ func (pe *PluginEngine) injectTimer(L *lua.LState, pluginName string) {
 				}
 			}
 			// 兜底超时比目标延时多留 5s，确保正常到点走 time.After 而非 context 取消
-			id, err := pe.submitAsync(pluginName, "timer", d+5*time.Second, run)
+			id, err := pe.submitAsync(L, pluginName, "timer", d+5*time.Second, run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -2595,55 +2837,77 @@ func (pe *PluginEngine) injectTimer(L *lua.LState, pluginName string) {
 // RegisterAsyncAPI 注册一类异步 API（如 "chat" → 插件入口 on_chat_response）。
 // 注册表集中管理 xxx_async 类接口的派发规格，后续新增 t2i/http/agent 等异步
 // 只需注册一个 kind。重复注册 panic（内置 kind 在 NewPluginEngine 注册）。
+// 以 copy-on-write 更新 atomic map：submitAsync 无锁读取，插件 Lua 回调内
+// 调用 *_async 不再与引擎锁交互（消除持锁回调内提交异步任务的死锁）。
 func (pe *PluginEngine) RegisterAsyncAPI(kind string, api AsyncAPI) {
-	pe.asyncAPIMu.Lock()
-	defer pe.asyncAPIMu.Unlock()
-	if _, dup := pe.asyncAPIs[kind]; dup {
+	// 持专用写锁跨 dup 检查 + map 复制 + Store：并发注册不同 kind 时，
+	// 后注册者必须基于最新 map 构建，否则会覆盖丢失先注册的 kind
+	pe.registerMu.Lock()
+	defer pe.registerMu.Unlock()
+	old := pe.asyncAPIs.Load()
+	if _, dup := (*old)[kind]; dup {
 		panic("pluggin: 异步 API 重复注册: " + kind)
 	}
-	pe.asyncAPIs[kind] = &api
+	// 注意必须真正复制 map：Go map 是引用类型，直接改共享 map 会与
+	// submitAsync 的并发读取产生 data race
+	m := make(map[string]*AsyncAPI, len(*old)+1)
+	for k, v := range *old {
+		m[k] = v
+	}
+	m[kind] = &api
+	pe.asyncAPIs.Store(&m)
 }
 
 // submitAsync 提交一个异步任务：run 在独立 goroutine 中执行（不得触碰任何 LState），
 // 完成后派发到插件的 Entry 入口函数。返回 req_id；kind 未注册返回 error。
-func (pe *PluginEngine) submitAsync(pluginName, kind string, timeout time.Duration, run func(ctx context.Context) (any, error)) (uint64, error) {
-	pe.asyncAPIMu.RLock()
-	api, ok := pe.asyncAPIs[kind]
-	pe.asyncAPIMu.RUnlock()
+// 无锁：asyncAPIs 注册表是 atomic 只读 map（构造期填充），此处不请求 pe.mu。
+// L 用于取回该插件当前事件快照（pluginRef 无锁，Lua 执行期间调用）。
+func (pe *PluginEngine) submitAsync(L *lua.LState, pluginName, kind string, timeout time.Duration, run func(ctx context.Context) (any, error)) (uint64, error) {
+	api, ok := (*pe.asyncAPIs.Load())[kind]
 	if !ok {
 		return 0, fmt.Errorf("pluggin: 异步 API %q 未注册", kind)
 	}
+	// 快照触发事件（持 stateMu 执行 Lua 期间读取，无需额外锁）
+	ev := currentEventOf(L)
 	id := atomic.AddUint64(&pe.asyncSeq, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		result, err := run(ctx)
-		pe.asyncCh <- asyncTask{pluginName: pluginName, kind: kind, api: api, reqID: id, result: result, err: err}
+		pe.asyncCh <- asyncTask{pluginName: pluginName, kind: kind, api: api, reqID: id, result: result, err: err, event: ev}
 	}()
 	return id, nil
 }
 
 // runAsyncCallbacks 消费异步任务队列，串行派发到插件 Lua 入口函数
-// on_<kind>_response(req_id, [ctx,] <Encode 返回值...>)。与事件派发通过 pe.mu
-// 互斥（写锁），保证同一 LState 不会并发执行 Lua。插件已卸载则丢弃任务。
+// on_<kind>_response(req_id, [ctx,] <Encode 返回值...>)。在插件 stateMu 下执行，
+// 与事件派发（dispatchMessage/onNotice/...）对同一 LState 互斥；不再持有引擎全局锁，
+// 回调内调用 *_async API（jn.timer.after 等）不会自死锁。插件已卸载则丢弃任务。
 // WithCtx 的 API 回调前从 jn_async_ctx 取出调用现场（一次性消费）。
 func (pe *PluginEngine) runAsyncCallbacks() {
 	for task := range pe.asyncCh {
-		pe.mu.Lock()
-		p, ok := pe.plugins[task.pluginName]
-		if !ok {
-			// 插件可能仍在加载中（Load 在 DoFile 完成前未发布到 plugins 表），
-			// 加载期提交的异步任务可能在发布前完成。短暂等待后重试一次，
-			// 避免任务被误丢弃；重试仍不存在（插件确已卸载）则丢弃。
-			pe.mu.Unlock()
-			time.Sleep(100 * time.Millisecond)
-			pe.mu.Lock()
-			p, ok = pe.plugins[task.pluginName]
-			if !ok {
-				pe.mu.Unlock()
-				continue
+		p := pe.pluginByName(task.pluginName)
+		if p == nil {
+			// 插件可能仍在加载中（entry 提交的异步任务先于发布完成）。
+			// 等待该次加载结束（成功则发布、失败则无插件）再决定派发/丢弃。
+			pe.loadMu.Lock()
+			l, loading := pe.loading[task.pluginName]
+			pe.loadMu.Unlock()
+			if loading {
+				<-l.done
+				p = pe.pluginByName(task.pluginName)
+			}
+			if p == nil {
+				continue // 加载失败或插件已卸载，丢弃任务
 			}
 		}
+		p.stateMu.Lock()
+		if p.closed {
+			p.stateMu.Unlock()
+			continue
+		}
+		// 恢复任务触发时的事件：回调内 jn.agent API 读到任务所属会话
+		p.currentEv = task.event
 		L := p.State
 		fn := L.GetGlobal(task.api.Entry)
 		if fn.Type() == lua.LTFunction {
@@ -2671,7 +2935,7 @@ func (pe *PluginEngine) runAsyncCallbacks() {
 				log.Error("插件异步回调错误", "plugin", task.pluginName, "kind", task.kind, "err", err)
 			}
 		}
-		pe.mu.Unlock()
+		p.stateMu.Unlock()
 	}
 }
 

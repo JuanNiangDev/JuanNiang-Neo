@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"JuanNiang-Neo/internal/adapter"
-
 	lua "github.com/yuin/gopher-lua"
+
+	"JuanNiang-Neo/internal/adapter"
 )
 
 // 回归测试：插件在异步回调（on_http_response）内再次提交异步任务（链式调用，

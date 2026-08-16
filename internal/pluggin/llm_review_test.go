@@ -31,6 +31,7 @@ type fakeAdapter struct {
 	muted      []string
 	kicked     []string
 	mutedUsers map[int64]bool // 模拟处于禁言中的用户
+	kickErr    error          // 非 nil 时 KickGroupMember 返回该错误（模拟踢人失败）
 }
 
 func (f *fakeAdapter) SendPrivateMsg(userID int64, message any) (int64, error) { return 0, nil }
@@ -54,6 +55,9 @@ func (f *fakeAdapter) GetGroupMemberList(groupID int64) ([]map[string]any, error
 func (f *fakeAdapter) KickGroupMember(groupID, userID int64, rejectAdd bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.kickErr != nil {
+		return f.kickErr
+	}
 	f.kicked = append(f.kicked, fmt.Sprintf("%d:%d", groupID, userID))
 	return nil
 }
@@ -110,24 +114,42 @@ type fakeLLM struct {
 	reply string
 	err   error
 	calls int
+	delay time.Duration // 每次 Chat 的模拟耗时（测试在途任务场景）
 }
 
 func (f *fakeLLM) Available() bool { return true }
 
 func (f *fakeLLM) Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls++
 	if f.err != nil {
-		return nil, f.err
+		err := f.err
+		d := f.delay
+		f.mu.Unlock()
+		if d > 0 {
+			time.Sleep(d)
+		}
+		return nil, err
 	}
-	return &provider.ChatResponse{Message: provider.ChatMessage{Role: "assistant", Content: f.reply}}, nil
+	reply := f.reply
+	d := f.delay
+	f.mu.Unlock()
+	if d > 0 {
+		time.Sleep(d)
+	}
+	return &provider.ChatResponse{Message: provider.ChatMessage{Role: "assistant", Content: reply}}, nil
 }
 
 func (f *fakeLLM) setReply(s string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reply = s
+}
+
+func (f *fakeLLM) setDelay(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.delay = d
 }
 
 func (f *fakeLLM) callCount() int {
@@ -208,7 +230,9 @@ func loadPluginManual(t *testing.T, pe *PluginEngine, name string) *lua.LState {
 	}
 
 	pe.mu.Lock()
-	pe.plugins[name] = &LoadedPlugin{Manifest: Manifest{Name: name}, State: L, Dir: pluginDir}
+	p := &LoadedPlugin{Manifest: Manifest{Name: name}, State: L, Dir: pluginDir}
+	attachPluginRef(L, p)
+	pe.plugins[name] = p
 	pe.mu.Unlock()
 
 	// 测试结束先卸载插件（从 map 移除），再关闭 LState：避免长延时异步任务
@@ -223,14 +247,42 @@ func loadPluginManual(t *testing.T, pe *PluginEngine, name string) *lua.LState {
 	return L
 }
 
+// pluginForL 返回拥有指定 LState 的已加载插件（测试辅助，用于拿 stateMu 串行化）。
+func pluginForL(pe *PluginEngine, L *lua.LState) *LoadedPlugin {
+	pe.mu.RLock()
+	defer pe.mu.RUnlock()
+	for _, p := range pe.plugins {
+		if p.State == L {
+			return p
+		}
+	}
+	return nil
+}
+
 // runOnMessage 构造群消息事件并调用插件 on_message，返回其第一个返回值（consumed）。
 // on_message 返回 (consumed, skip_reply)：consumed=true 消息不进 Agent（不短路）；
 // modified_event 已移除，插件不能修改事件。
 func runOnMessage(t *testing.T, pe *PluginEngine, L *lua.LState, groupID, userID int64, raw, msgID string) bool {
-	// on_message 内可能触发 *_async 任务，引擎 goroutine 会持写锁回调同一 LState；
-	// 这里持读锁串行化，避免 -race 竞争（读锁可重入，回调投递发生在锁外）。
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
+	// on_message 内可能触发 *_async 任务，引擎 goroutine 会持插件 stateMu 回调同一
+	// LState；这里也持 stateMu 串行化，避免 -race 竞争。
+	p := pluginForL(pe, L)
+	if p == nil {
+		t.Fatal("插件未加载")
+	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.closed {
+		t.Fatal("插件已关闭")
+	}
+	// 模拟 dispatchMessage：设置该插件当前事件（异步任务快照/agent API 读取用）
+	p.currentEv = EventData{
+		PostType:    "message",
+		MessageType: "group",
+		UserID:      userID,
+		GroupID:     groupID,
+		RawMessage:  raw,
+		Admins:      []string{},
+	}
 	t.Helper()
 	fn := L.GetGlobal("on_message")
 	if fn.Type() != lua.LTFunction {
@@ -266,34 +318,59 @@ func waitFor(t *testing.T, cond func() bool) {
 	t.Fatal("等待条件超时")
 }
 
-// luaGetGlobal / luaDoString 在引擎读锁内访问 LState：异步回调由引擎 goroutine 持 pe.mu 写锁执行 PCall，
-// LState 非线程安全，测试侧全局读写必须与回调互斥，否则 -race 下报数据竞争。
-// 用 RLock：Lua 内的 *_async 调用会经 submitAsync 再次 RLock，读锁可重入；任务实际投递发生在
-// 本函数释放锁之后，引擎写锁不会与嵌套读锁交错，避免自锁/死锁。
+// luaGetGlobal / luaDoString / luaDoFile 在插件 stateMu 内访问 LState：异步回调
+// 由引擎 goroutine 持同一插件的 stateMu 执行 PCall，LState 非线程安全，
+// 测试侧全局读写必须与回调互斥，否则 -race 下报数据竞争。
 func luaGetGlobal(pe *PluginEngine, L *lua.LState, name string) lua.LValue {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
+	p := pluginForL(pe, L)
+	if p == nil {
+		return lua.LNil
+	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.closed {
+		return lua.LNil
+	}
 	return L.GetGlobal(name)
 }
 
 func luaDoString(pe *PluginEngine, L *lua.LState, src string) error {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
+	p := pluginForL(pe, L)
+	if p == nil {
+		return fmt.Errorf("插件未加载")
+	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.closed {
+		return fmt.Errorf("插件已关闭")
+	}
 	return L.DoString(src)
 }
 
 func luaDoFile(pe *PluginEngine, L *lua.LState, path string) error {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
+	p := pluginForL(pe, L)
+	if p == nil {
+		return fmt.Errorf("插件未加载")
+	}
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	if p.closed {
+		return fmt.Errorf("插件已关闭")
+	}
 	return L.DoFile(path)
 }
 
-// dispatchCommand 在引擎读锁内派发命令（与生产 PluginEngine.Dispatch 的锁语义一致，
-// 命令 handler 会执行 Lua，须与异步回调的写锁互斥）。
+// dispatchCommand 派发命令（与生产 dispatchMessage 的语义一致：匹配在 commands
+// 锁内完成，handler 在插件 stateMu 下执行）。
 func dispatchCommand(pe *PluginEngine, raw string, ev EventData) (consumed bool, reply string, err error) {
-	pe.mu.RLock()
-	defer pe.mu.RUnlock()
-	return pe.commands.Dispatch(raw, ev)
+	node, args, hint := pe.commands.Match(raw)
+	if node != nil {
+		return pe.execCommand(node, args, ev)
+	}
+	if hint != "" {
+		return true, hint, nil
+	}
+	return false, "", nil
 }
 
 // ---------- 测试: jn.llm Go 机制（同步 / 异步 / 回调 / 错误） ----------
