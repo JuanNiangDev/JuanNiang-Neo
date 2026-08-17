@@ -147,22 +147,23 @@
               <div v-else-if="configItems.length === 0" class="text-center pa-8 text-medium-emphasis">暂无可配置项</div>
               <div v-else>
                 <div v-for="cfg in configItems" :key="cfg.key" class="mb-4 config-item">
-                  <div class="d-flex align-center justify-space-between">
-                    <div>
+                  <div class="d-flex justify-space-between align-start config-row">
+                    <div class="config-label">
                       <div class="text-body-2 font-weight-bold">{{ cfg.label || cfg.key }}</div>
                       <div v-if="cfg.description" class="text-caption text-medium-emphasis">{{ cfg.description }}</div>
                     </div>
+                    <v-switch
+                      v-if="cfg.type === 'bool'"
+                      class="config-switch"
+                      :model-value="!!configForm[cfg.key]"
+                      color="primary"
+                      density="compact"
+                      hide-details
+                      @update:model-value="(v) => setConfigValue(cfg.key, !!v)"
+                    />
                   </div>
-                  <v-switch
-                    v-if="cfg.type === 'bool'"
-                    :model-value="!!configForm[cfg.key]"
-                    color="primary"
-                    density="compact"
-                    hide-details
-                    @update:model-value="(v) => setConfigValue(cfg.key, !!v)"
-                  />
                   <v-text-field
-                    v-else-if="cfg.type === 'string'"
+                    v-if="cfg.type === 'string'"
                     :model-value="configForm[cfg.key]"
                     variant="outlined"
                     density="compact"
@@ -182,7 +183,9 @@
                       />
                       <v-btn icon="mdi-minus" size="small" variant="text" color="error" @click="removeListValue(cfg.key, idx)" />
                     </div>
-                    <v-btn size="small" variant="tonal" color="primary" prepend-icon="mdi-plus" @click="addListValue(cfg.key)">添加一项</v-btn>
+                    <div class="d-flex justify-end">
+                      <v-btn size="small" variant="tonal" color="primary" prepend-icon="mdi-plus" @click="addListValue(cfg.key)">添加一项</v-btn>
+                    </div>
                   </div>
                 </div>
                 <div class="d-flex justify-end mt-4">
@@ -545,5 +548,10 @@ onMounted(fetch)
 .markdown-body :deep(h2:first-child),
 .markdown-body :deep(h3:first-child),
 .markdown-body :deep(p:first-child) { margin-top: 0; }
-.config-item { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08); padding-bottom: 12px; }
+/* 右 padding 给开关留出余量：Vuetify 开关在开/关态下小圆点会超出控件盒约 6px，
+   若贴住滚动容器的裁剪边缘会被切掉一半 */
+.config-item { border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08); padding-bottom: 12px; padding-right: 8px; }
+.config-row { gap: 16px; }
+.config-label { flex: 1 1 auto; min-width: 0; }
+.config-switch { flex-shrink: 0; margin-top: 2px; }
 </style>

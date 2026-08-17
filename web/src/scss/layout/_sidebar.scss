@@ -29,7 +29,7 @@
 
     &:hover {
       background: rgba(var(--v-theme-primary), 0.08) !important;
-      color: rgb(var(--v-theme-on-surface)) !important;
+      color: rgb(var(--v-theme-sidebar-hover-text)) !important;
     }
 
     &.v-list-item--active {
@@ -72,7 +72,7 @@
 
       &:hover {
         background: rgba(var(--v-theme-primary), 0.08) !important;
-        color: rgb(var(--v-theme-on-surface)) !important;
+        color: rgb(var(--v-theme-sidebar-hover-text)) !important;
       }
     }
 

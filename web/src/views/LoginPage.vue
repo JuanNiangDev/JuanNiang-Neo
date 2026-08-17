@@ -1,5 +1,8 @@
 <template>
-  <div class="login-page login-ui">
+  <div class="login-page login-ui" :class="{ 'is-light': !themeStore.effectiveDark }">
+    <div class="login-theme-switch">
+      <ThemeModeMenu />
+    </div>
     <div class="login-shell">
       <!-- 左：Logo(左上角) + 原图(居中带框) 2:1 -->
       <section class="banner-panel">
@@ -66,10 +69,13 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
+import { useThemeStore } from '@/stores/theme'
+import ThemeModeMenu from '@/components/shared/ThemeModeMenu.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const toastStore = useToastStore()
+const themeStore = useThemeStore()
 
 const username = ref('')
 const password = ref('')
@@ -261,6 +267,49 @@ async function handleLogin() {
 .auth-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 14px 36px rgba(99, 102, 241, 0.5) !important;
+}
+
+/* ============ 主题切换器（右上角） ============ */
+.login-theme-switch {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  z-index: 5;
+}
+
+/* ============ 浅色变体（is-light 由主题 store 注入） ============ */
+.login-ui.is-light {
+  --ink: #1b2233;
+  --ink-dim: #5d6678;
+  --line: rgba(28, 35, 51, 0.08);
+}
+.login-page.login-ui.is-light {
+  background: #f5f6fa;
+}
+.login-ui.is-light .banner-panel {
+  background: radial-gradient(900px 500px at 20% 10%, rgba(99, 102, 241, 0.08), transparent 60%),
+              radial-gradient(700px 500px at 90% 95%, rgba(139, 92, 246, 0.07), transparent 55%),
+              #f5f6fa;
+}
+.login-ui.is-light .banner-frame {
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.12), 0 0 60px rgba(99, 102, 241, 0.08);
+}
+.login-ui.is-light .auth-panel {
+  border-left: 1px solid var(--line);
+  background: linear-gradient(180deg, #ffffff 0%, #f5f6fa 100%);
+}
+.login-ui.is-light .auth-field :deep(.v-field) {
+  background: rgba(28, 35, 51, 0.03) !important;
+}
+.login-ui.is-light .auth-field :deep(.v-field__outline::before) {
+  border-color: rgba(28, 35, 51, 0.14) !important;
+}
+.login-ui.is-light .auth-field :deep(.v-label) {
+  color: rgba(28, 35, 51, 0.55) !important;
+}
+.login-ui.is-light .auth-field :deep(.v-field__prepend-inner .v-icon),
+.login-ui.is-light .auth-field :deep(.v-field__append-inner .v-icon) {
+  color: rgba(28, 35, 51, 0.45) !important;
 }
 
 /* ============ 响应式 ============ */

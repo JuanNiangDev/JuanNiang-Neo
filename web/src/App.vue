@@ -1,5 +1,5 @@
 <template>
-  <v-app theme="JuanNiangThemeDark">
+  <v-app :theme="themeStore.effectiveThemeName">
     <RouterView />
 
     <v-snackbar v-if="toastStore.show" v-model="toastStore.show" :color="toastStore.current?.color"
@@ -21,6 +21,8 @@
 <script setup lang="ts">
 import { RouterView } from 'vue-router'
 import { useToastStore } from '@/stores/toast'
+import { useThemeStore } from '@/stores/theme'
 
 const toastStore = useToastStore()
+const themeStore = useThemeStore()
 </script>
