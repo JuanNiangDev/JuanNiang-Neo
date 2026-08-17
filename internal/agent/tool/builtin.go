@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -1077,7 +1079,7 @@ func text_to_image(getT2I func() *t2icaller.Client) *onebotTool {
 // --- Vision / 识图 ---
 
 // vision 使用识图模型识别图片内容（imageModel 已配置版本）。
-func vision() *onebotTool {
+func vision(imageModel provider.Provider) *onebotTool {
 	input := NewToolInput{
 		id:   "",
 		name: "vision",
@@ -1094,9 +1096,49 @@ func vision() *onebotTool {
 		longRunning: false,
 	}
 	executer := func(ctx context.Context, args json.RawMessage) (string, error) {
-		return "识图功能需要图片字节数据，请通过其他方式获取图片后调用。", nil
+		var p struct {
+			ImageURL string `json:"image_url"`
+			Prompt   string `json:"prompt"`
+		}
+		if err := json.Unmarshal(args, &p); err != nil {
+			return "", fmt.Errorf("vision 参数解析失败: %w", err)
+		}
+		if p.ImageURL == "" {
+			return "", fmt.Errorf("vision 缺少 image_url")
+		}
+		// 下载图片字节并交给识图模型
+		imgBytes, err := downloadBytes(ctx, p.ImageURL)
+		if err != nil {
+			return "", fmt.Errorf("vision 图片下载失败: %w", err)
+		}
+		if p.Prompt == "" {
+			p.Prompt = "请描述这张图片的内容"
+		}
+		return imageModel.Vision(ctx, imgBytes, p.Prompt)
 	}
 	return onebotToolBuild(executer, input)
+}
+
+// downloadBytes 下载图片字节（vision 工具用）。
+func downloadBytes(ctx context.Context, url string) ([]byte, error) {
+	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+		return nil, fmt.Errorf("仅支持 http(s) 图片 URL: %q", url)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; JuanNiang-Neo)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("图片下载 HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // vision_unavailable 未配置识图模型时的占位工具。
@@ -1325,7 +1367,7 @@ func RegisterBuiltinTools(
 	// --- Vision / 识图 ---
 
 	if imageModel != nil {
-		tools = append(tools, vision())
+		tools = append(tools, vision(imageModel))
 	} else {
 		tools = append(tools, vision_unavailable())
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -305,8 +307,13 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 - 如果图片是纯表情包、风景照、美食照等与任务无关的内容，相关度应该低
 
 请以 JSON 格式回复: {"relevance": 0.0-1.0, "reason": "简短原因"}`, h.SelfNickname, selfQQ, msg.Sender.Nickname, msg.UserID, h.SelfNickname)
-					// 下载图片并调用 Vision
-					resp, err := visionModel.Vision(judgeCtx, nil, prompt) // Vision expects raw image bytes
+					// 下载图片字节并调用 Vision（此前误传 nil，模型实际看不到图片）
+					imgBytes, err := h.fetchImageBytes(ctx, url, seg)
+					if err != nil {
+						log.Warn("下载图片失败", "url", url, "err", err)
+						return judgeFailVerdict(rs, "图片下载失败")
+					}
+					resp, err := visionModel.Vision(judgeCtx, imgBytes, prompt) // Vision expects raw image bytes
 					if err != nil {
 						log.Warn("Vision 调用失败", "err", err)
 						return judgeFailVerdict(rs, "Vision 调用失败")
@@ -447,6 +454,44 @@ func extractImageURL(seg adapter.Segment) string {
 		}
 	}
 	return ""
+}
+
+// fetchImageBytes 下载图片消息的字节内容，供 Vision 模型识图。
+// http(s) URL 直接下载；file 路径（QQ 本地路径）经 onebot11 get_image 转为可下载 URL。
+// 携带浏览器 UA：QQ 图片服务器会校验 User-Agent，缺失 UA 可能返回 403。
+func (h *HagoCenter) fetchImageBytes(ctx context.Context, rawURL string, seg adapter.Segment) ([]byte, error) {
+	urlStr := rawURL
+	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+		if h.Adapter == nil {
+			return nil, fmt.Errorf("adapter 未就绪，无法解析图片路径")
+		}
+		info, err := h.Adapter.GetImage(rawURL)
+		if err != nil {
+			return nil, fmt.Errorf("get_image 失败: %w", err)
+		}
+		urlStr = info.URL
+		if urlStr == "" {
+			urlStr = info.File
+		}
+	}
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
+		return nil, fmt.Errorf("无法解析图片 URL: %q", urlStr)
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; JuanNiang-Neo)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("图片下载 HTTP %d", resp.StatusCode)
+	}
+	return io.ReadAll(resp.Body)
 }
 
 // getRecentMessages 获取 ChatArea 中最近 N 条消息（不含当前消息）。
