@@ -1154,11 +1154,13 @@ func blockedIP(ip net.IP) bool {
 	return cgnatBlock.Contains(ip)
 }
 
-// dialRestricted 是受限 DialContext：请求前解析目标 host 的实际 IP 并拒绝非公网地址。
-// http.Transport 对每次连接（含重定向目标、DNS 解析后的 IP）都会经过这里，
-// 因此公开 URL 重定向到内部地址同样会被拦截。
+// dialRestricted 是受限 DialContext：请求前解析目标 host 的实际 IP，
+// 拒绝非公网地址后，**直接连接该 IP**（而非让 net.Dialer 再次解析域名）。
+// 这保证"校验的 IP"与"实际连接的 IP"是同一个，防止 DNS rebinding 绕过；
+// http.Transport 的 TLS SNI / Host 头仍取自 URL 主机名，不受影响。
+// 对每次连接（含重定向目标）都会经过这里，公开 URL 重定向到内部地址同样被拦截。
 func dialRestricted(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -1166,12 +1168,26 @@ func dialRestricted(ctx context.Context, network, addr string) (net.Conn, error)
 	if err != nil {
 		return nil, err
 	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("无法解析主机: %s", host)
+	}
+	// 任一解析结果命中拒绝段即整体拒绝
 	for _, ip := range ips {
 		if blockedIP(ip.IP) {
 			return nil, fmt.Errorf("拒绝访问非公网地址: %s (%s)", host, ip.IP)
 		}
 	}
-	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, addr)
+	// 依次尝试连接每个已校验通过的 IP（解析结果与连接目标一致）
+	var lastErr error
+	for _, ip := range ips {
+		dialAddr := net.JoinHostPort(ip.IP.String(), port)
+		conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, dialAddr)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // newImageDownloadClient 构造受限 HTTP 客户端：禁用代理（防止代理绕过 SSRF 检查），

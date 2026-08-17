@@ -26,9 +26,11 @@ const SilenceToken = "__NO_REPLY__"
 // cqImageCodeRe 匹配 CQ 图片码段（如 [CQ:image,file=...,url=...]）。
 var cqImageCodeRe = regexp.MustCompile(`\[CQ:image[^\]]*\]`)
 
-// qqCDNURLRe 匹配 QQ 图床 URL 文本（到空白/逗号/右括号为止），
-// 用于将 &amp; 解码范围限制在 URL 内，不影响消息中的其他文本。
-var qqCDNURLRe = regexp.MustCompile(`https?://[^\s,\]]*multimedia\.nt\.qq\.com\.cn[^\s,\]]*`)
+// qqCDNURLRe 匹配 QQ 图床 URL 文本（scheme 后必须是 multimedia.nt.qq.com.cn 主机，
+// 到空白/逗号/右括号为止），用于将 &amp; 解码范围限制在 URL 内。
+// 主机名紧跟在 scheme 后：https://example.com/.../multimedia.nt.qq.com.cn 这类
+// 路径中携带该字符串的 URL 不会误匹配。
+var qqCDNURLRe = regexp.MustCompile(`https?://multimedia\.nt\.qq\.com\.cn[^\s,\]]*`)
 
 // decodeQQImageEntities 仅解码图片 URL 相关文本中的 HTML 实体（&amp; → &）：
 //   - CQ 图片码内部的实体（QQ 图床 URL 的查询参数以 &amp; 分隔，原样发给 LLM 会被复刻成无法下载的 URL）

@@ -31,6 +31,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/cloudwego/hertz/pkg/protocol/sse"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
@@ -372,25 +373,36 @@ func providerWriteErrResp(c *app.RequestContext, err error) {
 }
 
 // isDeadlockErr 判断是否为 Postgres 死锁/序列化失败（SQLSTATE 40P01 / 40001），
-// 这类错误可安全重试整个事务。
+// 这类错误可安全重试整个事务。使用结构化 *pgconn.PgError 判定，
+// 不依赖错误文本匹配，避免错误详情误触发重试。
 func isDeadlockErr(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "40P01") || strings.Contains(msg, "40001") ||
-		strings.Contains(msg, "deadlock detected") ||
-		strings.Contains(msg, "could not serialize access")
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "40P01" || pgErr.Code == "40001"
 }
 
-// providerTx 在事务内执行 fn；遇死锁/序列化冲突自动重试（最多 3 次）。
+// providerTx 在事务内执行 fn；遇死锁/序列化冲突时退避重试（最多 3 次）。
 // 事务闭包由 gorm DB.Transaction 管理：返回错误或 panic 时自动回滚，不泄漏连接。
+// 退避防止竞争事务同时重试互相踩踏；ctx 取消时立即终止，不再发起新事务。
 func (s *Service) providerTx(ctx context.Context, fn func(tx *gorm.DB) error) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		err = s.DAO.DB.WithContext(ctx).Transaction(fn)
 		if !isDeadlockErr(err) {
 			return err
+		}
+		if attempt < 2 {
+			backoff := time.Duration(attempt+1) * 50 * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
 		}
 	}
 	return err
@@ -469,11 +481,13 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 			return err
 		}
 		if data.IsActive {
-			// 获取当前 Provider 信息以确认类型（事务内，与写操作一致）
+			// 获取当前 Provider 信息以确认类型（事务内，与写操作一致）。
+			// 直接用 %w 包装原始错误：First 对"记录不存在"本就返回 gorm.ErrRecordNotFound，
+			// 连接错误/死锁（40P01）等不会被误判为 ProviderNotExist。
 			var err error
 			raw, err = txProvider.GetByID(ctx, id)
 			if err != nil {
-				return fmt.Errorf("%w: %v", gorm.ErrRecordNotFound, err)
+				return fmt.Errorf("获取 provider 失败: %w", err)
 			}
 			// 同类型只能有一个 Active：先停用同类型其他 Provider
 			if err := txProvider.DeactivateByType(ctx, raw.Type, id); err != nil {

@@ -43,6 +43,16 @@ func TestDecodeQQImageEntitiesCDNPlusLiteralAmp(t *testing.T) {
 	}
 }
 
+// TestDecodeQQImageEntitiesForeignHostWithCDNInPath 回归：其他主机的路径里
+// 包含 multimedia.nt.qq.com.cn 字符串时不得解码（非 QQ CDN URL，CodeRabbit 审查点）。
+func TestDecodeQQImageEntitiesForeignHostWithCDNInPath(t *testing.T) {
+	in := `https://example.com/path/multimedia.nt.qq.com.cn/download?a=1&amp;b=2`
+	want := in
+	if got := decodeQQImageEntities(in); got != want {
+		t.Fatalf("非 CDN 主机误解码\n got: %q\nwant: %q", got, want)
+	}
+}
+
 // TestDecodeQQImageEntitiesMixed 图片码 + 普通文本混合：只解码图片相关部分。
 func TestDecodeQQImageEntitiesMixed(t *testing.T) {
 	in := `图片来了 [CQ:image,url=http://a.cn/x?p=1&amp;q=2] 请把 A&amp;B 发我`

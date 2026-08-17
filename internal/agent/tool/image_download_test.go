@@ -1,8 +1,12 @@
 package tool
 
 import (
+	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +66,33 @@ func TestBlockedIP(t *testing.T) {
 		if blockedIP(net.ParseIP(s)) {
 			t.Errorf("%s 不应被 SSRF 防护拒绝", s)
 		}
+	}
+}
+
+// TestDialRestrictedRejectsLoopback 受限拨号必须拒绝回环地址（SSRF 关键路径）。
+func TestDialRestrictedRejectsLoopback(t *testing.T) {
+	ctx := context.Background()
+	if _, err := dialRestricted(ctx, "tcp", "127.0.0.1:8080"); err == nil {
+		t.Fatal("回环地址应被拒绝")
+	}
+	if _, err := dialRestricted(ctx, "tcp", "[::1]:8080"); err == nil {
+		t.Fatal("IPv6 回环地址应被拒绝")
+	}
+}
+
+// TestDownloadImageBytesRejectsLocalServer 完整路径：httpDownload 经受限客户端
+// 下载本地服务必须失败（SSRF 拒绝），防止攻击者借 vision 工具探测内部网络。
+func TestDownloadImageBytesRejectsLocalServer(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("internal data"))
+	}))
+	defer srv.Close()
+
+	_, err := DownloadImageBytes(context.Background(), srv.URL)
+	if err == nil {
+		t.Fatal("下载本地服务应被 SSRF 防护拒绝")
+	}
+	if !strings.Contains(err.Error(), "拒绝访问非公网地址") {
+		t.Fatalf("应返回 SSRF 拒绝错误, got: %v", err)
 	}
 }
