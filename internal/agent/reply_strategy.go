@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -13,6 +11,7 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
 )
 
@@ -308,7 +307,7 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 
 请以 JSON 格式回复: {"relevance": 0.0-1.0, "reason": "简短原因"}`, h.SelfNickname, selfQQ, msg.Sender.Nickname, msg.UserID, h.SelfNickname)
 					// 下载图片字节并调用 Vision（此前误传 nil，模型实际看不到图片）
-					imgBytes, err := h.fetchImageBytes(ctx, url, seg)
+					imgBytes, err := h.fetchImageBytes(judgeCtx, url, seg)
 					if err != nil {
 						log.Warn("下载图片失败", "url", url, "err", err)
 						return judgeFailVerdict(rs, "图片下载失败")
@@ -457,12 +456,10 @@ func extractImageURL(seg adapter.Segment) string {
 }
 
 // fetchImageBytes 下载图片消息的字节内容，供 Vision 模型识图。
-// http(s) URL 直接下载；file 路径（QQ 本地路径）经 onebot11 get_image 转为可下载 URL。
-// 携带浏览器 UA：QQ 图片服务器会校验 User-Agent，缺失 UA 可能返回 403。
+// http(s) URL 直接下载（复用 tool.DownloadImageBytes：候选解码变体 + 大小上限）；
+// file 路径（QQ 本地路径）先经 onebot11 get_image 转为可下载 URL。
 func (h *HagoCenter) fetchImageBytes(ctx context.Context, rawURL string, seg adapter.Segment) ([]byte, error) {
-	urlStr := rawURL
-	// QQ 图床 URL 带 HTML 实体 &amp;，先解码为 & 再使用
-	urlStr = strings.ReplaceAll(urlStr, "&amp;", "&")
+	urlStr := strings.TrimSpace(rawURL)
 	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		if h.Adapter == nil {
 			return nil, fmt.Errorf("adapter 未就绪，无法解析图片路径")
@@ -476,26 +473,7 @@ func (h *HagoCenter) fetchImageBytes(ctx context.Context, rawURL string, seg ada
 			urlStr = info.File
 		}
 	}
-	// file 分支经 get_image 返回的 URL 也可能带 HTML 实体，统一再解码一次
-	urlStr = strings.ReplaceAll(urlStr, "&amp;", "&")
-	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
-		return nil, fmt.Errorf("无法解析图片 URL: %q", urlStr)
-	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; JuanNiang-Neo)")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("图片下载 HTTP %d", resp.StatusCode)
-	}
-	return io.ReadAll(resp.Body)
+	return tool.DownloadImageBytes(ctx, urlStr)
 }
 
 // getRecentMessages 获取 ChatArea 中最近 N 条消息（不含当前消息）。

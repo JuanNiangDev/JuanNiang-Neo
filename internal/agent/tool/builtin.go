@@ -1110,18 +1110,12 @@ func vision(getImageModel func() provider.Provider) *onebotTool {
 		if p.ImageURL == "" {
 			return "", fmt.Errorf("vision 缺少 image_url")
 		}
-		// 诊断：LLM 回传的 URL 可能与消息原文形态不同（HTML 实体/百分号编码/截断），
-		// 打印长度与前缀便于排查下载失败
-		urlPrefix := p.ImageURL
-		if len(urlPrefix) > 96 {
-			urlPrefix = urlPrefix[:96] + "..."
-		}
 		imageModel := getImageModel()
 		if imageModel == nil {
 			return "未配置识图模型(Image Model)，无法识别图片。请联系管理员配置。", nil
 		}
 		// 下载图片字节并交给识图模型
-		imgBytes, err := downloadBytes(ctx, p.ImageURL)
+		imgBytes, err := DownloadImageBytes(ctx, p.ImageURL)
 		if err != nil {
 			return "", fmt.Errorf("vision 图片下载失败: %w", err)
 		}
@@ -1133,16 +1127,37 @@ func vision(getImageModel func() provider.Provider) *onebotTool {
 	return onebotToolBuild(executer, input)
 }
 
-// downloadBytes 下载图片字节（vision 工具用）。
+// MaxImageBytes 图片下载的最大字节数，防止超大响应耗尽内存（OOM）。
+const MaxImageBytes = 25 << 20 // 25MB
+
+// ImageURLCandidates 生成图片 URL 的候选解码变体。
 // QQ 图床 URL（multimedia.nt.qq.com.cn）在 CQ 码/JSON 里带 HTML 实体 &amp;，
 // 需先解码为 & 否则查询参数错乱、下载失败。
 // LLM 复刻 URL 时可能再次引入变形（百分号编码 %26、残留实体等），
-// 首次请求失败时依次尝试解码变体，任一成功即返回。
-func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
-	candidates := []string{rawURL, strings.ReplaceAll(rawURL, "&amp;", "&")}
-	if u, err := url.QueryUnescape(rawURL); err == nil && u != rawURL {
-		candidates = append(candidates, u, strings.ReplaceAll(u, "&amp;", "&"))
+// 生成原始、HTML 实体解码、百分号解码的组合变体供依次尝试。
+func ImageURLCandidates(rawURL string) []string {
+	var candidates []string
+	seen := make(map[string]struct{}, 4)
+	add := func(u string) {
+		if _, dup := seen[u]; dup {
+			return
+		}
+		seen[u] = struct{}{}
+		candidates = append(candidates, u)
 	}
+	add(rawURL)
+	add(strings.ReplaceAll(rawURL, "&amp;", "&"))
+	if u, err := url.QueryUnescape(rawURL); err == nil && u != rawURL {
+		add(u)
+		add(strings.ReplaceAll(u, "&amp;", "&"))
+	}
+	return candidates
+}
+
+// DownloadImageBytes 下载图片字节（vision 工具与群聊相关性识图共用）。
+// 依次尝试 URL 解码变体，任一成功即返回；带响应体大小上限。
+func DownloadImageBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	candidates := ImageURLCandidates(rawURL)
 	var lastErr error
 	for i, u := range candidates {
 		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
@@ -1150,7 +1165,7 @@ func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
 			continue
 		}
 		if i > 0 {
-			log.Info("vision 图片下载重试", "attempt", i+1, "url_len", len(u))
+			log.Info("图片下载重试", "attempt", i+1, "url_len", len(u))
 		}
 		b, err := httpDownload(ctx, u)
 		if err == nil {
@@ -1165,6 +1180,7 @@ func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
 }
 
 // httpDownload 执行单次 HTTP GET 下载。
+// Content-Length 预检 + LimitReader 双重限制响应体大小，防止 OOM。
 func httpDownload(ctx context.Context, u string) ([]byte, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
@@ -1176,11 +1192,21 @@ func httpDownload(ctx context.Context, u string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("图片下载 HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	if resp.ContentLength > MaxImageBytes {
+		return nil, fmt.Errorf("图片过大: %d 字节（上限 %d）", resp.ContentLength, MaxImageBytes)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxImageBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > MaxImageBytes {
+		return nil, fmt.Errorf("图片过大: 超过 %d 字节上限", MaxImageBytes)
+	}
+	return b, nil
 }
 
 // --- 会话信息 ---

@@ -23,6 +23,26 @@ import (
 // prompt 会告知 LLM："判定不回复时输出 __NO_REPLY__，系统检测到后自动丢弃"。
 const SilenceToken = "__NO_REPLY__"
 
+// cqImageCodeRe 匹配 CQ 图片码段（如 [CQ:image,file=...,url=...]）。
+var cqImageCodeRe = regexp.MustCompile(`\[CQ:image[^\]]*\]`)
+
+// decodeQQImageEntities 仅解码图片 URL 相关文本中的 HTML 实体（&amp; → &）：
+//   - CQ 图片码内部的实体（QQ 图床 URL 的查询参数以 &amp; 分隔，原样发给 LLM 会被复刻成无法下载的 URL）
+//   - 纯文本形式（非 CQ 码）的 QQ 图床 URL 整体解码
+//
+// 普通用户文本（如字面 "&amp;"）保持不变，避免 LLM 收到的内容与原始消息不一致。
+func decodeQQImageEntities(s string) string {
+	if strings.Contains(s, "[CQ:image") {
+		s = cqImageCodeRe.ReplaceAllStringFunc(s, func(m string) string {
+			return strings.ReplaceAll(m, "&amp;", "&")
+		})
+	}
+	if strings.Contains(s, "multimedia.nt.qq.com.cn") {
+		s = strings.ReplaceAll(s, "&amp;", "&")
+	}
+	return s
+}
+
 // ReplySettings 包含从回复策略配置中提取的 per-message 设置。
 // 通过函数参数传递（而非 HagoCenter 共享字段），避免数据竞争。
 type ReplySettings struct {
@@ -843,9 +863,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// 主消息（本组最后一条）是当前需要回复的消息。避免模型把多人的问题
 	// 拼在一起一次回复（回复串味），也避免并行组重复消费同一消息。
 	for i, mu := range userMsgs {
-		// QQ 消息文本带 HTML 实体（&amp; 等），LLM 原样复刻易得到无法下载的 URL；
-		// 发给模型前解码为字面字符（存储记录仍保留原文）
-		mu = strings.ReplaceAll(mu, "&amp;", "&")
+		// QQ 图片 URL 在 CQ 码里带 HTML 实体（&amp;），LLM 原样复刻易得到无法下载的 URL；
+		// 仅解码 CQ 图片码/QQ 图床 URL 中的实体，普通用户文本（如字面 &amp;）原样保留
+		mu = decodeQQImageEntities(mu)
 		content := mu
 		if i != mainIdx {
 			content = "【背景消息·来自其他用户，无需逐一回复】" + mu
