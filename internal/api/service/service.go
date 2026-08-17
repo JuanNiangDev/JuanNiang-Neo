@@ -296,21 +296,10 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
-	if data.IsActive {
-		if err := s.DAO.Provider.DeactivateByType(ctx, data.Type, id); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
-	} else {
-		// 停用/变更 text provider 前校验：至少保留一个启用的 Text 模型
-		targetType := provider.ModelType(data.Type)
-		targetActive := data.IsActive
-		if err := s.checkTextModelRemains(ctx, id, &targetType, &targetActive); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.TextProviderRequired, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
-	}
+	// 目标状态校验：激活、停用、变更类型都必须保证操作后至少保留一个启用的 Text 模型。
+	// 放在分支前：IsActive=true 且把最后一个 Text Provider 改为其他类型时同样拦截。
+	targetType := provider.ModelType(data.Type)
+	targetActive := data.IsActive
 
 	providerConfig := models.Provider{
 		ID:             id,
@@ -328,7 +317,39 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 	provType := provider.ModelType(data.Type)
 	providerConfig_ := provider.ProviderConfigFromModel(&providerConfig)
 
-	// 运行时同步：先移除同类型旧的，再同步新配置
+	tx := s.DAO.DB.Begin()
+	if tx.Error != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: tx.Error.Error()}))
+		return
+	}
+	txProvider := s.DAO.Provider.WithTx(tx)
+	// 事务内行锁校验 + 写操作：并发请求无法同时通过校验并移除最后一个启用 Text Provider
+	if err := s.checkTextModelRemains(ctx, txProvider, id, &targetType, &targetActive); err != nil {
+		tx.Rollback()
+		providerWriteErrResp(c, err)
+		return
+	}
+
+	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
+	if data.IsActive {
+		if err := txProvider.DeactivateByType(ctx, data.Type, id); err != nil {
+			tx.Rollback()
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	}
+
+	if err := txProvider.Update(ctx, &providerConfig); err != nil {
+		tx.Rollback()
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 运行时同步（DB 已提交，以 DB 为准）：先移除同类型旧的，再同步新配置
 	if s.ProviderGroup != nil {
 		if data.IsActive {
 			for _, p := range s.ProviderGroup.ListProviders() {
@@ -340,32 +361,43 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		s.ProviderGroup.SyncConfig(providerConfig_)
 	}
 
-	if err := s.DAO.Provider.Update(ctx, &providerConfig); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
 	// Provider 变更影响 Eino Agent 的 model adapter，必须重建
 	s.notifyRebuild()
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+// ErrTextModelRequired 是"操作后无启用 Text 模型"的业务哨兵错误。
+// 与 DAO 查询错误区分：仅该错误映射为 dto.TextProviderRequired（40047），
+// 其余（如 DB 故障）映射为 ServerInternalErr，避免客户端误判。
+var ErrTextModelRequired = errors.New("至少保留一个启用的 Text 模型")
+
+// providerWriteErrResp 统一 Provider 写操作失败响应：
+// 业务校验失败（ErrTextModelRequired）→ 40047；其他错误 → 500。
+func providerWriteErrResp(c *app.RequestContext, err error) {
+	resp := dto.ServerInternalErr
+	if errors.Is(err, ErrTextModelRequired) {
+		resp = dto.TextProviderRequired
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(resp, dto.ErrorDetail{ErrorDetail: err.Error()}))
+}
+
 // checkTextModelRemains 校验停用/删除/更新操作后仍至少保留一个启用的 Text 模型。
 // Eino Agent 构建依赖 Text 模型：若全部停用，rebuild 报"无可用 Text 模型"、
 // 对话功能整体失能（历史故障）。targetType/targetActive 为操作后目标 provider
 // 的预期状态；nil 表示目标将被删除或不再处于启用态。
-func (s *Service) checkTextModelRemains(ctx context.Context, id string, targetType *provider.ModelType, targetActive *bool) error {
-	list, err := s.DAO.Provider.List(ctx, "")
+// p 应传入事务内 DAO（WithTx），以行锁（ListForUpdate）保证校验与写操作原子性。
+func (s *Service) checkTextModelRemains(ctx context.Context, p *dao.ProviderDAO, id string, targetType *provider.ModelType, targetActive *bool) error {
+	list, err := p.ListForUpdate(ctx, "")
 	if err != nil {
 		return err
 	}
 	activeText := 0
-	for _, p := range list {
-		if p.ID == id {
+	for _, pr := range list {
+		if pr.ID == id {
 			continue
 		}
-		if p.IsActive && provider.ModelType(p.Type) == provider.ModelTypeText {
+		if pr.IsActive && provider.ModelType(pr.Type) == provider.ModelTypeText {
 			activeText++
 		}
 	}
@@ -373,7 +405,7 @@ func (s *Service) checkTextModelRemains(ctx context.Context, id string, targetTy
 		activeText++
 	}
 	if activeText == 0 {
-		return fmt.Errorf("至少保留一个启用的 Text 模型")
+		return ErrTextModelRequired
 	}
 	return nil
 }
@@ -381,12 +413,25 @@ func (s *Service) checkTextModelRemains(ctx context.Context, id string, targetTy
 func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 
-	if err := s.checkTextModelRemains(ctx, id, nil, nil); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.TextProviderRequired, dto.ErrorDetail{ErrorDetail: err.Error()}))
+	tx := s.DAO.DB.Begin()
+	if tx.Error != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: tx.Error.Error()}))
+		return
+	}
+	txProvider := s.DAO.Provider.WithTx(tx)
+	// 事务内行锁校验 + 删除：并发请求无法同时通过校验并删除最后一个启用 Text Provider
+	if err := s.checkTextModelRemains(ctx, txProvider, id, nil, nil); err != nil {
+		tx.Rollback()
+		providerWriteErrResp(c, err)
 		return
 	}
 
-	if err := s.DAO.Provider.Delete(ctx, id); err != nil {
+	if err := txProvider.Delete(ctx, id); err != nil {
+		tx.Rollback()
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -411,22 +456,52 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	tx := s.DAO.DB.Begin()
+	if tx.Error != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: tx.Error.Error()}))
+		return
+	}
+	txProvider := s.DAO.Provider.WithTx(tx)
+
+	var raw *models.Provider
 	if data.IsActive {
-		// 获取当前 Provider 信息以确认类型
-		raw, err := s.DAO.Provider.GetByID(ctx, id)
+		// 获取当前 Provider 信息以确认类型（事务内，与写操作一致）
+		var err error
+		raw, err = txProvider.GetByID(ctx, id)
 		if err != nil {
+			tx.Rollback()
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ProviderNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
 
 		// 同类型只能有一个 Active：先停用同类型其他 Provider
-		if err := s.DAO.Provider.DeactivateByType(ctx, raw.Type, id); err != nil {
+		if err := txProvider.DeactivateByType(ctx, raw.Type, id); err != nil {
+			tx.Rollback()
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
+	} else {
+		// 停用前校验：至少保留一个启用的 Text 模型（事务内行锁校验 + 写操作）
+		if err := s.checkTextModelRemains(ctx, txProvider, id, nil, nil); err != nil {
+			tx.Rollback()
+			providerWriteErrResp(c, err)
+			return
+		}
+	}
 
-		// 运行时：移除同类型旧的，添加新的
-		if s.ProviderGroup != nil {
+	if err := txProvider.SetActive(ctx, id, data.IsActive); err != nil {
+		tx.Rollback()
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 运行时同步（DB 已提交，以 DB 为准）
+	if s.ProviderGroup != nil {
+		if data.IsActive {
 			provType := provider.ModelType(raw.Type)
 			for _, p := range s.ProviderGroup.ListProviders() {
 				if p.Type() == provType {
@@ -434,20 +509,9 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 				}
 			}
 			s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfigFromModel(raw)))
-		}
-	} else {
-		if err := s.checkTextModelRemains(ctx, id, nil, nil); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.TextProviderRequired, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
-		if s.ProviderGroup != nil {
+		} else {
 			s.ProviderGroup.DelProvider(id)
 		}
-	}
-
-	if err := s.DAO.Provider.SetActive(ctx, id, data.IsActive); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
 	}
 
 	// Provider 变更影响 Eino Agent 的 model adapter，必须重建
