@@ -461,7 +461,9 @@ func extractImageURL(seg adapter.Segment) string {
 // 携带浏览器 UA：QQ 图片服务器会校验 User-Agent，缺失 UA 可能返回 403。
 func (h *HagoCenter) fetchImageBytes(ctx context.Context, rawURL string, seg adapter.Segment) ([]byte, error) {
 	urlStr := rawURL
-	if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
+	// QQ 图床 URL 带 HTML 实体 &amp;，先解码为 & 再使用
+	urlStr = strings.ReplaceAll(urlStr, "&amp;", "&")
+	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		if h.Adapter == nil {
 			return nil, fmt.Errorf("adapter 未就绪，无法解析图片路径")
 		}
@@ -474,6 +476,8 @@ func (h *HagoCenter) fetchImageBytes(ctx context.Context, rawURL string, seg ada
 			urlStr = info.File
 		}
 	}
+	// file 分支经 get_image 返回的 URL 也可能带 HTML 实体，统一再解码一次
+	urlStr = strings.ReplaceAll(urlStr, "&amp;", "&")
 	if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 		return nil, fmt.Errorf("无法解析图片 URL: %q", urlStr)
 	}
@@ -534,11 +538,14 @@ func (h *HagoCenter) getRecentMessagesByMsgType(ctx context.Context, msgType str
 }
 
 // isAtSelf 检查消息是否 @ 了机器人自己。
-// 优先使用 Adapter 实时 SelfID（防止 Init 时 QQ bot 尚未连接导致缓存为 0），
-// 回退到启动时缓存的 SelfQQ。
-func (h *HagoCenter) isAtSelf(rawMsg string) bool {
+// SelfID 优先级：事件自带的 self_id（多连接时确定性归属，不依赖 map 遍历顺序）
+// > Adapter 实时 SelfID > 启动时缓存的 SelfQQ。
+func (h *HagoCenter) isAtSelf(rawMsg string, eventSelfID int64) bool {
 	selfQQ := h.SelfQQ
-	if h.Adapter != nil {
+	if eventSelfID != 0 {
+		selfQQ = eventSelfID
+	}
+	if selfQQ == 0 && h.Adapter != nil {
 		if id := h.Adapter.SelfID(); id != 0 {
 			selfQQ = id
 		}

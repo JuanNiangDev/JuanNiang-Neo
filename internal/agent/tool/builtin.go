@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -1078,8 +1079,11 @@ func text_to_image(getT2I func() *t2icaller.Client) *onebotTool {
 
 // --- Vision / 识图 ---
 
-// vision 使用识图模型识别图片内容（imageModel 已配置版本）。
-func vision(imageModel provider.Provider) *onebotTool {
+// vision 使用识图模型识别图片内容。
+// imageModel 以 getter 传入：每次调用时实时 SelectModel(ModelTypeImage)，
+// 避免 Init 早期（loadProviders 之前）的快照为 nil 而注册成占位工具，
+// 也保证热更新 provider 后立即生效。
+func vision(getImageModel func() provider.Provider) *onebotTool {
 	input := NewToolInput{
 		id:   "",
 		name: "vision",
@@ -1106,6 +1110,16 @@ func vision(imageModel provider.Provider) *onebotTool {
 		if p.ImageURL == "" {
 			return "", fmt.Errorf("vision 缺少 image_url")
 		}
+		// 诊断：LLM 回传的 URL 可能与消息原文形态不同（HTML 实体/百分号编码/截断），
+		// 打印长度与前缀便于排查下载失败
+		urlPrefix := p.ImageURL
+		if len(urlPrefix) > 96 {
+			urlPrefix = urlPrefix[:96] + "..."
+		}
+		imageModel := getImageModel()
+		if imageModel == nil {
+			return "未配置识图模型(Image Model)，无法识别图片。请联系管理员配置。", nil
+		}
 		// 下载图片字节并交给识图模型
 		imgBytes, err := downloadBytes(ctx, p.ImageURL)
 		if err != nil {
@@ -1120,12 +1134,40 @@ func vision(imageModel provider.Provider) *onebotTool {
 }
 
 // downloadBytes 下载图片字节（vision 工具用）。
-func downloadBytes(ctx context.Context, url string) ([]byte, error) {
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		return nil, fmt.Errorf("仅支持 http(s) 图片 URL: %q", url)
+// QQ 图床 URL（multimedia.nt.qq.com.cn）在 CQ 码/JSON 里带 HTML 实体 &amp;，
+// 需先解码为 & 否则查询参数错乱、下载失败。
+// LLM 复刻 URL 时可能再次引入变形（百分号编码 %26、残留实体等），
+// 首次请求失败时依次尝试解码变体，任一成功即返回。
+func downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	candidates := []string{rawURL, strings.ReplaceAll(rawURL, "&amp;", "&")}
+	if u, err := url.QueryUnescape(rawURL); err == nil && u != rawURL {
+		candidates = append(candidates, u, strings.ReplaceAll(u, "&amp;", "&"))
 	}
+	var lastErr error
+	for i, u := range candidates {
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			lastErr = fmt.Errorf("仅支持 http(s) 图片 URL: %q", u)
+			continue
+		}
+		if i > 0 {
+			log.Info("vision 图片下载重试", "attempt", i+1, "url_len", len(u))
+		}
+		b, err := httpDownload(ctx, u)
+		if err == nil {
+			return b, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("图片 URL 无法解析: %q", rawURL)
+	}
+	return nil, lastErr
+}
+
+// httpDownload 执行单次 HTTP GET 下载。
+func httpDownload(ctx context.Context, u string) ([]byte, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1139,29 +1181,6 @@ func downloadBytes(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("图片下载 HTTP %d", resp.StatusCode)
 	}
 	return io.ReadAll(resp.Body)
-}
-
-// vision_unavailable 未配置识图模型时的占位工具。
-func vision_unavailable() *onebotTool {
-	input := NewToolInput{
-		id:   "",
-		name: "vision",
-		desc: "识别图片内容",
-		params: openai.FunctionParameters{
-			"type": "object",
-			"properties": map[string]any{
-				"image_url": map[string]any{"type": "string", "description": "图片 URL"},
-				"prompt":    map[string]any{"type": "string", "description": "关于图片的问题"},
-			},
-			"required": []string{"image_url", "prompt"},
-		},
-		builtin:     true,
-		longRunning: false,
-	}
-	executer := func(ctx context.Context, args json.RawMessage) (string, error) {
-		return "未配置识图模型(Image Model)，无法识别图片。请联系管理员配置。", nil
-	}
-	return onebotToolBuild(executer, input)
 }
 
 // --- 会话信息 ---
@@ -1304,7 +1323,7 @@ func RegisterBuiltinTools(
 	adapter AdapterProvider,
 	getSandbox func() *sandboxcaller.Client,
 	getT2I func() *t2icaller.Client,
-	imageModel provider.Provider,
+	getImageModel func() provider.Provider,
 	getSessionCtx func(ctx context.Context) string,
 	getCurrentMsg func(ctx context.Context) *adapter.MessageEvent,
 	getRecentMsgs func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error),
@@ -1366,11 +1385,7 @@ func RegisterBuiltinTools(
 
 	// --- Vision / 识图 ---
 
-	if imageModel != nil {
-		tools = append(tools, vision(imageModel))
-	} else {
-		tools = append(tools, vision_unavailable())
-	}
+	tools = append(tools, vision(getImageModel))
 
 	// --- 会话信息 ---
 

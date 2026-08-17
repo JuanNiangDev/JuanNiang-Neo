@@ -140,8 +140,8 @@ func (h *HagoCenter) checkReplyStrategyFast(ctx context.Context, ev adapter.Even
 		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
 		return false
 	case models.StrategyAtOnly:
-		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage) {
-			log.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage, ev.SelfID) {
+			log.Info("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID, "self_id", ev.SelfID)
 			return false
 		}
 		return true
@@ -599,7 +599,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 			continue
 		}
 		// L1 规则快路径：@ 自己 / 插件命令 / 提及名字 → 必回，无需 LLM
-		if h.isAtSelf(msg.RawMessage) || h.isPluginCommand(msg.RawMessage) || isDefinitelyRelevant(msg, rs) {
+		if h.isAtSelf(msg.RawMessage, ev.SelfID) || h.isPluginCommand(msg.RawMessage) || isDefinitelyRelevant(msg, rs) {
 			mustKeep = append(mustKeep, ev)
 			continue
 		}
@@ -843,6 +843,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// 主消息（本组最后一条）是当前需要回复的消息。避免模型把多人的问题
 	// 拼在一起一次回复（回复串味），也避免并行组重复消费同一消息。
 	for i, mu := range userMsgs {
+		// QQ 消息文本带 HTML 实体（&amp; 等），LLM 原样复刻易得到无法下载的 URL；
+		// 发给模型前解码为字面字符（存储记录仍保留原文）
+		mu = strings.ReplaceAll(mu, "&amp;", "&")
 		content := mu
 		if i != mainIdx {
 			content = "【背景消息·来自其他用户，无需逐一回复】" + mu
