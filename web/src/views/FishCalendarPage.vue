@@ -167,28 +167,24 @@ interface CalCell {
 const grid = computed<CalCell[]>(() => {
   const year = viewYear.value
   const month = viewMonth.value
-  const daysInMonth = new Date(year, month, 0).getDate()
-  const firstDay = new Date(year, month - 1, 1).getDay() // 0=周日
-  const leading = (firstDay + 6) % 7 // 周一开头
   const todayStr = new Date().toLocaleDateString('sv') // YYYY-MM-DD
   const cells: CalCell[] = []
-  // 前导空白（上月）
-  const prevDays = new Date(year, month - 1, 0).getDate()
-  for (let i = leading - 1; i >= 0; i--) {
-    const d = prevDays - i
-    const date = fmtDate(new Date(year, month - 2, d))
-    cells.push({ date, day: d, inMonth: false, isToday: date === todayStr, content: affairsMap.value[date] || '' })
-  }
-  for (let d = 1; d <= daysInMonth; d++) {
-    const date = fmtDate(new Date(year, month - 1, d))
-    cells.push({ date, day: d, inMonth: true, isToday: date === todayStr, content: affairsMap.value[date] || '' })
-  }
-  // 补齐到整周
-  while (cells.length % 7 !== 0) {
-    const last = cells[cells.length - 1]
-    const d = Number(last.day) + 1
-    const date = fmtDate(new Date(viewYear.value, viewMonth.value - 1, d))
-    cells.push({ date, day: d, inMonth: false, isToday: false, content: '' })
+  // 从「周一开头的当月 1 号」之前的日期开始，逐日 +1，直到覆盖完整月并补齐到整周。
+  // day 始终取 cursor.getDate()（跨月由 Date 归一化），避免出现 32/33 等非法日期。
+  const first = new Date(year, month - 1, 1)
+  const leading = (first.getDay() + 6) % 7 // 周一开头的前导天数（上月）
+  const afterMonth = new Date(year, month, 1) // 下月 1 号 = 覆盖完整月的边界
+  const cursor = new Date(year, month - 1, 1 - leading)
+  while (cursor < afterMonth || cells.length % 7 !== 0) {
+    const date = fmtDate(cursor)
+    cells.push({
+      date,
+      day: cursor.getDate(),
+      inMonth: cursor.getMonth() === month - 1,
+      isToday: date === todayStr,
+      content: affairsMap.value[date] || '',
+    })
+    cursor.setDate(cursor.getDate() + 1)
   }
   return cells
 })
