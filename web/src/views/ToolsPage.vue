@@ -115,8 +115,8 @@ onMounted(fetch)
 
 <style scoped>
 .code-block {
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: rgb(var(--v-theme-code-bg));
+  color: rgb(var(--v-theme-code-fg));
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;

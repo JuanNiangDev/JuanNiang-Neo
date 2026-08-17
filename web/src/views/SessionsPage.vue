@@ -160,7 +160,7 @@ onMounted(fetch)
   border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
   border-radius: 6px;
   overflow: hidden;
-  background: #1e1e1e;
+  background: rgb(var(--v-theme-code-bg));
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -174,8 +174,8 @@ onMounted(fetch)
 
 .line-numbers {
   flex: 0 0 48px;
-  background: #1e1e1e;
-  color: #858585;
+  background: rgb(var(--v-theme-code-bg));
+  color: rgba(var(--v-theme-code-fg), 0.55);
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;
@@ -183,7 +183,7 @@ onMounted(fetch)
   padding: 12px 8px 12px 0;
   overflow-y: hidden;
   user-select: none;
-  border-right: 1px solid #2d2d30;
+  border-right: 1px solid rgba(var(--v-theme-code-fg), 0.18);
 }
 
 .line-num {
@@ -194,8 +194,8 @@ onMounted(fetch)
   flex: 1;
   margin: 0;
   padding: 12px 16px;
-  background: #1e1e1e;
-  color: #d4d4d4;
+  background: rgb(var(--v-theme-code-bg));
+  color: rgb(var(--v-theme-code-fg));
   font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;
@@ -218,7 +218,7 @@ onMounted(fetch)
 }
 .code-area::-webkit-scrollbar-thumb,
 .line-numbers::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(var(--v-theme-code-fg), 0.3);
   border-radius: 4px;
 }
 </style>

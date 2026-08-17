@@ -48,6 +48,10 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 挂载前/滚动越界的底色与主题一致（data-theme 由 stores/theme.ts 同步） */
+html[data-theme='dark'] { background: #0b0d14; }
+html[data-theme='light'] { background: #f5f6fa; }
+
 /* 细滚动条 */
 ::-webkit-scrollbar {
   width: 8px;

@@ -11,12 +11,12 @@
     <div class="d-flex align-center ps-4 pe-3 py-3" style="min-height: 64px; gap: 10px; flex-shrink: 0">
       <img v-if="logoExists" src="/site_logo.png" alt="Logo" style="height: 30px; width: 30px; border-radius: 8px; flex-shrink: 0" @error="logoExists = false" />
       <div class="d-flex flex-column" style="line-height: 1.1">
-        <span class="font-weight-bold" style="color: rgba(255,255,255,0.92); font-size: 15px; white-space: nowrap">JuanNiang-Neo</span>
-        <span class="text-caption" style="color: rgba(255,255,255,0.35); font-size: 11px">智能管理控制台</span>
+        <span class="font-weight-bold" style="color: rgb(var(--v-theme-on-surface)); font-size: 15px; white-space: nowrap">JuanNiang-Neo</span>
+        <span class="text-caption" style="color: rgba(var(--v-theme-on-surface), 0.55); font-size: 11px">智能管理控制台</span>
       </div>
     </div>
 
-    <v-divider class="mx-3" style="border-color: rgba(255,255,255,0.06); flex-shrink: 0" />
+    <v-divider class="mx-3" style="border-color: rgba(var(--v-theme-on-surface), 0.08); flex-shrink: 0" />
 
     <!-- Collapsible nav groups -->
     <!-- Navigation scrolls independently so flex sizing does not clip it. -->
@@ -49,8 +49,8 @@
     </div>
 
     <div class="px-3 py-2 flex-shrink-0">
-      <v-divider style="border-color: rgba(255,255,255,0.06)" class="mb-2" />
-      <div class="text-caption px-3 py-2" style="color: rgba(255,255,255,0.28); font-size: 11px">
+      <v-divider style="border-color: rgba(var(--v-theme-on-surface), 0.08)" class="mb-2" />
+      <div class="text-caption px-3 py-2" style="color: rgba(var(--v-theme-on-surface), 0.45); font-size: 11px">
         JuanNiang-Neo v1.0.0
       </div>
     </div>

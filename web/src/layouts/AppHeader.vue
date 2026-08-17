@@ -20,6 +20,9 @@
       <span class="hidden-xs">刷新数据</span>
     </v-btn>
 
+    <!-- 主题模式切换：跟随系统 / 深色 / 浅色 -->
+    <ThemeModeMenu class="me-2" />
+
     <v-menu offset="12" location="bottom end">
       <template #activator="{ props }">
         <v-btn v-bind="props" variant="text" class="me-3" style="min-width: 0; padding: 0 6px; height: 46px">
@@ -49,6 +52,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import { useAuthStore } from '@/stores/auth'
+import ThemeModeMenu from '@/components/shared/ThemeModeMenu.vue'
 
 const router = useRouter()
 const appStore = useAppStore()

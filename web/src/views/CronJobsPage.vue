@@ -102,6 +102,7 @@ import { basicSetup } from 'codemirror'
 import { cronJobApi, type CronJobResp, type AddCronJobReq } from '@/api'
 import { pluginApi } from '@/api'
 import { useToastStore } from '@/stores/toast'
+import { cmCodeMirrorTheme } from '@/theme/codemirrorTheme'
 
 const toastStore = useToastStore()
 const loading = ref(true)
@@ -127,8 +128,8 @@ const defaultForm = (): AddCronJobReq => ({
 
 const form = ref<AddCronJobReq>(defaultForm())
 
-// CodeMirror 配置
-const cmExtensions = [basicSetup, json()]
+// CodeMirror 配置（主题随深浅色自动适配）
+const cmExtensions = [basicSetup, json(), ...cmCodeMirrorTheme()]
 
 // JSON payload 实时校验
 const payloadError = computed(() => {
@@ -209,14 +210,5 @@ onMounted(fetch)
 }
 .editor-wrapper :deep(.cm-focused) {
   outline: none !important;
-}
-.editor-wrapper :deep(.cm-gutters) {
-  background: #000 !important;
-  color: #888 !important;
-  border-right: 1px solid #333 !important;
-}
-.editor-wrapper :deep(.cm-activeLineGutter) {
-  background: #1a1a1a !important;
-  color: #ccc !important;
 }
 </style>
