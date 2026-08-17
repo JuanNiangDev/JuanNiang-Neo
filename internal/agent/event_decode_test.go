@@ -33,6 +33,16 @@ func TestDecodeQQImageEntitiesPlainCDNURL(t *testing.T) {
 	}
 }
 
+// TestDecodeQQImageEntitiesCDNPlusLiteralAmp 回归：CDN URL 与独立字面 &amp; 共存时，
+// 只解码 URL 范围内的实体，普通文本原样保留（CodeRabbit 最新审查点）。
+func TestDecodeQQImageEntitiesCDNPlusLiteralAmp(t *testing.T) {
+	in := `看图 https://multimedia.nt.qq.com.cn/download?appid=1407&amp;rkey=x 代码 A&amp;B`
+	want := `看图 https://multimedia.nt.qq.com.cn/download?appid=1407&rkey=x 代码 A&amp;B`
+	if got := decodeQQImageEntities(in); got != want {
+		t.Fatalf("URL 范围解码错误\n got: %q\nwant: %q", got, want)
+	}
+}
+
 // TestDecodeQQImageEntitiesMixed 图片码 + 普通文本混合：只解码图片相关部分。
 func TestDecodeQQImageEntitiesMixed(t *testing.T) {
 	in := `图片来了 [CQ:image,url=http://a.cn/x?p=1&amp;q=2] 请把 A&amp;B 发我`

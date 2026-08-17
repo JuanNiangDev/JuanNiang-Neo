@@ -32,6 +32,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 	"github.com/cloudwego/hertz/pkg/protocol/sse"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 var log = logging.NewModule("api")
@@ -317,35 +318,23 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 	provType := provider.ModelType(data.Type)
 	providerConfig_ := provider.ProviderConfigFromModel(&providerConfig)
 
-	tx := s.DAO.DB.Begin()
-	if tx.Error != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: tx.Error.Error()}))
-		return
-	}
-	txProvider := s.DAO.Provider.WithTx(tx)
-	// 事务内行锁校验 + 写操作：并发请求无法同时通过校验并移除最后一个启用 Text Provider
-	if err := s.checkTextModelRemains(ctx, txProvider, id, &targetType, &targetActive); err != nil {
-		tx.Rollback()
-		providerWriteErrResp(c, err)
-		return
-	}
-
-	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
-	if data.IsActive {
-		if err := txProvider.DeactivateByType(ctx, data.Type, id); err != nil {
-			tx.Rollback()
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
+	// 事务内行锁校验 + 写操作：并发请求无法同时通过校验并移除最后一个启用 Text Provider。
+	// 事务开头 ListForUpdate 锁定全部 Provider 行，与 Delete/Toggle 加锁顺序一致，避免死锁。
+	err := s.providerTx(ctx, func(tx *gorm.DB) error {
+		txProvider := s.DAO.Provider.WithTx(tx)
+		if err := s.checkTextModelRemains(ctx, txProvider, id, &targetType, &targetActive); err != nil {
+			return err
 		}
-	}
-
-	if err := txProvider.Update(ctx, &providerConfig); err != nil {
-		tx.Rollback()
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	if err := tx.Commit().Error; err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
+		if data.IsActive {
+			if err := txProvider.DeactivateByType(ctx, data.Type, id); err != nil {
+				return err
+			}
+		}
+		return txProvider.Update(ctx, &providerConfig)
+	})
+	if err != nil {
+		providerWriteErrResp(c, err)
 		return
 	}
 
@@ -382,6 +371,31 @@ func providerWriteErrResp(c *app.RequestContext, err error) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(resp, dto.ErrorDetail{ErrorDetail: err.Error()}))
 }
 
+// isDeadlockErr 判断是否为 Postgres 死锁/序列化失败（SQLSTATE 40P01 / 40001），
+// 这类错误可安全重试整个事务。
+func isDeadlockErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "40P01") || strings.Contains(msg, "40001") ||
+		strings.Contains(msg, "deadlock detected") ||
+		strings.Contains(msg, "could not serialize access")
+}
+
+// providerTx 在事务内执行 fn；遇死锁/序列化冲突自动重试（最多 3 次）。
+// 事务闭包由 gorm DB.Transaction 管理：返回错误或 panic 时自动回滚，不泄漏连接。
+func (s *Service) providerTx(ctx context.Context, fn func(tx *gorm.DB) error) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = s.DAO.DB.WithContext(ctx).Transaction(fn)
+		if !isDeadlockErr(err) {
+			return err
+		}
+	}
+	return err
+}
+
 // checkTextModelRemains 校验停用/删除/更新操作后仍至少保留一个启用的 Text 模型。
 // Eino Agent 构建依赖 Text 模型：若全部停用，rebuild 报"无可用 Text 模型"、
 // 对话功能整体失能（历史故障）。targetType/targetActive 为操作后目标 provider
@@ -413,26 +427,16 @@ func (s *Service) checkTextModelRemains(ctx context.Context, p *dao.ProviderDAO,
 func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
 
-	tx := s.DAO.DB.Begin()
-	if tx.Error != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: tx.Error.Error()}))
-		return
-	}
-	txProvider := s.DAO.Provider.WithTx(tx)
 	// 事务内行锁校验 + 删除：并发请求无法同时通过校验并删除最后一个启用 Text Provider
-	if err := s.checkTextModelRemains(ctx, txProvider, id, nil, nil); err != nil {
-		tx.Rollback()
+	err := s.providerTx(ctx, func(tx *gorm.DB) error {
+		txProvider := s.DAO.Provider.WithTx(tx)
+		if err := s.checkTextModelRemains(ctx, txProvider, id, nil, nil); err != nil {
+			return err
+		}
+		return txProvider.Delete(ctx, id)
+	})
+	if err != nil {
 		providerWriteErrResp(c, err)
-		return
-	}
-
-	if err := txProvider.Delete(ctx, id); err != nil {
-		tx.Rollback()
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	if err := tx.Commit().Error; err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
 
@@ -456,46 +460,39 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	tx := s.DAO.DB.Begin()
-	if tx.Error != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: tx.Error.Error()}))
-		return
-	}
-	txProvider := s.DAO.Provider.WithTx(tx)
-
 	var raw *models.Provider
-	if data.IsActive {
-		// 获取当前 Provider 信息以确认类型（事务内，与写操作一致）
-		var err error
-		raw, err = txProvider.GetByID(ctx, id)
-		if err != nil {
-			tx.Rollback()
+	err := s.providerTx(ctx, func(tx *gorm.DB) error {
+		txProvider := s.DAO.Provider.WithTx(tx)
+		// 统一加锁顺序：事务开头先锁定全部 Provider 行（与 Update/Delete 一致），
+		// 再执行 GetByID 与写操作，避免并发写路径形成循环等待（死锁）。
+		if _, err := txProvider.ListForUpdate(ctx, ""); err != nil {
+			return err
+		}
+		if data.IsActive {
+			// 获取当前 Provider 信息以确认类型（事务内，与写操作一致）
+			var err error
+			raw, err = txProvider.GetByID(ctx, id)
+			if err != nil {
+				return fmt.Errorf("%w: %v", gorm.ErrRecordNotFound, err)
+			}
+			// 同类型只能有一个 Active：先停用同类型其他 Provider
+			if err := txProvider.DeactivateByType(ctx, raw.Type, id); err != nil {
+				return err
+			}
+		} else {
+			// 停用前校验：至少保留一个启用的 Text 模型（事务内行锁校验 + 写操作）
+			if err := s.checkTextModelRemains(ctx, txProvider, id, nil, nil); err != nil {
+				return err
+			}
+		}
+		return txProvider.SetActive(ctx, id, data.IsActive)
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ProviderNotExist, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
-
-		// 同类型只能有一个 Active：先停用同类型其他 Provider
-		if err := txProvider.DeactivateByType(ctx, raw.Type, id); err != nil {
-			tx.Rollback()
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
-	} else {
-		// 停用前校验：至少保留一个启用的 Text 模型（事务内行锁校验 + 写操作）
-		if err := s.checkTextModelRemains(ctx, txProvider, id, nil, nil); err != nil {
-			tx.Rollback()
-			providerWriteErrResp(c, err)
-			return
-		}
-	}
-
-	if err := txProvider.SetActive(ctx, id, data.IsActive); err != nil {
-		tx.Rollback()
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	if err := tx.Commit().Error; err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		providerWriteErrResp(c, err)
 		return
 	}
 

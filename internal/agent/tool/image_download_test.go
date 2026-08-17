@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"net"
 	"reflect"
 	"testing"
 )
@@ -40,5 +41,26 @@ func TestImageURLCandidatesNoChange(t *testing.T) {
 	got := ImageURLCandidates(raw)
 	if len(got) != 1 || got[0] != raw {
 		t.Fatalf("无变形 URL 应只有原始候选: %v", got)
+	}
+}
+
+// TestBlockedIP SSRF 防护范围：loopback/私网/链路本地/组播/未指定/CGNAT 拒绝，
+// 公网地址放行。
+func TestBlockedIP(t *testing.T) {
+	blocked := []string{
+		"127.0.0.1", "10.0.0.1", "172.16.0.1", "192.168.1.1",
+		"169.254.1.1", "0.0.0.0", "100.64.1.1", "224.0.0.1",
+		"::1", "fe80::1", "fc00::1", "ff02::1",
+	}
+	for _, s := range blocked {
+		if !blockedIP(net.ParseIP(s)) {
+			t.Errorf("%s 应被 SSRF 防护拒绝", s)
+		}
+	}
+	allowed := []string{"8.8.8.8", "1.1.1.1", "2400:3200::1"}
+	for _, s := range allowed {
+		if blockedIP(net.ParseIP(s)) {
+			t.Errorf("%s 不应被 SSRF 防护拒绝", s)
+		}
 	}
 }

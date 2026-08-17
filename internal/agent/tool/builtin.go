@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -1130,6 +1131,61 @@ func vision(getImageModel func() provider.Provider) *onebotTool {
 // MaxImageBytes 图片下载的最大字节数，防止超大响应耗尽内存（OOM）。
 const MaxImageBytes = 25 << 20 // 25MB
 
+// ---------- SSRF 防护 ----------
+
+// cgnatBlock 是 CGNAT 共享地址段（100.64.0.0/10，RFC 6598），不对外路由。
+var cgnatBlock = mustCIDR("100.64.0.0/10")
+
+func mustCIDR(s string) *net.IPNet {
+	_, ipNet, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return ipNet
+}
+
+// blockedIP 判断 IP 是否为 SSRF 防护应拒绝的地址：
+// loopback、私网（RFC1918 / fc00::/7）、链路本地、组播、未指定及 CGNAT 段。
+func blockedIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	return cgnatBlock.Contains(ip)
+}
+
+// dialRestricted 是受限 DialContext：请求前解析目标 host 的实际 IP 并拒绝非公网地址。
+// http.Transport 对每次连接（含重定向目标、DNS 解析后的 IP）都会经过这里，
+// 因此公开 URL 重定向到内部地址同样会被拦截。
+func dialRestricted(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	for _, ip := range ips {
+		if blockedIP(ip.IP) {
+			return nil, fmt.Errorf("拒绝访问非公网地址: %s (%s)", host, ip.IP)
+		}
+	}
+	return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, addr)
+}
+
+// newImageDownloadClient 构造受限 HTTP 客户端：禁用代理（防止代理绕过 SSRF 检查），
+// 受限 DialContext 校验每个连接目标。
+func newImageDownloadClient() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Proxy:       nil,
+			DialContext: dialRestricted,
+		},
+	}
+}
+
 // ImageURLCandidates 生成图片 URL 的候选解码变体。
 // QQ 图床 URL（multimedia.nt.qq.com.cn）在 CQ 码/JSON 里带 HTML 实体 &amp;，
 // 需先解码为 & 否则查询参数错乱、下载失败。
@@ -1180,9 +1236,10 @@ func DownloadImageBytes(ctx context.Context, rawURL string) ([]byte, error) {
 }
 
 // httpDownload 执行单次 HTTP GET 下载。
+// 使用受限客户端（SSRF 防护 + 禁用代理）；
 // Content-Length 预检 + LimitReader 双重限制响应体大小，防止 OOM。
 func httpDownload(ctx context.Context, u string) ([]byte, error) {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := newImageDownloadClient()
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
