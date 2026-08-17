@@ -53,6 +53,40 @@ func TestDecodeQQImageEntitiesForeignHostWithCDNInPath(t *testing.T) {
 	}
 }
 
+// TestDecodeQQImageEntitiesEvilHostSuffix 回归：主机名带 .evil 后缀时实际主机不同，
+// 不得解码（CodeRabbit 审查点）。
+func TestDecodeQQImageEntitiesEvilHostSuffix(t *testing.T) {
+	in := `https://multimedia.nt.qq.com.cn.evil/download?a=1&amp;b=2`
+	want := in
+	if got := decodeQQImageEntities(in); got != want {
+		t.Fatalf(".evil 后缀 URL 误解码\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestDecodeQQImageEntitiesUserinfoAttack 回归：@evil.com 形式的 userinfo 注入
+// 实际主机是 evil.com，不得解码（CodeRabbit 审查点）。
+func TestDecodeQQImageEntitiesUserinfoAttack(t *testing.T) {
+	in := `https://multimedia.nt.qq.com.cn@evil.com/download?a=1&amp;b=2`
+	want := in
+	if got := decodeQQImageEntities(in); got != want {
+		t.Fatalf("@userinfo 注入 URL 误解码\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// TestDecodeQQImageEntitiesPortAndEnd 合法形态保持匹配：带端口、或主机后直接结束的 URL。
+func TestDecodeQQImageEntitiesPortAndEnd(t *testing.T) {
+	in := `https://multimedia.nt.qq.com.cn:443/download?a=1&amp;b=2 结束`
+	want := `https://multimedia.nt.qq.com.cn:443/download?a=1&b=2 结束`
+	if got := decodeQQImageEntities(in); got != want {
+		t.Fatalf("带端口 URL 解码错误\n got: %q\nwant: %q", got, want)
+	}
+	// 主机后无路径/参数：正则应匹配（无实体可解码，结果不变即正确）
+	plain := "https://multimedia.nt.qq.com.cn"
+	if got := decodeQQImageEntities(plain); got != plain {
+		t.Fatalf("裸主机 URL 处理错误\n got: %q\nwant: %q", got, plain)
+	}
+}
+
 // TestDecodeQQImageEntitiesMixed 图片码 + 普通文本混合：只解码图片相关部分。
 func TestDecodeQQImageEntitiesMixed(t *testing.T) {
 	in := `图片来了 [CQ:image,url=http://a.cn/x?p=1&amp;q=2] 请把 A&amp;B 发我`

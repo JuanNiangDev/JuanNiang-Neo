@@ -84,7 +84,7 @@ func TestDialRestrictedRejectsLoopback(t *testing.T) {
 // 下载本地服务必须失败（SSRF 拒绝），防止攻击者借 vision 工具探测内部网络。
 func TestDownloadImageBytesRejectsLocalServer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("internal data"))
+		_, _ = w.Write([]byte("internal data"))
 	}))
 	defer srv.Close()
 
