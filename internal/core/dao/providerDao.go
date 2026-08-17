@@ -5,11 +5,28 @@ import (
 	"context"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type ProviderDAO struct{ db *gorm.DB }
 
 func NewProviderDAO(db *gorm.DB) *ProviderDAO { return &ProviderDAO{db: db} }
+
+// WithTx 返回绑定到指定事务的 DAO 副本，供 Service 层在事务内执行校验与写操作。
+func (d *ProviderDAO) WithTx(tx *gorm.DB) *ProviderDAO { return &ProviderDAO{db: tx} }
+
+// ListForUpdate 行级锁查询 Provider 列表（SELECT ... FOR UPDATE），
+// 用于事务内校验"至少保留一个启用 Text 模型"不变量：并发写事务会阻塞在锁上，
+// 提交后重查拿到最新数据，避免校验通过后写操作破坏不变量。
+func (d *ProviderDAO) ListForUpdate(ctx context.Context, typ models.ModelType) ([]models.Provider, error) {
+	var list []models.Provider
+	q := d.db.WithContext(ctx).Clauses(clause.Locking{Strength: "UPDATE"})
+	if typ != "" {
+		q = q.Where("type = ?", typ)
+	}
+	err := q.Order("created_at DESC").Find(&list).Error
+	return list, err
+}
 
 func (d *ProviderDAO) Create(ctx context.Context, p *models.Provider) error {
 	if p.ID == "" {

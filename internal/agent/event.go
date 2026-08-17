@@ -23,6 +23,34 @@ import (
 // prompt 会告知 LLM："判定不回复时输出 __NO_REPLY__，系统检测到后自动丢弃"。
 const SilenceToken = "__NO_REPLY__"
 
+// cqImageCodeRe 匹配 CQ 图片码段（如 [CQ:image,file=...,url=...]）。
+var cqImageCodeRe = regexp.MustCompile(`\[CQ:image[^\]]*\]`)
+
+// qqCDNURLRe 匹配 QQ 图床 URL 文本（scheme 后必须是 multimedia.nt.qq.com.cn 主机）。
+// 主机名后只允许：合法端口、路径/查询/片段、URL 分隔符（空白/逗号/]）或字符串结尾；
+// 拒绝 multimedia.nt.qq.com.cn.evil 与 ...@evil.com 这类实际主机不同的 URL。
+// Go regexp 为 RE2（无 lookahead），用分支表达边界。
+var qqCDNURLRe = regexp.MustCompile(`https?://multimedia\.nt\.qq\.com\.cn(:\d+)?(?:[/?#][^\s,\]]*|[\s,\]]|$)`)
+
+// decodeQQImageEntities 仅解码图片 URL 相关文本中的 HTML 实体（&amp; → &）：
+//   - CQ 图片码内部的实体（QQ 图床 URL 的查询参数以 &amp; 分隔，原样发给 LLM 会被复刻成无法下载的 URL）
+//   - 纯文本 QQ 图床 URL 自身的实体（按 URL 匹配范围，不波及相邻文本）
+//
+// 普通用户文本（如字面 "&amp;"）保持不变，避免 LLM 收到的内容与原始消息不一致。
+func decodeQQImageEntities(s string) string {
+	if strings.Contains(s, "[CQ:image") {
+		s = cqImageCodeRe.ReplaceAllStringFunc(s, func(m string) string {
+			return strings.ReplaceAll(m, "&amp;", "&")
+		})
+	}
+	if strings.Contains(s, "multimedia.nt.qq.com.cn") {
+		s = qqCDNURLRe.ReplaceAllStringFunc(s, func(m string) string {
+			return strings.ReplaceAll(m, "&amp;", "&")
+		})
+	}
+	return s
+}
+
 // ReplySettings 包含从回复策略配置中提取的 per-message 设置。
 // 通过函数参数传递（而非 HagoCenter 共享字段），避免数据竞争。
 type ReplySettings struct {
@@ -140,8 +168,8 @@ func (h *HagoCenter) checkReplyStrategyFast(ctx context.Context, ev adapter.Even
 		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
 		return false
 	case models.StrategyAtOnly:
-		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage) {
-			log.Debug("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID)
+		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage, ev.SelfID) {
+			log.Info("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID, "self_id", ev.SelfID)
 			return false
 		}
 		return true
@@ -599,7 +627,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 			continue
 		}
 		// L1 规则快路径：@ 自己 / 插件命令 / 提及名字 → 必回，无需 LLM
-		if h.isAtSelf(msg.RawMessage) || h.isPluginCommand(msg.RawMessage) || isDefinitelyRelevant(msg, rs) {
+		if h.isAtSelf(msg.RawMessage, ev.SelfID) || h.isPluginCommand(msg.RawMessage) || isDefinitelyRelevant(msg, rs) {
 			mustKeep = append(mustKeep, ev)
 			continue
 		}
@@ -843,6 +871,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// 主消息（本组最后一条）是当前需要回复的消息。避免模型把多人的问题
 	// 拼在一起一次回复（回复串味），也避免并行组重复消费同一消息。
 	for i, mu := range userMsgs {
+		// QQ 图片 URL 在 CQ 码里带 HTML 实体（&amp;），LLM 原样复刻易得到无法下载的 URL；
+		// 仅解码 CQ 图片码/QQ 图床 URL 中的实体，普通用户文本（如字面 &amp;）原样保留
+		mu = decodeQQImageEntities(mu)
 		content := mu
 		if i != mainIdx {
 			content = "【背景消息·来自其他用户，无需逐一回复】" + mu

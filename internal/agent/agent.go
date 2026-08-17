@@ -217,7 +217,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	tool.RegisterBuiltinTools(h.Tools, cfg.Adapter,
 		func() *sandboxcaller.Client { return h.SandboxClient },
 		func() *t2icaller.Client { return h.T2IClient },
-		h.Providers.SelectModel(provider.ModelTypeImage),
+		func() provider.Provider { return h.Providers.SelectModel(provider.ModelTypeImage) },
 		func(ctx context.Context) string {
 			if sc := GetMsgSessionCtx(ctx); sc != nil {
 				return sc.SessionCtxStr

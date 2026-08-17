@@ -29,6 +29,8 @@ func isDupKeyErr(err error) bool {
 
 // Bundle 汇聚所有 DAO，方便注入。
 type Bundle struct {
+	// DB 为底层 *gorm.DB 句柄，供 Service 层开启事务（配合各 DAO 的 WithTx）。
+	DB              *gorm.DB
 	User            *UserDAO
 	Provider        *ProviderDAO
 	MCPServer       *MCPServerDAO
@@ -61,6 +63,7 @@ type Bundle struct {
 
 func NewBundle(db *gorm.DB) *Bundle {
 	return &Bundle{
+		DB:              db,
 		User:            NewUserDAO(db),
 		Provider:        NewProviderDAO(db),
 		MCPServer:       NewMCPServerDAO(db),

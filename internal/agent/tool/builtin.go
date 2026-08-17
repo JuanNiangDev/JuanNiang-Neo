@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -1076,8 +1080,11 @@ func text_to_image(getT2I func() *t2icaller.Client) *onebotTool {
 
 // --- Vision / 识图 ---
 
-// vision 使用识图模型识别图片内容（imageModel 已配置版本）。
-func vision() *onebotTool {
+// vision 使用识图模型识别图片内容。
+// imageModel 以 getter 传入：每次调用时实时 SelectModel(ModelTypeImage)，
+// 避免 Init 早期（loadProviders 之前）的快照为 nil 而注册成占位工具，
+// 也保证热更新 provider 后立即生效。
+func vision(getImageModel func() provider.Provider) *onebotTool {
 	input := NewToolInput{
 		id:   "",
 		name: "vision",
@@ -1094,32 +1101,185 @@ func vision() *onebotTool {
 		longRunning: false,
 	}
 	executer := func(ctx context.Context, args json.RawMessage) (string, error) {
-		return "识图功能需要图片字节数据，请通过其他方式获取图片后调用。", nil
+		var p struct {
+			ImageURL string `json:"image_url"`
+			Prompt   string `json:"prompt"`
+		}
+		if err := json.Unmarshal(args, &p); err != nil {
+			return "", fmt.Errorf("vision 参数解析失败: %w", err)
+		}
+		if p.ImageURL == "" {
+			return "", fmt.Errorf("vision 缺少 image_url")
+		}
+		imageModel := getImageModel()
+		if imageModel == nil {
+			return "未配置识图模型(Image Model)，无法识别图片。请联系管理员配置。", nil
+		}
+		// 下载图片字节并交给识图模型
+		imgBytes, err := DownloadImageBytes(ctx, p.ImageURL)
+		if err != nil {
+			return "", fmt.Errorf("vision 图片下载失败: %w", err)
+		}
+		if p.Prompt == "" {
+			p.Prompt = "请描述这张图片的内容"
+		}
+		return imageModel.Vision(ctx, imgBytes, p.Prompt)
 	}
 	return onebotToolBuild(executer, input)
 }
 
-// vision_unavailable 未配置识图模型时的占位工具。
-func vision_unavailable() *onebotTool {
-	input := NewToolInput{
-		id:   "",
-		name: "vision",
-		desc: "识别图片内容",
-		params: openai.FunctionParameters{
-			"type": "object",
-			"properties": map[string]any{
-				"image_url": map[string]any{"type": "string", "description": "图片 URL"},
-				"prompt":    map[string]any{"type": "string", "description": "关于图片的问题"},
-			},
-			"required": []string{"image_url", "prompt"},
+// MaxImageBytes 图片下载的最大字节数，防止超大响应耗尽内存（OOM）。
+const MaxImageBytes = 25 << 20 // 25MB
+
+// ---------- SSRF 防护 ----------
+
+// cgnatBlock 是 CGNAT 共享地址段（100.64.0.0/10，RFC 6598），不对外路由。
+var cgnatBlock = mustCIDR("100.64.0.0/10")
+
+func mustCIDR(s string) *net.IPNet {
+	_, ipNet, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return ipNet
+}
+
+// blockedIP 判断 IP 是否为 SSRF 防护应拒绝的地址：
+// loopback、私网（RFC1918 / fc00::/7）、链路本地、组播、未指定及 CGNAT 段。
+func blockedIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	return cgnatBlock.Contains(ip)
+}
+
+// dialRestricted 是受限 DialContext：请求前解析目标 host 的实际 IP，
+// 拒绝非公网地址后，**直接连接该 IP**（而非让 net.Dialer 再次解析域名）。
+// 这保证"校验的 IP"与"实际连接的 IP"是同一个，防止 DNS rebinding 绕过；
+// http.Transport 的 TLS SNI / Host 头仍取自 URL 主机名，不受影响。
+// 对每次连接（含重定向目标）都会经过这里，公开 URL 重定向到内部地址同样被拦截。
+func dialRestricted(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("无法解析主机: %s", host)
+	}
+	// 任一解析结果命中拒绝段即整体拒绝
+	for _, ip := range ips {
+		if blockedIP(ip.IP) {
+			return nil, fmt.Errorf("拒绝访问非公网地址: %s (%s)", host, ip.IP)
+		}
+	}
+	// 依次尝试连接每个已校验通过的 IP（解析结果与连接目标一致）
+	var lastErr error
+	for _, ip := range ips {
+		dialAddr := net.JoinHostPort(ip.IP.String(), port)
+		conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, dialAddr)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
+// newImageDownloadClient 构造受限 HTTP 客户端：禁用代理（防止代理绕过 SSRF 检查），
+// 受限 DialContext 校验每个连接目标。
+func newImageDownloadClient() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			Proxy:       nil,
+			DialContext: dialRestricted,
 		},
-		builtin:     true,
-		longRunning: false,
 	}
-	executer := func(ctx context.Context, args json.RawMessage) (string, error) {
-		return "未配置识图模型(Image Model)，无法识别图片。请联系管理员配置。", nil
+}
+
+// ImageURLCandidates 生成图片 URL 的候选解码变体。
+// QQ 图床 URL（multimedia.nt.qq.com.cn）在 CQ 码/JSON 里带 HTML 实体 &amp;，
+// 需先解码为 & 否则查询参数错乱、下载失败。
+// LLM 复刻 URL 时可能再次引入变形（百分号编码 %26、残留实体等），
+// 生成原始、HTML 实体解码、百分号解码的组合变体供依次尝试。
+func ImageURLCandidates(rawURL string) []string {
+	var candidates []string
+	seen := make(map[string]struct{}, 4)
+	add := func(u string) {
+		if _, dup := seen[u]; dup {
+			return
+		}
+		seen[u] = struct{}{}
+		candidates = append(candidates, u)
 	}
-	return onebotToolBuild(executer, input)
+	add(rawURL)
+	add(strings.ReplaceAll(rawURL, "&amp;", "&"))
+	if u, err := url.QueryUnescape(rawURL); err == nil && u != rawURL {
+		add(u)
+		add(strings.ReplaceAll(u, "&amp;", "&"))
+	}
+	return candidates
+}
+
+// DownloadImageBytes 下载图片字节（vision 工具与群聊相关性识图共用）。
+// 依次尝试 URL 解码变体，任一成功即返回；带响应体大小上限。
+func DownloadImageBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	candidates := ImageURLCandidates(rawURL)
+	var lastErr error
+	for i, u := range candidates {
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			lastErr = fmt.Errorf("仅支持 http(s) 图片 URL: %q", u)
+			continue
+		}
+		if i > 0 {
+			log.Info("图片下载重试", "attempt", i+1, "url_len", len(u))
+		}
+		b, err := httpDownload(ctx, u)
+		if err == nil {
+			return b, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("图片 URL 无法解析: %q", rawURL)
+	}
+	return nil, lastErr
+}
+
+// httpDownload 执行单次 HTTP GET 下载。
+// 使用受限客户端（SSRF 防护 + 禁用代理）；
+// Content-Length 预检 + LimitReader 双重限制响应体大小，防止 OOM。
+func httpDownload(ctx context.Context, u string) ([]byte, error) {
+	client := newImageDownloadClient()
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; JuanNiang-Neo)")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("图片下载 HTTP %d", resp.StatusCode)
+	}
+	if resp.ContentLength > MaxImageBytes {
+		return nil, fmt.Errorf("图片过大: %d 字节（上限 %d）", resp.ContentLength, MaxImageBytes)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxImageBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) > MaxImageBytes {
+		return nil, fmt.Errorf("图片过大: 超过 %d 字节上限", MaxImageBytes)
+	}
+	return b, nil
 }
 
 // --- 会话信息 ---
@@ -1262,7 +1422,7 @@ func RegisterBuiltinTools(
 	adapter AdapterProvider,
 	getSandbox func() *sandboxcaller.Client,
 	getT2I func() *t2icaller.Client,
-	imageModel provider.Provider,
+	getImageModel func() provider.Provider,
 	getSessionCtx func(ctx context.Context) string,
 	getCurrentMsg func(ctx context.Context) *adapter.MessageEvent,
 	getRecentMsgs func(ctx context.Context, msgType string, targetID int64, limit int) ([]string, error),
@@ -1324,11 +1484,7 @@ func RegisterBuiltinTools(
 
 	// --- Vision / 识图 ---
 
-	if imageModel != nil {
-		tools = append(tools, vision())
-	} else {
-		tools = append(tools, vision_unavailable())
-	}
+	tools = append(tools, vision(getImageModel))
 
 	// --- 会话信息 ---
 
