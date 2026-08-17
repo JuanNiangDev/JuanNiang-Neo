@@ -302,6 +302,14 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
+	} else {
+		// 停用/变更 text provider 前校验：至少保留一个启用的 Text 模型
+		targetType := provider.ModelType(data.Type)
+		targetActive := data.IsActive
+		if err := s.checkTextModelRemains(ctx, id, &targetType, &targetActive); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.TextProviderRequired, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
 	}
 
 	providerConfig := models.Provider{
@@ -343,8 +351,40 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
+// checkTextModelRemains 校验停用/删除/更新操作后仍至少保留一个启用的 Text 模型。
+// Eino Agent 构建依赖 Text 模型：若全部停用，rebuild 报"无可用 Text 模型"、
+// 对话功能整体失能（历史故障）。targetType/targetActive 为操作后目标 provider
+// 的预期状态；nil 表示目标将被删除或不再处于启用态。
+func (s *Service) checkTextModelRemains(ctx context.Context, id string, targetType *provider.ModelType, targetActive *bool) error {
+	list, err := s.DAO.Provider.List(ctx, "")
+	if err != nil {
+		return err
+	}
+	activeText := 0
+	for _, p := range list {
+		if p.ID == id {
+			continue
+		}
+		if p.IsActive && provider.ModelType(p.Type) == provider.ModelTypeText {
+			activeText++
+		}
+	}
+	if targetType != nil && *targetType == provider.ModelTypeText && targetActive != nil && *targetActive {
+		activeText++
+	}
+	if activeText == 0 {
+		return fmt.Errorf("至少保留一个启用的 Text 模型")
+	}
+	return nil
+}
+
 func (s *Service) DeleteProvider(ctx context.Context, c *app.RequestContext) {
 	id := c.Param("id")
+
+	if err := s.checkTextModelRemains(ctx, id, nil, nil); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.TextProviderRequired, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
 
 	if err := s.DAO.Provider.Delete(ctx, id); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -396,6 +436,10 @@ func (s *Service) ToggleProvider(ctx context.Context, c *app.RequestContext) {
 			s.ProviderGroup.AddProvider(provider.NewProvider(provider.ProviderConfigFromModel(raw)))
 		}
 	} else {
+		if err := s.checkTextModelRemains(ctx, id, nil, nil); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.TextProviderRequired, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
 		if s.ProviderGroup != nil {
 			s.ProviderGroup.DelProvider(id)
 		}
