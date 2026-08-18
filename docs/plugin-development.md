@@ -213,22 +213,26 @@ log.error("操作失败: " .. err)
 | `file.exists(path) → bool` | bool | 判断文件是否存在 |
 | `file.remove(path) → bool [, err]` | bool | 删除文件 |
 
+> **路径基准**：`jn.file` 的所有 `path` 均**相对于插件自身目录** `data/pluggins/<插件名>/`，
+> 而非仓库根目录。写 `notes.txt` 实际写入 `data/pluggins/<插件名>/notes.txt`。
+> 禁止绝对路径与 `..` 越界，插件之间彼此隔离。
+
 ```lua
 -- 逐行读取（read_line 越界返回 nil，可用作循环终止条件）
 local i = 1
 while true do
-    local line = jn.file.read_line("data/notes.txt", i)
+    local line = jn.file.read_line("notes.txt", i)
     if line == nil then break end
     log.info(line)
     i = i + 1
 end
 
 -- 整体读写
-jn.file.write("data/state.txt", "hello")
-local content = jn.file.read("data/state.txt")
+jn.file.write("state.txt", "hello")
+local content = jn.file.read("state.txt")
 
 -- 追加一行
-jn.file.append_line("data/log.txt", "事件发生于 " .. os.date())
+jn.file.append_line("log.txt", "事件发生于 " .. os.date())
 ```
 
 ## 全局表: `onebot11`
