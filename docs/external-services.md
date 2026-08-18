@@ -15,6 +15,31 @@
 
 所有持久化在 Postgres + Redis（短期记忆窗口、PubSub、任意缓存）。`.env` 中的 `T2I_BASE_URL`/`SANDBOX_*` 仅是文档性 env，**运行时实际从 DB 读取**。
 
+### env 变量与 `devconfig.go` 字段的对应
+
+上表「配置来源」写的 `DB_*` / `REDIS_*` 是 **env 变量名**，与 `cmd/server/devconfig.go` 里的嵌套 struct 字段并不同名，两者由 `cmd/server/main.go` 显式配对。
+
+优先级由 `devEnv(envKey, yamlVal, fallback)` 决定（`cmd/server/devconfig.go:59`）：**env 变量 > `dev.yaml` > 内置默认值**，空字符串视为未设置、继续向后取。
+
+| env 变量 | `dev.yaml` 路径 | `DevConfig` 字段 | 默认值 |
+|----------|-----------------|------------------|--------|
+| `DB_HOST` | `database.host` | `Database.Host` | `localhost` |
+| `DB_PORT` | `database.port` | `Database.Port` | `5432` |
+| `DB_USER` | `database.user` | `Database.User` | `postgres` |
+| `DB_PASSWORD` | `database.password` | `Database.Password` | `postgres` |
+| `DB_NAME` | `database.name` | `Database.Name` | `juan` |
+| `REDIS_ADDR` | `redis.addr` | `Redis.Addr` | `localhost:6379` |
+| `REDIS_PASSWORD` | `redis.password` | `Redis.Password` | `root` |
+| `REDIS_DB` | `redis.db` | `Redis.DB` | `0` |
+| `JWT_SECRET` | `jwt.secret` | `JWT.Secret` | 无（留空则不启用） |
+| `IMG_DIR` | `images.dir` | `Images.Dir` | `data/imgs` |
+| `WEB_DIR` | `web.dir` | `Web.Dir` | `web/dist` |
+| `API_ADDR` | `api.addr` | `API.Addr` | `:8090` |
+
+注意 Redis 用的是 `REDIS_ADDR`（`host:port` 合并写法），**没有** `REDIS_HOST` / `REDIS_PORT`；Postgres 则是 host 与 port 分开。
+
+`REDIS_PREFIX` 不走这套映射，由 `internal/core/core.go` 直接 `os.Getenv` 读取，`dev.yaml` 中无对应项。
+
 ## LLM Provider
 
 ### 设计
