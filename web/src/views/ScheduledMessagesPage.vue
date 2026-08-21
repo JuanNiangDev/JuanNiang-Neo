@@ -9,7 +9,7 @@
       <v-btn color="primary" prepend-icon="mdi-plus" @click="openCreate">新建定时任务</v-btn>
     </div>
 
-    <v-data-table :headers="headers" :items="tasks" :loading="loading" :page="page" :items-per-page="pageSize" :items-length="total" @update:options="onPageChange">
+    <v-data-table-server :headers="headers" :items="tasks" :loading="loading" :page="page" :items-per-page="pageSize" :items-length="total" :items-per-page-options="[10, 20, 50]" @update:options="onPageChange">
       <template #item.name="{ item }">
         <div class="font-weight-medium">{{ item.name }}</div>
         <div class="text-caption text-medium-emphasis">{{ (item.blocks?.length || 0) }} 个编排块</div>
@@ -34,7 +34,7 @@
         <v-btn icon="mdi-pencil" size="small" variant="text" color="primary" title="编辑" @click="openEdit(item)" />
         <v-btn icon="mdi-delete" size="small" variant="text" color="error" title="删除" @click="confirmDelete(item)" />
       </template>
-    </v-data-table>
+    </v-data-table-server>
 
     <!-- 新建/编辑弹窗：积木式编排 -->
     <v-dialog v-model="dialog" max-width="900" scrollable>
@@ -299,19 +299,20 @@ const imageSourceOptions = [
   { title: '图床图片', value: 'imgstore' },
 ]
 
+// 后端列表仅支持分页（固定排序），所有列禁用排序。
 const headers = [
-  { title: '任务', key: 'name' },
-  { title: '触发器 cron', key: 'cron_expr' },
-  { title: '目标', key: 'target' },
-  { title: '启用', key: 'enabled', align: 'center' as const },
-  { title: '上次执行', key: 'last_run_at' },
+  { title: '任务', key: 'name', sortable: false },
+  { title: '触发器 cron', key: 'cron_expr', sortable: false },
+  { title: '目标', key: 'target', sortable: false },
+  { title: '启用', key: 'enabled', align: 'center' as const, sortable: false },
+  { title: '上次执行', key: 'last_run_at', sortable: false },
   { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
 ]
 
 const loading = ref(false)
 const tasks = ref<ScheduledMessageResp[]>([])
 const page = ref(1)
-const pageSize = 20
+const pageSize = ref(20)
 const total = ref(0)
 
 const dialog = ref(false)
@@ -376,10 +377,12 @@ function extractImgId(content: string): string {
   return m ? m[1] : content
 }
 
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+
 async function fetchTasks() {
   loading.value = true
   try {
-    const res = (await scheduledMessageApi.list({ page: page.value, page_size: pageSize })).data.data
+    const res = (await scheduledMessageApi.list({ page: page.value, page_size: pageSize.value })).data.data
     tasks.value = res.list || []
     total.value = res.total || 0
   } catch (e: any) {
@@ -391,6 +394,7 @@ async function fetchTasks() {
 
 function onPageChange(opts: any) {
   page.value = opts.page || 1
+  if (opts.itemsPerPage) pageSize.value = opts.itemsPerPage
   fetchTasks()
 }
 

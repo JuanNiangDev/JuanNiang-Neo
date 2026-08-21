@@ -286,9 +286,18 @@ func (p *openAIProvider) buildAnthropic(req ChatRequest, stream bool) ([]byte, e
 }
 
 // buildResponses OpenAI Responses 协议：input 数组（非 messages）。
+// system 消息不放入 input（responses 协议不允许 role=system），合并到 instructions 字段。
 func (p *openAIProvider) buildResponses(req ChatRequest, stream bool) ([]byte, error) {
+	var instructions string
 	input := make([]map[string]any, 0, len(req.Messages))
 	for _, m := range req.Messages {
+		if m.Role == "system" {
+			if instructions != "" {
+				instructions += "\n"
+			}
+			instructions += m.Content
+			continue
+		}
 		if m.ToolCallID != "" {
 			input = append(input, map[string]any{
 				"type":    "function_call_output",
@@ -315,6 +324,9 @@ func (p *openAIProvider) buildResponses(req ChatRequest, stream bool) ([]byte, e
 	}
 
 	body := map[string]any{"model": p.cfg.Model, "input": input}
+	if instructions != "" {
+		body["instructions"] = instructions
+	}
 	if mt := p.resolveMaxTokens(req, 0); mt > 0 {
 		body["max_output_tokens"] = mt
 	}
@@ -656,6 +668,9 @@ func (p *openAIProvider) doRequest(ctx context.Context, url string, body []byte)
 // setHeaders 按 AuthHeader / 协议默认设置认证头。
 func (p *openAIProvider) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
+	// 浏览器风格 UA：部分 provider（opencode 等走 Cloudflare）按 User-Agent
+	// 拦截 Go 默认客户端（Go-http-client/1.1 → 403 error code: 1010）。
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 	auth := p.cfg.AuthHeader
 	if auth == "" {
 		switch p.APIMode() {

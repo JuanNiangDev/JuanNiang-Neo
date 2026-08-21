@@ -821,6 +821,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 
 	// ---------- 构建 Eino 消息列表 ----------
+	// 开头多条连续 system 消息合并为一条：部分 provider（硅基流动 Qwen、商汤）要求
+	// system 消息唯一且位于最前，多条 system 会报 "System message must be at the beginning"。
 	einoMsgs := []*einoschema.Message{
 		{Role: einoschema.System, Content: systemCtx},
 	}
@@ -830,6 +832,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	for _, spc := range skillPromptContents {
 		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.System, Content: spc})
 	}
+	// 合并开头连续 system（保留一条，内容换行拼接）
+	einoMsgs = mergeLeadingSystemMsgs(einoMsgs)
 	if h.Memory != nil {
 		stMsgs, err := h.Memory.GetShortTermMessages(ctx, chatArea.ID)
 		if err == nil {
@@ -1527,4 +1531,28 @@ func (h *HagoCenter) buildSessionContext(ctx context.Context, msg *adapter.Messa
 	}
 
 	return "[当前聊天环境]\n" + strings.Join(parts, "\n")
+}
+
+// mergeLeadingSystemMsgs 将消息列表开头连续的 system 消息合并为一条（换行拼接）。
+// 部分 provider（硅基流动 Qwen、商汤等）要求 system 消息唯一且位于最前，
+// 多条 system 会报 "System message must be at the beginning"。
+func mergeLeadingSystemMsgs(msgs []*einoschema.Message) []*einoschema.Message {
+	merged := 0
+	for i, m := range msgs {
+		if m.Role != einoschema.System {
+			break
+		}
+		merged = i + 1
+	}
+	if merged <= 1 {
+		return msgs
+	}
+	parts := make([]string, 0, merged)
+	for i := 0; i < merged; i++ {
+		parts = append(parts, msgs[i].Content)
+	}
+	out := make([]*einoschema.Message, 0, len(msgs)-merged+1)
+	out = append(out, &einoschema.Message{Role: einoschema.System, Content: strings.Join(parts, "\n\n")})
+	out = append(out, msgs[merged:]...)
+	return out
 }

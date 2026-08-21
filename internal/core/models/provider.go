@@ -46,7 +46,7 @@ type Provider struct {
 	AuthHeader string `gorm:"default:''"`
 	// URLMode URL 拼接：""|auto|exact
 	URLMode   string `gorm:"default:''"`
-	IsActive  bool   `gorm:"default:true;index"`
+	IsActive  bool   `gorm:"default:false;index"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`

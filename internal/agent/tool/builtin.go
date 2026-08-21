@@ -392,6 +392,12 @@ func send_private_msg(adapter AdapterProvider, getCurrentMsg func(ctx context.Co
 			return "", fmt.Errorf("消息内容无效: %w", err)
 		}
 
+		// 静默内容拦截：LLM 判定"不回复"时可能把 __NO_REPLY__ 当作消息发出
+		// （string 或消息段数组中的 text 段），这里直接吞掉，避免占位标记泄漏到聊天里。
+		if isSilenceToolContent(messagePlainText(msg)) {
+			return "已判定为静默（不回复），未发送", nil
+		}
+
 		// LLM 常省略 user_id（意图为当前会话）：从当前消息上下文兜底
 		userID := int64(p.UserID)
 		if userID == 0 {
@@ -454,6 +460,12 @@ func send_group_msg(adapter AdapterProvider, getCurrentMsg func(ctx context.Cont
 		msg, err := BuildMessageLoose(p.Message)
 		if err != nil {
 			return "", fmt.Errorf("消息内容无效: %w", err)
+		}
+
+		// 静默内容拦截：LLM 判定"不回复"时可能把 __NO_REPLY__ 当作消息发出
+		// （string 或消息段数组中的 text 段），这里直接吞掉，避免占位标记泄漏到聊天里。
+		if isSilenceToolContent(messagePlainText(msg)) {
+			return "已判定为静默（不回复），未发送", nil
 		}
 
 		// LLM 常省略 group_id（意图为当前会话）：从当前消息上下文兜底
@@ -1012,11 +1024,12 @@ func code_exec(getSandbox func() *sandboxcaller.Client) *onebotTool {
 
 // text_to_image 根据 HTML/模板生成图片，返回图片 URL。图片不会自动发送，请你在要发送的消息中用 [CQ:image,file=URL] 拼接图片，可与文字组成一条富文本消息。
 // 若对输出图片尺寸有要求，请通过 width/height 参数指定（像素），会决定生成图片的实际宽高。
+// HTML 设计风格遵循系统提示词中「渲染风格」注入的样式（每次随机，见风格库文件），并遵守反 AI 味铁律（系统字体、无动效）。
 func text_to_image(getT2I func() *t2icaller.Client) *onebotTool {
 	input := NewToolInput{
 		id:   "",
 		name: "text_to_image",
-		desc: "根据 HTML/模板生成图片，返回图片 URL。需要指定输出图片尺寸时传入 width/height（像素）。图片不会自动发送，请你在要发送的消息中用 [CQ:image,file=URL] 拼接图片，可与文字组成一条富文本消息。",
+		desc: "根据 HTML/模板生成图片，返回图片 URL。需要指定输出图片尺寸时传入 width/height（像素）。图片不会自动发送，请你在要发送的消息中用 [CQ:image,file=URL] 拼接图片，可与文字组成一条富文本消息。HTML 设计遵循系统提示词中「渲染风格」注入的样式，并遵守反 AI 味铁律（系统字体、无动效）。",
 		params: openai.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
@@ -1088,7 +1101,7 @@ func vision(getImageModel func() provider.Provider) *onebotTool {
 	input := NewToolInput{
 		id:   "",
 		name: "vision",
-		desc: "使用识图模型识别图片内容",
+		desc: "识别一张已经存在的图片的内容（需要你手头有图片 URL）。注意：此工具不生成任何新图片；要生成海报/图片/卡片请用 text_to_image 工具（传 HTML 渲染）",
 		params: openai.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{

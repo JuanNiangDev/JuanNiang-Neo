@@ -4,6 +4,7 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
+	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/skill"
 	"JuanNiang-Neo/internal/api/dto"
@@ -258,15 +259,29 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 	}
 	dto.ApplyProviderFields(&providerConfig, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode)
 
-	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
-	if data.IsActive {
-		if err := s.DAO.Provider.DeactivateByType(ctx, data.Type, id); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
+	// 事务内行锁校验 + 写入：并发 AddProvider 请求无法同时通过"同类型已存在启用"
+	// 检查并各自创建 is_active=true 的同类型 Provider。
+	// 事务开头 ListForUpdate 锁定全部 Provider 行，与 Update/Delete/Toggle 加锁顺序一致，避免死锁。
+	err := s.providerTx(ctx, func(tx *gorm.DB) error {
+		if !data.IsActive {
+			return s.DAO.Provider.WithTx(tx).Create(ctx, &providerConfig)
 		}
-	}
-
-	if err := s.DAO.Provider.Create(ctx, &providerConfig); err != nil {
+		list, err := s.DAO.Provider.WithTx(tx).ListForUpdate(ctx, "")
+		if err != nil {
+			return err
+		}
+		// 防御：若同类型已存在启用 Provider，新添加的强制为未激活（不抢占已有开启的），
+		// 用户需在列表中手动切换。避免前端异常/误操作导致两个同类型同时激活。
+		for _, p := range list {
+			if p.IsActive && p.Type == data.Type {
+				data.IsActive = false
+				providerConfig.IsActive = false
+				break
+			}
+		}
+		return s.DAO.Provider.WithTx(tx).Create(ctx, &providerConfig)
+	})
+	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -358,7 +373,7 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 }
 
 // ErrTextModelRequired 是"操作后无启用 Text 模型"的业务哨兵错误。
-// 与 DAO 查询错误区分：仅该错误映射为 dto.TextProviderRequired（40047），
+// 与 DAO 查询错误区分：仅该错误映射为 dto.TextProviderRequired（40048），
 // 其余（如 DB 故障）映射为 ServerInternalErr，避免客户端误判。
 var ErrTextModelRequired = errors.New("至少保留一个启用的 Text 模型")
 
@@ -1228,57 +1243,21 @@ func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	destDir := filepath.Join("data/pluggins", pluginName)
-	os.RemoveAll(destDir)
-	os.MkdirAll(destDir, 0755)
-
-	for _, f := range reader.File {
-		// 防 zip-slip：校验每个条目解压后仍在 destDir 内（拒绝 "../"、绝对路径等逃逸条目）
-		target := filepath.Join(destDir, f.Name)
-		rel, err := filepath.Rel(destDir, target)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			log.Warn("插件包包含逃逸路径条目，拒绝安装", "plugin", pluginName, "entry", f.Name)
-			os.RemoveAll(destDir)
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginPackageUnsafe, dto.ErrorDetail{ErrorDetail: "非法路径条目: " + f.Name}))
-			return
-		}
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(target, 0755)
-			continue
-		}
-		os.MkdirAll(filepath.Dir(target), 0755)
-		dst, err := os.Create(target)
-		if err != nil {
-			log.Error("插件文件创建失败", "plugin", pluginName, "entry", f.Name, "err", err)
-			os.RemoveAll(destDir)
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WriteFileFail, nil))
-			return
-		}
-		rc, err := f.Open()
-		if err != nil {
-			dst.Close()
-			log.Error("插件文件读取失败", "plugin", pluginName, "entry", f.Name, "err", err)
-			os.RemoveAll(destDir)
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidZipFile, nil))
-			return
-		}
-		if _, err := io.Copy(dst, rc); err != nil {
-			rc.Close()
-			dst.Close()
-			log.Error("插件文件写入失败", "plugin", pluginName, "entry", f.Name, "err", err)
-			os.RemoveAll(destDir)
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WriteFileFail, nil))
-			return
-		}
-		rc.Close()
-		dst.Close()
+	basePath := "data/pluggins"
+	if s.PluginEngine != nil {
+		basePath = s.PluginEngine.BasePath()
 	}
 
-	if s.PluginEngine != nil {
-		if err := s.PluginEngine.Load(pluginName); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
+	// 统一安装入口：暂存解压 → 全量校验 → 原子提交 → 引擎加载（升级先卸载），
+	// 失败自动回滚旧版；pe 为 nil 时仅落盘不加载。
+	if err := pluggin.InstallStagedPlugin(s.PluginEngine, basePath, pluginName, &reader.Reader, ""); err != nil {
+		if errors.Is(err, pluggin.ErrUnsafeZipEntry) {
+			log.Warn("插件包包含非法条目，拒绝安装", "plugin", pluginName, "err", err)
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginPackageUnsafe, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.PluginUploadResp{Name: pluginName, Status: "loaded"}))
@@ -1984,16 +1963,28 @@ func (s *Service) UpdateT2IConfig(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// allowlist 校验：SelectedStyle 仅允许空串（随机）、"random" 或风格库中定义的风格名，
+	// 防止 API 调用者持久化列表外的风格名使配置脱离已定义契约。
+	if !prompt.IsValidT2IStyle(strings.TrimSpace(data.SelectedStyle)) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.T2IStyleInvalid, dto.ErrorDetail{ErrorDetail: "selected_style: " + data.SelectedStyle}))
+		return
+	}
+	data.SelectedStyle = strings.TrimSpace(data.SelectedStyle)
+
 	cfg := &models.T2IConfig{
-		ID:       1,
-		BaseURL:  data.BaseURL,
-		Timeout:  data.Timeout,
-		IsActive: data.IsActive,
+		ID:            1,
+		BaseURL:       data.BaseURL,
+		Timeout:       data.Timeout,
+		IsActive:      data.IsActive,
+		SelectedStyle: data.SelectedStyle,
 	}
 	if err := s.DAO.T2I.UpdateConfig(ctx, cfg); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// 同步渲染风格选择到提示词注入（空 = 随机）
+	prompt.SetSelectedT2IStyle(data.SelectedStyle)
 
 	// 运行时同步：创建新客户端并同步到 HagoCenter
 	if data.IsActive {
@@ -2027,6 +2018,12 @@ func (s *Service) CheckT2IHealth(ctx context.Context, c *app.RequestContext) {
 	}
 	err := s.T2IClient.HealthCheck()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": err == nil}))
+}
+
+// GetT2IStyles 返回风格库列表（供管理面板下拉选择），从风格库文件实时读取。
+func (s *Service) GetT2IStyles(ctx context.Context, c *app.RequestContext) {
+	styles := prompt.LoadT2IStyleList()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, styles))
 }
 
 // ---------- Sandbox ----------

@@ -230,15 +230,20 @@ function hexToRgb(hex: string): string {
   const n = parseInt(full, 16)
   return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`
 }
+// surfaceRgb 返回主题 on-surface 色的 RGB 分量；缺失时兜底浅色主题的
+// on-surface（#1b2233），避免 undefined 进入 hexToRgb 触发 TypeError。
+function surfaceRgb(): string {
+  const onSurface = theme.global.current.value.colors['on-surface'] || '#1b2233'
+  return hexToRgb(onSurface)
+}
 function inkColor(alpha: number): string {
-  const onSurface = theme.global.current.value.colors['on-surface']
-  return `rgba(${hexToRgb(onSurface)}, ${alpha})`
+  return `rgba(${surfaceRgb()}, ${alpha})`
 }
 function tokenColor(name: string): string {
   return theme.global.current.value.colors[name] ?? '#6366f1'
 }
 // 进度条轨道色：随主题在浅底/深底上都可辨
-const trackColor = computed(() => `rgba(${hexToRgb(theme.global.current.value.colors['on-surface'])}, 0.12)`)
+const trackColor = computed(() => `rgba(${surfaceRgb()}, 0.12)`)
 
 const lastTokenData = ref<DailyTokenUsageResp[]>([])
 

@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -488,12 +489,16 @@ func (pe *PluginEngine) Load(name string) (retErr error) {
 	return nil
 }
 
+// ErrPluginNotLoaded 标识卸载/重载目标插件未加载（非真实失败）。
+// 调用方可借 errors.Is 区分"从未加载"与卸载失败，避免依赖错误文案。
+var ErrPluginNotLoaded = errors.New("plugin not loaded")
+
 func (pe *PluginEngine) Unload(name string) error {
 	pe.mu.Lock()
 	p, ok := pe.plugins[name]
 	if !ok {
 		pe.mu.Unlock()
-		return fmt.Errorf("plugin %q not loaded", name)
+		return fmt.Errorf("%w: plugin %q", ErrPluginNotLoaded, name)
 	}
 	// 系统插件禁止卸载
 	if p.Manifest.System {

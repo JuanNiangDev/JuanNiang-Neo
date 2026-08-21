@@ -297,3 +297,42 @@ func mustNewRequest(t *testing.T, url string) *http.Request {
 	}
 	return r
 }
+
+// ---------- Responses 协议 system→instructions 适配（§7.3） ----------
+
+func TestBuildResponsesSystemToInstructions(t *testing.T) {
+	p := NewProvider(ProviderConfig{
+		APIMode: APIModeOpenAIResponses,
+		Model:   "deepseek-v4-pro",
+	}).(*openAIProvider)
+	req := ChatRequest{
+		Messages: []ChatMessage{
+			{Role: "system", Content: "系统提示词A"},
+			{Role: "system", Content: "系统提示词B"},
+			{Role: "user", Content: "你好"},
+		},
+	}
+	body, err := p.buildRequest(req, false)
+	if err != nil {
+		t.Fatalf("buildRequest err: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("unmarshal err: %v", err)
+	}
+	// system 消息合并进 instructions，不进 input
+	if got := m["instructions"]; got != "系统提示词A\n系统提示词B" {
+		t.Errorf("instructions = %q, want 合并后的系统提示词", got)
+	}
+	input, ok := m["input"].([]any)
+	if !ok {
+		t.Fatalf("input = %v (%T), want []any", m["input"], m["input"])
+	}
+	if len(input) != 1 {
+		t.Fatalf("input 长度 = %d, want 1（仅 user）", len(input))
+	}
+	first := input[0].(map[string]any)
+	if first["role"] != "user" {
+		t.Errorf("input[0].role = %v, want user（system 不得出现在 input）", first["role"])
+	}
+}

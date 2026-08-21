@@ -209,3 +209,101 @@ func TestBundle(t *testing.T) {
 		t.Error("bundle fields should not be nil")
 	}
 }
+
+func TestProviderCreateKeepsInactive(t *testing.T) {
+	db := testDB(t)
+	dao := NewProviderDAO(db)
+
+	// IsActive=false 时，Create 必须按结构体值写入 false，
+	// 不被 gorm default:true 的默认值覆盖（历史 bug：响应 false 但 DB true）。
+	p := &models.Provider{
+		Name:     "test-inactive",
+		Type:     "text_model",
+		Endpoint: "https://example.com/v1",
+		Token:    "x",
+		Model:    "m",
+		IsActive: false,
+	}
+	if err := dao.Create(context.Background(), p); err != nil {
+		t.Fatalf("create err: %v", err)
+	}
+	got, err := dao.GetByID(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("get err: %v", err)
+	}
+	if got.IsActive {
+		t.Error("IsActive = true, want false（默认关闭语义被 gorm default:true 破坏）")
+	}
+
+	// 显式 true 仍可写入
+	p2 := &models.Provider{Name: "test-active", Type: "text_model", Endpoint: "https://example.com/v1", Token: "x", Model: "m", IsActive: true}
+	if err := dao.Create(context.Background(), p2); err != nil {
+		t.Fatalf("create p2 err: %v", err)
+	}
+	got2, err := dao.GetByID(context.Background(), p2.ID)
+	if err != nil {
+		t.Fatalf("get p2 err: %v", err)
+	}
+	if !got2.IsActive {
+		t.Error("IsActive = false, want true")
+	}
+}
+
+// TestProviderCreateKeepsInactiveOnLegacyDefaultTrue 旧库场景：providers 表由
+// 旧版模型迁移而来，is_active 列带 DEFAULT 1。若 Create 省略零值字段，
+// 数据库默认值会把 IsActive=false 写成 true。Select("*") 强制写入所有字段，
+// 零值 false 必须显式落库，不受列默认值影响。
+func TestProviderCreateKeepsInactiveOnLegacyDefaultTrue(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db err: %v", err)
+	}
+	if err := db.Exec(`CREATE TABLE providers (
+		id TEXT PRIMARY KEY,
+		created_at DATETIME,
+		updated_at DATETIME,
+		deleted_at DATETIME,
+		name TEXT NOT NULL,
+		type TEXT NOT NULL,
+		endpoint TEXT,
+		token TEXT,
+		model TEXT,
+		temperature REAL,
+		enable_thinking BOOLEAN,
+		api_mode TEXT,
+		thinking_effort TEXT,
+		thinking_budget INTEGER,
+		max_tokens INTEGER,
+		top_p REAL,
+		top_k INTEGER,
+		frequency_penalty REAL,
+		presence_penalty REAL,
+		repetition_penalty REAL,
+		provider_key TEXT,
+		auth_header TEXT,
+		url_mode TEXT,
+		is_active BOOLEAN NOT NULL DEFAULT 1
+	)`).Error; err != nil {
+		t.Fatalf("create legacy table err: %v", err)
+	}
+	dao := NewProviderDAO(db)
+
+	p := &models.Provider{
+		Name:     "legacy-inactive",
+		Type:     "text_model",
+		Endpoint: "https://example.com/v1",
+		Token:    "x",
+		Model:    "m",
+		IsActive: false,
+	}
+	if err := dao.Create(context.Background(), p); err != nil {
+		t.Fatalf("create err: %v", err)
+	}
+	got, err := dao.GetByID(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("get err: %v", err)
+	}
+	if got.IsActive {
+		t.Error("旧库 DEFAULT 1 场景下 IsActive = true, want false（Create 省略零值被列默认值覆盖）")
+	}
+}

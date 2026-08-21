@@ -24,6 +24,7 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
 	"JuanNiang-Neo/internal/agent/fishcal"
+	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/scheduledmsg"
 	"JuanNiang-Neo/internal/api/engine"
 	"JuanNiang-Neo/internal/api/middleware"
@@ -423,6 +424,8 @@ func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, 
 			return
 		}
 	}
+	// 同步渲染风格选择到提示词注入（空 = 随机），独立于 T2I 服务启用状态
+	prompt.SetSelectedT2IStyle(cfg.SelectedStyle)
 	if !cfg.IsActive {
 		log.Info("T2I 未启用")
 		return

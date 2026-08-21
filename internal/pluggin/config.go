@@ -39,6 +39,11 @@ func (pe *PluginEngine) configDir(name string) string {
 	return filepath.Join(pe.basePath, name)
 }
 
+// BasePath 返回插件根目录（安装/配置路径）。
+func (pe *PluginEngine) BasePath() string {
+	return pe.basePath
+}
+
 func (pe *PluginEngine) readConfig(name string) (*PluginConfig, error) {
 	path := pe.configPath(pe.configDir(name))
 	data, err := os.ReadFile(path)
