@@ -392,9 +392,9 @@ func send_private_msg(adapter AdapterProvider, getCurrentMsg func(ctx context.Co
 			return "", fmt.Errorf("消息内容无效: %w", err)
 		}
 
-		// 静默内容拦截：LLM 判定"不回复"时可能把 __NO_REPLY__ 当作消息发出，
-		// 这里直接吞掉，避免占位标记泄漏到聊天里。
-		if s, ok := msg.(string); ok && isSilenceToolContent(s) {
+		// 静默内容拦截：LLM 判定"不回复"时可能把 __NO_REPLY__ 当作消息发出
+		// （string 或消息段数组中的 text 段），这里直接吞掉，避免占位标记泄漏到聊天里。
+		if isSilenceToolContent(messagePlainText(msg)) {
 			return "已判定为静默（不回复），未发送", nil
 		}
 
@@ -462,9 +462,9 @@ func send_group_msg(adapter AdapterProvider, getCurrentMsg func(ctx context.Cont
 			return "", fmt.Errorf("消息内容无效: %w", err)
 		}
 
-		// 静默内容拦截：LLM 判定"不回复"时可能把 __NO_REPLY__ 当作消息发出，
-		// 这里直接吞掉，避免占位标记泄漏到聊天里。
-		if s, ok := msg.(string); ok && isSilenceToolContent(s) {
+		// 静默内容拦截：LLM 判定"不回复"时可能把 __NO_REPLY__ 当作消息发出
+		// （string 或消息段数组中的 text 段），这里直接吞掉，避免占位标记泄漏到聊天里。
+		if isSilenceToolContent(messagePlainText(msg)) {
 			return "已判定为静默（不回复），未发送", nil
 		}
 

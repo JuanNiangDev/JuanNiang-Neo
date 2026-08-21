@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -127,13 +128,18 @@ func TestIsSilenceToolContent(t *testing.T) {
 }
 
 func TestDeferredFlushSkipsSilence(t *testing.T) {
+	fakeSent = map[string]bool{}
 	q := NewDeferredSendQueue()
 	q.Add(DeferredSend{MessageType: "group", TargetID: 123, Message: "__NO_REPLY__", Delivery: true})
 	q.Add(DeferredSend{MessageType: "group", TargetID: 123, Message: "正常消息", Delivery: true})
 
 	sent := q.Flush(context.Background(), &fakeAdapter{})
-	if len(sent) != 2 {
-		t.Fatalf("Flush 返回 %d 条（含被过滤的静默内容），want 2", len(sent))
+	// Flush 只返回实际投递的条目，静默内容不出现在返回值中
+	if len(sent) != 1 {
+		t.Fatalf("Flush 返回 %d 条（应只含实际投递条目），want 1", len(sent))
+	}
+	if sent[0].Text() != "正常消息" {
+		t.Errorf("返回条目应为正常消息，got %q", sent[0].Text())
 	}
 	// 验证正常消息仍被发送、静默消息被跳过（由 fakeAdapter 记录）
 	if !fakeSent["正常消息"] {
@@ -144,20 +150,95 @@ func TestDeferredFlushSkipsSilence(t *testing.T) {
 	}
 }
 
+func TestDeferredFlushSkipsSilenceSegments(t *testing.T) {
+	fakeSent = map[string]bool{}
+	q := NewDeferredSendQueue()
+	// 消息段数组中的 text 段携带静默标记：同样被跳过
+	q.Add(DeferredSend{
+		MessageType: "group", TargetID: 123, Delivery: true,
+		Message: []adapter.Segment{
+			{Type: "text", Data: map[string]any{"text": "__NO_REPLY__"}},
+			{Type: "image", Data: map[string]any{"file": "x"}},
+		},
+	})
+	q.Add(DeferredSend{MessageType: "group", TargetID: 123, Message: "正常消息", Delivery: true})
+
+	sent := q.Flush(context.Background(), &fakeAdapter{})
+	if len(sent) != 1 || sent[0].Text() != "正常消息" {
+		t.Fatalf("消息段数组静默项应被过滤，实际返回 %v", sent)
+	}
+	if fakeSent["__NO_REPLY__"] {
+		t.Error("静默消息段不应被发送")
+	}
+}
+
+func TestDeliveredToSkipsSilence(t *testing.T) {
+	q := NewDeferredSendQueue()
+	q.Add(DeferredSend{MessageType: "group", TargetID: 123, Message: "__NO_REPLY__", Delivery: true})
+	// 静默项不抑制最终回复
+	if q.DeliveredTo("group", 123) {
+		t.Error("静默内容不应视为已投递")
+	}
+	q.Add(DeferredSend{MessageType: "group", TargetID: 123, Message: "正常消息", Delivery: true})
+	if !q.DeliveredTo("group", 123) {
+		t.Error("正常交付消息应视为已投递")
+	}
+	// 无效目标不抑制最终回复
+	q2 := NewDeferredSendQueue()
+	q2.Add(DeferredSend{MessageType: "group", TargetID: 0, Message: "正常消息", Delivery: true})
+	if q2.DeliveredTo("group", 0) {
+		t.Error("无效目标不应视为已投递")
+	}
+}
+
+// TestSendMsgToolSilenceSegmentArray direct-send 路径（无 DeferredSendQueue）：
+// 消息段数组中 text 段携带静默标记时同样被拦截，不发送且不报错。
+func TestSendMsgToolSilenceSegmentArray(t *testing.T) {
+	fakeSent = map[string]bool{}
+	cur := &adapter.MessageEvent{MessageType: "group", GroupID: 456}
+	getCurrentMsg := func(ctx context.Context) *adapter.MessageEvent { return cur }
+	tool := send_group_msg(&fakeAdapter{}, getCurrentMsg)
+
+	args := json.RawMessage(`{"group_id":456,"message":[{"type":"text","data":{"text":"__NO_REPLY__"}}]}`)
+	out, err := tool.Execute(context.Background(), args)
+	if err != nil {
+		t.Fatalf("静默段数组不应报错: %v", err)
+	}
+	if !strings.Contains(out, "静默") {
+		t.Errorf("应返回静默提示，got %q", out)
+	}
+	for k := range fakeSent {
+		if strings.Contains(k, "__NO_REPLY__") {
+			t.Errorf("静默内容不应被发送，实际发送了 %q", k)
+		}
+	}
+
+	// 对照：正常段数组仍正常入队/发送
+	fakeSent = map[string]bool{}
+	args = json.RawMessage(`{"group_id":456,"message":[{"type":"text","data":{"text":"正常段数组消息"}}]}`)
+	if _, err := tool.Execute(context.Background(), args); err != nil {
+		t.Fatalf("正常段数组不应报错: %v", err)
+	}
+	// 无 DeferredSendQueue 时 direct-send：fakeAdapter 应记录到发送
+	if !fakeSent["正常段数组消息"] {
+		t.Error("正常段数组消息未被发送")
+	}
+}
+
 // fakeAdapter 记录发送内容的最小 AdapterProvider 实现。
 var fakeSent = map[string]bool{}
 
 type fakeAdapter struct{}
 
 func (f *fakeAdapter) SendPrivateMsg(userID int64, message any) (int64, error) {
-	if s, ok := message.(string); ok {
-		fakeSent[s] = true
+	if text := messagePlainText(message); text != "" {
+		fakeSent[text] = true
 	}
 	return 1, nil
 }
 func (f *fakeAdapter) SendGroupMsg(groupID int64, message any) (int64, error) {
-	if s, ok := message.(string); ok {
-		fakeSent[s] = true
+	if text := messagePlainText(message); text != "" {
+		fakeSent[text] = true
 	}
 	return 1, nil
 }
