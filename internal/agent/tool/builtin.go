@@ -1101,7 +1101,7 @@ func vision(getImageModel func() provider.Provider) *onebotTool {
 	input := NewToolInput{
 		id:   "",
 		name: "vision",
-		desc: "使用识图模型识别图片内容",
+		desc: "识别一张已经存在的图片的内容（需要你手头有图片 URL）。注意：此工具不生成任何新图片；要生成海报/图片/卡片请用 text_to_image 工具（传 HTML 渲染）",
 		params: openai.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
