@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -268,6 +269,107 @@ func TestInstallPluginZipRollbackOnLoadFail(t *testing.T) {
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".staging-") {
 			t.Fatalf("回滚后暂存/备份目录未清理: %s", e.Name())
+		}
+	}
+	// 引擎状态断言：回滚后 welcome 应重新注册为已加载（v1 重载）
+	if _, loaded := pe.plugins["welcome"]; !loaded {
+		t.Error("回滚后 welcome 未在引擎中重新注册（v1 重载失败）")
+	}
+}
+
+// TestInstallPluginZipFirstInstallLoadFailCleans 首次安装加载失败时删除
+// 已提交的新目录（不遗留未加载插件）。
+func TestInstallPluginZipFirstInstallLoadFailCleans(t *testing.T) {
+	pe, _ := newMiniTestEngine(t, nil)
+	data := buildZip(t, []zipEntry{
+		{name: "welcome/pluggin.yaml", content: validManifest},
+		{name: "welcome/main.lua", content: "!!语法错误(("},
+	})
+	if _, err := InstallPluginZip(pe, "plugins/welcome", data); err == nil {
+		t.Fatal("加载失败必须报错")
+	}
+	if _, err := os.Stat(filepath.Join(pe.basePath, "welcome")); err == nil {
+		t.Fatal("首次安装加载失败应删除新插件目录")
+	}
+	if _, loaded := pe.plugins["welcome"]; loaded {
+		t.Error("加载失败的插件不应在引擎中注册")
+	}
+	entries, _ := os.ReadDir(pe.basePath)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".staging-") {
+			t.Fatalf("暂存/备份目录未清理: %s", e.Name())
+		}
+	}
+}
+
+// TestExtractZipToSizeLimit zip 炸弹：单文件或总量超过上限必须被拒绝。
+func TestExtractZipToSizeLimit(t *testing.T) {
+	dir := t.TempDir()
+	// 超过单文件上限（32MiB）的压缩条目，用高压缩比重复字节
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("big.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := bytes.Repeat([]byte("A"), 1<<20)
+	for i := 0; i < 33; i++ {
+		if _, err := w.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = extractZipTo(reader, "", dir)
+	if err == nil {
+		t.Fatal("超限条目必须被拒绝")
+	}
+	if !strings.Contains(err.Error(), "超过单文件解压上限") {
+		t.Fatalf("错误信息应指明单文件超限: %v", err)
+	}
+}
+
+// TestInstallStagedPluginConcurrentSameName 同一插件并发安装串行执行：
+// 两个请求同时到达时，最终目录状态一致且无 .staging-* 残留。
+func TestInstallStagedPluginConcurrentSameName(t *testing.T) {
+	pe, _ := newMiniTestEngine(t, nil)
+	v1 := buildZip(t, []zipEntry{
+		{name: "welcome/pluggin.yaml", content: validManifest},
+		{name: "welcome/main.lua", content: "-- v1"},
+	})
+	v2 := buildZip(t, []zipEntry{
+		{name: "welcome/pluggin.yaml", content: validManifest},
+		{name: "welcome/main.lua", content: "-- v2"},
+	})
+	r1, _ := zip.NewReader(bytes.NewReader(v1), int64(len(v1)))
+	r2, _ := zip.NewReader(bytes.NewReader(v2), int64(len(v2)))
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); _ = InstallStagedPlugin(pe, pe.basePath, "welcome", r1, "welcome/") }()
+	go func() { defer wg.Done(); _ = InstallStagedPlugin(pe, pe.basePath, "welcome", r2, "welcome/") }()
+	wg.Wait()
+
+	// 最终目录存在且内容完整（v1 或 v2 任一），无暂存残留
+	got, err := os.ReadFile(filepath.Join(pe.basePath, "welcome", "main.lua"))
+	if err != nil {
+		t.Fatalf("并发安装后目录缺失: %v", err)
+	}
+	if string(got) != "-- v1" && string(got) != "-- v2" {
+		t.Fatalf("目录内容应为 v1 或 v2，实际 %q", got)
+	}
+	if _, loaded := pe.plugins["welcome"]; !loaded {
+		t.Error("并发安装后 welcome 应已加载")
+	}
+	entries, _ := os.ReadDir(pe.basePath)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".staging-") {
+			t.Fatalf("并发安装后暂存/备份目录未清理: %s", e.Name())
 		}
 	}
 }

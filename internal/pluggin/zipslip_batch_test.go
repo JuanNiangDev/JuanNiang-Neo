@@ -1,6 +1,8 @@
 package pluggin
 
 import (
+	"archive/zip"
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,23 +28,29 @@ func TestInstallAllRealStoreZips(t *testing.T) {
 		if err != nil {
 			t.Fatalf("读取 %s 失败: %v", e.Name(), err)
 		}
-		pe, _ := newMiniTestEngine(t, nil)
-		sdkDir := filepath.Join(pe.basePath, "sdk")
-		os.MkdirAll(sdkDir, 0o755)
-		os.WriteFile(filepath.Join(sdkDir, "jn.lua"), []byte(jnSDKSource), 0o644)
+		reader, rerr := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+		if rerr != nil {
+			t.Errorf("真实包 %s 无法解析 zip: %v", e.Name(), rerr)
+			continue
+		}
 		name := strings.TrimSuffix(e.Name(), ".zip")
-		_, err = InstallPluginZip(pe, "plugins/"+name, data)
-		// nil-db 测试引擎不注入 database 表：依赖 database 权限的插件
-		// Lua 执行会失败，但 zip 解压已正确完成（manifest 已落盘）。
-		// 本测试只验证解压安全与完整性，运行时依赖交给专用测试。
-		if err != nil && !strings.Contains(err.Error(), "执行 entry") {
-			t.Errorf("真实包 %s 安装失败: %v", e.Name(), err)
+		// 本测试只验证解压安全与完整性（StageZipExtract 全量校验解压），
+		// 不触发引擎 Load——nil-db 测试引擎缺 database 表，依赖该权限的
+		// 插件 Lua 必然执行失败，且首装失败会回滚删除目录，无法据此断言。
+		// 运行时依赖交给专用 e2e 测试。
+		pe, _ := newMiniTestEngine(t, nil)
+		destDir := filepath.Join(pe.basePath, name)
+		staging, serr := StageZipExtract(reader, "", destDir)
+		if serr != nil {
+			t.Errorf("真实包 %s 解压失败: %v", e.Name(), serr)
 			continue
 		}
-		if _, serr := os.Stat(filepath.Join(pe.basePath, name, "pluggin.yaml")); serr != nil {
-			t.Errorf("真实包 %s 解压不完整（manifest 缺失）: %v", e.Name(), serr)
+		if _, merr := os.Stat(filepath.Join(staging, "pluggin.yaml")); merr != nil {
+			t.Errorf("真实包 %s 解压不完整（manifest 缺失）: %v", e.Name(), merr)
+			_ = os.RemoveAll(staging)
 			continue
 		}
+		_ = os.RemoveAll(staging)
 		installed++
 	}
 	t.Logf("批量安装成功 %d 个真实商店包", installed)
