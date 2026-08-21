@@ -3,6 +3,7 @@ package pluggin
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,8 +330,8 @@ func TestExtractZipToSizeLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("超限条目必须被拒绝")
 	}
-	if !strings.Contains(err.Error(), "超过单文件解压上限") {
-		t.Fatalf("错误信息应指明单文件超限: %v", err)
+	if !errors.Is(err, ErrUnsafeZipEntry) {
+		t.Fatalf("应返回 ErrUnsafeZipEntry: %v", err)
 	}
 }
 

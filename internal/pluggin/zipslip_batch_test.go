@@ -34,13 +34,24 @@ func TestInstallAllRealStoreZips(t *testing.T) {
 			continue
 		}
 		name := strings.TrimSuffix(e.Name(), ".zip")
+		// 与 InstallPluginZip 一致：按 pluggin.yaml 所在目录推导 rootPrefix，
+		// 覆盖前缀剥离逻辑（含顶层目录的真实包不会被误判为解压不完整）。
+		var rootPrefix string
+		for _, f := range reader.File {
+			if filepath.Base(f.Name) == "pluggin.yaml" {
+				if d := filepath.ToSlash(filepath.Dir(f.Name)); d != "." {
+					rootPrefix = d + "/"
+				}
+				break
+			}
+		}
 		// 本测试只验证解压安全与完整性（StageZipExtract 全量校验解压），
 		// 不触发引擎 Load——nil-db 测试引擎缺 database 表，依赖该权限的
 		// 插件 Lua 必然执行失败，且首装失败会回滚删除目录，无法据此断言。
 		// 运行时依赖交给专用 e2e 测试。
 		pe, _ := newMiniTestEngine(t, nil)
 		destDir := filepath.Join(pe.basePath, name)
-		staging, serr := StageZipExtract(reader, "", destDir)
+		staging, serr := StageZipExtract(reader, rootPrefix, destDir)
 		if serr != nil {
 			t.Errorf("真实包 %s 解压失败: %v", e.Name(), serr)
 			continue

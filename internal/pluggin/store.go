@@ -488,7 +488,7 @@ func InstallStagedPlugin(pe *PluginEngine, basePath, dirName string, reader *zip
 		// （Load 对已加载插件直接返回 already loaded）。
 		wasLoaded := false
 		if err := pe.Unload(dirName); err != nil {
-			if !strings.Contains(err.Error(), "not loaded") {
+			if !errors.Is(err, ErrPluginNotLoaded) {
 				RollbackStagedPlugin(destDir, backup)
 				return fmt.Errorf("卸载旧版插件失败: %w", err)
 			}
