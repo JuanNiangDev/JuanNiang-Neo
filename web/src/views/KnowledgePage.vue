@@ -9,12 +9,12 @@
       <v-btn color="primary" prepend-icon="mdi-plus" @click="openAdd">新增知识</v-btn>
     </div>
 
-    <v-data-table :headers="headers" :items="items" :loading="loading" :page="page" :items-per-page="pageSize" :items-length="total" :items-per-page-options="[10, 20, 50]" @update:options="onPageChange">
+    <v-data-table-server :headers="headers" :items="items" :loading="loading" :page="page" :items-per-page="pageSize" :items-length="total" :items-per-page-options="[10, 20, 50]" @update:options="onPageChange">
       <template #item.title="{ item }">
         <span class="font-weight-medium">{{ item.title || '(无标题)' }}</span>
       </template>
       <template #item.content="{ item }">
-        <span class="text-body-2 text-medium-emphasis" style="max-width: 320px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom">{{ item.content }}</span>
+        <span class="text-body-2 text-medium-emphasis" style="max-width: 320px; display: inline-block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle">{{ item.content }}</span>
       </template>
       <template #item.keywords="{ item }">
         <div v-if="item.keyword_status === 'ready' && item.keywords?.length">
@@ -34,7 +34,9 @@
         <v-btn icon="mdi-pencil" size="small" variant="text" color="primary" title="编辑" @click="openEdit(item)" />
         <v-btn icon="mdi-delete" size="small" variant="text" color="error" title="删除" @click="confirmDelete(item)" />
       </template>
-    </v-data-table>
+    </v-data-table-server>
+
+    <!-- 新增/编辑弹窗 -->
 
     <!-- 新增/编辑弹窗 -->
     <v-dialog v-model="dialog" max-width="640">
@@ -73,7 +75,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { knowledgeApi, type KnowledgeResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
@@ -104,6 +106,8 @@ const form = ref(defaultForm())
 
 const statusLabel = (s: string) => ({ pending: '提取中', ready: '已就绪', failed: '失败' }[s] || s)
 const statusColor = (s: string) => ({ pending: 'warning', ready: 'success', failed: 'error' }[s] || 'default')
+
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 
 async function fetch(silent = false) {
   if (!silent) loading.value = true

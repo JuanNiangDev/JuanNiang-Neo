@@ -9,7 +9,7 @@
       <v-btn color="primary" prepend-icon="mdi-plus" @click="openCreate">新建定时任务</v-btn>
     </div>
 
-    <v-data-table :headers="headers" :items="tasks" :loading="loading" :page="page" :items-per-page="pageSize" :items-length="total" @update:options="onPageChange">
+    <v-data-table-server :headers="headers" :items="tasks" :loading="loading" :page="page" :items-per-page="pageSize" :items-length="total" @update:options="onPageChange">
       <template #item.name="{ item }">
         <div class="font-weight-medium">{{ item.name }}</div>
         <div class="text-caption text-medium-emphasis">{{ (item.blocks?.length || 0) }} 个编排块</div>
@@ -34,7 +34,7 @@
         <v-btn icon="mdi-pencil" size="small" variant="text" color="primary" title="编辑" @click="openEdit(item)" />
         <v-btn icon="mdi-delete" size="small" variant="text" color="error" title="删除" @click="confirmDelete(item)" />
       </template>
-    </v-data-table>
+    </v-data-table-server>
 
     <!-- 新建/编辑弹窗：积木式编排 -->
     <v-dialog v-model="dialog" max-width="900" scrollable>
@@ -375,6 +375,8 @@ function extractImgId(content: string): string {
   const m = content.match(/^imgs:\/\/(.+)$/)
   return m ? m[1] : content
 }
+
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
 
 async function fetchTasks() {
   loading.value = true

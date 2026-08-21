@@ -232,6 +232,7 @@ function hexToRgb(hex: string): string {
 }
 function inkColor(alpha: number): string {
   const onSurface = theme.global.current.value.colors['on-surface']
+  if (!onSurface) return `rgba(27, 34, 51, ${alpha})` // 兜底：浅色主题 on-surface，防 undefined → NaN 渲染成白色
   return `rgba(${hexToRgb(onSurface)}, ${alpha})`
 }
 function tokenColor(name: string): string {

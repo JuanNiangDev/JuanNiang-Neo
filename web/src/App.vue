@@ -19,10 +19,22 @@
 </template>
 
 <script setup lang="ts">
+import { watch } from 'vue'
 import { RouterView } from 'vue-router'
+import { useTheme } from 'vuetify'
 import { useToastStore } from '@/stores/toast'
 import { useThemeStore } from '@/stores/theme'
 
 const toastStore = useToastStore()
 const themeStore = useThemeStore()
+
+// 同步 Vuetify 全局主题名：<v-app :theme> 只是组件级覆盖，不更新 useTheme().global.name，
+// 导致依赖 theme.global.name 的图表/取色（如 DashboardPage 的 ECharts 轴色）在浅色模式下
+// 仍取深色主题的 on-surface（白色）→ 浅底白字不可见。
+const vuetifyTheme = useTheme()
+watch(
+  () => themeStore.effectiveThemeName,
+  (name) => { vuetifyTheme.global.name.value = name },
+  { immediate: true },
+)
 </script>
