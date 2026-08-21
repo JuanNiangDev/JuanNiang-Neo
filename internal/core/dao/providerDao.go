@@ -32,7 +32,9 @@ func (d *ProviderDAO) Create(ctx context.Context, p *models.Provider) error {
 	if p.ID == "" {
 		p.ID = newUUID()
 	}
-	return d.db.WithContext(ctx).Create(p).Error
+	// 显式 Select 写入 is_active：字段有 gorm default:true 时，零值 false 会被默认值覆盖，
+	// 导致"新添加默认关闭"的语义失效（响应与 DB 不一致）。Select 强制按结构体值写入。
+	return d.db.WithContext(ctx).Select("*").Create(p).Error
 }
 
 func (d *ProviderDAO) GetByID(ctx context.Context, id string) (*models.Provider, error) {

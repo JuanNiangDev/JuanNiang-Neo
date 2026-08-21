@@ -261,9 +261,21 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 
 	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
 	if data.IsActive {
-		if err := s.DAO.Provider.DeactivateByType(ctx, data.Type, id); err != nil {
+		// 防御：若同类型已存在启用 Provider，新添加的强制为未激活（不抢占已有开启的），
+		// 用户需在列表中手动切换。避免前端异常/误操作导致两个同类型同时激活。
+		existing, err := s.DAO.Provider.ListActive(ctx, data.Type)
+		if err != nil {
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
+		}
+		if len(existing) > 0 {
+			data.IsActive = false
+			providerConfig.IsActive = false
+		} else {
+			if err := s.DAO.Provider.DeactivateByType(ctx, data.Type, id); err != nil {
+				c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+				return
+			}
 		}
 	}
 

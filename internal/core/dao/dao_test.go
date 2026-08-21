@@ -209,3 +209,39 @@ func TestBundle(t *testing.T) {
 		t.Error("bundle fields should not be nil")
 	}
 }
+
+func TestProviderCreateKeepsInactive(t *testing.T) {
+	db := testDB(t)
+	dao := NewProviderDAO(db)
+
+	// IsActive=false 时，Create 必须按结构体值写入 false，
+	// 不被 gorm default:true 的默认值覆盖（历史 bug：响应 false 但 DB true）。
+	p := &models.Provider{
+		Name:     "test-inactive",
+		Type:     "text_model",
+		Endpoint: "https://example.com/v1",
+		Token:    "x",
+		Model:    "m",
+		IsActive: false,
+	}
+	if err := dao.Create(context.Background(), p); err != nil {
+		t.Fatalf("create err: %v", err)
+	}
+	got, err := dao.GetByID(context.Background(), p.ID)
+	if err != nil {
+		t.Fatalf("get err: %v", err)
+	}
+	if got.IsActive {
+		t.Error("IsActive = true, want false（默认关闭语义被 gorm default:true 破坏）")
+	}
+
+	// 显式 true 仍可写入
+	p2 := &models.Provider{Name: "test-active", Type: "text_model", Endpoint: "https://example.com/v1", Token: "x", Model: "m", IsActive: true}
+	if err := dao.Create(context.Background(), p2); err != nil {
+		t.Fatalf("create p2 err: %v", err)
+	}
+	got2, _ := dao.GetByID(context.Background(), p2.ID)
+	if !got2.IsActive {
+		t.Error("IsActive = false, want true")
+	}
+}
