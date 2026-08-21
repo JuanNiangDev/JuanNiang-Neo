@@ -2005,6 +2005,14 @@ func (s *Service) UpdateT2IConfig(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// allowlist 校验：SelectedStyle 仅允许空串（随机）、"random" 或风格库中定义的风格名，
+	// 防止 API 调用者持久化列表外的风格名使配置脱离已定义契约。
+	if !prompt.IsValidT2IStyle(strings.TrimSpace(data.SelectedStyle)) {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.T2IStyleInvalid, dto.ErrorDetail{ErrorDetail: "selected_style: " + data.SelectedStyle}))
+		return
+	}
+	data.SelectedStyle = strings.TrimSpace(data.SelectedStyle)
+
 	cfg := &models.T2IConfig{
 		ID:            1,
 		BaseURL:       data.BaseURL,

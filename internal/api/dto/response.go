@@ -54,6 +54,7 @@ var (
 	StickerImageExist       = Response{Status: 40042, Info: "该图床图片已被其他表情引用"}
 	FishCalConfigNotExist   = Response{Status: 40043, Info: "摸鱼日历配置不存在"}
 	ScheduledMsgNotExist    = Response{Status: 40044, Info: "定时消息任务不存在"}
+	T2IStyleInvalid         = Response{Status: 40049, Info: "T2I 渲染风格无效（仅允许空、random 或风格库中定义的风格名）"}
 	StickerTagSystem        = Response{Status: 40047, Info: "系统内置标签不可删除"}
 )
 
