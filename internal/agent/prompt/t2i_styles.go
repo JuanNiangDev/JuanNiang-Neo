@@ -40,8 +40,14 @@ func (s *t2iStyle) format() string {
 	return b.String()
 }
 
-// t2iStylesPath 实际路径，可在初始化时由环境变量覆盖。
-var t2iStylesPath = t2iStylesDefaultPath
+// t2iStylesPath 实际路径；优先取环境变量 T2I_STYLES_FILE（非空去除空白后），
+// 未设置或为空时回退默认路径。进程启动时求值一次。
+var t2iStylesPath = func() string {
+	if path := strings.TrimSpace(os.Getenv("T2I_STYLES_FILE")); path != "" {
+		return path
+	}
+	return t2iStylesDefaultPath
+}()
 
 // 内置通用兜底风格（JSON 格式，仅文件缺失/为空时使用）。
 // 具体风格一律在风格库文件中定义；本兜底仅保证功能不失效，不承载具体设计意图。
@@ -127,6 +133,20 @@ func LoadT2IStyleList() []T2IStyleListItem {
 		})
 	}
 	return out
+}
+
+// IsValidT2IStyle 校验风格选择值是否合法：空串（随机）、"random"
+// 或风格库中定义的风格名。供服务层在持久化前做 allowlist 校验。
+func IsValidT2IStyle(name string) bool {
+	if name == "" || name == "random" {
+		return true
+	}
+	for _, s := range loadT2IStyleStructs() {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // pickT2IStyle 选择本次渲染风格：

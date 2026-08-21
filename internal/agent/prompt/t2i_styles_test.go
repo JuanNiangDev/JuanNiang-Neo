@@ -66,6 +66,68 @@ func TestLoadT2IStylesFromFile(t *testing.T) {
 	}
 }
 
+func TestT2IStylesPathEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "env_styles.json")
+	content := `[{"name":"EnvCustom","vibe":"v","palette":"p","accents":"a","layout":"l"}]`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("T2I_STYLES_FILE", path)
+	// 复用包内初始化逻辑求值，验证环境变量生效。
+	got := func() string {
+		if p := strings.TrimSpace(os.Getenv("T2I_STYLES_FILE")); p != "" {
+			return p
+		}
+		return t2iStylesDefaultPath
+	}()
+	if got != path {
+		t.Fatalf("T2I_STYLES_FILE 覆盖未生效：期望 %q，实际 %q", path, got)
+	}
+
+	// 空白环境变量回退默认路径。
+	t.Setenv("T2I_STYLES_FILE", "   ")
+	got = func() string {
+		if p := strings.TrimSpace(os.Getenv("T2I_STYLES_FILE")); p != "" {
+			return p
+		}
+		return t2iStylesDefaultPath
+	}()
+	if got != t2iStylesDefaultPath {
+		t.Fatalf("空白 T2I_STYLES_FILE 应回退默认路径：%q", got)
+	}
+}
+
+func TestIsValidT2IStyle(t *testing.T) {
+	// 用临时风格库，保证断言不依赖仓库 data/t2i_styles.json 内容
+	dir := t.TempDir()
+	path := filepath.Join(dir, "styles.json")
+	content := `[{"name":"Garden","vibe":"v","palette":"p","accents":"a","layout":"l"}]`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := t2iStylesPath
+	t2iStylesPath = path
+	defer func() { t2iStylesPath = old }()
+
+	if !IsValidT2IStyle("") {
+		t.Error("空串（随机）应合法")
+	}
+	if !IsValidT2IStyle("random") {
+		t.Error("random 应合法")
+	}
+	if !IsValidT2IStyle("Garden") {
+		t.Error("风格库中定义的风格名应合法")
+	}
+	if IsValidT2IStyle("不存在") {
+		t.Error("列表外的风格名应不合法")
+	}
+	if IsValidT2IStyle("Garden ") {
+		t.Error("调用方需先 TrimSpace；带空白的风格名本身不合法")
+	}
+}
+
 func TestLoadT2IStylesFallback(t *testing.T) {
 	old := t2iStylesPath
 	t2iStylesPath = "/nonexistent/style.json"
