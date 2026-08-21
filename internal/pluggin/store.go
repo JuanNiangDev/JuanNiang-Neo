@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -301,29 +303,47 @@ func (sc *StoreClient) TestMirror(mirror string) (time.Duration, error) {
 	return time.Since(start), err
 }
 
+// pluginDirNameRe 插件目录名白名单：仅字母/数字/下划线/连字符。
+// dirName 会拼进 basePath（data/pluggins/<dirName>）且安装前会 RemoveAll
+// 该目录，必须拒绝 ".."、路径分隔符等片段，否则恶意 zip 可推断出
+// 逃逸目录名实现任意目录删除（zip-slip 变种）。
+var pluginDirNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// lastPathSegment 取路径末段（兼容反斜杠分隔符），用于从商店 path
+// （如 "plugins/welcome"）提取插件目录名。
+func lastPathSegment(p string) string {
+	return path.Base(filepath.ToSlash(p))
+}
+
 // InstallPluginZip 将商店下载的 zip 解压安装到 data/pluggins/<name>/ 并加载。
 // zip 内要求包含 pluggin.yaml（可在根或子目录）。
+// zip 内容不可信：目录名与每个条目都过安全校验，防 zip-slip 逃逸。
 func InstallPluginZip(pe *PluginEngine, name string, data []byte) (string, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return "", fmt.Errorf("无效的 zip: %w", err)
 	}
 
-	// 推断插件目录名：优先 pluggin.yaml 所在目录名，兜底用 name。
-	dirName := name
+	// 推断插件目录名：优先 pluggin.yaml 所在目录名，兜底用 name 末段。
+	// 推断结果必须过白名单；取末段可剥掉 "plugins/x"、"x/../.." 等
+	// 路径片段中的父路径部分，末段仍非法（如 ".."）则整体拒绝。
+	dirName := lastPathSegment(name)
 	var rootPrefix string
 	for _, f := range reader.File {
 		if f.Name == "pluggin.yaml" || filepath.Base(f.Name) == "pluggin.yaml" {
-			d := filepath.Dir(f.Name)
+			d := filepath.ToSlash(filepath.Dir(f.Name))
 			if d == "." {
-				dirName = name
+				dirName = lastPathSegment(name)
 				rootPrefix = ""
 			} else {
-				dirName = filepath.Base(d)
+				dirName = path.Base(d)
 				rootPrefix = d + "/"
 			}
 			break
 		}
+	}
+	if !pluginDirNameRe.MatchString(dirName) {
+		return "", fmt.Errorf("插件目录名不合法: %q", dirName)
 	}
 
 	destDir := filepath.Join(pe.basePath, dirName)
@@ -336,24 +356,33 @@ func InstallPluginZip(pe *PluginEngine, name string, data []byte) (string, error
 
 	for _, f := range reader.File {
 		// 去掉 rootPrefix 前缀，落到插件目录根
-		rel := f.Name
+		rel := filepath.ToSlash(f.Name)
 		if rootPrefix != "" && strings.HasPrefix(rel, rootPrefix) {
 			rel = strings.TrimPrefix(rel, rootPrefix)
 		}
 		if rel == "" {
 			continue
 		}
-		path := filepath.Join(destDir, rel)
+		// 防 zip-slip：解压目标必须仍在 destDir 内，逃逸条目（"../"、
+		// 绝对路径等）直接中止安装，而不是静默写到插件目录之外。
+		target := filepath.Join(destDir, rel)
+		if r, err := filepath.Rel(destDir, target); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("zip 包含逃逸路径条目: %q", f.Name)
+		}
+		// 拒绝符号链接等特殊条目：解压只落普通文件与目录
+		if f.Mode()&(os.ModeSymlink|os.ModeDevice|os.ModeNamedPipe|os.ModeSocket) != 0 {
+			return "", fmt.Errorf("zip 包含不允许的特殊文件条目: %q", f.Name)
+		}
 		if f.FileInfo().IsDir() {
-			_ = os.MkdirAll(path, 0o755)
+			_ = os.MkdirAll(target, 0o755)
 			continue
 		}
-		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		_ = os.MkdirAll(filepath.Dir(target), 0o755)
 		rc, err := f.Open()
 		if err != nil {
 			continue
 		}
-		dst, err := os.Create(path)
+		dst, err := os.Create(target)
 		if err == nil {
 			_, _ = io.Copy(dst, rc)
 			_ = dst.Close()

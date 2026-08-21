@@ -1255,6 +1255,14 @@ func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginPackageUnsafe, dto.ErrorDetail{ErrorDetail: "非法路径条目: " + f.Name}))
 			return
 		}
+		// 拒绝符号链接等特殊条目：解压只落普通文件与目录
+		// （os.Create 虽不会物化 symlink，但显式拒绝防未来重构引入穿透）
+		if f.Mode()&(os.ModeSymlink|os.ModeDevice|os.ModeNamedPipe|os.ModeSocket) != 0 {
+			log.Warn("插件包包含特殊文件条目，拒绝安装", "plugin", pluginName, "entry", f.Name)
+			os.RemoveAll(destDir)
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginPackageUnsafe, dto.ErrorDetail{ErrorDetail: "特殊文件条目: " + f.Name}))
+			return
+		}
 		if f.FileInfo().IsDir() {
 			os.MkdirAll(target, 0755)
 			continue
