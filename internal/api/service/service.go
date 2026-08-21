@@ -259,27 +259,29 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 	}
 	dto.ApplyProviderFields(&providerConfig, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode)
 
-	// 同类型只能有一个 Active：激活前先停用同类型其他 Provider
-	if data.IsActive {
+	// 事务内行锁校验 + 写入：并发 AddProvider 请求无法同时通过"同类型已存在启用"
+	// 检查并各自创建 is_active=true 的同类型 Provider。
+	// 事务开头 ListForUpdate 锁定全部 Provider 行，与 Update/Delete/Toggle 加锁顺序一致，避免死锁。
+	err := s.providerTx(ctx, func(tx *gorm.DB) error {
+		if !data.IsActive {
+			return s.DAO.Provider.WithTx(tx).Create(ctx, &providerConfig)
+		}
+		list, err := s.DAO.Provider.WithTx(tx).ListForUpdate(ctx, "")
+		if err != nil {
+			return err
+		}
 		// 防御：若同类型已存在启用 Provider，新添加的强制为未激活（不抢占已有开启的），
 		// 用户需在列表中手动切换。避免前端异常/误操作导致两个同类型同时激活。
-		existing, err := s.DAO.Provider.ListActive(ctx, data.Type)
-		if err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
-		if len(existing) > 0 {
-			data.IsActive = false
-			providerConfig.IsActive = false
-		} else {
-			if err := s.DAO.Provider.DeactivateByType(ctx, data.Type, id); err != nil {
-				c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-				return
+		for _, p := range list {
+			if p.IsActive && p.Type == data.Type {
+				data.IsActive = false
+				providerConfig.IsActive = false
+				break
 			}
 		}
-	}
-
-	if err := s.DAO.Provider.Create(ctx, &providerConfig); err != nil {
+		return s.DAO.Provider.WithTx(tx).Create(ctx, &providerConfig)
+	})
+	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
