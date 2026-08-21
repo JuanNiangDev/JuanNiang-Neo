@@ -40,14 +40,18 @@ func (s *t2iStyle) format() string {
 	return b.String()
 }
 
-// t2iStylesPath 实际路径；优先取环境变量 T2I_STYLES_FILE（非空去除空白后），
-// 未设置或为空时回退默认路径。进程启动时求值一次。
-var t2iStylesPath = func() string {
+// resolveT2IStylesPath 解析风格库路径：T2I_STYLES_FILE 非空（去空白）时
+// 使用该值，否则回退默认路径。生产初始化与测试共用同一实现。
+func resolveT2IStylesPath() string {
 	if path := strings.TrimSpace(os.Getenv("T2I_STYLES_FILE")); path != "" {
 		return path
 	}
 	return t2iStylesDefaultPath
-}()
+}
+
+// t2iStylesPath 实际路径；优先取环境变量 T2I_STYLES_FILE（非空去除空白后），
+// 未设置或为空时回退默认路径。进程启动时求值一次。
+var t2iStylesPath = resolveT2IStylesPath()
 
 // 内置通用兜底风格（JSON 格式，仅文件缺失/为空时使用）。
 // 具体风格一律在风格库文件中定义；本兜底仅保证功能不失效，不承载具体设计意图。
