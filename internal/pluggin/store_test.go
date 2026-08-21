@@ -170,3 +170,104 @@ func TestInstallPluginZipSubdirYaml(t *testing.T) {
 		t.Fatalf("插件文件未落盘: %v", err)
 	}
 }
+
+// TestInstallPluginZipKeepsOldOnBadZip 安装失败（条目非法）时旧插件目录必须原样保留。
+func TestInstallPluginZipKeepsOldOnBadZip(t *testing.T) {
+	pe, _ := newMiniTestEngine(t, nil)
+	// 先装一个合法版本
+	good := buildZip(t, []zipEntry{
+		{name: "welcome/pluggin.yaml", content: validManifest},
+		{name: "welcome/main.lua", content: "-- v1"},
+	})
+	if _, err := InstallPluginZip(pe, "plugins/welcome", good); err != nil {
+		t.Fatalf("初装失败: %v", err)
+	}
+	// 再装一个恶意升级包：条目逃逸 → 整体拒绝，旧版不动
+	bad := buildZip(t, []zipEntry{
+		{name: "welcome/pluggin.yaml", content: validManifest},
+		{name: "welcome/../../../pwned.txt", content: "PWNED"},
+	})
+	if _, err := InstallPluginZip(pe, "plugins/welcome", bad); err == nil {
+		t.Fatal("逃逸条目必须被拒绝")
+	}
+	got, err := os.ReadFile(filepath.Join(pe.basePath, "welcome", "main.lua"))
+	if err != nil {
+		t.Fatalf("旧版被删除: %v", err)
+	}
+	if string(got) != "-- v1" {
+		t.Fatalf("旧版本文件内容被改动: %q", got)
+	}
+	// 不残留 .staging-* 暂存目录
+	entries, _ := os.ReadDir(pe.basePath)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".staging-") {
+			t.Fatalf("暂存目录未清理: %s", e.Name())
+		}
+	}
+}
+
+// TestInstallPluginZipUpgradesSuccessfully 合法升级包正常替换旧版。
+func TestInstallPluginZipUpgradesSuccessfully(t *testing.T) {
+	pe, _ := newMiniTestEngine(t, nil)
+	v1 := buildZip(t, []zipEntry{
+		{name: "welcome/pluggin.yaml", content: validManifest},
+		{name: "welcome/main.lua", content: "-- v1"},
+	})
+	if _, err := InstallPluginZip(pe, "plugins/welcome", v1); err != nil {
+		t.Fatalf("v1 安装失败: %v", err)
+	}
+	v2 := buildZip(t, []zipEntry{
+		{name: "welcome/pluggin.yaml", content: validManifest},
+		{name: "welcome/main.lua", content: "-- v2"},
+	})
+	if _, err := InstallPluginZip(pe, "plugins/welcome", v2); err != nil {
+		t.Fatalf("v2 升级失败: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(pe.basePath, "welcome", "main.lua"))
+	if err != nil {
+		t.Fatalf("读取失败: %v", err)
+	}
+	if string(got) != "-- v2" {
+		t.Fatalf("升级后应为 v2 内容: %q", got)
+	}
+	// 备份目录不残留
+	entries, _ := os.ReadDir(pe.basePath)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".staging-") {
+			t.Fatalf("备份/暂存目录未清理: %s", e.Name())
+		}
+	}
+}
+
+// TestInstallPluginZipRollbackOnLoadFail 升级包解压成功但加载失败时，回滚旧版。
+func TestInstallPluginZipRollbackOnLoadFail(t *testing.T) {
+	pe, _ := newMiniTestEngine(t, nil)
+	v1 := buildZip(t, []zipEntry{
+		{name: "welcome/pluggin.yaml", content: validManifest},
+		{name: "welcome/main.lua", content: "-- v1"},
+	})
+	if _, err := InstallPluginZip(pe, "plugins/welcome", v1); err != nil {
+		t.Fatalf("v1 安装失败: %v", err)
+	}
+	// v2 的 main.lua 语法错误 → Load 失败 → 回滚 v1
+	v2 := buildZip(t, []zipEntry{
+		{name: "welcome/pluggin.yaml", content: validManifest},
+		{name: "welcome/main.lua", content: "!!语法错误(("},
+	})
+	if _, err := InstallPluginZip(pe, "plugins/welcome", v2); err == nil {
+		t.Fatal("加载失败必须报错")
+	}
+	got, err := os.ReadFile(filepath.Join(pe.basePath, "welcome", "main.lua"))
+	if err != nil {
+		t.Fatalf("回滚失败，旧版丢失: %v", err)
+	}
+	if string(got) != "-- v1" {
+		t.Fatalf("应回滚到 v1 内容: %q", got)
+	}
+	entries, _ := os.ReadDir(pe.basePath)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".staging-") {
+			t.Fatalf("回滚后暂存/备份目录未清理: %s", e.Name())
+		}
+	}
+}

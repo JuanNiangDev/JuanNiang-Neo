@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -315,17 +316,124 @@ func lastPathSegment(p string) string {
 	return path.Base(filepath.ToSlash(p))
 }
 
-// InstallPluginZip 将商店下载的 zip 解压安装到 data/pluggins/<name>/ 并加载。
-// zip 内要求包含 pluggin.yaml（可在根或子目录）。
+// ErrUnsafeZipEntry 标识 zip 包含非法条目（逃逸路径/特殊文件），
+// 调用方可据此映射"插件包不安全"类错误。
+var ErrUnsafeZipEntry = errors.New("zip 包含非法条目")
+
+// extractZipTo 将 zip 全部条目解压到 destDir（可剥离 rootPrefix 前缀）。
+// 逐条执行 zip-slip 校验；任一条目非法或任一 I/O 失败立即返回错误，
+// 不静默跳过、不落半成品。
+func extractZipTo(reader *zip.Reader, rootPrefix, destDir string) error {
+	for _, f := range reader.File {
+		// 去掉 rootPrefix 前缀，落到插件目录根
+		rel := filepath.ToSlash(f.Name)
+		if rootPrefix != "" && strings.HasPrefix(rel, rootPrefix) {
+			rel = strings.TrimPrefix(rel, rootPrefix)
+		}
+		if rel == "" {
+			continue
+		}
+		// 防 zip-slip：解压目标必须仍在 destDir 内，逃逸条目（"../"、
+		// 绝对路径等）直接中止安装，而不是静默写到插件目录之外。
+		target := filepath.Join(destDir, rel)
+		if r, err := filepath.Rel(destDir, target); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("%w: 逃逸路径条目 %q", ErrUnsafeZipEntry, f.Name)
+		}
+		// 拒绝符号链接等特殊条目：解压只落普通文件与目录
+		if f.Mode()&(os.ModeSymlink|os.ModeDevice|os.ModeNamedPipe|os.ModeSocket) != 0 {
+			return fmt.Errorf("%w: 特殊文件条目 %q", ErrUnsafeZipEntry, f.Name)
+		}
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("创建目录失败 %q: %w", f.Name, err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("创建父目录失败 %q: %w", f.Name, err)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("读取 zip 条目失败 %q: %w", f.Name, err)
+		}
+		dst, err := os.Create(target)
+		if err != nil {
+			_ = rc.Close()
+			return fmt.Errorf("创建文件失败 %q: %w", f.Name, err)
+		}
+		if _, err := io.Copy(dst, rc); err != nil {
+			_ = rc.Close()
+			_ = dst.Close()
+			return fmt.Errorf("写入文件失败 %q: %w", f.Name, err)
+		}
+		_ = rc.Close()
+		_ = dst.Close()
+	}
+	return nil
+}
+
+// StageZipExtract 在 destDir 同级创建唯一暂存目录（同文件系统，rename 原子），
+// 将 zip 全量校验解压到暂存目录，返回暂存目录路径。
+// 任一条目非法或 I/O 失败时清理暂存目录并返回错误。
+func StageZipExtract(reader *zip.Reader, rootPrefix, destDir string) (string, error) {
+	staging, err := os.MkdirTemp(filepath.Dir(destDir), ".staging-")
+	if err != nil {
+		return "", fmt.Errorf("创建暂存目录失败: %w", err)
+	}
+	_ = os.Chmod(staging, 0o755)
+	if err := extractZipTo(reader, rootPrefix, staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return "", err
+	}
+	return staging, nil
+}
+
+// CommitStagedPlugin 将暂存目录替换为正式插件目录（原子 rename）。
+// 旧目录先改名备份；rename 失败时恢复旧目录，旧插件不丢。
+// 返回备份路径（无旧版时空串）。
+func CommitStagedPlugin(destDir, staging string) (backup string, err error) {
+	hadOld := false
+	if _, statErr := os.Stat(destDir); statErr == nil {
+		hadOld = true
+		backup = staging + "-backup"
+		if err := os.Rename(destDir, backup); err != nil {
+			_ = os.RemoveAll(staging)
+			return "", fmt.Errorf("备份旧插件目录失败: %w", err)
+		}
+	}
+	if err := os.Rename(staging, destDir); err != nil {
+		_ = os.RemoveAll(staging)
+		if hadOld {
+			if rbErr := os.Rename(backup, destDir); rbErr != nil {
+				return "", fmt.Errorf("落位新插件目录失败且恢复旧目录也失败: install=%v, restore=%v", err, rbErr)
+			}
+		}
+		return "", fmt.Errorf("落位新插件目录失败: %w", err)
+	}
+	return backup, nil
+}
+
+// RollbackStagedPlugin 插件加载失败时回滚：移除新目录，恢复备份的旧版本。
+// 全新安装（无备份）时保留新文件，便于排查加载失败原因。
+func RollbackStagedPlugin(destDir, backup string) {
+	if backup == "" {
+		return
+	}
+	_ = os.RemoveAll(destDir)
+	if err := os.Rename(backup, destDir); err != nil {
+		log.Error("回滚旧版插件目录失败", "dest", destDir, "err", err)
+	}
+}
+
+// InstallPluginZip 将商店下载的 zip 暂存解压、全量校验后原子安装到
+// data/pluggins/<name>/ 并加载。zip 内要求包含 pluggin.yaml（可在根或子目录）。
 // zip 内容不可信：目录名与每个条目都过安全校验，防 zip-slip 逃逸。
+// 校验或解压失败时旧插件目录保持原样；升级场景加载失败自动回滚旧版。
 func InstallPluginZip(pe *PluginEngine, name string, data []byte) (string, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return "", fmt.Errorf("无效的 zip: %w", err)
 	}
-
-	// 推断插件目录名：优先 pluggin.yaml 所在目录名，兜底用 name 末段。
-	// 推断结果必须过白名单；取末段可剥掉 "plugins/x"、"x/../.." 等
 	// 路径片段中的父路径部分，末段仍非法（如 ".."）则整体拒绝。
 	dirName := lastPathSegment(name)
 	var rootPrefix string
@@ -347,51 +455,44 @@ func InstallPluginZip(pe *PluginEngine, name string, data []byte) (string, error
 	}
 
 	destDir := filepath.Join(pe.basePath, dirName)
-	if err := os.RemoveAll(destDir); err != nil {
-		return "", fmt.Errorf("清理旧目录失败: %w", err)
-	}
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return "", fmt.Errorf("创建目录失败: %w", err)
+
+	// 暂存解压 + 全量校验：失败时旧目录原样保留
+	staging, err := StageZipExtract(reader, rootPrefix, destDir)
+	if err != nil {
+		return "", err
 	}
 
-	for _, f := range reader.File {
-		// 去掉 rootPrefix 前缀，落到插件目录根
-		rel := filepath.ToSlash(f.Name)
-		if rootPrefix != "" && strings.HasPrefix(rel, rootPrefix) {
-			rel = strings.TrimPrefix(rel, rootPrefix)
+	// 原子替换：旧目录备份 → 新目录上位
+	backup, err := CommitStagedPlugin(destDir, staging)
+	if err != nil {
+		return "", err
+	}
+
+	// 升级场景：旧版已在引擎中加载，先卸载使其磁盘新文件能被 Load 读取
+	// （Load 对已加载插件直接返回 already loaded）。
+	wasLoaded := false
+	if err := pe.Unload(dirName); err != nil {
+		if !strings.Contains(err.Error(), "not loaded") {
+			RollbackStagedPlugin(destDir, backup)
+			return dirName, fmt.Errorf("卸载旧版插件失败: %w", err)
 		}
-		if rel == "" {
-			continue
-		}
-		// 防 zip-slip：解压目标必须仍在 destDir 内，逃逸条目（"../"、
-		// 绝对路径等）直接中止安装，而不是静默写到插件目录之外。
-		target := filepath.Join(destDir, rel)
-		if r, err := filepath.Rel(destDir, target); err != nil || r == ".." || strings.HasPrefix(r, ".."+string(filepath.Separator)) {
-			return "", fmt.Errorf("zip 包含逃逸路径条目: %q", f.Name)
-		}
-		// 拒绝符号链接等特殊条目：解压只落普通文件与目录
-		if f.Mode()&(os.ModeSymlink|os.ModeDevice|os.ModeNamedPipe|os.ModeSocket) != 0 {
-			return "", fmt.Errorf("zip 包含不允许的特殊文件条目: %q", f.Name)
-		}
-		if f.FileInfo().IsDir() {
-			_ = os.MkdirAll(target, 0o755)
-			continue
-		}
-		_ = os.MkdirAll(filepath.Dir(target), 0o755)
-		rc, err := f.Open()
-		if err != nil {
-			continue
-		}
-		dst, err := os.Create(target)
-		if err == nil {
-			_, _ = io.Copy(dst, rc)
-			_ = dst.Close()
-		}
-		_ = rc.Close()
+	} else {
+		wasLoaded = true
 	}
 
 	if err := pe.Load(dirName); err != nil {
+		// 升级场景回滚旧版并尽量恢复引擎状态；全新安装保留文件便于排查
+		RollbackStagedPlugin(destDir, backup)
+		if wasLoaded {
+			// 目录已回滚为旧版，重载旧版恢复引擎运行状态
+			if reErr := pe.Load(dirName); reErr != nil {
+				log.Error("回滚后重载旧版插件失败", "name", dirName, "err", reErr)
+			}
+		}
 		return dirName, fmt.Errorf("加载插件失败: %w", err)
+	}
+	if backup != "" {
+		_ = os.RemoveAll(backup)
 	}
 	return dirName, nil
 }
