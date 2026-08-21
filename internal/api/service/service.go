@@ -1243,54 +1243,21 @@ func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
-	destDir := filepath.Join("data/pluggins", pluginName)
+	basePath := "data/pluggins"
+	if s.PluginEngine != nil {
+		basePath = s.PluginEngine.BasePath()
+	}
 
-	// 暂存解压 + 全量校验：失败时旧插件目录原样保留（不再先删旧目录）
-	staging, err := pluggin.StageZipExtract(&reader.Reader, "", destDir)
-	if err != nil {
+	// 统一安装入口：暂存解压 → 全量校验 → 原子提交 → 引擎加载（升级先卸载），
+	// 失败自动回滚旧版；pe 为 nil 时仅落盘不加载。
+	if err := pluggin.InstallStagedPlugin(s.PluginEngine, basePath, pluginName, &reader.Reader, ""); err != nil {
 		if errors.Is(err, pluggin.ErrUnsafeZipEntry) {
 			log.Warn("插件包包含非法条目，拒绝安装", "plugin", pluginName, "err", err)
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginPackageUnsafe, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidZipFile, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
-	}
-
-	// 原子替换：旧目录备份 → 新目录上位
-	backup, err := pluggin.CommitStagedPlugin(destDir, staging)
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-
-	// 升级场景：旧版已加载则先卸载，让磁盘新文件生效
-	wasLoaded := false
-	if s.PluginEngine != nil {
-		if err := s.PluginEngine.Unload(pluginName); err != nil {
-			if !strings.Contains(err.Error(), "not loaded") {
-				pluggin.RollbackStagedPlugin(destDir, backup)
-				c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
-				return
-			}
-		} else {
-			wasLoaded = true
-		}
-	}
-	if s.PluginEngine != nil {
-		if err := s.PluginEngine.Load(pluginName); err != nil {
-			pluggin.RollbackStagedPlugin(destDir, backup)
-			if wasLoaded {
-				if reErr := s.PluginEngine.Load(pluginName); reErr != nil {
-					log.Error("回滚后重载旧版插件失败", "name", pluginName, "err", reErr)
-				}
-			}
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
-	}
-	if backup != "" {
-		_ = os.RemoveAll(backup)
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.PluginUploadResp{Name: pluginName, Status: "loaded"}))
