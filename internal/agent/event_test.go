@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	einoschema "github.com/cloudwego/eino/schema"
 )
 
 // TestSplitMessagesCQCodeNotSplit 验证 CQ 码不会被切到两条消息里。
@@ -183,4 +185,39 @@ func TestOrderedReplierSequential(t *testing.T) {
 	if len(got) != 3 || got[0] != 0 || got[1] != 1 || got[2] != 2 {
 		t.Fatalf("顺序到达应依次执行: %v", got)
 	}
+}
+
+func TestMergeLeadingSystemMsgs(t *testing.T) {
+	sys := func(c string) *einoschema.Message { return &einoschema.Message{Role: einoschema.System, Content: c} }
+	usr := func(c string) *einoschema.Message { return &einoschema.Message{Role: einoschema.User, Content: c} }
+
+	t.Run("三条 system 合并为一条", func(t *testing.T) {
+		in := []*einoschema.Message{sys("A"), sys("B"), sys("C"), usr("hi")}
+		out := mergeLeadingSystemMsgs(in)
+		if len(out) != 2 {
+			t.Fatalf("len = %d, want 2", len(out))
+		}
+		if out[0].Role != einoschema.System || out[0].Content != "A\n\nB\n\nC" {
+			t.Errorf("out[0] = %+v, want 合并后的 system", out[0])
+		}
+		if out[1].Content != "hi" {
+			t.Errorf("out[1].Content = %q, want hi", out[1].Content)
+		}
+	})
+
+	t.Run("单条 system 不变", func(t *testing.T) {
+		in := []*einoschema.Message{sys("A"), usr("hi")}
+		out := mergeLeadingSystemMsgs(in)
+		if len(out) != 2 || out[0].Content != "A" {
+			t.Errorf("单条 system 不应被合并: %+v", out)
+		}
+	})
+
+	t.Run("开头无 system 不变", func(t *testing.T) {
+		in := []*einoschema.Message{usr("hi")}
+		out := mergeLeadingSystemMsgs(in)
+		if len(out) != 1 || out[0].Content != "hi" {
+			t.Errorf("无 system 不应变化: %+v", out)
+		}
+	})
 }
