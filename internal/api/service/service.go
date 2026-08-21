@@ -373,7 +373,7 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 }
 
 // ErrTextModelRequired 是"操作后无启用 Text 模型"的业务哨兵错误。
-// 与 DAO 查询错误区分：仅该错误映射为 dto.TextProviderRequired（40047），
+// 与 DAO 查询错误区分：仅该错误映射为 dto.TextProviderRequired（40048），
 // 其余（如 DB 故障）映射为 ServerInternalErr，避免客户端误判。
 var ErrTextModelRequired = errors.New("至少保留一个启用的 Text 模型")
 
@@ -1244,64 +1244,53 @@ func (s *Service) UploadPlugin(ctx context.Context, c *app.RequestContext) {
 	}
 
 	destDir := filepath.Join("data/pluggins", pluginName)
-	os.RemoveAll(destDir)
-	os.MkdirAll(destDir, 0755)
 
-	for _, f := range reader.File {
-		// 防 zip-slip：校验每个条目解压后仍在 destDir 内（拒绝 "../"、绝对路径等逃逸条目）
-		target := filepath.Join(destDir, f.Name)
-		rel, err := filepath.Rel(destDir, target)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			log.Warn("插件包包含逃逸路径条目，拒绝安装", "plugin", pluginName, "entry", f.Name)
-			os.RemoveAll(destDir)
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginPackageUnsafe, dto.ErrorDetail{ErrorDetail: "非法路径条目: " + f.Name}))
+	// 暂存解压 + 全量校验：失败时旧插件目录原样保留（不再先删旧目录）
+	staging, err := pluggin.StageZipExtract(&reader.Reader, "", destDir)
+	if err != nil {
+		if errors.Is(err, pluggin.ErrUnsafeZipEntry) {
+			log.Warn("插件包包含非法条目，拒绝安装", "plugin", pluginName, "err", err)
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginPackageUnsafe, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
-		// 拒绝符号链接等特殊条目：解压只落普通文件与目录
-		// （os.Create 虽不会物化 symlink，但显式拒绝防未来重构引入穿透）
-		if f.Mode()&(os.ModeSymlink|os.ModeDevice|os.ModeNamedPipe|os.ModeSocket) != 0 {
-			log.Warn("插件包包含特殊文件条目，拒绝安装", "plugin", pluginName, "entry", f.Name)
-			os.RemoveAll(destDir)
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginPackageUnsafe, dto.ErrorDetail{ErrorDetail: "特殊文件条目: " + f.Name}))
-			return
-		}
-		if f.FileInfo().IsDir() {
-			os.MkdirAll(target, 0755)
-			continue
-		}
-		os.MkdirAll(filepath.Dir(target), 0755)
-		dst, err := os.Create(target)
-		if err != nil {
-			log.Error("插件文件创建失败", "plugin", pluginName, "entry", f.Name, "err", err)
-			os.RemoveAll(destDir)
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WriteFileFail, nil))
-			return
-		}
-		rc, err := f.Open()
-		if err != nil {
-			dst.Close()
-			log.Error("插件文件读取失败", "plugin", pluginName, "entry", f.Name, "err", err)
-			os.RemoveAll(destDir)
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidZipFile, nil))
-			return
-		}
-		if _, err := io.Copy(dst, rc); err != nil {
-			rc.Close()
-			dst.Close()
-			log.Error("插件文件写入失败", "plugin", pluginName, "entry", f.Name, "err", err)
-			os.RemoveAll(destDir)
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WriteFileFail, nil))
-			return
-		}
-		rc.Close()
-		dst.Close()
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.InvalidZipFile, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
 	}
 
+	// 原子替换：旧目录备份 → 新目录上位
+	backup, err := pluggin.CommitStagedPlugin(destDir, staging)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 升级场景：旧版已加载则先卸载，让磁盘新文件生效
+	wasLoaded := false
+	if s.PluginEngine != nil {
+		if err := s.PluginEngine.Unload(pluginName); err != nil {
+			if !strings.Contains(err.Error(), "not loaded") {
+				pluggin.RollbackStagedPlugin(destDir, backup)
+				c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
+				return
+			}
+		} else {
+			wasLoaded = true
+		}
+	}
 	if s.PluginEngine != nil {
 		if err := s.PluginEngine.Load(pluginName); err != nil {
+			pluggin.RollbackStagedPlugin(destDir, backup)
+			if wasLoaded {
+				if reErr := s.PluginEngine.Load(pluginName); reErr != nil {
+					log.Error("回滚后重载旧版插件失败", "name", pluginName, "err", reErr)
+				}
+			}
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.PluginLoadFail, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
+	}
+	if backup != "" {
+		_ = os.RemoveAll(backup)
 	}
 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.PluginUploadResp{Name: pluginName, Status: "loaded"}))
