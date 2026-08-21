@@ -392,6 +392,12 @@ func send_private_msg(adapter AdapterProvider, getCurrentMsg func(ctx context.Co
 			return "", fmt.Errorf("消息内容无效: %w", err)
 		}
 
+		// 静默内容拦截：LLM 判定"不回复"时可能把 __NO_REPLY__ 当作消息发出，
+		// 这里直接吞掉，避免占位标记泄漏到聊天里。
+		if s, ok := msg.(string); ok && isSilenceToolContent(s) {
+			return "已判定为静默（不回复），未发送", nil
+		}
+
 		// LLM 常省略 user_id（意图为当前会话）：从当前消息上下文兜底
 		userID := int64(p.UserID)
 		if userID == 0 {
@@ -454,6 +460,12 @@ func send_group_msg(adapter AdapterProvider, getCurrentMsg func(ctx context.Cont
 		msg, err := BuildMessageLoose(p.Message)
 		if err != nil {
 			return "", fmt.Errorf("消息内容无效: %w", err)
+		}
+
+		// 静默内容拦截：LLM 判定"不回复"时可能把 __NO_REPLY__ 当作消息发出，
+		// 这里直接吞掉，避免占位标记泄漏到聊天里。
+		if s, ok := msg.(string); ok && isSilenceToolContent(s) {
+			return "已判定为静默（不回复），未发送", nil
 		}
 
 		// LLM 常省略 group_id（意图为当前会话）：从当前消息上下文兜底

@@ -105,6 +105,11 @@ func (q *DeferredSendQueue) Flush(ctx context.Context, a AdapterProvider) []Defe
 			log.Warn("延迟发送跳过无效目标", "type", s.MessageType, "target", s.TargetID)
 			continue
 		}
+		// 静默内容（LLM 把 __NO_REPLY__ 或纯静默短语当作工具消息发出）不发送，防止占位标记泄漏到群里。
+		if isSilenceToolContent(s.Text()) {
+			log.Info("延迟发送跳过静默内容", "content", s.Text(), "type", s.MessageType, "target", s.TargetID)
+			continue
+		}
 		switch s.MessageType {
 		case "private":
 			if _, err := a.SendPrivateMsg(s.TargetID, s.Message); err != nil {
@@ -142,4 +147,45 @@ func GetDeferredSendQueue(ctx context.Context) *DeferredSendQueue {
 	}
 	q, _ := ctx.Value(deferredQueueKey{}).(*DeferredSendQueue)
 	return q
+}
+
+// silenceToken 与 agent 包 SilenceToken 保持一致：LLM 判定不回复时输出的固定标记。
+const silenceToken = "__NO_REPLY__"
+
+// isSilenceToolContent 判断工具发送的纯文本是否为静默内容（__NO_REPLY__ 标记
+// 或纯静默声明短语）。LLM 偶尔会把"不回复"判定输出成 send_*_msg 的消息内容，
+// 导致占位标记泄漏到聊天里；这类消息应在发送前丢弃。
+func isSilenceToolContent(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(trimmed, silenceToken) {
+		return true
+	}
+	if len([]rune(trimmed)) > 15 {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	silencePhrases := []string{
+		"保持静默", "保持沉默", "静默观察", "静默",
+		"不回复", "我不回复", "我不回",
+		"不插话", "我不插话",
+		"不说话", "我不说话",
+		"不发言", "我不发言",
+		"不参与", "我不参与",
+		"与我无关", "不关我的事",
+		"我不说",
+		"不响", "不响，做空气", "不响，做空气。",
+		"做空气", "装死", "当没看到", "没看到",
+		"路过", "潜水", "暗中观察",
+		"😶", "🤐", "🙈", "🫥",
+	}
+	for _, m := range silencePhrases {
+		if lower == m {
+			return true
+		}
+	}
+	return strings.Contains(lower, "静默") || strings.Contains(lower, "不回复") || strings.Contains(lower, "不插话") ||
+		strings.Contains(lower, "不响") || strings.Contains(lower, "做空气") || strings.Contains(lower, "装死")
 }

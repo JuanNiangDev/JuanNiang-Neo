@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"JuanNiang-Neo/internal/adapter"
 )
 
 // TestImageURLCandidates 候选链覆盖：原始 → HTML 实体解码 → 百分号解码变体。
@@ -95,4 +97,81 @@ func TestDownloadImageBytesRejectsLocalServer(t *testing.T) {
 	if !strings.Contains(err.Error(), "拒绝访问非公网地址") {
 		t.Fatalf("应返回 SSRF 拒绝错误, got: %v", err)
 	}
+}
+
+// ---------- 静默内容过滤（__NO_REPLY__ 防泄漏） ----------
+
+func TestIsSilenceToolContent(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"纯 NO_REPLY 标记", "__NO_REPLY__", true},
+		{"NO_REPLY 带前后缀", "我判断不回复 __NO_REPLY__", true},
+		{"静默短语", "保持静默", true},
+		{"静默短语带标点", "不回复", true},
+		{"做空气", "做空气", true},
+		{"正常回复", "你好呀", false},
+		{"长文本不被误判", "这是一段超过十五个字的正常回复内容，需要正常发送", false},
+		{"空串", "", false},
+		{"回复含 NO_REPLY 字样但语义不同", "我说的是__NO_REPLY__这个词本身的意思", true}, // 保守：含标记即吞
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := isSilenceToolContent(c.in); got != c.want {
+				t.Errorf("isSilenceToolContent(%q) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestDeferredFlushSkipsSilence(t *testing.T) {
+	q := NewDeferredSendQueue()
+	q.Add(DeferredSend{MessageType: "group", TargetID: 123, Message: "__NO_REPLY__", Delivery: true})
+	q.Add(DeferredSend{MessageType: "group", TargetID: 123, Message: "正常消息", Delivery: true})
+
+	sent := q.Flush(context.Background(), &fakeAdapter{})
+	if len(sent) != 2 {
+		t.Fatalf("Flush 返回 %d 条（含被过滤的静默内容），want 2", len(sent))
+	}
+	// 验证正常消息仍被发送、静默消息被跳过（由 fakeAdapter 记录）
+	if !fakeSent["正常消息"] {
+		t.Error("正常消息未被发送")
+	}
+	if fakeSent["__NO_REPLY__"] {
+		t.Error("静默内容 __NO_REPLY__ 不应被发送")
+	}
+}
+
+// fakeAdapter 记录发送内容的最小 AdapterProvider 实现。
+var fakeSent = map[string]bool{}
+
+type fakeAdapter struct{}
+
+func (f *fakeAdapter) SendPrivateMsg(userID int64, message any) (int64, error) {
+	if s, ok := message.(string); ok {
+		fakeSent[s] = true
+	}
+	return 1, nil
+}
+func (f *fakeAdapter) SendGroupMsg(groupID int64, message any) (int64, error) {
+	if s, ok := message.(string); ok {
+		fakeSent[s] = true
+	}
+	return 1, nil
+}
+func (f *fakeAdapter) DeleteMsg(messageID int64) error                        { return nil }
+func (f *fakeAdapter) GetMsg(messageID int64) (*adapter.MessageEvent, error)  { return nil, nil }
+func (f *fakeAdapter) GetGroupInfo(groupID int64) (*adapter.GroupInfo, error) { return nil, nil }
+func (f *fakeAdapter) GetGroupMemberList(groupID int64) ([]adapter.GroupMemberInfo, error) {
+	return nil, nil
+}
+func (f *fakeAdapter) KickGroupMember(groupID, userID int64, rejectAdd bool) error        { return nil }
+func (f *fakeAdapter) BanGroupMember(groupID, userID int64, duration int) error           { return nil }
+func (f *fakeAdapter) SetGroupWholeBan(groupID int64, enable bool) error                  { return nil }
+func (f *fakeAdapter) SetGroupCard(groupID, userID int64, card string) error              { return nil }
+func (f *fakeAdapter) HandleFriendRequest(flag string, approve bool, remark string) error { return nil }
+func (f *fakeAdapter) HandleGroupRequest(flag, subType string, approve bool, reason string) error {
+	return nil
 }
