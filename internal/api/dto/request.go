@@ -286,9 +286,10 @@ type UpdateLongTermMemoryReq struct {
 // ---------- T2I ----------
 
 type UpdateT2IConfigReq struct {
-	BaseURL  string `json:"base_url"`
-	Timeout  int    `json:"timeout"`
-	IsActive bool   `json:"is_active"`
+	BaseURL       string `json:"base_url"`
+	Timeout       int    `json:"timeout"`
+	IsActive      bool   `json:"is_active"`
+	SelectedStyle string `json:"selected_style"`
 }
 
 // ---------- Sandbox ----------

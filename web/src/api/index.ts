@@ -44,8 +44,9 @@ export interface OverviewResp { chat_area_count: number; mcp_count: number; adap
 
 export interface DailyTokenUsageResp { date: string; token_count: number }
 
-export interface T2IConfigResp { base_url: string; timeout: number; is_active: boolean; healthy: boolean }
-export interface UpdateT2IConfigReq { base_url: string; timeout?: number; is_active: boolean }
+export interface T2IConfigResp { base_url: string; timeout: number; is_active: boolean; healthy: boolean; selected_style: string }
+export interface UpdateT2IConfigReq { base_url: string; timeout?: number; is_active: boolean; selected_style?: string }
+export interface T2IStyleItem { name: string; category: string; tags: string[]; vibe: string }
 
 export interface SandboxConfigResp { base_url: string; api_key: string; timeout: number; is_active: boolean; healthy: boolean }
 export interface UpdateSandboxConfigReq { base_url: string; api_key: string; timeout?: number; is_active: boolean }
@@ -192,6 +193,7 @@ export const t2iApi = {
   getConfig: () => client.get('/t2i/config'),
   updateConfig: (data: UpdateT2IConfigReq) => client.put('/t2i/config', data),
   health: () => client.get('/t2i/health'),
+  listStyles: () => client.get('/t2i/styles'),
 }
 
 // ======== Sandbox ========

@@ -100,9 +100,27 @@ const SystemLockedPromptContent = `# JuanNiang-Neo 全局行为约束
 ✅ "需要重启服务才能生效"
 
 ### ✅ 需要格式化时的正确做法
-使用 text_to_image 工具渲染为图片：代码块、表格、图表、流程图等。
-传入的 HTML 需包含完整内联 CSS 样式（字体 ≥14px、对比度充足），浅色背景。
-若对输出图片的宽高有要求（如海报、卡片），务必通过 text_to_image 的 width/height 参数指定像素尺寸，它们决定生成图片的实际宽高；HTML 内联样式的宽度仅影响布局。
+**用户"发送图片给你看" ≠ "让你生成图片"**：前者是已有图片，必须用 vision 识别（见第 3 节）；只有用户**明确要求新建/生成/制作**一张图时才用 text_to_image。
+
+用户明确说「生成/做/画一张海报、贺卡、欢迎图、日历、宣传图、代码块、表格、图表、流程图」等**要新建一张图**时，一律调用 text_to_image 工具（传入 HTML 渲染成图片）。
+- 严禁用 vision 工具做这件事：vision 只能「识别/描述一张已经存在的图片」，它不会生成任何新图片。需要出图时只能走 text_to_image。
+- 若你手头没有任何图片 URL，却想「识别图片」，那一定是你误解了：没有已有图片就不该调用 vision。
+
+【技术约束】
+- 传入的 HTML 需包含完整内联 CSS 样式，浅色背景，正文 ≥14px、对比度充足。
+- 渲染结果是静态图片：不写任何 JS、动画（@keyframes）、过渡（transition）、交互/悬浮效果——都用不上，纯属浪费。
+- 字体用系统字体栈（如 -apple-system, PingFang SC, Microsoft YaHei, Segoe UI, sans-serif），不引入外部字体链接或 web 字体，渲染环境无外网。
+- 若对输出图片的宽高有要求（如海报、卡片），务必通过 text_to_image 的 width/height 参数指定像素尺寸，它们决定生成图片的实际宽高；HTML 内联样式的宽度仅影响布局。
+
+【渲染风格：每次由系统从风格库随机指定一种，见下方注入】
+{{T2I_STYLE}}
+
+【所有风格通用 —— 反 AI 味铁律】
+- 禁止紫→蓝/青→粉渐变、渐变文字（background-clip:text）、玻璃拟态、发光阴影、网格光斑背景。
+- 标题一律正体（禁止斜体标题）；数字用 tabular-nums；省略号用 …（U+2026）而非 ...；引号用弯引号。
+- 不用 emoji 当图标（✨🚀⚡🔥🎯 等）；不伪造数据/指标；不用虚构公司名（Acme/Nexus 等）。
+- 不画假的浏览器/手机/终端外框；内容用真实数据或留白，不填占位装饰。
+- 留白充足（模块间距 40–64px 量级），拒绝三列等宽"图标+标题+两行说明"卡片阵、卡片套卡片、内容塞满画布。
 
 纯文本回复直接发送，不要加任何格式标记。用空格和换行符做简单排版即可。
 
@@ -267,7 +285,8 @@ func (pm *PromptManager) BuildFullContext(ctx context.Context, longTermMemories 
 		parts = append(parts, skillMemory)
 	}
 
-	return strings.Join(parts, "\n\n"), nil
+	// 随机注入本次 T2I 渲染风格（占位符替换），每次构建上下文独立随机。
+	return injectT2IStyle(strings.Join(parts, "\n\n")), nil
 }
 
 // GetByID 获取指定 Prompt。

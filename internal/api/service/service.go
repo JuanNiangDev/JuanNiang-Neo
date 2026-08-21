@@ -4,6 +4,7 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
+	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/skill"
 	"JuanNiang-Neo/internal/api/dto"
@@ -1985,15 +1986,19 @@ func (s *Service) UpdateT2IConfig(ctx context.Context, c *app.RequestContext) {
 	}
 
 	cfg := &models.T2IConfig{
-		ID:       1,
-		BaseURL:  data.BaseURL,
-		Timeout:  data.Timeout,
-		IsActive: data.IsActive,
+		ID:            1,
+		BaseURL:       data.BaseURL,
+		Timeout:       data.Timeout,
+		IsActive:      data.IsActive,
+		SelectedStyle: data.SelectedStyle,
 	}
 	if err := s.DAO.T2I.UpdateConfig(ctx, cfg); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+
+	// 同步渲染风格选择到提示词注入（空 = 随机）
+	prompt.SetSelectedT2IStyle(data.SelectedStyle)
 
 	// 运行时同步：创建新客户端并同步到 HagoCenter
 	if data.IsActive {
@@ -2027,6 +2032,12 @@ func (s *Service) CheckT2IHealth(ctx context.Context, c *app.RequestContext) {
 	}
 	err := s.T2IClient.HealthCheck()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": err == nil}))
+}
+
+// GetT2IStyles 返回风格库列表（供管理面板下拉选择），从风格库文件实时读取。
+func (s *Service) GetT2IStyles(ctx context.Context, c *app.RequestContext) {
+	styles := prompt.LoadT2IStyleList()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, styles))
 }
 
 // ---------- Sandbox ----------

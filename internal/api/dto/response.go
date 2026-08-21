@@ -395,10 +395,11 @@ type PluginUploadResp struct {
 }
 
 type T2IConfigResp struct {
-	BaseURL  string `json:"base_url"`
-	Timeout  int    `json:"timeout"`
-	IsActive bool   `json:"is_active"`
-	Healthy  bool   `json:"healthy"`
+	BaseURL       string `json:"base_url"`
+	Timeout       int    `json:"timeout"`
+	IsActive      bool   `json:"is_active"`
+	Healthy       bool   `json:"healthy"`
+	SelectedStyle string `json:"selected_style"`
 }
 
 type SandboxConfigResp struct {

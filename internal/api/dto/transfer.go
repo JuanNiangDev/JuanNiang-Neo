@@ -339,10 +339,11 @@ func RawLongTermMemory2Resp(raw *models.LongTermMemory) LongTermMemoryResp {
 
 func RawT2IConfig2Resp(raw *models.T2IConfig, healthy bool) T2IConfigResp {
 	return T2IConfigResp{
-		BaseURL:  raw.BaseURL,
-		Timeout:  raw.Timeout,
-		IsActive: raw.IsActive,
-		Healthy:  healthy,
+		BaseURL:       raw.BaseURL,
+		Timeout:       raw.Timeout,
+		IsActive:      raw.IsActive,
+		Healthy:       healthy,
+		SelectedStyle: raw.SelectedStyle,
 	}
 }
 
