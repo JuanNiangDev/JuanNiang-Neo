@@ -93,11 +93,13 @@ const deleteDialog = ref(false)
 const editing = ref<string | null>(null)
 const deleteTarget = ref<KnowledgeResp | null>(null)
 
+// 后端列表仅支持分页（固定排序），所有列禁用排序，避免 v-data-table-server
+// 触发无效的排序请求/误导性排序 UI。
 const headers = [
-  { title: '标题', key: 'title' },
-  { title: '内容', key: 'content' },
-  { title: '关键词', key: 'keywords' },
-  { title: '提取状态', key: 'keyword_status', align: 'center' as const },
+  { title: '标题', key: 'title', sortable: false },
+  { title: '内容', key: 'content', sortable: false },
+  { title: '关键词', key: 'keywords', sortable: false },
+  { title: '提取状态', key: 'keyword_status', align: 'center' as const, sortable: false },
   { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
 ]
 
