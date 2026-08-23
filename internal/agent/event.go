@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
@@ -408,6 +409,21 @@ func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.E
 	return kept
 }
 
+// memoryRecall 长期记忆对话召回（降级链：RAG 向量语义 → pg_trgm gram → 最近条目）。
+// RAG 路径由 tryMemoryRAGRecall 承担（未配置/失败返回 false），
+// 其余走 MemoryGroup.RecallLongTermMemory（内部含 gram 空回退最近）。
+func (h *HagoCenter) memoryRecall(ctx context.Context, areaID, msg string, limit int) ([]string, error) {
+	if h.Memory == nil {
+		return nil, nil
+	}
+	if query, _ := longterm.RecallTerms(msg); query != "" {
+		if items, ok := h.tryMemoryRAGRecall(ctx, query); ok {
+			return items, nil
+		}
+	}
+	return h.Memory.RecallLongTermMemory(ctx, areaID, msg, limit)
+}
+
 // writeBatchToMemory 批次级记忆屏障：把整批用户消息（黑名单过滤后、带发言人标识）
 // 一次性写入短期记忆（幂等去重），取代原 handleMessage 内逐组分散写入。
 // 同批并发组读到的记忆一致，避免"另一 Agent 不知情 / 重复消费"；
@@ -793,9 +809,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// ---------- 构建系统提示词（长期记忆 + 核心提示词；工具感知交由 Eino tools 参数处理） ----------
 	var longTermMems []string
 	if h.Memory != nil {
-		// 语义召回：按当前消息相关性取长期记忆（gram 倒排候选 + similarity 排序，
-		// 空候选/异常自动回退最近条目）；LTM_RECALL_MODE=recent 可整体关闭
-		longTermMems, _ = h.Memory.RecallLongTermMemory(ctx, chatArea.ID, combinedUserMsg, 5)
+		// 记忆召回：RAG 向量语义检索首选 → 降级 pg_trgm gram 召回 → 最近条目；
+		// LTM_RECALL_MODE=recent 可整体关闭语义/向量路径
+		longTermMems, _ = h.memoryRecall(ctx, chatArea.ID, combinedUserMsg, 5)
 	}
 
 	sessionCtxStr := h.buildSessionContext(ctx, msg, events[len(events)-1].Admins)

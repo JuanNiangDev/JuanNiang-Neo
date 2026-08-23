@@ -28,6 +28,31 @@ func (d *KnowledgeDAO) GetByID(ctx context.Context, id string) (*models.Knowledg
 	return &item, nil
 }
 
+// GetByIDs 批量取条目（供 RAG 语义召回按命中 tag 反查内容）。
+func (d *KnowledgeDAO) GetByIDs(ctx context.Context, ids []string) ([]models.KnowledgeItem, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var list []models.KnowledgeItem
+	err := d.db.WithContext(ctx).Where("id IN (?)", ids).Find(&list).Error
+	return list, err
+}
+
+// ListAllIDs 返回全部条目 ID（供 RAG 候选集构建，仅主键列，量级小）。
+func (d *KnowledgeDAO) ListAllIDs(ctx context.Context) ([]string, error) {
+	var ids []string
+	err := d.db.WithContext(ctx).Model(&models.KnowledgeItem{}).Where("deleted_at IS NULL").
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
+// ListAllContent 返回全部条目（ID + 内容，供 RAG 手动全量同步）。知识量级小，全量可接受。
+func (d *KnowledgeDAO) ListAllContent(ctx context.Context) ([]models.KnowledgeItem, error) {
+	var list []models.KnowledgeItem
+	err := d.db.WithContext(ctx).Where("deleted_at IS NULL").Find(&list).Error
+	return list, err
+}
+
 func (d *KnowledgeDAO) Update(ctx context.Context, item *models.KnowledgeItem) error {
 	return d.db.WithContext(ctx).Save(item).Error
 }

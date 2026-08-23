@@ -31,6 +31,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+	"github.com/google/uuid"
 )
 
 // HagoCenter 是 Agent 系统的中央调度器，聚合所有子模块。
@@ -94,6 +95,13 @@ type HagoCenter struct {
 
 	// 知识库 LRU（50 条，缓存对话前检索结果，加速匹配）
 	knowledgeLRU *knowledgeLRU
+
+	// RAG 候选集缓存（内存态，丢失可重建）：知识侧随知识变更失效，记忆侧 TTL 兜底。
+	knowledgeRagSetMu sync.RWMutex
+	knowledgeRagSet   map[uuid.UUID]string // 知识 v5 tag → itemID
+	memoryRagSetMu    sync.RWMutex
+	memoryRagSet      map[uuid.UUID]string // 记忆 v5 tag → itemID
+	memoryRagSetAt    time.Time
 
 	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
 	EinoAgent *adk.ChatModelAgent

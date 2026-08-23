@@ -1,6 +1,7 @@
 package service
 
 import (
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
@@ -11,6 +12,7 @@ import (
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/core/ragtag"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
 	"archive/zip"
@@ -2633,6 +2635,9 @@ func (s *Service) AddKnowledge(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 双写：同步向量到 RAG-Service（未配置时静默跳过，不报错）
+	s.syncKnowledgeVector(item.ID, item.Content)
+
 	// 异步提取关键词 + 失效 LRU
 	if s.OnExtractKnowledge != nil {
 		s.OnExtractKnowledge(item.ID)
@@ -2668,6 +2673,9 @@ func (s *Service) UpdateKnowledge(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 双写：内容变更后同步覆写向量（Upsert 幂等；未配置时静默跳过）
+	s.syncKnowledgeVector(item.ID, item.Content)
+
 	if s.OnExtractKnowledge != nil {
 		s.OnExtractKnowledge(item.ID)
 	}
@@ -2677,12 +2685,14 @@ func (s *Service) UpdateKnowledge(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawKnowledge2Resp(item)))
 }
 
-// DeleteKnowledge 删除知识库条目。
+// DeleteKnowledge 删除知识库条目（双删：Postgres + RAG 向量）。
 func (s *Service) DeleteKnowledge(ctx context.Context, c *app.RequestContext) {
 	if err := s.DAO.Knowledge.Delete(ctx, c.Param("id")); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	// 双删：同步删除 RAG 向量（未配置时静默跳过；失败仅告警，残留无害）
+	s.deleteKnowledgeVector(c.Param("id"))
 	if s.OnKnowledgeChanged != nil {
 		s.OnKnowledgeChanged()
 	}
@@ -2704,6 +2714,82 @@ func (s *Service) ReExtractKnowledge(ctx context.Context, c *app.RequestContext)
 		s.OnExtractKnowledge(item.ID)
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- RAG 向量同步 ----------
+
+// syncKnowledgeVector 把知识条目内容同步写入 RAG 向量库（双写）。
+// RAG 未配置 → 直接返回（不报错）；写入失败仅告警，由手动同步按钮兜底。
+func (s *Service) syncKnowledgeVector(itemID, content string) {
+	if s.RAGClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := s.RAGClient.Upsert(ctx, ragtag.Knowledge(itemID), content); err != nil {
+		log.Warn("知识向量同步失败（可在知识库页手动同步）", "id", itemID, "err", err)
+	}
+}
+
+// deleteKnowledgeVector 删除知识条目的 RAG 向量（双删）。
+// RAG 未配置 → 直接返回；删除失败仅告警（残留向量无害）。
+func (s *Service) deleteKnowledgeVector(itemID string) {
+	if s.RAGClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.RAGClient.Delete(ctx, ragtag.Knowledge(itemID)); err != nil {
+		log.Warn("知识向量删除失败", "id", itemID, "err", err)
+	}
+}
+
+// SyncKnowledgeVector 手动全量同步知识库到 RAG 向量库（页面按钮触发）：
+// 全部条目按 50 条一批 BatchUpsert（一次嵌入一次发布）；
+// RAG 未启用直接返回提示，不报错。
+func (s *Service) SyncKnowledgeVector(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+			"ready": false, "synced": 0, "failed": 0, "total": 0,
+			"message": "RAG 未启用，无法同步向量库",
+		}))
+		return
+	}
+	items, err := s.DAO.Knowledge.ListAllContent(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	const batchSize = 50
+	synced, failed := 0, 0
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batch := make([]ragcaller.BatchItem, 0, end-i)
+		for _, it := range items[i:end] {
+			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Knowledge(it.ID), Text: it.Content})
+		}
+		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		if err != nil {
+			log.Warn("知识向量同步批次失败", "batch", i/batchSize+1, "err", err)
+			failed += len(batch)
+			continue
+		}
+		for _, r := range resp.Results {
+			if r.Error != nil {
+				failed++
+			} else {
+				synced++
+			}
+		}
+	}
+	log.Info("知识库向量同步完成", "total", len(items), "synced", synced, "failed", failed)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+		"ready": true, "synced": synced, "failed": failed, "total": len(items),
+	}))
 }
 
 // ---------- 图床 ----------

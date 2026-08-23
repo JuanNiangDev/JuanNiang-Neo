@@ -158,12 +158,14 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/reply-strategy", auth, svc.UpdateReplyStrategy)
 
 	// Knowledge 知识库
+	// 知识库
 	api.GET("/knowledge", auth, svc.ListKnowledge)
 	api.GET("/knowledge/:id", auth, svc.GetKnowledge)
 	api.POST("/knowledge", auth, svc.AddKnowledge)
 	api.PUT("/knowledge/:id", auth, svc.UpdateKnowledge)
 	api.DELETE("/knowledge/:id", auth, svc.DeleteKnowledge)
 	api.POST("/knowledge/:id/re-extract", auth, svc.ReExtractKnowledge)
+	api.POST("/knowledge/vector-sync", auth, svc.SyncKnowledgeVector)
 
 	// 图床
 	api.GET("/images", auth, svc.ListImages)

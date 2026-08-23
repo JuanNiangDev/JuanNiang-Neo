@@ -169,8 +169,9 @@ func parseKeywordsFromLLM(content string) []string {
 
 // ---------- 对话前检索注入 ----------
 
-// buildKnowledgeContext 对话前模糊匹配知识库，命中内容拼入系统提示词。
-// LRU 命中直接返回；未命中走 DB 检索并回写缓存。
+// buildKnowledgeContext 对话前匹配知识库，命中内容拼入系统提示词。
+// 首选 RAG 语义检索（向量命中按分数排序）；未配置/不可用/无命中降级到
+// SQL 模糊匹配（关键词 + 内容前 20 字 ILIKE，LRU 加速）。
 func (h *HagoCenter) buildKnowledgeContext(ctx context.Context, msg string) string {
 	if h.DAO == nil || h.DAO.Knowledge == nil {
 		return ""
@@ -179,6 +180,13 @@ func (h *HagoCenter) buildKnowledgeContext(ctx context.Context, msg string) stri
 	if query == "" {
 		return ""
 	}
+
+	// RAG 语义检索首选：命中一批按分数排序的条目，直接注入
+	if items, ok := h.tryKnowledgeRAGRecall(ctx, query); ok && len(items) > 0 {
+		return formatKnowledgeContext(items)
+	}
+
+	// 降级：LRU + SQL 模糊匹配（现状）
 	key := knowledgeQueryKey(query)
 	if items, ok := h.knowledgeLRU.Get(key); ok {
 		return formatKnowledgeContext(items)
@@ -192,9 +200,10 @@ func (h *HagoCenter) buildKnowledgeContext(ctx context.Context, msg string) stri
 	return formatKnowledgeContext(items)
 }
 
-// InvalidateKnowledgeLRU 知识库条目变更后失效缓存。
+// InvalidateKnowledgeLRU 知识库条目变更后失效缓存（LRU + RAG 候选集）。
 func (h *HagoCenter) InvalidateKnowledgeLRU() {
 	h.knowledgeLRU.Clear()
+	h.invalidateKnowledgeRagSet()
 	log.Info("知识库 LRU 已失效")
 }
 

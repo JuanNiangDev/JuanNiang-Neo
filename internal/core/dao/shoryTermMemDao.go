@@ -32,6 +32,24 @@ func (d *LongTermMemoryItemDAO) ListByChatArea(ctx context.Context, chatAreaID s
 	return list, err
 }
 
+// GetByIDs 批量取条目（供 RAG 语义召回按命中 tag 反查内容）。
+func (d *LongTermMemoryItemDAO) GetByIDs(ctx context.Context, ids []string) ([]models.LongTermMemoryItem, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	var list []models.LongTermMemoryItem
+	err := d.db.WithContext(ctx).Where("id IN (?)", ids).Find(&list).Error
+	return list, err
+}
+
+// ListAllIDs 返回全部条目 ID（供 RAG 记忆候选集构建，仅主键列）。
+func (d *LongTermMemoryItemDAO) ListAllIDs(ctx context.Context) ([]string, error) {
+	var ids []string
+	err := d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
 // likePred 返回子串匹配谓词：PostgreSQL 用 ILIKE（大小写不敏感），
 // 其它方言（SQLite 测试环境）用 LIKE，避免语法错误。
 func (d *LongTermMemoryItemDAO) likePred() string {

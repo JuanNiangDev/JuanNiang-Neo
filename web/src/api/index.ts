@@ -342,6 +342,7 @@ export const knowledgeApi = {
   update: (id: string, data: AddKnowledgeReq) => client.put(`/knowledge/${id}`, data),
   delete: (id: string) => client.delete(`/knowledge/${id}`),
   reExtract: (id: string) => client.post(`/knowledge/${id}/re-extract`),
+  syncVector: () => client.post('/knowledge/vector-sync'),
 }
 
 // ======== 图床 ========
