@@ -307,6 +307,28 @@ M.llm = llm
 M.timer = timer
 
 -- ====================================================================
+-- rag RAG 向量检索 (需要 rag 权限；RAG-Service 未启用时返回错误)
+-- ====================================================================
+-- 面向原始 JuanNiang-RAG-Service API（tag 必须是 UUID，全文入库自动分块），
+-- 不要与主程序知识/记忆集合的派生 tag 混用。
+
+---@class jn.RAGHit
+---@field tag string 命中 tag（UUID）
+---@field score number 相似度分数 (0~1)
+
+---@class jn.RAG
+---@field add fun(tag: string, text: string): boolean, string? 同步写入（幂等 upsert，长文自动分块）
+---@field add_async fun(tag: string, text: string, ctx?: table): number 异步写入，立即返回 req_id；完成后引擎调用 on_rag_response(req_id, ctx, tag, err)
+---@field search fun(query: string, k?: number, min_score?: number): jn.RAGHit[], string? 同步检索，返回 [{tag, score}]（按分数降序）
+---@field search_async fun(query: string, k?: number, min_score?: number, ctx?: table): number 异步检索（最后一个 table 参数视为 ctx），回调 on_rag_response(req_id, ctx, results, err)
+M.rag = rag
+
+-- 异步回调约定（引擎级异步注册表，kind "rag"）：
+-- 插件定义全局函数 on_rag_response(req_id, ctx, result, err)，引擎在请求完成后
+-- 串行调用（与事件派发互斥）。add_async 的 result 为 tag 字符串；search_async 的
+-- result 为 [{tag, score}] 表；err 为 nil 表示成功。
+
+-- ====================================================================
 -- config 动态配置 (无需权限，默认注入)
 -- ====================================================================
 

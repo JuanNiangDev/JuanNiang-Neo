@@ -450,6 +450,34 @@ function on_sandbox_response(req_id, ctx, result, err)
 end
 ```
 
+## 全局表: `rag`
+
+权限：`rag`。面向原始 JuanNiang-RAG-Service API（tag 必须是 **UUID** 字符串，全文入库自动分块）。**未启用时** 函数返回 `(nil, "RAG 服务未启用")`。不要与主程序知识/记忆集合的派生 tag 混用（避免污染两侧检索）。
+
+| 函数 | 返回 | 说明 |
+|------|------|------|
+| `rag.add(tag, text) → bool, err` | | 同步写入（幂等 upsert，长文自动分块） |
+| `rag.add_async(tag, text [, ctx]) → number` | `req_id` | 异步写入：立即返回，完成回调 `on_rag_response(req_id, ctx, tag, err)` |
+| `rag.search(query, k?, min_score?) → table [, err]` | `[{tag, score}]` | 同步检索，按分数降序（k 默认 10，上限 100） |
+| `rag.search_async(query, k?, min_score? [, ctx]) → number` | `req_id` | 异步检索：回调 `on_rag_response(req_id, ctx, results, err)`，results=`[{tag, score}]` |
+
+```lua
+-- 同步写入 + 检索
+local ok, err = jn.rag.add("7f6b2f8a-1111-4950-9c1f-000000000001", "这是一段用于入库的中文文本……")
+local hits, err = jn.rag.search("入库的中文文本", 5)
+for _, h in ipairs(hits or {}) do
+    jn.log.info(h.tag .. " score=" .. h.score)
+end
+
+-- 异步：完成回调 on_rag_response（写入与检索共用）
+local rid = jn.rag.add_async("7f6b2f8a-1111-4950-9c1f-000000000001", "异步入库内容", { from = "demo" })
+local rid2 = jn.rag.search_async("异步入库内容", 5, nil, { from = "demo" })
+function on_rag_response(req_id, ctx, result, err)
+    if err then jn.log.warn("RAG 请求失败: " .. err) return end
+    jn.log.info("result=" .. tostring(result))
+end
+```
+
 ## 全局表: `agent`
 
 权限：`agent`。提供 Agent 配置查询与运行时管理（共 17 个函数）。
@@ -569,6 +597,7 @@ end
 | `chat` | `llm.chat_async(messages, opts?)` | `on_chat_response` | `(req_id, content, err)` |
 | `t2i` | `t2i.generate_async` / `t2i.generate_url_async` | `on_t2i_response` | `(req_id, ctx, result, err)` |
 | `http` | `http.get_async` / `http.post_async` | `on_http_response` | `(req_id, ctx, result, err)` |
+| `rag` | `rag.add_async` / `rag.search_async` | `on_rag_response` | `(req_id, ctx, result, err)` |
 | `sandbox` | `sandbox.create_async` / `exec_shell_async` / `exec_python_async` | `on_sandbox_response` | `(req_id, ctx, result, err)` |
 
 > **调用现场保存（ctx）**：`t2i` / `http` 异步回调带 `ctx` 参数——调用时把要保留的变量打包成一张表作为最后一个参数传入（如 `generate_async(html, opts, ctx)`），引擎按 `req_id` 关联保存，回调时**原样带回**（不序列化，可含函数）。用于延续调用前的业务状态（待处理消息、群号、临时标记等）；不传则为 `nil`。`llm.chat_async` 不带 `ctx`（回调签名保持 `(req_id, content, err)`，兼容现有插件）。

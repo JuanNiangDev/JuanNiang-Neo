@@ -25,10 +25,12 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
 
+	"github.com/google/uuid"
 	lua "github.com/yuin/gopher-lua"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/core/cache"
@@ -130,6 +132,7 @@ type AgentOperator interface {
 	GetToolRegistry() ToolRegistryAccess
 	GetT2IClient() *t2icaller.Client
 	GetSandboxClient() *sandboxcaller.Client
+	GetRAGClient() *ragcaller.Client // RAG 向量检索客户端（nil=未启用）
 }
 
 // ProviderGroupAccess 暴露给插件的 Provider 管理接口。
@@ -341,6 +344,31 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
 			}
 			return []lua.LValue{lua.LNil, lua.LNil}
+		},
+	})
+	// rag → on_rag_response（带调用现场 ctx）；结果：add 回 tag 字符串，search 回 [{tag,score}] 表
+	pe.RegisterAsyncAPI("rag", AsyncAPI{
+		Entry:   "on_rag_response",
+		WithCtx: true,
+		Encode: func(L *lua.LState, result any, err error) []lua.LValue {
+			if err != nil {
+				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
+			}
+			switch v := result.(type) {
+			case string:
+				return []lua.LValue{lua.LString(v), lua.LNil}
+			case []ragcaller.SearchHit:
+				t := L.NewTable()
+				for i, hit := range v {
+					item := L.NewTable()
+					item.RawSetString("tag", lua.LString(hit.Tag.String()))
+					item.RawSetString("score", lua.LNumber(hit.Score))
+					t.RawSetInt(i+1, item)
+				}
+				return []lua.LValue{t, lua.LNil}
+			default:
+				return []lua.LValue{lua.LNil, lua.LString("rag: 未知结果类型")}
+			}
 		},
 	})
 	// 注册内置 /help 命令
@@ -1364,6 +1392,11 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 		pe.injectSandbox(L, pluginName)
 	}
 
+	// RAG（向量检索服务）
+	if hasPerm("rag") {
+		pe.injectRAG(L, pluginName)
+	}
+
 	// Agent
 	if hasPerm("agent") && pe.dao != nil {
 		pe.injectAgent(L)
@@ -2329,6 +2362,166 @@ func luaTableToT2IOptions(L *lua.LState, idx int) (*t2icaller.GenerateOptions, e
 		return nil, parseErr
 	}
 	return opts, nil
+}
+
+// ragAsyncTimeout RAG 异步 API 总超时（写入/检索本地服务，30s 足够）。
+const ragAsyncTimeout = 30 * time.Second
+
+// parseRagUUID 解析插件传入的 RAG tag（必须是合法 UUID 字符串）。
+func parseRagUUID(s string) (uuid.UUID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("RAG tag 必须是 UUID 字符串: %s", s)
+	}
+	return u, nil
+}
+
+// injectRAG 注入 rag 全局表（需要 rag 权限）：RAG-Service 原始 API。
+//
+// 契约：面向原始 RAG-Service（tag=UUID，全文入库自动分块），
+// **不要**与知识/记忆集合的 v5 派生 tag 混用（避免污染两侧检索）。
+// 客户端始终经 AgentOperator 动态获取（Web 配置热更新即时生效）。
+func (pe *PluginEngine) injectRAG(L *lua.LState, pluginName string) {
+	getCurrentClient := func() *ragcaller.Client {
+		if pe.agentOp != nil {
+			return pe.agentOp.GetRAGClient()
+		}
+		return nil
+	}
+
+	// searchToLua 把检索结果转成 Lua 数组表 [{tag, score}]。
+	searchToLua := func(hits []ragcaller.SearchHit) *lua.LTable {
+		t := L.NewTable()
+		for i, hit := range hits {
+			item := L.NewTable()
+			item.RawSetString("tag", lua.LString(hit.Tag.String()))
+			item.RawSetString("score", lua.LNumber(hit.Score))
+			t.RawSetInt(i+1, item)
+		}
+		return t
+	}
+
+	ragTable := L.NewTable()
+	L.SetFuncs(ragTable, map[string]lua.LGFunction{
+		// add(tag, text) 同步写入（幂等 upsert，长文自动分块）
+		"add": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString("RAG 服务未启用"))
+				return 2
+			}
+			tag, err := parseRagUUID(L.CheckString(1))
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			text := L.CheckString(2)
+			_, err = client.Upsert(context.Background(), tag, text)
+			return pushResult(L, err)
+		},
+		// add_async(tag, text [, ctx]) → req_id；回调 on_rag_response(req_id, ctx, tag, err)
+		"add_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("RAG 服务未启用"))
+				return 2
+			}
+			tag, err := parseRagUUID(L.CheckString(1))
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			text := L.CheckString(2)
+			run := func(ctx context.Context) (any, error) {
+				if _, err := client.Upsert(ctx, tag, text); err != nil {
+					return nil, err
+				}
+				return tag.String(), nil
+			}
+			id, err := pe.submitAsync(L, pluginName, "rag", ragAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 3) // 第 3 位：可选 ctx 现场表
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+		// search(query, k?, min_score?) 同步检索，返回 [{tag, score}]（按分数降序）
+		"search": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString("RAG 服务未启用"))
+				return 2
+			}
+			query := L.CheckString(1)
+			k := 10
+			var minScore *float64
+			top := L.GetTop()
+			if top >= 2 && L.Get(2).Type() == lua.LTNumber {
+				k = int(float64(L.Get(2).(lua.LNumber)))
+			}
+			if top >= 3 && L.Get(3).Type() == lua.LTNumber {
+				ms := float64(L.Get(3).(lua.LNumber))
+				minScore = &ms
+			}
+			hits, err := client.Search(context.Background(), query, k, minScore)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			L.Push(searchToLua(hits))
+			return 1
+		},
+		// search_async(query, k?, min_score? [, ctx]) → req_id；回调 on_rag_response(req_id, ctx, results, err)
+		"search_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("RAG 服务未启用"))
+				return 2
+			}
+			query := L.CheckString(1)
+			k := 10
+			var minScore *float64
+			ctxIdx := 0
+			top := L.GetTop()
+			// 尾部 table = ctx 现场表（与 search 的数值参数区分）
+			if top >= 2 && L.Get(top).Type() == lua.LTTable {
+				ctxIdx = top
+				top--
+			}
+			if top >= 2 && L.Get(2).Type() == lua.LTNumber {
+				k = int(float64(L.Get(2).(lua.LNumber)))
+			}
+			if top >= 3 && L.Get(3).Type() == lua.LTNumber {
+				ms := float64(L.Get(3).(lua.LNumber))
+				minScore = &ms
+			}
+			run := func(ctx context.Context) (any, error) {
+				return client.Search(ctx, query, k, minScore)
+			}
+			id, err := pe.submitAsync(L, pluginName, "rag", ragAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			if ctxIdx > 0 {
+				saveAsyncCtx(L, id, ctxIdx)
+			}
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+	})
+	L.SetGlobal("rag", ragTable)
 }
 
 func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
