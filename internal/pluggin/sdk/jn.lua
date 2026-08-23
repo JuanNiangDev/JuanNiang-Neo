@@ -83,10 +83,10 @@ M.json = json
 -- ====================================================================
 
 ---@class jn.OneBot11
----@field send_private_msg fun(user_id: number, message: string|table): boolean, string? 异步发送私聊消息，不阻塞
----@field send_group_msg fun(group_id: number, message: string|table): boolean, string? 异步发送群消息，不阻塞
----@field send_private_msg_sync fun(user_id: number, message: string|table): boolean, string? 同步发送私聊消息，等待结果
----@field send_group_msg_sync fun(group_id: number, message: string|table): boolean, string? 同步发送群消息，等待结果
+---@field send_private_msg fun(user_id: number, message: string|table, reply_to?: number): boolean, string? 异步发送私聊消息，不阻塞（reply_to=引用回复的消息ID，可选）
+---@field send_group_msg fun(group_id: number, message: string|table, reply_to?: number): boolean, string? 异步发送群消息，不阻塞（reply_to=引用回复的消息ID，可选）
+---@field send_private_msg_sync fun(user_id: number, message: string|table, reply_to?: number): boolean, string? 同步发送私聊消息，等待结果（reply_to=引用回复的消息ID，可选）
+---@field send_group_msg_sync fun(group_id: number, message: string|table, reply_to?: number): boolean, string? 同步发送群消息，等待结果（reply_to=引用回复的消息ID，可选）
 ---@field send_group_forward_msg fun(group_id: number, nodes: table[]): boolean, string? 异步发送群合并转发（转发卡片），不阻塞；nodes 为节点数组：构造节点 {user_id=…, nickname=“…”, content=“文本或消息段数组”} / 引用节点 {id=群内已有消息ID}
 ---@field send_group_forward_msg_sync fun(group_id: number, nodes: table[]): number, string? 同步发送群合并转发，返回 message_id
 ---@field delete_msg fun(message_id: number|string): boolean, string? 撤回消息（事件表的 message_id 为字符串）

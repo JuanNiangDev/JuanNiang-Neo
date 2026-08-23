@@ -239,10 +239,10 @@ jn.file.append_line("data/log.txt", "事件发生于 " .. os.date())
 
 | 函数 | 说明 |
 |------|------|
-| `onebot11.send_private_msg(user_id, message) → bool, string` | **异步发送**私聊，立即返回。`message` 可为 string 或消息段数组 |
-| `onebot11.send_group_msg(group_id, message) → bool, string` | **异步发送**群聊，立即返回 |
-| `onebot11.send_private_msg_sync(user_id, message) → bool [, err]` | **同步发送**私聊，阻塞等待结果返回 |
-| `onebot11.send_group_msg_sync(group_id, message) → bool [, err]` | **同步发送**群聊，阻塞等待结果返回 |
+| `onebot11.send_private_msg(user_id, message, reply_to?) → bool, string` | **异步发送**私聊，立即返回。`message` 可为 string 或消息段数组；可选 `reply_to`（消息 ID）让本条消息**引用回复**指定消息 |
+| `onebot11.send_group_msg(group_id, message, reply_to?) → bool, string` | **异步发送**群聊，立即返回；可选 `reply_to` 同上 |
+| `onebot11.send_private_msg_sync(user_id, message, reply_to?) → bool [, err]` | **同步发送**私聊，阻塞等待结果返回；可选 `reply_to` 同上 |
+| `onebot11.send_group_msg_sync(group_id, message, reply_to?) → bool [, err]` | **同步发送**群聊，阻塞等待结果返回；可选 `reply_to` 同上 |
 | `onebot11.send_group_forward_msg(group_id, nodes) → bool, string` | **异步发送**群合并转发（转发卡片），立即返回。`nodes` 为节点数组：构造节点 `{user_id=…, nickname=“…”, content=“文本或消息段数组”}`；引用节点 `{id=群内已有消息ID}`（引用既有消息作为转发节点） |
 | `onebot11.send_group_forward_msg_sync(group_id, nodes) → number [, err]` | **同步发送**群合并转发，阻塞等待，返回 `message_id`（部分实现不返回时可能为 0，请以 `err` 判断成功） |
 | `onebot11.delete_msg(message_id) → bool [, err]` | 撤回消息；`message_id` 接受数字或字符串（事件表的 `message_id` 为字符串，避免 QQ 长 ID 精度丢失） |

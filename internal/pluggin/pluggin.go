@@ -1639,6 +1639,32 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		return nodes
 	}
 
+	// applyReplyTo 在消息前插入引用回复段（可选第 3 参数 reply_to=消息ID）：
+	// 字符串消息含 CQ 码时先解析为段数组再前插；纯文本与段数组统一前插 Reply 段。
+	// reply_to 为 nil/非法时原样返回消息。
+	applyReplyTo := func(msg any, replyTo lua.LValue) any {
+		if replyTo == lua.LNil {
+			return msg
+		}
+		id, err := luaMsgID(replyTo)
+		if err != nil {
+			log.Warn("插件 reply_to 参数无效，忽略引用", "reply_to", replyTo.String(), "err", err)
+			return msg
+		}
+		replySeg := adapter.Reply(strconv.FormatInt(id, 10))
+		switch v := msg.(type) {
+		case string:
+			if adapter.HasCQCode(v) {
+				return append([]adapter.Segment{replySeg}, adapter.ParseCQCodes(v)...)
+			}
+			return []adapter.Segment{replySeg, adapter.Text(v)}
+		case []adapter.Segment:
+			return append([]adapter.Segment{replySeg}, v...)
+		default:
+			return msg
+		}
+	}
+
 	obTable := L.NewTable()
 	funcs := map[string]lua.LGFunction{
 		"send_private_msg": func(L *lua.LState) int {
@@ -1652,6 +1678,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
+			msg = applyReplyTo(msg, L.Get(3)) // 可选 reply_to=被引用消息ID
 			// 插件发消息异步，不阻塞命令 handler 返回
 			go func() {
 				t0 := time.Now()
@@ -1674,6 +1701,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
+			msg = applyReplyTo(msg, L.Get(3)) // 可选 reply_to=被引用消息ID
 			// 插件发消息异步，不阻塞命令 handler 返回
 			go func() {
 				t0 := time.Now()
@@ -1720,6 +1748,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
+			msg = applyReplyTo(msg, L.Get(3)) // 可选 reply_to=被引用消息ID
 			_, err := sendAdp.SendPrivateMsg(userID, msg)
 			return pushResult(L, err)
 		},
@@ -1734,6 +1763,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
+			msg = applyReplyTo(msg, L.Get(3)) // 可选 reply_to=被引用消息ID
 			_, err := sendAdp.SendGroupMsg(groupID, msg)
 			return pushResult(L, err)
 		},
