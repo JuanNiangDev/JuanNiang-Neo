@@ -793,7 +793,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// ---------- 构建系统提示词（长期记忆 + 核心提示词；工具感知交由 Eino tools 参数处理） ----------
 	var longTermMems []string
 	if h.Memory != nil {
-		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, chatArea.ID, "", 5)
+		// 语义召回：按当前消息相关性取长期记忆（gram 倒排候选 + similarity 排序，
+		// 空候选/异常自动回退最近条目）；LTM_RECALL_MODE=recent 可整体关闭
+		longTermMems, _ = h.Memory.RecallLongTermMemory(ctx, chatArea.ID, combinedUserMsg, 5)
 	}
 
 	sessionCtxStr := h.buildSessionContext(ctx, msg, events[len(events)-1].Admins)

@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -186,7 +188,15 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 
 	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea)
 	stConf := shortterm.Config{WindowSize: 100, AutoCompact: true}
-	ltConf := longterm.Config{HotAreaSize: 10}
+	// 长期记忆对话召回：默认语义召回（pg_trgm 倒排 + similarity 排序）;
+	// 环境变量 LTM_RECALL_MODE=recent 可回退为旧"最近 N 条"行为（灰度/故障逃生）。
+	ltConf := longterm.Config{HotAreaSize: 10, RecallMode: longterm.RecallModeSemantic}
+	if strings.EqualFold(os.Getenv("LTM_RECALL_MODE"), "recent") {
+		ltConf.RecallMode = longterm.RecallModeRecent
+		log.Info("长期记忆召回模式: recent（环境变量 LTM_RECALL_MODE=recent）")
+	} else {
+		log.Info("长期记忆召回模式: semantic")
+	}
 	st := shortterm.New(stConf, cfg.Cache)
 	lt := longterm.New(ltConf, cfg.DAO.LongTermMemItem)
 	sm := skillmem.New(cfg.DAO.SkillMemory)

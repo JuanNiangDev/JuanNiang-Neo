@@ -11,9 +11,22 @@ import (
 
 var log = logging.NewModule("longterm")
 
+// RecallMode 长期记忆对话召回模式。
+type RecallMode string
+
+const (
+	// RecallModeRecent 按最近写入召回（旧行为）：HotArea 内存直返，DB 时间倒序兕底。
+	RecallModeRecent RecallMode = "recent"
+	// RecallModeSemantic 按消息语义召回（默认）：消息 gram 走 pg_trgm GIN 倒排候选，
+	// 候选内 similarity 排序；空候选/异常自动回退最近。
+	RecallModeSemantic RecallMode = "semantic"
+)
+
 // Config 长期记忆配置。
 type Config struct {
 	HotAreaSize int
+	// RecallMode 对话召回模式（默认语义召回；可通过环境变量 LTM_RECALL_MODE=recent 关闭）
+	RecallMode RecallMode
 }
 
 // LongTermMemory 长期记忆，Postgres 存储 + 内存 HotArea (LRU)。
@@ -28,6 +41,9 @@ type LongTermMemory struct {
 func New(conf Config, itemDAO *dao.LongTermMemoryItemDAO) *LongTermMemory {
 	if conf.HotAreaSize <= 0 {
 		conf.HotAreaSize = 10
+	}
+	if conf.RecallMode == "" {
+		conf.RecallMode = RecallModeSemantic // 默认语义召回
 	}
 	return &LongTermMemory{
 		conf:    conf,
@@ -64,6 +80,27 @@ func (m *LongTermMemory) Search(ctx context.Context, areaID, query string, limit
 
 	// HotArea 不足，回退 DB 查询
 	return m.dao.ListByChatArea(ctx, areaID, limit)
+}
+
+// Recall 对话语义召回（主链路）：
+//  1. recent 模式 / gram 为空（短消息、纯表情）→ 直接回退最近条目（Search 空 query）
+//  2. semantic 模式：gram OR 候选 + similarity 排序；
+//     候选为空或检索异常 → 回退最近条目，保证召回质量不劣于旧行为
+func (m *LongTermMemory) Recall(ctx context.Context, areaID string, grams []string, query string, limit int) ([]models.LongTermMemoryItem, error) {
+	if m.conf.RecallMode == RecallModeRecent || len(grams) == 0 {
+		return m.Search(ctx, areaID, "", limit)
+	}
+
+	items, err := m.dao.SemanticSearch(ctx, areaID, grams, query, limit)
+	if err != nil {
+		log.Warn("长期记忆语义召回失败，回退最近", "area_id", areaID, "err", err)
+		return m.Search(ctx, areaID, "", limit)
+	}
+	if len(items) == 0 {
+		// 新话题无字面重叠：回退最近，避免语义召回把记忆"清空"
+		return m.Search(ctx, areaID, "", limit)
+	}
+	return items, nil
 }
 
 // GetHot 返回指定 ChatArea 的热区记忆条目（最新在前）。

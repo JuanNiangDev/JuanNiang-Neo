@@ -181,6 +181,25 @@ func (m *MemoryGroup) GetLongTermMemory(ctx context.Context, areaID, query strin
 	return out, nil
 }
 
+// RecallLongTermMemory 对话主链路召回：按当前消息语义召回长期记忆
+// （消息 gram → pg_trgm 倒排候选 → similarity 排序；空候选/异常回退最近）。
+func (m *MemoryGroup) RecallLongTermMemory(ctx context.Context, areaID, msg string, limit int) ([]string, error) {
+	query, grams := longterm.RecallTerms(msg)
+	if query == "" {
+		// 无有效文本（纯表情/纯 CQ 码）：回退最近条目
+		return m.GetLongTermMemory(ctx, areaID, "", limit)
+	}
+	items, err := m.LongTerm.Recall(ctx, areaID, grams, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i] = item.Content
+	}
+	return out, nil
+}
+
 func (m *MemoryGroup) UpdateLongTermConfig(conf LongTermMemoryConfig) {
 	m.LongTerm.UpdateConfig(conf)
 }
