@@ -32,10 +32,19 @@ func (d *LongTermMemoryItemDAO) ListByChatArea(ctx context.Context, chatAreaID s
 	return list, err
 }
 
+// likePred 返回子串匹配谓词：PostgreSQL 用 ILIKE（大小写不敏感），
+// 其它方言（SQLite 测试环境）用 LIKE，避免语法错误。
+func (d *LongTermMemoryItemDAO) likePred() string {
+	if d.db.Dialector.Name() == "postgres" {
+		return "ILIKE"
+	}
+	return "LIKE"
+}
+
 func (d *LongTermMemoryItemDAO) SearchByContent(ctx context.Context, chatAreaID string, keyword string, limit int) ([]models.LongTermMemoryItem, error) {
 	var list []models.LongTermMemoryItem
 	err := d.db.WithContext(ctx).
-		Where("chat_area_id = ? AND content ILIKE ?", chatAreaID, "%"+keyword+"%").
+		Where("chat_area_id = ? AND content "+d.likePred()+" ?", chatAreaID, "%"+keyword+"%").
 		Order("created_at DESC").
 		Limit(limit).
 		Find(&list).Error
@@ -61,13 +70,14 @@ func (d *LongTermMemoryItemDAO) SemanticSearch(ctx context.Context, chatAreaID s
 	var sb strings.Builder
 	sb.WriteString("SELECT * FROM long_term_memory_items")
 	sb.WriteString(" WHERE chat_area_id = ? AND (")
+	pred := d.likePred()
 	args := make([]any, 0, len(grams)+3)
 	args = append(args, chatAreaID)
 	for i, g := range grams {
 		if i > 0 {
 			sb.WriteString(" OR ")
 		}
-		sb.WriteString("content ILIKE '%' || ? || '%'")
+		sb.WriteString("content " + pred + " '%' || ? || '%'")
 		args = append(args, g)
 	}
 	sb.WriteString(")")

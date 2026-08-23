@@ -160,7 +160,7 @@ flowchart LR
 |------|------|------|
 | `provider` | `provider.go` | OpenAI 兼容 `/v1/chat/completions`（流式 SSE）、`Vision`（inline base64）；`ProviderGroup` 同类型单 Active 管理 |
 | `mcp` | `mcp.go` | `mark3labs/mcp-go` SSE 客户端；`MCPGroup` 聚合连接 + `ListTools`/`CallTool`（MCP 可覆盖 builtin 同名工具） |
-| `memory` | `memory.go` + `shortterm`/`longterm`/`skillmem` | 四层记忆：短期(Redis 滑窗, 默认100条, 自动Compact) / 长期(Postgres + 内存 LRU HotArea) / 技能记忆(SkillMemory, Compact 时 LLM 自动提取) / 会话记录(Postgres 审计) |
+| `memory` | `memory.go` + `shortterm`/`longterm`/`skillmem` | 四层记忆：短期(Redis 滑窗, 默认100条, 自动Compact) / 长期(Postgres + 内存 LRU HotArea + **语义召回**：消息 gram 走 pg_trgm GIN 倒排候选 + similarity 排序，空候选回退最近；`LTM_RECALL_MODE=recent` 可回退旧行为) / 技能记忆(SkillMemory, Compact 时 LLM 自动提取) / 会话记录(Postgres 审计) |
 | `prompt` | `prompt.go` | `PromptManager` + 系统锁定提示词 `EnsureSystemPrompt` 幂等播种 + `BuildFullContext`（工具感知不拼入提示词，由 Eino tools 参数提供） |
 | `session` | `session.go` | `SessionManager`：`GetOrCreate` / `AppendRecord`(Postgres) / `UpdateTokenUsage` |
 | `skill` | `skill.go` | `SkillEngine.Match(input)` 按关键词 / 正则 / priority 匹配首个激活技能 |
@@ -327,7 +327,8 @@ handleMessage                                       event.go:311
 ├─ h.Session.GetOrCreate(chatArea.ID)               event.go:344
 ├─ 收集批内用户消息(带发言人标识) + Skills.Match      event.go:351-380
 ├─ Loops.Register 活跃循环 (Web 监控页展示)         event.go:388-397
-├─ longTermMems = h.Memory.GetLongTermMemory          event.go:402
+├─ longTermMems = h.Memory.RecallLongTermMemory    event.go:402
+│   (语义召回: 消息 gram → pg_trgm 倒排候选 + similarity 排序; 空候选回退最近 5 条)
 ├─ skillMem = h.Memory.GetSkillMemory()              event.go:413
 ├─ systemCtx = h.Prompt.BuildFullContext(longTermMem, skillMem)
 │   (工具感知不拼入提示词, 由 Eino 每次模型调用自动携带 tools 参数)
