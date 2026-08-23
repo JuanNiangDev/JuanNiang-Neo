@@ -104,6 +104,7 @@ export const memoryApi = {
   updateShortTerm: (chatAreaID: string, data: { window_size: number; auto_compact: boolean }) => client.put(`/memory/${chatAreaID}/short-term`, data),
   getLongTerm: (chatAreaID: string) => client.get(`/memory/${chatAreaID}/long-term`),
   updateLongTerm: (chatAreaID: string, data: { hot_area_size: number; hot_memory_ttl: number }) => client.put(`/memory/${chatAreaID}/long-term`, data),
+  syncRAG: () => client.post('/memory/sync-rag'),
 }
 
 // ======== Prompts ========

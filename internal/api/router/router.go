@@ -48,6 +48,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/memory/:chatAreaID/short-term", auth, svc.UpdateShortTermMemoryConfig)
 	api.GET("/memory/:chatAreaID/long-term", auth, svc.GetLongTermMemoryConfig)
 	api.PUT("/memory/:chatAreaID/long-term", auth, svc.UpdateLongTermMemoryConfig)
+	api.POST("/memory/sync-rag", auth, svc.SyncMemoryRAG)
 
 	// Prompts
 	api.GET("/prompts", auth, svc.ListPrompts)

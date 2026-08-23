@@ -2792,6 +2792,59 @@ func (s *Service) SyncKnowledgeVector(ctx context.Context, c *app.RequestContext
 	}))
 }
 
+// SyncMemoryRAG 手动全量同步长期记忆到 RAG 向量库（Memory 页按钮触发）：
+// 全部 LongTermMemItem 按 50 条一批 BatchUpsert（幂等），补齐 Compact 双写之前
+// 的历史记忆。RAG 未启用返回明确提示（不静默）。
+func (s *Service) SyncMemoryRAG(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+			"ready": false, "synced": 0, "failed": 0, "total": 0,
+			"message": "RAG 未启用，无法同步记忆向量",
+		}))
+		return
+	}
+	ids, err := s.DAO.LongTermMemItem.ListAllIDs(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	items, err := s.DAO.LongTermMemItem.GetByIDs(ctx, ids)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	const batchSize = 50
+	synced, failed := 0, 0
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batch := make([]ragcaller.BatchItem, 0, end-i)
+		for _, it := range items[i:end] {
+			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Memory(it.ID), Text: it.Content})
+		}
+		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		if err != nil {
+			log.Warn("记忆向量同步批次失败", "batch", i/batchSize+1, "err", err)
+			failed += len(batch)
+			continue
+		}
+		for _, r := range resp.Results {
+			if r.Error != nil {
+				failed++
+			} else {
+				synced++
+			}
+		}
+	}
+	log.Info("长期记忆向量同步完成", "total", len(items), "synced", synced, "failed", failed)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+		"ready": true, "synced": synced, "failed": failed, "total": len(items),
+	}))
+}
+
 // ---------- 图床 ----------
 
 // maxImageSize 上传图片大小上限：1.5MB。
