@@ -49,6 +49,7 @@ type Bundle struct {
 	Onebot11Adapter *Onebot11AdapterDao
 	Sandbox         *SandboxConfigDAO
 	T2I             *T2IConfigDAO
+	RAG             *RAGConfigDAO
 	Webhook         *WebhookConfigDAO
 	CronJob         *CronJobDAO
 	ReplyStrategy   *ReplyStrategyDAO
@@ -82,6 +83,7 @@ func NewBundle(db *gorm.DB) *Bundle {
 		Onebot11Adapter: NewOnebot11AdapterDao(db),
 		Sandbox:         NewSandboxConfigDAO(db),
 		T2I:             NewT2IConfigDAO(db),
+		RAG:             NewRAGConfigDAO(db),
 		Webhook:         NewWebhookConfigDAO(db),
 		CronJob:         NewCronJobDAO(db),
 		ReplyStrategy:   NewReplyStrategyDAO(db),

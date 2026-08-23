@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"JuanNiang-Neo/infrastructure/postgres"
+	"JuanNiang-Neo/infrastructure/rag"
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	"JuanNiang-Neo/infrastructure/redis"
 	sandbox "JuanNiang-Neo/infrastructure/sandbox"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
@@ -211,6 +213,7 @@ func main() {
 		WebhookAdapter: webhookAdapter,
 		Sandbox:        nil,
 		T2I:            nil,
+		RAG:            nil,
 		Providers:      hago.Providers,
 		MCPGroup:       hago.MCP,
 		DAO:            coreInst.DAO,
@@ -270,8 +273,10 @@ func main() {
 	// T2I / Sandbox 运行时同步：从 DB 加载配置并设置回调
 	loadT2IFromDB(ctx, svc, coreInst.DAO, hago)
 	loadSandboxFromDB(ctx, svc, coreInst.DAO, hago)
+	loadRAGFromDB(ctx, svc, coreInst.DAO, hago)
 	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
 	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
+	svc.OnUpdateRAG = func(client *ragcaller.Client) { hago.RAGClient = client }
 	svc.OnRebuildAgent = func() { hago.RebuildEinoAgent(ctx) }
 	svc.OnUpdateToolAdminOnly = func() { hago.RefreshToolAdminOnly(ctx) }
 	svc.OnReplyStrategyChanged = func() { hago.InvalidateReplySettings() }
@@ -479,6 +484,39 @@ func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bund
 
 	// Sandbox 客户端晚于 buildEinoAgent 就绪，重建 Agent 注册 sandbox 系列工具
 	hago.RebuildEinoAgent(ctx)
+}
+
+// loadRAGFromDB 从 DB 加载 RAG-Service 配置并创建客户端（未启用/失败时保持 nil，
+// 记忆与知识检索自动降级到非 RAG 路径；nil 客户端是降级开关，不是错误）。
+func loadRAGFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
+	cfg, err := daos.RAG.GetConfig(ctx)
+	if err != nil {
+		// 数据库无配置 → 初始化默认配置，保证前端读取不报错
+		if initErr := daos.RAG.InitConfig(ctx); initErr != nil {
+			log.Warn("RAG 默认配置初始化失败", "err", initErr)
+			return
+		}
+		cfg, err = daos.RAG.GetConfig(ctx)
+		if err != nil {
+			log.Warn("RAG 配置加载失败，使用默认", "err", err)
+			return
+		}
+	}
+	if !cfg.IsActive {
+		log.Info("RAG 未启用（记忆/知识检索走降级路径）")
+		return
+	}
+	client, err := rag.NewClient(
+		rag.WithBaseURL(cfg.BaseURL),
+		rag.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
+	)
+	if err != nil {
+		log.Warn("RAG 客户端创建失败，降级到非 RAG 路径", "err", err)
+		return
+	}
+	svc.RAGClient = client
+	hago.RAGClient = client
+	log.Info("RAG 客户端已就绪", "base_url", cfg.BaseURL)
 }
 
 // loadWebhookConfig 从 DB 加载 Webhook 配置；若不存在则使用默认值并初始化 DB。

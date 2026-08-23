@@ -292,6 +292,13 @@ type UpdateT2IConfigReq struct {
 	SelectedStyle string `json:"selected_style"`
 }
 
+// UpdateRAGConfigReq RAG 向量检索服务配置更新请求。
+type UpdateRAGConfigReq struct {
+	BaseURL  string `json:"base_url"`
+	Timeout  int    `json:"timeout"`
+	IsActive bool   `json:"is_active"`
+}
+
 // ---------- Sandbox ----------
 
 type UpdateSandboxConfigReq struct {

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
@@ -49,6 +50,9 @@ type HagoCenter struct {
 	// T2I 和 Sandbox 运行时客户端（可通过 API 热更新）
 	SandboxClient *sandboxcaller.Client
 	T2IClient     *t2icaller.Client
+	// RAGClient 向量检索服务客户端（可通过 API 热更新）；nil=未启用，
+	// 记忆/知识检索自动降级到非 RAG 路径（pg_trgm / SQL 匹配）。
+	RAGClient *ragcaller.Client
 
 	Concurrency    *ConcurrencyManager
 	CronJobManager *cronjob.Manager
@@ -121,6 +125,7 @@ type Config struct {
 	WebhookAdapter *adapter.WebhookAdapter
 	Sandbox        *sandboxcaller.Client
 	T2I            *t2icaller.Client
+	RAG            *ragcaller.Client
 	Providers      *provider.ProviderGroup
 	MCPGroup       *mcp.MCPGroup
 	DAO            *dao.Bundle
@@ -179,9 +184,10 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	}
 	log.Info("机器人身份信息", "self_qq", h.SelfQQ, "self_nickname", h.SelfNickname)
 
-	// 存储 T2I/Sandbox 运行时客户端
+	// 存储 T2I/Sandbox/RAG 运行时客户端
 	h.SandboxClient = cfg.Sandbox
 	h.T2IClient = cfg.T2I
+	h.RAGClient = cfg.RAG
 
 	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径) + 每日 Token 统计
 	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.DAO.TokenUsageDaily, cfg.Cache)

@@ -128,6 +128,12 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/sandbox/config", auth, svc.UpdateSandboxConfig)
 	api.GET("/sandbox/health", auth, svc.CheckSandboxHealth)
 
+	// RAG（向量检索服务）
+	api.GET("/rag/config", auth, svc.GetRAGConfig)
+	api.PUT("/rag/config", auth, svc.UpdateRAGConfig)
+	api.GET("/rag/health", auth, svc.CheckRAGHealth)
+	api.GET("/rag/info", auth, svc.GetRAGInfo)
+
 	// Webhook
 	api.GET("/webhook/config", auth, svc.GetWebhookConfig)
 	api.PUT("/webhook/config", auth, svc.UpdateWebhookConfig)

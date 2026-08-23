@@ -203,6 +203,44 @@ export const sandboxApi = {
   health: () => client.get('/sandbox/health'),
 }
 
+// ======== RAG（向量检索服务） ========
+
+export interface RAGConfigResp {
+  base_url: string
+  timeout: number
+  is_active: boolean
+  healthy: boolean
+}
+
+export interface UpdateRAGConfigReq {
+  base_url: string
+  timeout: number
+  is_active: boolean
+}
+
+export interface RAGInfoResp {
+  status?: string
+  model?: {
+    ready: boolean
+    model_name?: string
+    dim?: number
+    n_params?: number
+    n_threads?: number
+    error?: string
+  }
+  memory?: { rss_kb: number; vsize_kb: number }
+  tags?: number
+  chunks?: number
+  error?: string
+}
+
+export const ragApi = {
+  getConfig: () => client.get('/rag/config'),
+  updateConfig: (data: UpdateRAGConfigReq) => client.put('/rag/config', data),
+  health: () => client.get('/rag/health'),
+  info: () => client.get('/rag/info'),
+}
+
 // ======== Webhook ========
 export const webhookApi = {
   getConfig: () => client.get('/webhook/config'),

@@ -40,6 +40,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.Onebot11Adapter{},
 		&models.T2IConfig{},
 		&models.SandboxConfig{},
+		&models.RAGConfig{},
 		&models.WebhookConfig{},
 		&models.CronJob{},
 		&models.ReplyStrategyConfig{},

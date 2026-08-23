@@ -133,6 +133,7 @@ const navGroups = [
 		items: [
 			{ title: 'T2I', icon: 'mdi-image-auto-adjust', to: '/t2i' },
 			{ title: 'Sandbox', icon: 'mdi-code-braces-box', to: '/sandbox' },
+			{ title: 'RAG 向量', icon: 'mdi-vector-polyline', to: '/rag' },
 			{ title: '修改密码', icon: 'mdi-key-change', to: '/settings' },
 		],
 	},

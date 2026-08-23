@@ -2094,6 +2094,96 @@ func (s *Service) CheckSandboxHealth(ctx context.Context, c *app.RequestContext)
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": err == nil}))
 }
 
+// ---------- RAG ----------
+
+func (s *Service) GetRAGConfig(ctx context.Context, c *app.RequestContext) {
+	cfg, err := s.DAO.RAG.GetConfig(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.RAGConfigNotFound, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	healthy := false
+	if s.RAGClient != nil {
+		healthy = s.RAGClient.HealthCheck() == nil
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawRAGConfig2Resp(cfg, healthy)))
+}
+
+func (s *Service) UpdateRAGConfig(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateRAGConfigReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	cfg, err := s.DAO.RAG.GetConfig(ctx)
+	if err != nil {
+		// 数据库无配置 → 初始化默认配置
+		if initErr := s.DAO.RAG.InitConfig(ctx); initErr != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: initErr.Error()}))
+			return
+		}
+		cfg, err = s.DAO.RAG.GetConfig(ctx)
+		if err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.RAGConfigNotFound, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	}
+
+	cfg.BaseURL = data.BaseURL
+	cfg.Timeout = data.Timeout
+	cfg.IsActive = data.IsActive
+
+	if err := s.DAO.RAG.UpdateConfig(ctx, cfg); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 运行时同步：启用且健康检查通过则注入客户端，否则置 nil（走降级路径）
+	if data.IsActive {
+		client := ragClientFactory(data.BaseURL, data.Timeout)
+		s.RAGClient = client
+		if s.OnUpdateRAG != nil {
+			s.OnUpdateRAG(client)
+		}
+	} else {
+		s.RAGClient = nil
+		if s.OnUpdateRAG != nil {
+			s.OnUpdateRAG(nil)
+		}
+	}
+
+	healthy := false
+	if s.RAGClient != nil {
+		healthy = s.RAGClient.HealthCheck() == nil
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawRAGConfig2Resp(cfg, healthy)))
+}
+
+func (s *Service) CheckRAGHealth(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": false}))
+		return
+	}
+	err := s.RAGClient.HealthCheck()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": err == nil}))
+}
+
+// GetRAGInfo 查询 RAG-Service 运行状态（模型/内存/规模），供管理面板展示。
+func (s *Service) GetRAGInfo(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{"ready": false}))
+		return
+	}
+	info, err := s.RAGClient.Info(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{"ready": false, "error": err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, info))
+}
+
 // ---------- Webhook ----------
 
 func (s *Service) GetWebhookConfig(ctx context.Context, c *app.RequestContext) {
