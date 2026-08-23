@@ -26,6 +26,7 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
 	"JuanNiang-Neo/internal/agent/fishcal"
+	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/scheduledmsg"
 	"JuanNiang-Neo/internal/api/engine"
@@ -257,6 +258,29 @@ func main() {
 	// 将 PluginEngine 注册为 Webhook 插件路由器
 	webhookAdapter.SetPluginRouter(pluginEngine)
 
+	// ---------- 6.5 群管理系统功能（Phase 0.5 检测闸门 + 系统命令） ----------
+	gm := groupmgr.New(coreInst.DAO.GroupMgr,
+		adapterProv,
+		func() *ragcaller.Client { return hago.RAGClient },
+		hago.Providers)
+	if err := gm.Init(ctx); err != nil {
+		log.Error("群管理初始化失败", "err", err)
+	} else {
+		go gm.Run(ctx)
+	}
+	hago.GroupMgr = gm
+	// 系统命令：后注册覆盖插件同名命令（命令树覆盖语义），旧插件停用前不冲突
+	pluginEngine.RegisterBuiltinCommand([]string{"groupstats"}, pluggin.CommandOpts{
+		Description: "查看群管理统计数据（管理员）",
+		Usage:       "/groupstats",
+	}, func(args []string, ev pluggin.EventData) (bool, string, error) {
+		if !gm.IsCommandAdmin(ev.GroupID, ev.UserID, ev.Admins) {
+			return true, "只有管理员可以查看统计数据哦～", nil
+		}
+		return true, gm.CommandGroupStats(ev.GroupID), nil
+	})
+	registerGroupMgrCommands(pluginEngine, gm)
+
 	// ---------- 7. Web API ----------
 
 	svc := service.New(coreInst.DAO, adapterProv, webhookAdapter, pluginEngine)
@@ -416,6 +440,65 @@ func parseAdmins(s string) []string {
 		admins = append(admins, id)
 	}
 	return admins
+}
+
+// registerGroupMgrCommands 注册群管理系统命令（覆盖旧 Lua 插件的同名命令）。
+func registerGroupMgrCommands(pluginEngine *pluggin.PluginEngine, gm *groupmgr.Manager) {
+	// /豁免 —— 管理员对某用户执行一次豁免：解除禁言 + 清空违规记录（不加入白名单）
+	pluginEngine.RegisterBuiltinCommand([]string{"豁免"}, pluggin.CommandOpts{
+		Description: "豁免某用户：解除禁言并清空违规记录（不加入白名单，管理员）",
+		Usage:       "/豁免 QQ号 或 /豁免 @某人",
+	}, func(args []string, ev pluggin.EventData) (bool, string, error) {
+		if ev.MessageType != "group" {
+			return true, "该命令仅限群聊使用哦～", nil
+		}
+		if !gm.IsCommandAdmin(ev.GroupID, ev.UserID, ev.Admins) {
+			return true, groupmgr.CommandPardonDenied(), nil
+		}
+		qq := groupmgr.ParseTargetQQ(args)
+		if qq == 0 {
+			return true, groupmgr.CommandPardonUsage(), nil
+		}
+		return true, gm.CommandPardon(ev.GroupID, qq), nil
+	})
+
+	// /白名单 —— 管理员将某用户加入白名单（不再检测）+ 清违规 + 解禁言
+	pluginEngine.RegisterBuiltinCommand([]string{"白名单"}, pluggin.CommandOpts{
+		Description: "将某用户加入白名单：不再检测、清除违规记录，若被禁言自动解除（管理员）",
+		Usage:       "/白名单 QQ号 或 /白名单 @某人",
+	}, func(args []string, ev pluggin.EventData) (bool, string, error) {
+		if ev.MessageType != "group" {
+			return true, "该命令仅限群聊使用哦～", nil
+		}
+		if !gm.IsCommandAdmin(ev.GroupID, ev.UserID, ev.Admins) {
+			return true, groupmgr.CommandWhitelistDenied(), nil
+		}
+		qq := groupmgr.ParseTargetQQ(args)
+		if qq == 0 {
+			return true, groupmgr.CommandWhitelistUsage(), nil
+		}
+		return true, gm.CommandWhitelist(ev.GroupID, qq), nil
+	})
+
+	// /解除豁免 /取消豁免 —— 管理员从白名单移除某用户
+	for _, path := range []string{"解除豁免", "取消豁免"} {
+		pluginEngine.RegisterBuiltinCommand([]string{path}, pluggin.CommandOpts{
+			Description: "解除豁免某用户：从白名单移除，恢复检测（管理员）",
+			Usage:       "/" + path + " QQ号 或 /" + path + " @某人",
+		}, func(args []string, ev pluggin.EventData) (bool, string, error) {
+			if ev.MessageType != "group" {
+				return true, "该命令仅限群聊使用哦～", nil
+			}
+			if !gm.IsCommandAdmin(ev.GroupID, ev.UserID, ev.Admins) {
+				return true, groupmgr.CommandPardonDenied(), nil
+			}
+			qq := groupmgr.ParseTargetQQ(args)
+			if qq == 0 {
+				return true, groupmgr.CommandUnexemptUsage(), nil
+			}
+			return true, gm.CommandUnexempt(qq), nil
+		})
+	}
 }
 
 func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {

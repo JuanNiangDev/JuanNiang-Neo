@@ -122,6 +122,14 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 			return
 		}
 	}
+	// Phase 0.5: 系统级群管理检测（先于所有 Lua 插件，Go 原生）。
+	// consumed=true（图片刷屏/+1复读）直接拦截不进 Agent；
+	// 违禁类已内部处罚（不消费，消息继续流向插件与 Agent）。
+	if h.GroupMgr != nil {
+		if h.GroupMgr.Process(ctx, ev) {
+			return
+		}
+	}
 	// Phase 1: Plugin 统一拦截
 	if h.PluginEngine != nil {
 		result := h.PluginEngine.Dispatch(ev)

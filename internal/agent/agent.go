@@ -13,6 +13,7 @@ import (
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/cronjob"
+	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
@@ -59,7 +60,8 @@ type HagoCenter struct {
 	CronJobManager *cronjob.Manager
 	CronJobEvents  chan adapter.Event // CronJob → 主 Agent 事件循环
 	PluginEngine   *pluggin.PluginEngine
-	Loops          *LoopTracker // 当前活跃的 Agent ReAct 循环（监控展示）
+	GroupMgr       *groupmgr.Manager // 群管理系统功能（Phase 0.5 检测闸门）
+	Loops          *LoopTracker      // 当前活跃的 Agent ReAct 循环（监控展示）
 
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
 	SelfQQ       int64

@@ -406,6 +406,14 @@ func (pe *PluginEngine) registerBuiltinCommands() {
 	})
 }
 
+// RegisterBuiltinCommand 注册内置 Go 命令（纯闭包，不依赖插件加载状态）。
+// 供主仓库系统级功能（如群管理 /groupstats）注册命令；后注册覆盖先注册
+// （命令树 Register 覆盖语义），因此系统命令优先于插件同名命令。
+func (pe *PluginEngine) RegisterBuiltinCommand(path []string, opts CommandOpts, handler CommandHandler) {
+	opts.Builtin = true
+	pe.commands.Register("system", path, opts, handler)
+}
+
 func (pe *PluginEngine) LoadAll() error {
 	// 确保内置 SDK 与 system 插件已落盘
 	pe.ensureEmbeddedAssets()
