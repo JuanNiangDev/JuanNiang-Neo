@@ -54,7 +54,7 @@
 | 40028 | 系统插件不允许删除或停用 |
 | 40029 | 系统提示词不允许修改或删除 |
 | 40030 | 内置工具运行时常驻，不支持启停 |
-| 40031 | 无效的回复策略 |
+| 40031 | 无效的回复策略（已废弃：策略收敛为仅 relevance，不再返回） |
 | 40032 | 相关性阈值非法 / 判断失败策略只能是 drop 或 reply |
 | 40033 | 知识内容不能为空 |
 | 40034 | 图片大小不能超过 1.5MB |
@@ -98,9 +98,9 @@
 - `ACLScope`: `chat` | `tool` | `mcp`（**当前仅 `chat` 生效**，`tool`/`mcp` 为历史保留）
 - `ACLPermission`: `allow` | `deny`
 - `ACLTargetType`: `all` | `list`（`list` 时 `user_ids` 才有效）
-- `ReplyStrategy`: `never_reply` | `at_only` | `always` | `relevance`
+- `ReplyStrategy`: 仅 `relevance`（历史 `never_reply`/`at_only`/`always` 已移除）
 
-**ACL 语义**（当前仅聊天黑名单）：无规则=允许所有；仅 `deny` 规则生效（`all`=禁止所有人、`list`=禁止指定 `user_ids`）；`allow` 规则不再生效；Admins 列表中的用户绕过 ACL。
+**ACL 语义**（当前仅聊天黑名单）：无规则=允许所有；仅 `deny` 规则生效（`all`=禁止所有人、`list`=禁止指定 `user_ids`）；`allow` 规则不再生效；黑名单对所有用户生效（**管理员不豁免**）。
 
 ---
 
@@ -700,31 +700,30 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 
 系统回复策略（单例，仅一行）。控制群聊中 Agent 对消息的回复行为。
 
-**ReplyStrategy 枚举**
+**ReplyStrategy 枚举**（已收敛为仅一种）
 
 | 值 | 含义 |
 |----|------|
-| `never_reply` | 完全不回复 |
-| `at_only` | 仅被 @ 时回复 |
-| `always` | 始终回复（默认） |
-| `relevance` | 按相关性回复：@/命令/提及名字必回；噪音消息规则过滤；其余候选批量合并为一次 LLM 判断（受 `relevance_threshold` 影响），带结果缓存/冷却与刷屏降级 |
+| `relevance` | 按相关性回复（唯一策略）：@/命令/提及名字必回；噪音消息规则过滤；其余候选批量合并为一次 LLM 判断（受 `relevance_threshold` 影响），带结果缓存/冷却与刷屏降级 |
+
+> 历史策略（`never_reply`/`at_only`/`always`）已移除；存量配置在启动时自动迁移为 `relevance`，`strategy` 字段保留在响应中供兼容。
 
 ### GET /reply-strategy
-获取配置。首次 GET 不存在时自动创建（`strategy=always, relevance_threshold=0.5`）。
+获取配置。首次 GET 不存在时自动创建（`strategy=relevance, relevance_threshold=0.5`）。
 
-**data** `ReplyStrategyResp`: `strategy`、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`relevance_timeout` int（相关性判断超时秒，默认 10）、`judge_fail_policy` string（`drop`=判断失败不回复（默认）/ `reply`=照常回复）。
+**data** `ReplyStrategyResp`: `strategy`（恒为 `relevance`）、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`relevance_timeout` int（相关性判断超时秒，默认 10）、`judge_fail_policy` string（`drop`=判断失败不回复（默认）/ `reply`=照常回复）。
 
 ### PUT /reply-strategy
-更新。
+更新（不再接受 `strategy` 字段，策略恒为 `relevance`）。
 
-**Body** `UpdateReplyStrategyReq`: `strategy`、`relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）、`relevance_timeout`（相关性判断超时秒，0=默认 10s，范围 1-120）、`judge_fail_policy`（`drop`/`reply`，空=默认 `drop`）。
+**Body** `UpdateReplyStrategyReq`: `relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）、`relevance_timeout`（相关性判断超时秒，0=默认 10s，范围 1-120）、`judge_fail_policy`（`drop`/`reply`，空=默认 `drop`）。
 
 **data** `ReplyStrategyResp`。
 
 ```bash
 curl -X PUT http://localhost:8090/api/v1/reply-strategy \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
-  -d '{"strategy":"relevance","relevance_threshold":0.6,"bot_name":"小卷","judge_fail_policy":"reply"}'
+  -d '{"relevance_threshold":0.6,"bot_name":"小卷","judge_fail_policy":"reply"}'
 ```
 
 ---

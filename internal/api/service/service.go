@@ -2414,27 +2414,16 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		return
 	}
 
-	// 验证策略值
-	validStrategies := map[string]bool{
-		string(models.StrategyNeverReply): true,
-		string(models.StrategyAtOnly):     true,
-		string(models.StrategyAlways):     true,
-		string(models.StrategyRelevance):  true,
-	}
-	if !validStrategies[data.Strategy] {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40031, Info: "无效的回复策略"}, nil))
-		return
-	}
+	// 回复策略已收敛为仅 relevance（不再接受 strategy 字段），
+	// 其余相关性参数仍需校验。
 
 	// 验证阈值
-	if data.Strategy == string(models.StrategyRelevance) {
-		if data.RelevanceThreshold < 0 || data.RelevanceThreshold > 1 {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: "相关性阈值必须在 0-1 之间"}, nil))
-			return
-		}
-		if data.RelevanceThreshold == 0 {
-			data.RelevanceThreshold = 0.5
-		}
+	if data.RelevanceThreshold < 0 || data.RelevanceThreshold > 1 {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: "相关性阈值必须在 0-1 之间"}, nil))
+		return
+	}
+	if data.RelevanceThreshold == 0 {
+		data.RelevanceThreshold = 0.5
 	}
 
 	// 验证相关性判断超时（1-120 秒，0=默认 10s）
@@ -2461,7 +2450,8 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		return
 	}
 
-	cfg.Strategy = models.ReplyStrategy(data.Strategy)
+	// 策略固定为 relevance（存量老化策略值由启动迁移收敛）
+	cfg.Strategy = models.StrategyRelevance
 	cfg.RelevanceThreshold = data.RelevanceThreshold
 	cfg.BotName = data.BotName
 	cfg.StripMarkdown = data.StripMarkdown

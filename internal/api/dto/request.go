@@ -339,9 +339,10 @@ type ToggleCronJobReq struct {
 }
 
 // ---------- 回复策略 ----------
+// 回复策略已收敛为仅 relevance：请求不再接受 strategy 字段，
+// 以下均为相关性判断的参数配置。
 
 type UpdateReplyStrategyReq struct {
-	Strategy           string  `json:"strategy"`
 	RelevanceThreshold float64 `json:"relevance_threshold"`
 	BotName            string  `json:"bot_name"`
 	StripMarkdown      bool    `json:"strip_markdown"`

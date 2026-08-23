@@ -255,6 +255,7 @@ export const cronJobApi = {
 }
 
 // ======== Reply Strategy ========
+// 回复策略已收敛为仅 relevance（strategy 字段保留在响应中供兼容，请求不再接受）
 
 export interface ReplyStrategyResp {
   strategy: string
@@ -269,7 +270,6 @@ export interface ReplyStrategyResp {
 }
 
 export interface UpdateReplyStrategyReq {
-  strategy: string
   relevance_threshold: number
   bot_name: string
   strip_markdown: boolean

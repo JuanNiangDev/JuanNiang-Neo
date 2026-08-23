@@ -162,23 +162,10 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 // 返回 true 表示继续处理；relevance 策略一律返回 true，其 LLM 判断
 // 由 dispatchToAgent 在 goroutine 内调用完整的 checkReplyStrategy 完成。
 func (h *HagoCenter) checkReplyStrategyFast(ctx context.Context, ev adapter.Event, rs ReplySettings) bool {
-	msg := ev.Message
-	switch rs.Strategy {
-	case models.StrategyNeverReply:
-		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
-		return false
-	case models.StrategyAtOnly:
-		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage, ev.SelfID) {
-			log.Info("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID, "self_id", ev.SelfID)
-			return false
-		}
-		return true
-	case models.StrategyRelevance:
-		// 延迟到派发 goroutine 内判断（避免阻塞事件循环）
-		return true
-	default: // StrategyAlways
-		return true
-	}
+	// 回复策略已收敛为仅 relevance：@/命令/提及名字必回由规则快路径保证（零 LLM 调用），
+	// 其余候选消息的 LLM 相关性判断延迟到派发 goroutine 内执行（filterRelevant），
+	// 避免阻塞事件循环。这里恒放行，策略判断全部由 filterRelevant 接管。
+	return true
 }
 
 // replySettingsTTL 回复策略内存缓存有效期：策略是单例配置且极少变更，
@@ -198,7 +185,7 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
 		log.Warn("获取回复策略失败，使用默认值", "err", err)
-		return ReplySettings{Strategy: models.StrategyAlways}
+		return ReplySettings{Strategy: models.StrategyRelevance}
 	}
 	// 相关性判断超时（秒）；0/非法值回退到默认 10s
 	timeout := time.Duration(cfg.RelevanceTimeout) * time.Second
@@ -608,9 +595,7 @@ func groupEventsByUser(events []adapter.Event) [][]adapter.Event {
 // 流程（L1/L2.1）：规则快路径（@/命令/提及名字 → 必回；噪音 → 丢弃）→
 // 剩余候选消息合并为一次批量判断（含图消息标注 [图片]）。
 func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event, rs ReplySettings) []adapter.Event {
-	if rs.Strategy != models.StrategyRelevance {
-		return events
-	}
+	// 回复策略仅 relevance：全程执行下面的快路径 + 批量判断管线，无需策略分支。
 	var mustKeep, candidates []adapter.Event
 	for _, ev := range events {
 		if ev.SkipReplyCheck {
@@ -891,7 +876,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 
 	// ---------- 回复策略 & AgentLite ----------
-	skipSilenceCheck := rs.Strategy == models.StrategyAlways
+	// 注：回复策略已收敛为仅 relevance，skipSilenceCheck（旧 always 策略独占）已移除，
+	// 群聊静默响应（__NO_REPLY__ / 静默短语）始终检测丢弃。
 	agentLite := rs.AgentLite
 
 	// 构建注入给 Eino Agent 的系统指令（Instruction）
@@ -1042,7 +1028,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 
 		// 后处理：静默检测 + 发送 + 记忆
 		if assistantContent != "" && !deliveredToCurrent {
-			silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(assistantContent)
+			silenced := msg.MessageType == "group" && isSilenceResponse(assistantContent)
 			if silenced {
 				log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
 			} else {

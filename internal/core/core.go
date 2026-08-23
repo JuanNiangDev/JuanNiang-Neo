@@ -122,6 +122,14 @@ func Init(ctx context.Context, db *gorm.DB, redisClient *redis.Client) (*Core, e
 			}
 		}
 
+		// 回复策略收敛为仅 relevance：存量行（never_reply/at_only/always）
+		// 统一迁移到唯一策略，避免历史配置在只保留 relevance 后失效或行为歧义。
+		if err := db.Exec("UPDATE reply_strategy_config SET strategy = ? WHERE strategy <> ?",
+			models.StrategyRelevance, models.StrategyRelevance).Error; err != nil {
+			initErr = err
+			return
+		}
+
 		cacheInst := cache.NewCache(redisClient, os.Getenv("REDIS_PREFIX"))
 
 		bundle := dao.NewBundle(db)
