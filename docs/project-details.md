@@ -808,8 +808,8 @@ Lua 侧通过 SDK `jn.command.register(path, handlerFn, opts)` 注册，path 可
 |--------|------|------|
 | `log` | 始终 | info/warn/error → slog `[plugin:<name>]` 前缀 |
 | `json` | 始终 | encode/decode |
-| `onebot11` | `onebot11` | 21 个 OneBot11 API（SendAdapter 接口桥接） |
-| `http` | `http` | get/post，30s 超时真实 HTTP |
+| `onebot11` | `onebot11` | 25 个 OneBot11 API（SendAdapter 接口桥接；含合并转发/引用回复） |
+| `http` | `http` | get/post/get_async/post_async，30s 超时；可选 proxy（http/socks4/socks4a/socks5） |
 | `database` | `database` | query/exec（共享 DB；`prefixSQL` 桩未生效，⚠ 任意 SQL） |
 | `cache` | `cache` | get/set/del/exists（`pluggin:<name>:` 前缀命名空间） |
 | `t2i` | `t2i` | generate / generate_url + toggle/is_active/get_config |

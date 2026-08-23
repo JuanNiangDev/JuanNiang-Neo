@@ -302,7 +302,7 @@ MCP（Model Context Protocol，SSE 传输）服务器配置 CRUD，支持运行�
 
 ## 6. Memory
 
-短期/长期记忆**配置**管理（按 ChatArea）。短期消息实际存 Redis，长期条目存 Postgres，本组接口只管理配置元数据。
+短期/长期记忆**配置**管理（按 ChatArea）。短期消息实际存 Redis，长期条目存 Postgres，本组接口只管理配置元数据。对话时长期记忆默认**按消息语义召回**（gram → pg_trgm 倒排候选 + similarity 排序，空候选回退最近 5 条），环境变量 `LTM_RECALL_MODE=recent` 可回退旧行为。
 
 ### GET /memory/:chatAreaID/short-term
 获取短期记忆配置，不存在则自动创建（`window_size=100, auto_compact=true`）。

@@ -32,6 +32,7 @@
 | `REDIS_PASSWORD` | `root` | |
 | `REDIS_DB` | `0` | Redis 逻辑库索引|
 | `REDIS_PREFIX` | `juan:` | ⚠ 未在 `.env.example` 但 `cache.NewCache` 实际读取|
+| `LTM_RECALL_MODE` | `semantic` | 长期记忆对话召回模式：`semantic`=按消息语义召回（pg_trgm 倒排候选 + similarity 排序，空候选回退最近）；`recent`=旧行为（最近 N 条）|
 | `IMG_DIR` | `data/imgs` | 图床图片存储目录（`imgstore`；元数据在 DB `image_assets`）|
 | `T2I_BASE_URL` | (空/注释) | ⚠ 仅文档；运行时实际从 DB `t2i_configs` 读取|
 | `SANDBOX_BASE_URL` | (空/注释) | ⚠ 同上，从 DB `sandbox_configs` 读取|
@@ -182,7 +183,7 @@ go tool pprof -http :8080 http://127.0.0.1:6060/debug/pprof/heap
 | 启动报 "Postgres 连接失败" | DB_HOST/PORT/USER/PASSWORD/NAME 错；compose 用 `postgres` 主机名 |
 | 启动报 "Redis 連接失败" | REDIS_ADDR/PASSWORD 错；compose 用 `redis:6379` |
 | OneBot 客户端连不上 8081 | OB_TOKEN 不匹配；浏览器访问无 `Authorization: Bearer`；检查防火墙 |
-| LLM 不回复消息 | 1) 没配置/激活 text_model Provider；2) 回复策略设了 `never_reply`；3) ACL 拒绝；4) 群聊不是 @ 也不是 always |
+| LLM 不回复消息 | 1) 没配置/激活 text_model Provider；2) 相关性判断未通过（@/命令/提及名字必回，其余按相关性阈值）；3) ACL 黑名单拒绝；4) 判断失败且策略为 `drop` |
 | Agent 提示"未启用 T2I" | Web 面板 T2I 配置未启用 / `base_url` 不可达；`GET /t2i/health` 为 false |
 | CronJob 不触发 | 留意这是 6 字段（秒级）cron；`0 0 9 * * *` 才是每天 9:00 |
 | 插件改了不生效 | 改 `pluggin.yaml` 必须 reload；改 Lua 文件也要 toggle 后才重新 DoFile |
@@ -244,7 +245,7 @@ WantedBy=multi-user.target
 5. 在"Providers"页配置 LLM Provider（OpenAI 兼容端点），激活
 6. 在"Adapter"页配置 OB_TOKEN 与 admin QQ，启用
 7. 让 OneBot11 实现（NapCat/Lagrange 等）反向 WS 连 `ws://host:8081/`，带 `Authorization: Bearer <OB_TOKEN>`
-8. 在"回复策略"页配置群聊行为
+8. 在"回复设置"页配置相关性阈值等群聊行为（回复策略已收敛为仅按相关性回复）
 
 ## FAQ
 
