@@ -54,6 +54,13 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.FishCalendarConfig{},
 		&models.FishCalendarAffair{},
 		&models.ScheduledMessage{},
+		&models.GroupMgrConfig{},
+		&models.GroupMgrWord{},
+		&models.GroupMgrSample{},
+		&models.GroupMgrViolation{},
+		&models.GroupMgrWhitelist{},
+		&models.GroupMgrAdmin{},
+		&models.GroupMgrStat{},
 	)
 }
 

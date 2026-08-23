@@ -23,3 +23,13 @@ func Knowledge(itemID string) uuid.UUID {
 func Memory(itemID string) uuid.UUID {
 	return uuid.NewSHA1(ragNS, []byte("m:"+itemID))
 }
+
+// Word 返回群管理违规关键词条的 RAG tag（与 k:/m:/s: 前缀互不污染）。
+func Word(itemID string) uuid.UUID {
+	return uuid.NewSHA1(ragNS, []byte("w:"+itemID))
+}
+
+// Sample 返回群管理违规样本的 RAG tag（学习闭环/种子/导入样本）。
+func Sample(itemID string) uuid.UUID {
+	return uuid.NewSHA1(ragNS, []byte("s:"+itemID))
+}
