@@ -53,6 +53,7 @@
 | 40027 | Sandbox 配置不存在 |
 | 40028 | 系统插件不允许删除或停用 |
 | 40029 | 系统提示词不允许修改或删除 |
+| 40034 | RAG 配置不存在 |
 | 40030 | 内置工具运行时常驻，不支持启停 |
 | 40031 | 无效的回复策略（已废弃：策略收敛为仅 relevance，不再返回） |
 | 40032 | 相关性阈值非法 / 判断失败策略只能是 drop 或 reply |
@@ -627,7 +628,27 @@ Text-to-Image 配置与健康管理。单行配置（ID=1）。详见 [external-
 **Body** `UpdateSandboxConfigReq`: `base_url`、`api_key`、`is_active`（必填），`timeout`（可选）。**data** `SandboxConfigResp`。
 
 ### GET /sandbox/health
+**data** `{"healthy": bool}`.
+
+---
+
+## 19.5 RAG 向量检索
+
+RAG-Service 配置与健康管理（记忆/知识语义检索）。单行配置（ID=1，**默认未启用**）。未启用或服务不可达时：记忆召回降级 pg_trgm 语义匹配、知识库检索降级 SQL 匹配，不影响正常对话。
+
+### GET /rag/config
+**data** `RAGConfigResp`: `base_url`、`timeout` int、`is_active` bool、`healthy` bool。
+
+### PUT /rag/config
+**Body** `UpdateRAGConfigReq`: `base_url`、`is_active`（必填），`timeout`（可选）。启用且健康检查通过才注入客户端（健康失败置 nil → 走降级路径）。**data** `RAGConfigResp`。
+
+### GET /rag/health
 **data** `{"healthy": bool}`。
+
+### GET /rag/info
+查询 RAG-Service 运行状态：`{status, model:{ready, model_name, dim, n_params, n_threads, error}, memory:{rss_kb, vsize_kb}, tags, chunks}`；未启用返回 `{ready:false}`。
+
+> 服务本体 `JuanNiang-RAG-Service`（Rust）需独立部署：`make download && cargo run --release`（默认 `127.0.0.1:3000`）。知识与记忆分集合由 UUID v5 派生 tag 隔离（`internal/core/ragtag`）。
 
 ---
 
@@ -730,7 +751,7 @@ curl -X PUT http://localhost:8090/api/v1/reply-strategy \
 
 ## 23. 知识库
 
-SQL 驱动知识库：Web 存入知识条目，Agent 异步提取关键词；对话前按关键词/内容模糊匹配，命中结果注入系统提示词（LRU 50 条缓存加速）。
+Web 存入知识条目，Agent 异步提取关键词；对话前**首选 RAG 语义检索**（向量命中按分数注入），未启用/未命中降级为关键词 + 内容前 20 字模糊匹配（LRU 50 条缓存加速）。新增/编辑/删除知识时同步双写/双删 RAG-Service 向量（未配置时静默跳过）。
 
 > `keyword_status`：`pending`（提取中，暂不参与匹配）→ `ready`（可匹配）→ `failed`（提取失败，可手动重试）。新增/编辑后自动异步提取关键词。
 
@@ -755,6 +776,9 @@ SQL 驱动知识库：Web 存入知识条目，Agent 异步提取关键词；对
 
 ### POST /knowledge/:id/re-extract
 手动重试关键词提取（`failed` 状态时用）。**data** `null`。
+
+### POST /knowledge/vector-sync
+手动全量同步知识库到 RAG 向量库（页面「同步向量库」按钮）：全部条目按 50 条一批 `BatchUpsert`（一次嵌入一次发布）。RAG 未启用时返回 `{ready:false, message}`（不报错）。**data** `{ready bool, sync_total int, synced int, failed int}`。
 
 `KnowledgeResp`: `id`、`title`、`content`、`keywords` string[]、`keyword_status`、`created_at`、`updated_at`。
 
