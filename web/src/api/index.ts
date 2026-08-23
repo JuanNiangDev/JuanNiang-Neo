@@ -478,3 +478,79 @@ export const scheduledMessageApi = {
   toggle: (id: string, enabled: boolean) => client.put(`/scheduled-messages/${id}/toggle`, { enabled }),
   trigger: (id: string) => client.post(`/scheduled-messages/${id}/trigger`),
 }
+
+// ======== 群管理 ========
+export interface GroupMgrConfigResp {
+  enabled: boolean
+  llm_review: boolean
+  high_score: number
+  low_score: number
+  fallback_score: number
+  exclude_groups: string[]
+  llm_criteria: string
+  llm_gray_prompt: string
+  llm_high_risk_prompt: string
+}
+export interface UpdateGroupMgrConfigReq {
+  enabled: boolean
+  llm_review: boolean
+  high_score: number
+  low_score: number
+  fallback_score: number
+  exclude_groups: string[]
+  llm_criteria: string
+  llm_gray_prompt: string
+  llm_high_risk_prompt: string
+}
+export interface GroupMgrWordResp { id: number; word: string; category: string; source: string }
+export interface GroupMgrSampleResp { id: number; text: string; category: string; source: string; hit_count: number; created_at: string }
+export interface GroupMgrViolationResp { id: number; group_id: number; user_id: number; count: number }
+export interface GroupMgrStatsResp {
+  group_id: number
+  date: string
+  join_today: number
+  warns: number
+  mutes: number
+  copy_warns: number
+  ad: number
+  sensitive: number
+  kicks: number
+}
+export interface GroupMgrTestResp {
+  text: string
+  card: boolean
+  word: string
+  word_cat: string
+  rag_ok: boolean
+  rag_score: number
+  rag_sample: string
+  rag_category: string
+  verdict: string
+  reason: string
+}
+
+export const groupMgrApi = {
+  getConfig: () => client.get('/group-mgr/config'),
+  updateConfig: (data: UpdateGroupMgrConfigReq) => client.put('/group-mgr/config', data),
+  words: (category?: string) => client.get('/group-mgr/words', { params: { category } }),
+  addWord: (word: string, category: string) => client.post('/group-mgr/words', { word, category }),
+  deleteWord: (id: number) => client.delete(`/group-mgr/words/${id}`),
+  importWords: (file: File, category: string) => {
+    const form = new FormData()
+    form.append('file', file)
+    return client.post(`/group-mgr/words/import?category=${category}`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  syncRAG: () => client.post('/group-mgr/sync-rag'),
+  samples: () => client.get('/group-mgr/samples'),
+  deleteSample: (id: number) => client.delete(`/group-mgr/samples/${id}`),
+  violations: () => client.get('/group-mgr/violations'),
+  deleteViolation: (id: number) => client.delete(`/group-mgr/violations/${id}`),
+  whitelist: () => client.get('/group-mgr/whitelist'),
+  updateWhitelist: (qq_list: number[]) => client.put('/group-mgr/whitelist', { qq_list }),
+  admins: () => client.get('/group-mgr/admins'),
+  updateAdmins: (qq_list: number[]) => client.put('/group-mgr/admins', { qq_list }),
+  stats: (group_id: number) => client.get('/group-mgr/stats', { params: { group_id } }),
+  test: (text: string) => client.post('/group-mgr/test', { text }),
+}

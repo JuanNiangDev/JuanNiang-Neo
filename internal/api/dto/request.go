@@ -359,3 +359,34 @@ type UpdateReplyStrategyReq struct {
 	RelevanceTimeout   int     `json:"relevance_timeout"` // 相关性检测超时（秒），0=默认 10s
 	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop=不回复（默认）, reply=照常回复
 }
+
+// ---------- 群管理 ----------
+
+// UpdateGroupMgrConfigReq 更新群管理配置（含三档阈值/排除群/三份提示词）。
+type UpdateGroupMgrConfigReq struct {
+	Enabled           bool     `json:"enabled"`
+	LLMReview         bool     `json:"llm_review"`
+	HighScore         float64  `json:"high_score"`
+	LowScore          float64  `json:"low_score"`
+	FallbackScore     float64  `json:"fallback_score"`
+	ExcludeGroups     []string `json:"exclude_groups"`
+	LLMCriteria       string   `json:"llm_criteria"`
+	LLMGrayPrompt     string   `json:"llm_gray_prompt"`
+	LLMHighRiskPrompt string   `json:"llm_high_risk_prompt"`
+}
+
+// AddGroupMgrWordReq 新增词条。
+type AddGroupMgrWordReq struct {
+	Word     string `json:"word"`
+	Category string `json:"category"` // black / gray / sensitive
+}
+
+// UpdateGroupMgrQQListReq 更新白名单/管理员列表（全量覆盖）。
+type UpdateGroupMgrQQListReq struct {
+	QQList []int64 `json:"qq_list"`
+}
+
+// TestGroupMgrReq 链路测试。
+type TestGroupMgrReq struct {
+	Text string `json:"text"`
+}

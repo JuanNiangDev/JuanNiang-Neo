@@ -203,4 +203,23 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.DELETE("/scheduled-messages/:id", auth, svc.DeleteScheduledMessage)
 	api.PUT("/scheduled-messages/:id/toggle", auth, svc.ToggleScheduledMessage)
 	api.POST("/scheduled-messages/:id/trigger", auth, svc.TriggerScheduledMessage)
+
+	// 群管理（系统级功能）
+	api.GET("/group-mgr/config", auth, svc.GetGroupMgrConfig)
+	api.PUT("/group-mgr/config", auth, svc.UpdateGroupMgrConfig)
+	api.GET("/group-mgr/words", auth, svc.ListGroupMgrWords)
+	api.POST("/group-mgr/words", auth, svc.AddGroupMgrWord)
+	api.DELETE("/group-mgr/words/:id", auth, svc.DeleteGroupMgrWord)
+	api.POST("/group-mgr/words/import", auth, svc.ImportGroupMgrWords)
+	api.POST("/group-mgr/sync-rag", auth, svc.SyncGroupMgrRAG)
+	api.GET("/group-mgr/samples", auth, svc.ListGroupMgrSamples)
+	api.DELETE("/group-mgr/samples/:id", auth, svc.DeleteGroupMgrSample)
+	api.GET("/group-mgr/violations", auth, svc.ListGroupMgrViolations)
+	api.DELETE("/group-mgr/violations/:id", auth, svc.DeleteGroupMgrViolation)
+	api.GET("/group-mgr/whitelist", auth, svc.GetGroupMgrWhitelist)
+	api.PUT("/group-mgr/whitelist", auth, svc.UpdateGroupMgrWhitelist)
+	api.GET("/group-mgr/admins", auth, svc.GetGroupMgrAdmins)
+	api.PUT("/group-mgr/admins", auth, svc.UpdateGroupMgrAdmins)
+	api.GET("/group-mgr/stats", auth, svc.GetGroupMgrStats)
+	api.POST("/group-mgr/test", auth, svc.TestGroupMgr)
 }

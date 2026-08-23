@@ -485,3 +485,68 @@ type ReplyStrategyResp struct {
 	RelevanceTimeout   int     `json:"relevance_timeout"` // 相关性检测超时（秒）
 	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop / reply
 }
+
+// ---------- 群管理 ----------
+
+// GroupMgrConfigResp 群管理配置。
+type GroupMgrConfigResp struct {
+	Enabled           bool     `json:"enabled"`
+	LLMReview         bool     `json:"llm_review"`
+	HighScore         float64  `json:"high_score"`
+	LowScore          float64  `json:"low_score"`
+	FallbackScore     float64  `json:"fallback_score"`
+	ExcludeGroups     []string `json:"exclude_groups"`
+	LLMCriteria       string   `json:"llm_criteria"`
+	LLMGrayPrompt     string   `json:"llm_gray_prompt"`
+	LLMHighRiskPrompt string   `json:"llm_high_risk_prompt"`
+}
+
+// GroupMgrWordResp 词条。
+type GroupMgrWordResp struct {
+	ID       uint   `json:"id"`
+	Word     string `json:"word"`
+	Category string `json:"category"`
+	Source   string `json:"source"`
+}
+
+// GroupMgrSampleResp 样本。
+type GroupMgrSampleResp struct {
+	ID        uint   `json:"id"`
+	Text      string `json:"text"`
+	Category  string `json:"category"`
+	Source    string `json:"source"`
+	HitCount  int    `json:"hit_count"`
+	CreatedAt string `json:"created_at"`
+}
+
+// GroupMgrViolationResp 违规记录。
+type GroupMgrViolationResp struct {
+	ID      uint  `json:"id"`
+	GroupID int64 `json:"group_id"`
+	UserID  int64 `json:"user_id"`
+	Count   int   `json:"count"`
+}
+
+// GroupMgrQQListResp 白名单/管理员列表。
+type GroupMgrQQListResp struct {
+	QQList []int64 `json:"qq_list"`
+}
+
+// GroupMgrStatsResp 统计。
+type GroupMgrStatsResp struct {
+	GroupID   int64  `json:"group_id"`
+	Date      string `json:"date"`
+	JoinToday int64  `json:"join_today"`
+	Warns     int64  `json:"warns"`
+	Mutes     int64  `json:"mutes"`
+	CopyWarns int64  `json:"copy_warns"`
+	Ad        int64  `json:"ad"`
+	Sensitive int64  `json:"sensitive"`
+	Kicks     int64  `json:"kicks"`
+}
+
+// GroupMgrSyncResp 同步向量库结果。
+type GroupMgrSyncResp struct {
+	Total  int `json:"total"`
+	Failed int `json:"failed"`
+}

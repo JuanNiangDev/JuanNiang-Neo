@@ -45,6 +45,7 @@ const router = createRouter({
 		{ path: 'advanced/stickers', name: 'StickerLibrary', component: () => import('@/views/StickerLibraryPage.vue') },
 		{ path: 'advanced/fish-calendar', name: 'FishCalendar', component: () => import('@/views/FishCalendarPage.vue') },
 		{ path: 'advanced/scheduled-messages', name: 'ScheduledMessages', component: () => import('@/views/ScheduledMessagesPage.vue') },
+		{ path: 'advanced/group-mgr', name: 'GroupMgr', component: () => import('@/views/GroupMgrPage.vue') },
       ],
     },
   ],

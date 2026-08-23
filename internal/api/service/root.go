@@ -13,6 +13,7 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
 	cronjobmgr "JuanNiang-Neo/internal/agent/cronjob"
+	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
 	"JuanNiang-Neo/internal/agent/prompt"
@@ -79,6 +80,8 @@ type Service struct {
 	OnSchedMsgTrigger func(ctx context.Context, id string) error
 	// StoreClient 插件商店客户端（拉取元数据 / 安装 / 镜像源管理）。
 	StoreClient *pluggin.StoreClient
+	// GroupMgr 群管理系统功能（Web 面板配置/词库/统计/链路测试）。
+	GroupMgr *groupmgr.Manager
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {
