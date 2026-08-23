@@ -52,16 +52,17 @@ func New(conf Config, itemDAO *dao.LongTermMemoryItemDAO) *LongTermMemory {
 	}
 }
 
-func (m *LongTermMemory) Add(ctx context.Context, areaID, content string) error {
+// Add 写入一条长期记忆（Postgres + 内存热区），返回含 ID 的条目（供上层同步向量）。
+func (m *LongTermMemory) Add(ctx context.Context, areaID, content string) (*models.LongTermMemoryItem, error) {
 	item := &models.LongTermMemoryItem{
 		ChatAreaID: areaID,
 		Content:    content,
 	}
 	if err := m.dao.Create(ctx, item); err != nil {
-		return err
+		return nil, err
 	}
 	m.addToHot(areaID, item)
-	return nil
+	return item, nil
 }
 
 // Search 查询长期记忆。优先从 HotArea 缓存读取，缓存不足时回退到 DB。

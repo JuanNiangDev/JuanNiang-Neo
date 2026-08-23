@@ -276,7 +276,10 @@ func main() {
 	loadRAGFromDB(ctx, svc, coreInst.DAO, hago)
 	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
 	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
-	svc.OnUpdateRAG = func(client *ragcaller.Client) { hago.RAGClient = client }
+	svc.OnUpdateRAG = func(client *ragcaller.Client) {
+		hago.RAGClient = client
+		hago.Memory.SetRAGClient(client) // 同步记忆双写客户端
+	}
 	svc.OnRebuildAgent = func() { hago.RebuildEinoAgent(ctx) }
 	svc.OnUpdateToolAdminOnly = func() { hago.RefreshToolAdminOnly(ctx) }
 	svc.OnReplyStrategyChanged = func() { hago.InvalidateReplySettings() }

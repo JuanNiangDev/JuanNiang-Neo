@@ -8,11 +8,13 @@ import (
 	"sync"
 	"time"
 
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/memory/skillmem"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/core/ragtag"
 	"JuanNiang-Neo/internal/logging"
 )
 
@@ -32,6 +34,9 @@ type MemoryGroup struct {
 	LongTerm    *longterm.LongTermMemory
 	SkillMemory *skillmem.SkillMemory
 	LLMProvider provider.Provider // 用于 Compact 中的技能记忆更新（兼容旧赋值，动态获取函数优先）
+
+	// RAGClient 向量检索客户端（Compact 双写记忆向量用）；nil=未启用时静默跳过。
+	RAGClient *ragcaller.Client
 
 	// llmProviderFn 动态获取 Text LLM Provider：Compact 触发时实时取最新模型，
 	// 避免启动时序（Init 时 ProviderGroup 尚未加载）与 Provider 热更新导致的 nil/过期问题。
@@ -60,6 +65,11 @@ func (m *MemoryGroup) SetShortTermStore(store ShortTermStore) {
 // SetLLMProviderFn 注入 Text LLM Provider 动态获取函数（由 agent.Init 调用）。
 func (m *MemoryGroup) SetLLMProviderFn(fn func() provider.Provider) {
 	m.llmProviderFn = fn
+}
+
+// SetRAGClient 注入 RAG 向量检索客户端（双写记忆向量用；nil=未启用）。
+func (m *MemoryGroup) SetRAGClient(c *ragcaller.Client) {
+	m.RAGClient = c
 }
 
 // getLLMProvider 返回当前可用的 Text LLM Provider：优先动态获取函数，回退旧字段。
@@ -153,7 +163,20 @@ func (m *MemoryGroup) UpdateShortTermConfig(areaID string, conf ShortTermMemoryC
 }
 
 func (m *MemoryGroup) AddLongTermMemory(ctx context.Context, areaID, content string) error {
-	return m.LongTerm.Add(ctx, areaID, content)
+	item, err := m.LongTerm.Add(ctx, areaID, content)
+	if err != nil {
+		return err
+	}
+	// 双写：同步记忆向量到 RAG-Service（Compact 落库后；未配置静默跳过，
+	// 失败仅告警——记忆量级小且无手动同步入口，残留影响可忽略）。
+	if m.RAGClient != nil && item != nil {
+		ragCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := m.RAGClient.Upsert(ragCtx, ragtag.Memory(item.ID), content); err != nil {
+			log.Warn("记忆向量同步失败", "id", item.ID, "err", err)
+		}
+	}
+	return nil
 }
 
 // GetExistingLongTermMemory 获取当前长期记忆内容（供 Compact 使用）。
