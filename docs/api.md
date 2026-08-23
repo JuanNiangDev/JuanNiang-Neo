@@ -974,6 +974,66 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 
 ---
 
+## 28. 群管理
+
+系统级群违规检测（Phase 0.5 检测闸门，先于所有 Lua 插件）。判定链路：卡片文本化 → RAG 语义核实（首选，三档阈值）→ 模棱两可/低置信有词送 LLM 审核；RAG 不可用降级关键词路径。含图片刷屏、+1 复读、三级惩罚、白名单/管理员豁免、入群统计与学习闭环（LLM 确认违规自动入库样本）。
+
+### GET /group-mgr/config
+群管理配置。**data** `GroupMgrConfigResp`: `enabled`、`llm_review`、`high_score`（RAG 高置信直罚阈值，默认 0.75）、`low_score`（模棱两可下限，默认 0.5）、`fallback_score`（LLM 异常分数兜底，默认 0.6）、`exclude_groups`（排除检测的群 ID 列表）、`llm_criteria`、`llm_gray_prompt`、`llm_high_risk_prompt`（三份 LLM 审核提示词，空值回落内嵌默认）。
+
+### PUT /group-mgr/config
+更新配置并热重载。**Body** 同 `GroupMgrConfigResp`。**data** `GroupMgrConfigResp`。
+
+### GET /group-mgr/words?category=
+词条列表（`category` 可选：black/gray/sensitive）。**data** `GroupMgrWordResp[]`: `id`、`word`、`category`、`source`（system=种子 / import=导入）。
+
+### POST /group-mgr/words
+新增词条。**Body** `{word string, category string}`。RAG 可用时同步写入样本表+向量库，不可用仅存词库。**data** `null`。
+
+### DELETE /group-mgr/words/:id
+删除词条（热重载词库）。**data** `null`。
+
+### POST /group-mgr/words/import?category=
+txt 导入词条（multipart `file`，一行一个，去注释/空白/小写/去重）。**data** `{imported int, skipped int}`。导入词条在 RAG 可用时同步写入向量库（种子样本）。
+
+### POST /group-mgr/sync-rag
+手动全量同步向量库（词条 + 样本，50 条/批幂等 upsert）。RAG 未配置返回错误。**data** `GroupMgrSyncResp`: `total`、`failed`。
+
+### GET /group-mgr/samples
+RAG 违规样本列表。**data** `GroupMgrSampleResp[]`: `id`、`text`、`category`、`source`（seed/learn/import）、`hit_count`（RAG 高置信直罚命中次数）、`created_at`。
+
+### DELETE /group-mgr/samples/:id
+删除样本（RAG 双删，未配置静默跳过）。**data** `null`。
+
+### GET /group-mgr/violations
+违规记录。**data** `GroupMgrViolationResp[]`: `id`、`group_id`、`user_id`、`count`。
+
+### DELETE /group-mgr/violations/:id
+删除某条违规记录（重置该用户违规）。**data** `null`。
+
+### GET /group-mgr/whitelist
+白名单 QQ 列表。**data** `{qq_list []int64}`。
+
+### PUT /group-mgr/whitelist
+白名单全量覆盖。**Body** `{qq_list []int64}`。**data** `null`。
+
+### GET /group-mgr/admins
+手动管理员 QQ 列表。**data** `{qq_list []int64}`。
+
+### PUT /group-mgr/admins
+手动管理员全量覆盖。**Body** `{qq_list []int64}`。**data** `null`。
+
+### GET /group-mgr/stats?group_id=
+统计（与 /groupstats 命令同源）。**data** `GroupMgrStatsResp`: `group_id`、`date`、`join_today`、`warns`、`mutes`、`copy_warns`、`ad`、`sensitive`、`kicks`。
+
+### POST /group-mgr/test
+链路测试（不处罚、不写库）。**Body** `{text string}`。**data** `GroupMgrTestResp`: `text`、`card`、`word`、`word_cat`、`rag_ok`、`rag_score`、`rag_sample`、`rag_category`、`verdict`（punish/review/pass）、`reason`。
+
+### POST /memory/sync-rag
+长期记忆手动全量同步向量库（`LongTermMemItem` 按 50 条/批幂等 upsert，补齐 Compact 双写前的历史记忆）。RAG 未启用返回 `ready:false` + 提示。**data** `{ready bool, synced int, failed int, total int}`。
+
+---
+
 ## 附：前端 SPA 静态服务
 
 后端复用 Hertz 引擎同端口（`:8090`）服务前端 SPA：
