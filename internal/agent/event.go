@@ -389,6 +389,9 @@ func memoryMsg(m *adapter.MessageEvent) string {
 
 // filterBlockedEvents 聊天黑名单过滤（管理员豁免），返回新 slice（不改原 events）。
 // 与 handleMessage 内过滤逻辑一致，供 spawnBatch 批次级记忆屏障使用。
+// filterBlockedEvents 黑名单过滤：命中聊天黑名单的用户消息直接丢弃。
+// 黑名单对所有用户生效（含 Admins 列表，管理员不豁免），保证被 ban 的 QQ 号
+// 无法使用 Agent 循环；插件拦截阶段（Phase 1）不受影响。
 func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea) []adapter.Event {
 	kept := make([]adapter.Event, 0, len(events))
 	for _, ev := range events {
@@ -396,7 +399,7 @@ func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.E
 		if m == nil {
 			continue
 		}
-		if isAdmin(m.UserID, ev.Admins) || h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
+		if h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
 			kept = append(kept, ev)
 		} else {
 			log.Info("聊天黑名单丢弃消息", "user_id", m.UserID, "chat_area_id", chatArea.ID)
