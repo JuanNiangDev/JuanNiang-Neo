@@ -92,6 +92,7 @@ func (p *LoadedPlugin) close() {
 type SendAdapter interface {
 	SendPrivateMsg(userID int64, message any) (int64, error)
 	SendGroupMsg(groupID int64, message any) (int64, error)
+	SendGroupForwardMsg(groupID int64, nodes []adapter.ForwardNode) (int64, error)
 	DeleteMsg(messageID int64) error
 	GetMsg(messageID int64) (map[string]any, error)
 	GetGroupInfo(groupID int64) (map[string]any, error)
@@ -1606,6 +1607,38 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		return segs
 	}
 
+	// buildForwardNodes 将 Lua 合并转发节点数组转为 []adapter.ForwardNode：
+	//   构造节点 {user_id=…, nickname=“…”, content=“文本或消息段数组”}
+	//   引用节点 {id=消息ID}
+	buildForwardNodes := func(tbl *lua.LTable) []adapter.ForwardNode {
+		nodes := make([]adapter.ForwardNode, 0, tbl.Len())
+		tbl.ForEach(func(_, v lua.LValue) {
+			nt, ok := v.(*lua.LTable)
+			if !ok {
+				return
+			}
+			var n adapter.ForwardNode
+			if id := nt.RawGetString("id"); id.Type() == lua.LTNumber {
+				n.ID = int64(id.(lua.LNumber))
+			}
+			if u := nt.RawGetString("user_id"); u.Type() == lua.LTNumber {
+				n.Uin = int64(u.(lua.LNumber))
+			}
+			if nm := nt.RawGetString("nickname"); nm.Type() == lua.LTString {
+				n.Name = string(nm.(lua.LString))
+			}
+			if c := nt.RawGetString("content"); c != lua.LNil {
+				if ct, ok := c.(*lua.LTable); ok {
+					n.Content = buildSegments(ct)
+				} else {
+					n.Content = c.String()
+				}
+			}
+			nodes = append(nodes, n)
+		})
+		return nodes
+	}
+
 	obTable := L.NewTable()
 	funcs := map[string]lua.LGFunction{
 		"send_private_msg": func(L *lua.LState) int {
@@ -1703,6 +1736,36 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			}
 			_, err := sendAdp.SendGroupMsg(groupID, msg)
 			return pushResult(L, err)
+		},
+		// send_group_forward_msg / _sync 发送合并转发消息（转发卡片）：
+		//   构造节点 {user_id=…, nickname=“…”, content=“文本或消息段数组”}
+		//   引用节点 {id=群内已有消息ID}
+		"send_group_forward_msg": func(L *lua.LState) int {
+			groupID := int64(L.CheckNumber(1))
+			nodes := buildForwardNodes(L.CheckTable(2))
+			if len(nodes) == 0 {
+				return pushResult(L, fmt.Errorf("合并转发节点不能为空"))
+			}
+			// 插件发消息异步，不阻塞命令 handler 返回
+			go func() {
+				if _, err := sendAdp.SendGroupForwardMsg(groupID, nodes); err != nil {
+					log.Warn("插件异步发送群合并转发失败", "plugin", pluginName, "group_id", groupID, "nodes", len(nodes), "err", err)
+				}
+			}()
+			return pushOk(L)
+		},
+		"send_group_forward_msg_sync": func(L *lua.LState) int {
+			groupID := int64(L.CheckNumber(1))
+			nodes := buildForwardNodes(L.CheckTable(2))
+			if len(nodes) == 0 {
+				return pushResult(L, fmt.Errorf("合并转发节点不能为空"))
+			}
+			id, err := sendAdp.SendGroupForwardMsg(groupID, nodes)
+			if err != nil {
+				return pushResult(L, err)
+			}
+			L.Push(lua.LNumber(id))
+			return 1
 		},
 		"delete_msg": func(L *lua.LState) int {
 			id, err := luaMsgID(L.Get(1))

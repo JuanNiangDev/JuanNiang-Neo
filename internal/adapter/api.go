@@ -301,11 +301,28 @@ func (p *Adapter) GetForwardMsg(messageID string) ([]ForwardNode, error) {
 	return callAndParseSlice[ForwardNode](p, "get_forward_msg", map[string]any{"message_id": messageID})
 }
 
-// SendGroupForwardMsg 发送合并转发消息到群。
+// SendGroupForwardMsg 发送合并转发消息到群。nodes 支持两种节点（LLBot/OneBot11 扩展标准）：
+//   - 构造节点（Uin/Name/Content）：序列化为 {type:"node", data:{user_id, nickname, content}}，
+//     content 支持 string（含 CQ 码自动解析）或 []Segment；
+//   - 引用节点（仅 ID）：序列化为 {type:"node", data:{id}}，引用群内已存在的消息作为转发节点。
 func (p *Adapter) SendGroupForwardMsg(groupID int64, nodes []ForwardNode) (int64, error) {
+	messages := make([]map[string]any, 0, len(nodes))
+	for _, n := range nodes {
+		data := make(map[string]any, 3)
+		if n.ID != 0 {
+			// 引用节点：直接引用已发送消息
+			data["id"] = n.ID
+		} else {
+			// 构造节点
+			data["user_id"] = n.Uin
+			data["nickname"] = n.Name
+			data["content"] = p.resolveImageAssets(normalizeMessage(n.Content))
+		}
+		messages = append(messages, map[string]any{"type": "node", "data": data})
+	}
 	rsp, err := p.call("send_group_forward_msg", map[string]any{
 		"group_id": groupID,
-		"messages": nodes,
+		"messages": messages,
 	})
 	if err != nil {
 		return 0, err

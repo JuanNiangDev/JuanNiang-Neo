@@ -173,7 +173,7 @@ flowchart LR
 |------|--------|--------|------|
 | 始终 | `log` (`jn.log`) | 3 | info/warn/error → slog |
 | 始终 | `json` (`jn.json`) | 2 | encode/decode |
-| `onebot11` | `onebot11` (`jn.onebot11`) | 23 | 消息发送（异步/同步）+ 群管理 + 信息查询 + 请求处理 + 登录/状态/版本 + read_file_base64 |
+| `onebot11` | `onebot11` (`jn.onebot11`) | 25 | 消息发送（异步/同步）+ 合并转发 + 引用回复 + 群管理 + 信息查询 + 请求处理 + 登录/状态/版本 + read_file_base64 |
 | `http` | `http` (`jn.http`) | 4 | get/post（30s 超时）+ get_async/post_async（异步回调 `on_http_response`） |
 | `database` | `database` (`jn.database`) | 2 | query/exec（共享 DB，前缀桩未生效，⚠ 权限敏感） |
 | `cache` | `cache` (`jn.cache`) | 4 | get/set/del/exists（`pluggin:<name>:` 命名空间） |
