@@ -322,18 +322,23 @@ local info, err = jn.onebot11.get_group_info(987654321)
 
 | 函数 | 返回 | 说明 |
 |------|------|------|
-| `http.get(url) → table` | `{status=number, body=string}` | GET，30s 超时 |
-| `http.post(url [, content_type, body]) → table` | `{status, body}` | POST，30s 超时 |
-| `http.get_async(url [, ctx]) → number` | `req_id` | GET 异步版：立即返回，完成回调 `on_http_response`（不阻塞事件循环） |
-| `http.post_async(url [, content_type, body, ctx]) → number` | `req_id` | POST 异步版 |
+| `http.get(url [, proxy]) → table` | `{status=number, body=string}` | GET，30s 超时；可选 `proxy` 走代理（见下方代理说明） |
+| `http.post(url [, content_type, body, proxy]) → table` | `{status, body}` | POST，30s 超时；可选第 4 位 `proxy` |
+| `http.get_async(url [, ctx, headers, proxy]) → number` | `req_id` | GET 异步版：立即返回，完成回调 `on_http_response`（不阻塞事件循环）。第 2 位 `ctx` 调用现场表（旧签名）、第 3 位 `headers` 表、第 4 位 `proxy`；也可用 opts 表 `get_async(url, {proxy=…, headers=…, ctx=…})` |
+| `http.post_async(url [, content_type, body, proxy, ctx]) → number` | `req_id` | POST 异步版；第 4 位 `proxy` 字符串，尾部 table 仍为 `ctx`（有 proxy 时后移至第 5 位） |
+
+**代理参数**（`proxy`，可选）：不传或传空串 = 直连（默认）；支持 `http://host:port`、`https://host:port`、`socks4://host:port`（或 `socks4a://`，域名目标）、`socks5://[user:pass@]host:port`。非法协议或地址直接返回错误。
 
 ```lua
 local r, err = jn.http.get("https://api.github.com/repos/x/y")
 local r, err = jn.http.post("https://httpbin.org/post", "application/json",
                             '{"k":"v"}')
 
--- 异步：立即返回 req_id，完成回调 on_http_response
-local rid = jn.http.get_async("https://api.github.com/repos/x/y")
+-- 走代理：socks5 / socks4 / http 均可
+local r, err = jn.http.get("https://www.google.com", "socks5://127.0.0.1:1080")
+
+-- 异步 + 代理（opts 表写法）
+local rid = jn.http.get_async("https://www.google.com", { proxy = "socks4://127.0.0.1:1081", ctx = { from = "demo" } })
 function on_http_response(req_id, ctx, result, err)
     if err then jn.log.warn("HTTP 请求失败: " .. err) return end
     jn.log.info("status=" .. result.status .. " body=" .. result.body)

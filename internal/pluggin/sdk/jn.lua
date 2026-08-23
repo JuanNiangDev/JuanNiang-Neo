@@ -119,10 +119,10 @@ M.onebot11 = onebot11
 ---@field body string 响应正文
 
 ---@class jn.HTTP
----@field get fun(url: string): jn.HTTPResponse, string?
----@field post fun(url: string, content_type?: string, body?: string): jn.HTTPResponse, string?
----@field get_async fun(url: string, ctx?: table): number 异步 GET，立即返回 req_id；完成后引擎调用插件入口 on_http_response(req_id, ctx, result, err)
----@field post_async fun(url: string, content_type?: string, body?: string, ctx?: table): number 异步 POST（最后一个 table 参数视为 ctx）
+---@field get fun(url: string, proxy?: string): jn.HTTPResponse, string? 同步 GET；可选 proxy: 空/直连，http(s)://…，socks4://…，socks4a://…，socks5://[user:pass@]…
+---@field post fun(url: string, content_type?: string, body?: string, proxy?: string): jn.HTTPResponse, string? 同步 POST；可选第 4 位 proxy（同上）
+---@field get_async fun(url: string, ctx?: table, headers?: table, proxy?: string): number 异步 GET，立即返回 req_id；完成后引擎调用插件入口 on_http_response(req_id, ctx, result, err)。ctx 为第 2 位调用现场表（旧签名），headers 为第 3 位表，proxy 为第 4 位字符串；也可传第 2 位 opts 表 {proxy=…, headers=…, ctx=…}
+---@field post_async fun(url: string, content_type?: string, body?: string, proxy?: string, ctx?: table): number 异步 POST（最后一个 table 参数视为 ctx；第 4 位为 proxy 字符串时 ctx 后移至第 5 位）
 M.http = http
 
 -- 异步回调约定（引擎级异步注册表，kind "http"）：
