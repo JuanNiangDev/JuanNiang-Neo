@@ -25,9 +25,9 @@
         </v-card>
       </v-col>
       <v-col cols="12" md="6">
-        <v-card rounded="lg" elevation="1" class="h-100">
+        <v-card rounded="lg" elevation="1" class="h-100 d-flex flex-column">
           <v-card-item><template #title><span class="text-h6 font-weight-bold">健康状态</span></template></v-card-item>
-          <v-card-text class="d-flex flex-column">
+          <v-card-text class="flex-grow-1 d-flex flex-column">
             <v-list density="compact">
               <v-list-item>
                 <template #prepend><span class="status-dot" :class="config.healthy ? 'active' : 'error'" /></template>
