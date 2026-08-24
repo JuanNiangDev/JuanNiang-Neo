@@ -20,8 +20,9 @@ const sampleSetTTL = 5 * time.Minute
 // ragSearchTimeout RAG 语义核实的硬超时：本地部署毫秒级，最坏 1s 不让消息卡死。
 const ragSearchTimeout = time.Second
 
-// sampleInfo 样本候选集条目（tag → 文本/类别，检索命中过滤 + 直罚类别判断）。
+// sampleInfo 样本候选集条目（tag → 文本/类别/ID，检索命中过滤 + 直罚类别判断 + 命中计数）。
 type sampleInfo struct {
+	id       uint
 	text     string
 	category string
 }
@@ -41,7 +42,7 @@ func (m *Manager) buildSampleSet(ctx context.Context) map[uuid.UUID]sampleInfo {
 	}
 	set := make(map[uuid.UUID]sampleInfo, len(samples))
 	for _, s := range samples {
-		set[ragtag.Sample(u32s(s.ID))] = sampleInfo{text: s.Text, category: s.Category}
+		set[ragtag.Sample(u32s(s.ID))] = sampleInfo{id: s.ID, text: s.Text, category: s.Category}
 	}
 	m.sampleSet = set
 	m.sampleSetAt = time.Now()
@@ -173,18 +174,19 @@ func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 }
 
 // upsertRAGSample 单条样本写入 RAG（学习闭环/导入用）。
-// 返回 error 供调用方判断同步是否真实成功（RAG 未配置返回 nil=未同步）。
-func (m *Manager) upsertRAGSample(ctx context.Context, sampleID uint, text string) error {
+// 返回 (bool, error)：bool=true 表示已真实写入向量库；RAG 未配置/不可用返回 (false, nil)。
+// 调用方必须以 bool 判定同步成功——nil error 不代表已写入（契约不再自相矛盾）。
+func (m *Manager) upsertRAGSample(ctx context.Context, sampleID uint, text string) (bool, error) {
 	cli := m.getRAG()
 	if cli == nil {
-		return nil
+		return false, nil // 未配置：未写入
 	}
 	if _, err := cli.Upsert(ctx, ragtag.Sample(u32s(sampleID)), text); err != nil {
 		log.Warn("样本写入 RAG 失败（不影响处罚）", "sample", sampleID, "err", err)
-		return err
+		return false, err
 	}
 	m.invalidateSampleSet()
-	return nil
+	return true, nil
 }
 
 // deleteRAGSample 删除样本向量（双删，RAG 不可用静默跳过）。

@@ -14,6 +14,15 @@ func (m *Manager) SyncRAG(ctx context.Context) (total, failed int, err error) {
 	return m.syncRAG(ctx)
 }
 
+// sampleCategoryByWord 词条分类 → 样本类别（样本契约：ad / sensitive；
+// 灰色/黑色词统一归 ad，敏感词映射 sensitive）。
+func sampleCategoryByWord(category string) string {
+	if category == "sensitive" {
+		return "sensitive"
+	}
+	return "ad"
+}
+
 // AddWord 新增词条（Web/导入共用）：
 //   - 写词条表（幂等 upsert，source=import，回填派生 RAG tag）
 //   - RAG 可用时同步写入样本表（seed）+ RAG upsert，仅真实同步成功才标记 RAGSynced；
@@ -27,9 +36,9 @@ func (m *Manager) AddWord(ctx context.Context, word, category string) (uint, err
 	var sampleID uint
 	synced := false
 	if m.getRAG() != nil {
-		if sid, err := m.dao.SampleAddWithWord(ctx, word, category, "seed", id); err == nil {
+		if sid, err := m.dao.SampleAddWithWord(ctx, word, sampleCategoryByWord(category), "seed", id); err == nil {
 			sampleID = sid
-			synced = m.upsertRAGSample(ctx, sid, word) == nil
+			synced, _ = m.upsertRAGSample(ctx, sid, word)
 		}
 	}
 	// 仅当样本真实写入 RAG 成功才标记已同步（区分「客户端存在」与「upsert 成功」）
@@ -56,8 +65,8 @@ func (m *Manager) ImportWords(ctx context.Context, lines []string, category stri
 		}
 		synced := false
 		if m.getRAG() != nil {
-			if sid, err := m.dao.SampleAddWithWord(ctx, w, category, "seed", id); err == nil {
-				synced = m.upsertRAGSample(ctx, sid, w) == nil
+			if sid, err := m.dao.SampleAddWithWord(ctx, w, sampleCategoryByWord(category), "seed", id); err == nil {
+				synced, _ = m.upsertRAGSample(ctx, sid, w)
 			}
 		}
 		_ = m.dao.WordMarkRAGSynced(ctx, id, synced)

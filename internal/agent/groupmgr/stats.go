@@ -22,31 +22,16 @@ func (m *Manager) recordJoin(ctx context.Context, groupID int64) {
 	}
 }
 
-// sampleHit 样本命中计数（RAG 高置信直罚时 +1；tag 反查样本 ID 不现实，直接按 tag 文本查）。
+// sampleHit 样本命中计数（RAG 高置信直罚时 +1）。
+// 候选集 sampleInfo 已携带样本 ID，命中直接按 ID 自增，不再 O(n) 文本反查。
 func (m *Manager) sampleHit(ctx context.Context, tag uuid.UUID) {
-	// 候选集内 tag → text，反查文本 +1（样本量小，全表扫可接受）
 	m.sampleMu.Lock()
-	var text string
-	for t, info := range m.sampleSet {
-		if t == tag {
-			text = info.text
-			break
-		}
-	}
+	info, ok := m.sampleSet[tag]
 	m.sampleMu.Unlock()
-	if text == "" {
+	if !ok || info.id == 0 {
 		return
 	}
-	list, err := m.dao.SampleListAll(ctx)
-	if err != nil {
-		return
-	}
-	for _, s := range list {
-		if s.Text == text {
-			_ = m.dao.SampleIncrHit(ctx, s.ID)
-			return
-		}
-	}
+	_ = m.dao.SampleIncrHit(ctx, info.id)
 }
 
 // Stats 统计摘要（/groupstats 命令与 Web 面板共用）。
