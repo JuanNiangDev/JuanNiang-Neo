@@ -23,6 +23,10 @@ type Adapter struct {
 	mu     sync.RWMutex
 	closed bool
 
+	// 群成员信息缓存（正缓存 10min / 负缓存 60s），避免高频群消息每条都调 OneBot11
+	memberInfoMu    sync.RWMutex
+	memberInfoCache map[string]memberInfoCacheEntry
+
 	// imageResolver 图床图片解析器：发送消息时遇到 image 段 file 以 "imgs://" 开头，
 	// 调用它把图片 ID 解析为 OneBot11 的 base64 图片串（"base64://<data>"）。
 	// 由 main.go 注入图床存储实现，Plugin 与 Agent 对解析过程无感。
@@ -33,12 +37,58 @@ type Adapter struct {
 	stickerResolver func(stickerID string) (base64Image string, ok bool)
 }
 
+// 群成员信息缓存参数。
+const (
+	memberInfoCacheTTL    = 10 * time.Minute // 正缓存：角色变更不频繁
+	memberInfoNegativeTTL = 60 * time.Second // 负缓存：查询失败/成员不存在，防每条消息重试打 API
+	memberInfoCacheLimit  = 2048             // 上限，超出整体清空（简单策略）
+)
+
+// memberInfoCacheEntry 群成员信息缓存条目。
+// err 一并缓存：负缓存命中时还原查询错误，避免调用方把"查询失败"误判为"成员存在"。
+type memberInfoCacheEntry struct {
+	info      *GroupMemberInfo
+	err       error
+	expiresAt time.Time
+}
+
 func New(cfg Config) *Adapter {
 	return &Adapter{
-		cfg:    cfg,
-		events: make(chan Event, 128),
-		closed: true, // 初始为"已停止"状态, 允许 Start
+		cfg:             cfg,
+		events:          make(chan Event, 128),
+		closed:          true, // 初始为"已停止"状态, 允许 Start
+		memberInfoCache: make(map[string]memberInfoCacheEntry),
 	}
+}
+
+// GetGroupMemberInfoCached 带缓存的群成员信息查询：命中缓存直接返回；
+// 未命中调 OneBot11 API 并缓存。查询失败或成员不存在时写入短负缓存，
+// 避免退群/异常成员在每条群消息上都重复触发 get_group_member_info。
+func (p *Adapter) GetGroupMemberInfoCached(groupID, userID int64) (*GroupMemberInfo, error) {
+	key := fmt.Sprintf("%d:%d", groupID, userID)
+	now := time.Now()
+
+	p.memberInfoMu.RLock()
+	if e, ok := p.memberInfoCache[key]; ok && now.Before(e.expiresAt) {
+		p.memberInfoMu.RUnlock()
+		return e.info, e.err
+	}
+	p.memberInfoMu.RUnlock()
+
+	info, err := p.GetGroupMemberInfo(groupID, userID)
+	ttl := memberInfoCacheTTL
+	if err != nil || info == nil {
+		ttl = memberInfoNegativeTTL // 失败/成员不存在：短负缓存
+	}
+
+	p.memberInfoMu.Lock()
+	p.memberInfoCache[key] = memberInfoCacheEntry{info: info, err: err, expiresAt: now.Add(ttl)}
+	// 防无界增长：超过上限时整体清空（简单策略）
+	if len(p.memberInfoCache) > memberInfoCacheLimit {
+		p.memberInfoCache = make(map[string]memberInfoCacheEntry)
+	}
+	p.memberInfoMu.Unlock()
+	return info, err
 }
 
 // SetImageResolver 注入图床图片解析器（见 imageResolver 注释）。

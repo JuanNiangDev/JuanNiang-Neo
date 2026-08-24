@@ -284,6 +284,8 @@ func (m *Manager) isSystemAdmin(userID int64, admins []string) bool {
 
 // isGroupAdmin 是否管理员/群主（处罚豁免用）：系统/手动管理员直接放行；
 // 群角色可识别时 owner/admin 放行；识别失败退回手动管理员判断。
+// 成员信息走 Adapter 层带缓存查询（正缓存 10min + 负缓存 60s），
+// 避免每条非白名单群消息都同步调 OneBot11 get_group_member_info。
 func (m *Manager) isGroupAdmin(userID int64, admins []string, groupID int64) bool {
 	if m.isSystemAdmin(userID, admins) {
 		return true
@@ -294,7 +296,7 @@ func (m *Manager) isGroupAdmin(userID int64, admins []string, groupID int64) boo
 	if manual {
 		return true
 	}
-	info, err := m.adp.GetGroupMemberInfo(groupID, userID)
+	info, err := m.adp.GetGroupMemberInfoCached(groupID, userID)
 	if err != nil || info == nil {
 		return false
 	}
