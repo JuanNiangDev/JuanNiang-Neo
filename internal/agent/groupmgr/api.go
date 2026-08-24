@@ -16,8 +16,8 @@ func (m *Manager) SyncRAG(ctx context.Context) (total, failed int, err error) {
 
 // AddWord 新增词条（Web/导入共用）：
 //   - 写词条表（幂等 upsert，source=import，回填派生 RAG tag）
-//   - RAG 可用时同步写入样本表（seed）+ RAG upsert，成功则标记 RAGSynced；
-//     不可用则保持 RAGSynced=false（面板展示未同步，可手动「同步向量库」）
+//   - RAG 可用时同步写入样本表（seed）+ RAG upsert，仅真实同步成功才标记 RAGSynced；
+//     不可用/失败保持 RAGSynced=false（面板展示未同步，可手动「同步向量库」）
 //   - 词库内存缓存热更新
 func (m *Manager) AddWord(ctx context.Context, word, category string) (uint, error) {
 	id, err := m.dao.WordUpsert(ctx, word, category, "import")
@@ -25,15 +25,15 @@ func (m *Manager) AddWord(ctx context.Context, word, category string) (uint, err
 		return 0, err
 	}
 	var sampleID uint
+	synced := false
 	if m.getRAG() != nil {
-		if sid, err := m.dao.SampleAdd(ctx, word, category, "seed"); err == nil {
+		if sid, err := m.dao.SampleAddWithWord(ctx, word, category, "seed", id); err == nil {
 			sampleID = sid
-			m.upsertRAGSample(ctx, sid, word)
+			synced = m.upsertRAGSample(ctx, sid, word) == nil
 		}
 	}
-	// RAG 可用且样本写入成功（含 RAG upsert 成功）→ 标记已同步；
-	// upsertRAGSample 内部静默跳过失败，这里以 RAG 客户端存在为准标记
-	_ = m.dao.WordMarkRAGSynced(ctx, id, m.getRAG() != nil)
+	// 仅当样本真实写入 RAG 成功才标记已同步（区分「客户端存在」与「upsert 成功」）
+	_ = m.dao.WordMarkRAGSynced(ctx, id, synced)
 	_ = m.Reload(ctx)
 	return sampleID, nil
 }
@@ -54,16 +54,43 @@ func (m *Manager) ImportWords(ctx context.Context, lines []string, category stri
 			skipped++
 			continue
 		}
+		synced := false
 		if m.getRAG() != nil {
-			if sid, err := m.dao.SampleAdd(ctx, w, category, "seed"); err == nil {
-				m.upsertRAGSample(ctx, sid, w)
+			if sid, err := m.dao.SampleAddWithWord(ctx, w, category, "seed", id); err == nil {
+				synced = m.upsertRAGSample(ctx, sid, w) == nil
 			}
 		}
-		_ = m.dao.WordMarkRAGSynced(ctx, id, m.getRAG() != nil)
+		_ = m.dao.WordMarkRAGSynced(ctx, id, synced)
 		imported++
 	}
 	_ = m.Reload(ctx)
 	return imported, skipped
+}
+
+// DeleteWord 删除词条 + 对账清理派生样本与 RAG 向量（双删）。
+// 回归：此前只软删 group_mgr_words 行，seed 样本副本与 RAG 向量仍活跃，
+// 管理员删词后 RAG 路径照常命中（无法停止检测）。
+func (m *Manager) DeleteWord(ctx context.Context, id uint) error {
+	w, err := m.dao.WordGet(ctx, id)
+	if err != nil {
+		return err
+	}
+	// 按文本匹配派生样本（词条文本即样本文本，幂等唯一）并双删 RAG 向量
+	samples, err := m.dao.SampleListByText(ctx, w.Word)
+	if err != nil {
+		return err
+	}
+	for _, s := range samples {
+		m.deleteRAGSample(ctx, s.ID)
+		if err := m.dao.SampleDelete(ctx, s.ID); err != nil {
+			log.Warn("词条派生样本删除失败", "sample", s.ID, "err", err)
+		}
+	}
+	if err := m.dao.WordDelete(ctx, id); err != nil {
+		return err
+	}
+	m.invalidateSampleSet()
+	return m.Reload(ctx)
 }
 
 // DeleteSample 删除样本（双删 RAG，不可用静默跳过）。

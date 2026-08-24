@@ -107,6 +107,8 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 
 // syncRAG 全量同步词条 + 样本到 RAG（幂等 upsert，50 条/批）。
 // 返回 (成功条数, 失败条数)。RAG 未配置返回明确错误（Web 面板展示）。
+// RAGSynced 标记与实际同步状态对齐：仅成功写入 RAG 的词条置 true，
+// 失败/未同步的词条置 false（面板「已同步」状态可信）。
 func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 	cli := m.getRAG()
 	if cli == nil {
@@ -124,10 +126,11 @@ func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 	// 词条 → 样本（关键词导入/种子词条都以文本形式入库；幂等由样本表 text 唯一兜底）
 	total, failed := 0, 0
 	seed := make([]caller.BatchItem, 0, len(words)+len(samples))
-	wordIDs := make([]uint, 0, len(words)) // 记录词条 ID，同步成功后标记 RAGSynced
+	wordTagOf := make(map[uuid.UUID]uint, len(words)) // tag → 词条 ID（样本 tag 不在其中）
 	for _, w := range words {
-		seed = append(seed, caller.BatchItem{Tag: ragtag.Word(u32s(w.ID)), Text: w.Word})
-		wordIDs = append(wordIDs, w.ID)
+		tag := ragtag.Word(u32s(w.ID))
+		seed = append(seed, caller.BatchItem{Tag: tag, Text: w.Word})
+		wordTagOf[tag] = w.ID
 	}
 	for _, s := range samples {
 		seed = append(seed, caller.BatchItem{Tag: ragtag.Sample(u32s(s.ID)), Text: s.Text})
@@ -143,17 +146,24 @@ func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 			log.Warn("RAG 批量同步失败", "err", err)
 			continue
 		}
-		for _, r := range resp.Results {
+		for idx, r := range resp.Results {
 			if r.Error != nil {
 				failed++
-			} else {
-				total++
+				continue
+			}
+			total++
+			// 词条写入成功 → 从待标记集合移除（剩余词条保持/置为未同步）
+			if id, ok := wordTagOf[seed[i+idx].Tag]; ok {
+				if err := m.dao.WordMarkRAGSynced(ctx, id, true); err != nil {
+					log.Warn("词条同步状态标记失败", "word_id", id, "err", err)
+				}
+				delete(wordTagOf, seed[i+idx].Tag)
 			}
 		}
 	}
-	// 全量同步成功 → 所有词条标记已同步（面板展示 RAG 同步状态）
-	for _, id := range wordIDs {
-		if err := m.dao.WordMarkRAGSynced(ctx, id, true); err != nil {
+	// 未成功写入的词条（失败批次/失败条目）标记为未同步，面板状态与实际对齐
+	for _, id := range wordTagOf {
+		if err := m.dao.WordMarkRAGSynced(ctx, id, false); err != nil {
 			log.Warn("词条同步状态标记失败", "word_id", id, "err", err)
 		}
 	}
@@ -162,17 +172,19 @@ func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 	return total, failed, nil
 }
 
-// upsertRAGSample 单条样本写入 RAG（学习闭环/导入用，RAG 不可用静默跳过）。
-func (m *Manager) upsertRAGSample(ctx context.Context, sampleID uint, text string) {
+// upsertRAGSample 单条样本写入 RAG（学习闭环/导入用）。
+// 返回 error 供调用方判断同步是否真实成功（RAG 未配置返回 nil=未同步）。
+func (m *Manager) upsertRAGSample(ctx context.Context, sampleID uint, text string) error {
 	cli := m.getRAG()
 	if cli == nil {
-		return
+		return nil
 	}
 	if _, err := cli.Upsert(ctx, ragtag.Sample(u32s(sampleID)), text); err != nil {
 		log.Warn("样本写入 RAG 失败（不影响处罚）", "sample", sampleID, "err", err)
-		return
+		return err
 	}
 	m.invalidateSampleSet()
+	return nil
 }
 
 // deleteRAGSample 删除样本向量（双删，RAG 不可用静默跳过）。

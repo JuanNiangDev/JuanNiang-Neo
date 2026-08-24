@@ -70,8 +70,10 @@ func (GroupMgrWord) TableName() string { return "group_mgr_words" }
 
 // GroupMgrSample RAG 违规样本（向量库本体，tag = ragtag.Sample(id)）。
 // 来源：seed（词条/关键词导入种子）、learn（LLM 确认违规自动入库）、import（txt 导入）。
+// WordID > 0 表示该样本由对应词条派生：删除词条时同步删除样本 + RAG 向量（对账清理）。
 type GroupMgrSample struct {
 	ID        uint   `gorm:"primarykey"`
+	WordID    uint   `gorm:"index;default:0"` // 关联词条 ID（0 = 非词条派生样本）
 	Text      string `gorm:"type:text;not null"`
 	Category  string `gorm:"not null;index"` // ad / sensitive
 	Source    string `gorm:"not null;default:'seed'"`

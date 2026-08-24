@@ -131,15 +131,17 @@ func (s *Service) AddGroupMgrWord(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
-// DeleteGroupMgrWord 删除词条。
+// DeleteGroupMgrWord 删除词条（双删派生样本 + RAG 向量）。
 func (s *Service) DeleteGroupMgrWord(ctx context.Context, c *app.RequestContext) {
 	id := parseUintParam(c, "id")
-	if err := s.DAO.GroupMgr.WordDelete(ctx, id); err != nil {
+	if s.GroupMgr != nil {
+		if err := s.GroupMgr.DeleteWord(ctx, id); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	} else if err := s.DAO.GroupMgr.WordDelete(ctx, id); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
-	}
-	if s.GroupMgr != nil {
-		_ = s.GroupMgr.Reload(ctx)
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
