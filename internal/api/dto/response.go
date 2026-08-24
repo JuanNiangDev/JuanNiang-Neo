@@ -503,10 +503,12 @@ type GroupMgrConfigResp struct {
 
 // GroupMgrWordResp 词条。
 type GroupMgrWordResp struct {
-	ID       uint   `json:"id"`
-	Word     string `json:"word"`
-	Category string `json:"category"`
-	Source   string `json:"source"`
+	ID        uint   `json:"id"`
+	Word      string `json:"word"`
+	Category  string `json:"category"`
+	Source    string `json:"source"`
+	RAGSynced bool   `json:"rag_synced"` // 是否已同步到 RAG 向量库
+	RAGTag    string `json:"rag_tag"`    // 派生 RAG tag UUID
 }
 
 // GroupMgrSampleResp 样本。
@@ -521,10 +523,13 @@ type GroupMgrSampleResp struct {
 
 // GroupMgrViolationResp 违规记录。
 type GroupMgrViolationResp struct {
-	ID      uint  `json:"id"`
-	GroupID int64 `json:"group_id"`
-	UserID  int64 `json:"user_id"`
-	Count   int   `json:"count"`
+	ID            uint   `json:"id"`
+	GroupID       int64  `json:"group_id"`
+	UserID        int64  `json:"user_id"`
+	Username      string `json:"username"`       // 处罚时群名片/昵称
+	Count         int    `json:"count"`          // 当前违规等级
+	DetectionPath string `json:"detection_path"` // rag / keyword / llm
+	LLMReason     string `json:"llm_reason"`     // LLM 审核返回的 reason
 }
 
 // GroupMgrQQListResp 白名单/管理员列表。

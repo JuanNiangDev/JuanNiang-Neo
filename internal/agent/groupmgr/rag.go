@@ -124,8 +124,10 @@ func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 	// 词条 → 样本（关键词导入/种子词条都以文本形式入库；幂等由样本表 text 唯一兜底）
 	total, failed := 0, 0
 	seed := make([]caller.BatchItem, 0, len(words)+len(samples))
+	wordIDs := make([]uint, 0, len(words)) // 记录词条 ID，同步成功后标记 RAGSynced
 	for _, w := range words {
 		seed = append(seed, caller.BatchItem{Tag: ragtag.Word(u32s(w.ID)), Text: w.Word})
+		wordIDs = append(wordIDs, w.ID)
 	}
 	for _, s := range samples {
 		seed = append(seed, caller.BatchItem{Tag: ragtag.Sample(u32s(s.ID)), Text: s.Text})
@@ -147,6 +149,12 @@ func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 			} else {
 				total++
 			}
+		}
+	}
+	// 全量同步成功 → 所有词条标记已同步（面板展示 RAG 同步状态）
+	for _, id := range wordIDs {
+		if err := m.dao.WordMarkRAGSynced(ctx, id, true); err != nil {
+			log.Warn("词条同步状态标记失败", "word_id", id, "err", err)
 		}
 	}
 	// 样本候选集失效重建（同步后立即可检索）

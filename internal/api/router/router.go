@@ -221,6 +221,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/group-mgr/whitelist", auth, svc.UpdateGroupMgrWhitelist)
 	api.GET("/group-mgr/admins", auth, svc.GetGroupMgrAdmins)
 	api.PUT("/group-mgr/admins", auth, svc.UpdateGroupMgrAdmins)
+	api.POST("/group-mgr/admins/sync-from-adapter", auth, svc.SyncGroupMgrAdminsFromAdapter)
 	api.GET("/group-mgr/stats", auth, svc.GetGroupMgrStats)
 	api.POST("/group-mgr/test", auth, svc.TestGroupMgr)
 }

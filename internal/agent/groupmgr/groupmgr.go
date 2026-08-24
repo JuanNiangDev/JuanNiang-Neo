@@ -135,7 +135,7 @@ func (m *Manager) Init(ctx context.Context) error {
 		imported := 0
 		for category, ws := range seeds {
 			for _, w := range ws {
-				if err := m.dao.WordUpsert(ctx, w, category, "system"); err != nil {
+				if _, err := m.dao.WordUpsert(ctx, w, category, "system"); err != nil {
 					log.Warn("种子词条导入失败", "word", w, "err", err)
 					continue
 				}

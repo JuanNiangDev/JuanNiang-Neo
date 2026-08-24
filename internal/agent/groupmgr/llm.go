@@ -204,14 +204,14 @@ func (m *Manager) handleReview(ctx context.Context, out reviewOutcome) {
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("error").Inc()
 		if highRisk && out.rc.hard {
 			// 高危回退直罚（敏感/黑词/卡片）
-			m.punish(ev, reasonByWord(out.rc.word, out.rc.wordCat, out.rc.kind == "card"), categoryByWordOrCard(out.rc.word, out.rc.wordCat, out.rc.kind == "card", "ad"))
+			m.punish(ev, reasonByWord(out.rc.word, out.rc.wordCat, out.rc.kind == "card"), categoryByWordOrCard(out.rc.word, out.rc.wordCat, out.rc.kind == "card", "ad"), "keyword")
 			return
 		}
 		if out.rc.ragScore != nil {
 			// 模棱两可分数兜底
 			cfg := m.getCfg(ctx)
 			if *out.rc.ragScore >= cfg.FallbackScore {
-				m.punish(ev, "RAG语义核实(LLM异常分数兜底)", categoryByWordOrCard(out.rc.word, out.rc.wordCat, out.rc.kind == "card", "ad"))
+				m.punish(ev, "RAG语义核实(LLM异常分数兜底)", categoryByWordOrCard(out.rc.word, out.rc.wordCat, out.rc.kind == "card", "ad"), "rag")
 				return
 			}
 		}
@@ -224,7 +224,7 @@ func (m *Manager) handleReview(ctx context.Context, out reviewOutcome) {
 		log.Warn("LLM 审查返回非 JSON，按失败处理", "content", out.content)
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("error").Inc()
 		if highRisk && out.rc.hard {
-			m.punish(ev, reasonByWord(out.rc.word, out.rc.wordCat, out.rc.kind == "card"), categoryByWordOrCard(out.rc.word, out.rc.wordCat, out.rc.kind == "card", "ad"))
+			m.punish(ev, reasonByWord(out.rc.word, out.rc.wordCat, out.rc.kind == "card"), categoryByWordOrCard(out.rc.word, out.rc.wordCat, out.rc.kind == "card", "ad"), "keyword")
 			return
 		}
 		return
@@ -237,7 +237,7 @@ func (m *Manager) handleReview(ctx context.Context, out reviewOutcome) {
 		if reason == "" {
 			reason = reasonByWord(out.rc.word, out.rc.wordCat, out.rc.kind == "card")
 		}
-		m.punish(ev, reason, category)
+		m.punish(ev, reason, category, "llm")
 		// 学习闭环：LLM 确认违规 → 样本入库 + RAG upsert（异步不影响处罚）
 		m.learnSample(ctx, out.content, ev, category)
 	default:

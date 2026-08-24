@@ -37,11 +37,15 @@ func (GroupMgrConfig) TableName() string { return "group_mgr_configs" }
 
 // GroupMgrWord 违规关键词条（黑色/灰色/敏感三分类，Web 可增删/txt 导入）。
 // Word 统一小写去重；Source 区分系统种子（go:embed 首次导入）与用户导入。
+// RAGSynced 标记该词条是否已同步到 RAG 向量库（同步/导入成功时置 true，删除/新增时置 false）。
+// RAGTag 是该词条派生的 RAG-Service tag UUID（ragtag.Word(id)），供面板展示与对账。
 type GroupMgrWord struct {
 	ID        uint   `gorm:"primarykey"`
 	Word      string `gorm:"not null;uniqueIndex"`
 	Category  string `gorm:"not null;index"` // black / gray / sensitive
 	Source    string `gorm:"not null;default:'system'"`
+	RAGSynced bool   `gorm:"not null;default:false"` // 是否已同步到 RAG 向量库
+	RAGTag    string `gorm:"type:varchar(64)"`       // 派生的 RAG tag UUID（展示用）
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`
@@ -65,12 +69,18 @@ type GroupMgrSample struct {
 func (GroupMgrSample) TableName() string { return "group_mgr_samples" }
 
 // GroupMgrViolation 违规记录（群+用户唯一；count = 当前违规等级 1/2/3）。
+// Username 记录处罚时该用户的群名片/昵称（面板展示用，可能过期）。
+// DetectionPath 记录判定来源：rag / keyword / llm（LLM 确认违规后追罚）。
+// LLMReason 记录 LLM 审核返回的 reason（detection_path=llm 时有值，面板可查看）。
 type GroupMgrViolation struct {
-	ID        uint  `gorm:"primarykey"`
-	GroupID   int64 `gorm:"not null;uniqueIndex:idx_gm_viol_g_u"`
-	UserID    int64 `gorm:"not null;uniqueIndex:idx_gm_viol_g_u"`
-	Count     int   `gorm:"not null;default:1"`
-	UpdatedAt time.Time
+	ID            uint   `gorm:"primarykey"`
+	GroupID       int64  `gorm:"not null;uniqueIndex:idx_gm_viol_g_u"`
+	UserID        int64  `gorm:"not null;uniqueIndex:idx_gm_viol_g_u"`
+	Count         int    `gorm:"not null;default:1"`
+	Username      string `gorm:"type:varchar(128)"` // 处罚时群名片/昵称
+	DetectionPath string `gorm:"type:varchar(16)"`  // rag / keyword / llm
+	LLMReason     string `gorm:"type:text"`         // LLM 审核返回的 reason
+	UpdatedAt     time.Time
 }
 
 func (GroupMgrViolation) TableName() string { return "group_mgr_violations" }

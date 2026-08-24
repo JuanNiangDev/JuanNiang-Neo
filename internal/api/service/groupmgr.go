@@ -85,7 +85,7 @@ func (s *Service) ListGroupMgrWords(ctx context.Context, c *app.RequestContext) 
 		if category != "" && w.Category != category {
 			continue
 		}
-		resp = append(resp, dto.GroupMgrWordResp{ID: w.ID, Word: w.Word, Category: w.Category, Source: w.Source})
+		resp = append(resp, dto.GroupMgrWordResp{ID: w.ID, Word: w.Word, Category: w.Category, Source: w.Source, RAGSynced: w.RAGSynced, RAGTag: w.RAGTag})
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
 }
@@ -107,7 +107,7 @@ func (s *Service) AddGroupMgrWord(ctx context.Context, c *app.RequestContext) {
 			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 			return
 		}
-	} else if err := s.DAO.GroupMgr.WordUpsert(ctx, data.Word, data.Category, "import"); err != nil {
+	} else if _, err := s.DAO.GroupMgr.WordUpsert(ctx, data.Word, data.Category, "import"); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
@@ -217,7 +217,7 @@ func (s *Service) ListGroupMgrViolations(ctx context.Context, c *app.RequestCont
 	}
 	resp := make([]dto.GroupMgrViolationResp, 0, len(list))
 	for _, v := range list {
-		resp = append(resp, dto.GroupMgrViolationResp{ID: v.ID, GroupID: v.GroupID, UserID: v.UserID, Count: v.Count})
+		resp = append(resp, dto.GroupMgrViolationResp{ID: v.ID, GroupID: v.GroupID, UserID: v.UserID, Username: v.Username, Count: v.Count, DetectionPath: v.DetectionPath, LLMReason: v.LLMReason})
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
 }
@@ -263,6 +263,21 @@ func (s *Service) GetGroupMgrAdmins(ctx context.Context, c *app.RequestContext) 
 		qqs = append(qqs, a.QQ)
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.GroupMgrQQListResp{QQList: qqs}))
+}
+
+// SyncGroupMgrAdminsFromAdapter 从 Adapter.Admins 同步管理员到群管理手动管理员表
+// （去重合并，返回新增数量）。面板「从 Adapter 同步管理员」按钮。
+func (s *Service) SyncGroupMgrAdminsFromAdapter(ctx context.Context, c *app.RequestContext) {
+	if s.GroupMgr == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "群管理未初始化"}))
+		return
+	}
+	added, err := s.GroupMgr.SyncAdminsFromAdapter(ctx, s.Adapter.Admins())
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]int{"added": added}))
 }
 
 // UpdateGroupMgrAdmins 手动管理员全量覆盖。

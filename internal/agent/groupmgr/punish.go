@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/metrics"
 )
 
@@ -73,9 +74,17 @@ var tierTemplates = map[string][3][]string{
 
 // punish 三级惩罚：第 1 次撤回+警告；第 2 次撤回+禁言 30min；第 3 次撤回+踢出（成功重置次数）。
 // 每次处罚 @ 回复违规者 + 私聊通知所有管理员。踢人失败保留次数并通知人工处理。
-func (m *Manager) punish(ev adapter.Event, reason, category string) {
+// path 为判定来源（rag / keyword / llm），与 reason（LLM 确认违规时为 LLM 输出的 reason）
+// 一并写入违规记录，供面板展示分析类型与 LLM 原因。
+func (m *Manager) punish(ev adapter.Event, reason, category, path string) {
 	groupID := ev.Message.GroupID
 	userID := ev.Message.UserID
+
+	meta := dao.ViolationMeta{
+		Username:      violationUsername(ev),
+		DetectionPath: path,
+		LLMReason:     reason,
+	}
 
 	count, err := m.dao.ViolationGet(context.Background(), groupID, userID)
 	if err != nil {
@@ -83,7 +92,7 @@ func (m *Manager) punish(ev adapter.Event, reason, category string) {
 		return
 	}
 	count++
-	if err := m.dao.ViolationSet(context.Background(), groupID, userID, count); err != nil {
+	if err := m.dao.ViolationSet(context.Background(), groupID, userID, count, meta); err != nil {
 		log.Warn("违规记录写入失败", "err", err)
 	}
 
@@ -106,7 +115,7 @@ func (m *Manager) punish(ev adapter.Event, reason, category string) {
 			metrics.GroupMgrViolationsTotal.WithLabelValues(category, "kick_failed").Inc()
 			m.notifyAdmins(ev, itoa(userID)+" "+reason+"（第 "+strconv.Itoa(count)+" 次）-> 踢人失败: "+err.Error()+"，请管理员人工处理")
 		} else {
-			_ = m.dao.ViolationSet(context.Background(), groupID, userID, 0)
+			_ = m.dao.ViolationSet(context.Background(), groupID, userID, 0, dao.ViolationMeta{})
 			_, _ = m.dao.StatIncr(context.Background(), gkey(groupID, "stats:kick"))
 		}
 	}
@@ -120,6 +129,17 @@ func (m *Manager) punish(ev adapter.Event, reason, category string) {
 	actionText := map[string]string{"warn": "撤回并警告", "mute": "撤回并禁言30分钟", "kick": "撤回并踢出群聊"}[action]
 	m.notifyAdmins(ev, itoa(userID)+" "+reason+"（第 "+strconv.Itoa(count)+" 次）-> "+actionText)
 	log.Info("群管理处罚", "user", userID, "group", groupID, "reason", reason, "count", count, "action", actionText)
+}
+
+// violationUsername 处罚现场用户名：群名片优先，其次昵称。
+func violationUsername(ev adapter.Event) string {
+	if ev.Message == nil {
+		return ""
+	}
+	if ev.Message.Sender.Card != "" {
+		return ev.Message.Sender.Card
+	}
+	return ev.Message.Sender.Nickname
 }
 
 // replyGroup 群聊 @ 发信人回复。

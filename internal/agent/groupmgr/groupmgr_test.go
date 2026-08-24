@@ -128,10 +128,10 @@ func TestDAOFixtures(t *testing.T) {
 
 	// 词条幂等：重复 upsert 不增加计数（种子已导入 2268 条）
 	before, _ := gmdao.WordCount(ctx)
-	if err := gmdao.WordUpsert(ctx, "校园卡", "gray", "import"); err != nil {
+	if _, err := gmdao.WordUpsert(ctx, "校园卡", "gray", "import"); err != nil {
 		t.Fatal(err)
 	}
-	if err := gmdao.WordUpsert(ctx, "校园卡", "gray", "import"); err != nil {
+	if _, err := gmdao.WordUpsert(ctx, "校园卡", "gray", "import"); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := gmdao.WordCount(ctx)
@@ -139,14 +139,14 @@ func TestDAOFixtures(t *testing.T) {
 		t.Fatalf("词条幂等失败，before=%d after=%d", before, after)
 	}
 	// 违规记录
-	if err := gmdao.ViolationSet(ctx, 100, 200, 1); err != nil {
+	if err := gmdao.ViolationSet(ctx, 100, 200, 1, dao.ViolationMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	c, _ := gmdao.ViolationGet(ctx, 100, 200)
 	if c != 1 {
 		t.Fatalf("违规次数 = %d", c)
 	}
-	if err := gmdao.ViolationSet(ctx, 100, 200, 0); err != nil {
+	if err := gmdao.ViolationSet(ctx, 100, 200, 0, dao.ViolationMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	if c, _ = gmdao.ViolationGet(ctx, 100, 200); c != 0 {

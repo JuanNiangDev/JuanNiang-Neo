@@ -52,7 +52,7 @@ func TestSyncRAG(t *testing.T) {
 	m.getRAG = func() *caller.Client { return ragCli }
 
 	// 词条 + 样本各一条
-	_ = gmdao.WordUpsert(ctx, "同步测试词", "gray", "import")
+	_, _ = gmdao.WordUpsert(ctx, "同步测试词", "gray", "import")
 	_, _ = gmdao.SampleAdd(ctx, "同步测试样本", "ad", "learn")
 
 	total, failed, err := m.SyncRAG(ctx)

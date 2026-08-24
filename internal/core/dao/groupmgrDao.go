@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"time"
 
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/core/ragtag"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -15,6 +17,9 @@ import (
 type GroupMgrDAO struct{ db *gorm.DB }
 
 func NewGroupMgrDAO(db *gorm.DB) *GroupMgrDAO { return &GroupMgrDAO{db: db} }
+
+// u64toa uint64 → 十进制字符串（RAG tag 派生用）。
+func u64toa(v uint64) string { return strconv.FormatUint(v, 10) }
 
 // ---------- 配置（单行） ----------
 
@@ -58,12 +63,52 @@ func (d *GroupMgrDAO) WordListByCategory(ctx context.Context, category string) (
 	return list, err
 }
 
-// WordUpsert 新增词条（幂等：已存在则更新分类/来源，不重复插入）。
-func (d *GroupMgrDAO) WordUpsert(ctx context.Context, word, category, source string) error {
-	return d.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "word"}},
-		DoUpdates: clause.AssignmentColumns([]string{"category", "source", "updated_at"}),
-	}).Create(&models.GroupMgrWord{Word: word, Category: category, Source: source}).Error
+// WordUpsert 新增/更新词条（幂等）。返回词条 ID。
+// 插入后回填派生 RAG tag（ragtag.Word(id) → v5 UUID）；
+// 词条内容变更时同步状态不置位（由 syncRAG / AddWord 完成后置位）。
+func (d *GroupMgrDAO) WordUpsert(ctx context.Context, word, category, source string) (uint, error) {
+	var w models.GroupMgrWord
+	err := d.db.WithContext(ctx).Where("word = ?", word).First(&w).Error
+	if err == nil {
+		w.Category = category
+		w.Source = source
+		if err := d.db.WithContext(ctx).Save(&w).Error; err != nil {
+			return 0, err
+		}
+		return w.ID, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return 0, err
+	}
+	w = models.GroupMgrWord{Word: word, Category: category, Source: source}
+	if err := d.db.WithContext(ctx).Create(&w).Error; err != nil {
+		return 0, err
+	}
+	// 派生 RAG tag（与检索侧 ragtag.Word(id) 一致，幂等可复现）
+	w.RAGTag = ragtag.Word(u64toa(uint64(w.ID))).String()
+	if err := d.db.WithContext(ctx).Model(&w).UpdateColumn("rag_tag", w.RAGTag).Error; err != nil {
+		return 0, err
+	}
+	return w.ID, nil
+}
+
+// WordMarkRAGSynced 标记词条 RAG 同步状态（syncRAG/导入/删除后调用）。
+func (d *GroupMgrDAO) WordMarkRAGSynced(ctx context.Context, id uint, synced bool) error {
+	return d.db.WithContext(ctx).Model(&models.GroupMgrWord{}).Where("id = ?", id).
+		UpdateColumns(map[string]any{"rag_synced": synced, "updated_at": time.Now()}).Error
+}
+
+// WordSetRAGTag 回填派生 RAG tag（历史词条/导入路径补 tag 用）。
+func (d *GroupMgrDAO) WordSetRAGTag(ctx context.Context, id uint, tag string) error {
+	return d.db.WithContext(ctx).Model(&models.GroupMgrWord{}).Where("id = ?", id).
+		UpdateColumn("rag_tag", tag).Error
+}
+
+// WordListUnsynced 列出未同步到 RAG 的词条（同步按钮增量处理用）。
+func (d *GroupMgrDAO) WordListUnsynced(ctx context.Context) ([]models.GroupMgrWord, error) {
+	var list []models.GroupMgrWord
+	err := d.db.WithContext(ctx).Where("rag_synced = ?", false).Order("id ASC").Find(&list).Error
+	return list, err
 }
 
 // WordDelete 删除词条（软删；唯一索引软删后重建同名由部分唯一索引约束）。
@@ -137,16 +182,29 @@ func (d *GroupMgrDAO) ViolationGet(ctx context.Context, groupID, userID int64) (
 	return v.Count, nil
 }
 
-// ViolationSet 写入违规次数（0 视为删除）。
-func (d *GroupMgrDAO) ViolationSet(ctx context.Context, groupID, userID int64, count int) error {
+// ViolationMeta 违规现场信息（处罚时记录，面板展示用）。
+type ViolationMeta struct {
+	Username      string // 群名片/昵称
+	DetectionPath string // rag / keyword / llm
+	LLMReason     string // LLM 审核返回的 reason
+}
+
+// ViolationSet 写入违规记录（count <= 0 视为删除）。
+// meta 为本次处罚的现场信息：用户名 / 判定来源 / LLM reason（逐次覆盖）。
+func (d *GroupMgrDAO) ViolationSet(ctx context.Context, groupID, userID int64, count int, meta ViolationMeta) error {
 	if count <= 0 {
 		return d.db.WithContext(ctx).Where("group_id = ? AND user_id = ?", groupID, userID).
 			Delete(&models.GroupMgrViolation{}).Error
 	}
 	return d.db.WithContext(ctx).Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "group_id"}, {Name: "user_id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"count", "updated_at"}),
-	}).Create(&models.GroupMgrViolation{GroupID: groupID, UserID: userID, Count: count}).Error
+		Columns: []clause.Column{{Name: "group_id"}, {Name: "user_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"count", "username", "detection_path", "llm_reason", "updated_at",
+		}),
+	}).Create(&models.GroupMgrViolation{
+		GroupID: groupID, UserID: userID, Count: count,
+		Username: meta.Username, DetectionPath: meta.DetectionPath, LLMReason: meta.LLMReason,
+	}).Error
 }
 
 // ViolationList 列出全部违规记录。

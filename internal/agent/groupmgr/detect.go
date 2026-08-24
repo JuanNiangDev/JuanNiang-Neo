@@ -110,7 +110,7 @@ func (m *Manager) handleRAGVerdict(ctx context.Context, ev adapter.Event, cfg *m
 			reason = "RAG语义核实(推荐卡片)"
 		}
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
-		m.punish(ev, reason, category)
+		m.punish(ev, reason, category, "rag")
 		m.sampleHit(ctx, v.tag)
 		return true
 	case mid:
@@ -130,7 +130,7 @@ func (m *Manager) handleRAGVerdict(ctx context.Context, ev adapter.Event, cfg *m
 		// LLM 不可用：分数兜底（≥ FallbackScore 直罚）
 		if v.score >= cfg.FallbackScore {
 			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
-			m.punish(ev, "RAG语义核实(LLM不可用分数兜底)", categoryByWordOrCard(word, wordCat, card, v.category))
+			m.punish(ev, "RAG语义核实(LLM不可用分数兜底)", categoryByWordOrCard(word, wordCat, card, v.category), "rag")
 			return true
 		}
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
@@ -157,7 +157,7 @@ func (m *Manager) handleRAGVerdict(ctx context.Context, ev adapter.Event, cfg *m
 		// LLM 不可用：回归旧语义——敏感/黑词/卡片直罚，灰词放行
 		if wordCat == "sensitive" || wordCat == "black" || card {
 			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
-			m.punish(ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, v.category))
+			m.punish(ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, v.category), "rag")
 			return true
 		}
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
@@ -182,7 +182,7 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 			return true
 		}
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "punish").Inc()
-		m.punish(ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, "ad"))
+		m.punish(ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, "ad"), "keyword")
 		return true
 	case wordCat == "gray":
 		// 常规审查；LLM 不可用 → 放行（异步追罚语义）
