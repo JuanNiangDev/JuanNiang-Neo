@@ -31,8 +31,8 @@ func loadImageB64(name string) string {
 	return "base64://" + base64.StdEncoding.EncodeToString(data)
 }
 
-// 违规禁言时长（第 2 次违规，默认 30 分钟，与旧插件一致）。
-const violationMuteSeconds = 1800
+// 三级惩罚第 2 次违规禁言时长默认值（面板可配，cfg.ViolationMuteSeconds）。
+const defaultViolationMuteSeconds = 1800
 
 // 三级惩罚话术（每级多套随机，卷娘语气；广告固定开头「打广告先交广告费」，敏感固定「小鬼不能碰」）。
 var tierTemplates = map[string][3][]string{
@@ -91,6 +91,11 @@ func (m *Manager) punish(ev adapter.Event, reason, category, path string) {
 		log.Warn("违规记录读取失败", "err", err)
 		return
 	}
+	// 违规禁言时长取面板配置（默认 30 分钟）
+	muteSeconds := defaultViolationMuteSeconds
+	if cfg := m.getCfg(context.Background()); cfg != nil && cfg.ViolationMuteSeconds > 0 {
+		muteSeconds = cfg.ViolationMuteSeconds
+	}
 	count++
 	if err := m.dao.ViolationSet(context.Background(), groupID, userID, count, meta); err != nil {
 		log.Warn("违规记录写入失败", "err", err)
@@ -104,7 +109,7 @@ func (m *Manager) punish(ev adapter.Event, reason, category, path string) {
 	case count == 2:
 		action = "mute"
 		_ = m.adp.DeleteMsg(ev.Message.MessageID)
-		_ = m.adp.BanGroupMember(groupID, userID, violationMuteSeconds)
+		_ = m.adp.BanGroupMember(groupID, userID, muteSeconds)
 		_, _ = m.dao.StatIncr(context.Background(), gkey(groupID, "stats:mute"))
 	default:
 		action = "kick"

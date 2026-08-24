@@ -31,15 +31,15 @@ func TestCheckImageSpamWarnThenMute(t *testing.T) {
 	ev := groupEv(100, 200, "[CQ:image,file=abc]")
 
 	// 1 张图：不触发
-	if m.checkImageSpam(ctx, ev) {
+	if m.checkImageSpam(ctx, ev, m.getCfg(ctx)) {
 		t.Fatal("单张图片不应触发")
 	}
 	// 2 张：不触发
-	if m.checkImageSpam(ctx, ev) {
+	if m.checkImageSpam(ctx, ev, m.getCfg(ctx)) {
 		t.Fatal("2 张图片不应触发")
 	}
 	// 3 张：触发警告（发送配图话术）
-	if !m.checkImageSpam(ctx, ev) {
+	if !m.checkImageSpam(ctx, ev, m.getCfg(ctx)) {
 		t.Fatal("3 张图片应触发警告")
 	}
 	m.imgMu.Lock()
@@ -53,14 +53,14 @@ func TestCheckImageSpamWarnThenMute(t *testing.T) {
 	}
 
 	// 已警告状态下再连续发图 → 禁言（stats:mute 递增）
-	if !m.checkImageSpam(ctx, ev) {
+	if !m.checkImageSpam(ctx, ev, m.getCfg(ctx)) {
 		t.Fatal("警告后达阈值应触发禁言")
 	}
 	if v, _ := gmdao.StatGet(ctx, gkey(100, "stats:mute")); v != "1" {
 		t.Fatalf("禁言统计 = %q", v)
 	}
 	// 禁言后刷屏状态已重置：单张图不再触发
-	if m.checkImageSpam(ctx, ev) {
+	if m.checkImageSpam(ctx, ev, m.getCfg(ctx)) {
 		t.Fatal("禁言后状态应重置，单张图不应触发")
 	}
 }
@@ -72,11 +72,11 @@ func TestCheckCopySpamTrigger(t *testing.T) {
 
 	// 用户 1、2 发相同消息：未达阈值不触发；用户 3 触发警告
 	for _, uid := range []int64{1, 2} {
-		if m.checkCopySpam(ctx, groupEv(100, uid, "你们这群人机")) {
+		if m.checkCopySpam(ctx, groupEv(100, uid, "你们这群人机"), m.getCfg(ctx)) {
 			t.Fatalf("用户 %d 不应提前触发", uid)
 		}
 	}
-	if !m.checkCopySpam(ctx, groupEv(100, 3, "你们这群人机")) {
+	if !m.checkCopySpam(ctx, groupEv(100, 3, "你们这群人机"), m.getCfg(ctx)) {
 		t.Fatal("第 3 人应触发复读警告")
 	}
 	if v, _ := gmdao.StatGet(ctx, gkey(100, "stats:copy_warn")); v != "1" {
@@ -84,14 +84,14 @@ func TestCheckCopySpamTrigger(t *testing.T) {
 	}
 
 	// 同一用户重复发言不算复读（新消息重置）
-	m.checkCopySpam(ctx, groupEv(100, 4, "别的内容"))
+	m.checkCopySpam(ctx, groupEv(100, 4, "别的内容"), m.getCfg(ctx))
 	for i := 0; i < 5; i++ {
-		if m.checkCopySpam(ctx, groupEv(100, 4, "别的内容")) {
+		if m.checkCopySpam(ctx, groupEv(100, 4, "别的内容"), m.getCfg(ctx)) {
 			t.Fatal("同一用户重复不应触发")
 		}
 	}
 	// 含 CQ 码的消息不参与复读检测
-	if m.checkCopySpam(ctx, groupEv(100, 5, "[CQ:face,id=14]")) {
+	if m.checkCopySpam(ctx, groupEv(100, 5, "[CQ:face,id=14]"), m.getCfg(ctx)) {
 		t.Fatal("CQ 消息不应参与复读")
 	}
 }

@@ -20,6 +20,18 @@ type GroupMgrConfig struct {
 	LowScore      float64 `gorm:"not null;default:0.5"`   // RAG 模棱两可下限（≤ 视为不违规）
 	FallbackScore float64 `gorm:"not null;default:0.6"`   // LLM 异常 + RAG 模棱两可时的分数兜底（≥ 直罚）
 
+	// 图片刷屏检测参数（对齐旧插件 config.yaml）
+	ImgSpamWindow    int `gorm:"not null;default:2"`  // 刷屏时间窗口（秒）
+	ImgSpamThreshold int `gorm:"not null;default:3"`  // 窗口内触发警告的图片数量
+	ImgMuteDuration  int `gorm:"not null;default:60"` // 重复刷屏禁言时长（秒）
+
+	// +1 复读检测参数
+	EnableCopyCheck bool `gorm:"not null;default:true"` // 复读检测开关
+	CopyThreshold   int  `gorm:"not null;default:3"`    // 多少人连续发相同消息判定为复读
+
+	// 三级惩罚参数
+	ViolationMuteSeconds int `gorm:"not null;default:1800"` // 第二次违规禁言时长（秒）
+
 	// ExcludeGroups 排除检测的群 ID 列表（这些群不跑任何检测/惩罚）。
 	ExcludeGroups JSONSlice `gorm:"type:jsonb;default:'[]'"`
 

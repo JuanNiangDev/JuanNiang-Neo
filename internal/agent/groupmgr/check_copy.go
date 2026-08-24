@@ -5,15 +5,24 @@ import (
 	"strings"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/metrics"
 )
 
 // checkCopySpam +1 复读检测：N 人连续发相同纯文本消息触发警告。
-// 返回 true = 已触发（消费消息）。
-func (m *Manager) checkCopySpam(ctx context.Context, ev adapter.Event) bool {
+// 开关/阈值来自面板配置。返回 true = 已触发（消费消息）。
+func (m *Manager) checkCopySpam(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig) bool {
 	raw := strings.TrimSpace(ev.Message.RawMessage)
 	if raw == "" || strings.Contains(raw, "[CQ:") {
 		return false
+	}
+	// 复读检测开关（面板配置）
+	if !cfg.EnableCopyCheck {
+		return false
+	}
+	threshold := cfg.CopyThreshold
+	if threshold <= 0 {
+		threshold = 3
 	}
 	groupID, userID := ev.Message.GroupID, ev.Message.UserID
 
@@ -36,7 +45,7 @@ func (m *Manager) checkCopySpam(ctx context.Context, ev adapter.Event) bool {
 	}
 	st.users[userID] = true
 	st.count++
-	if st.count < copyThreshold {
+	if st.count < threshold {
 		return false
 	}
 	if st.trig {

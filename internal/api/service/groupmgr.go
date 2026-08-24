@@ -58,6 +58,23 @@ func (s *Service) UpdateGroupMgrConfig(ctx context.Context, c *app.RequestContex
 	if data.FallbackScore >= 0 && data.FallbackScore <= 1 {
 		cfg.FallbackScore = data.FallbackScore
 	}
+	// 检测参数（图片刷屏 / 复读 / 惩罚时长），非法值忽略保留原值
+	if data.ImgSpamWindow > 0 {
+		cfg.ImgSpamWindow = data.ImgSpamWindow
+	}
+	if data.ImgSpamThreshold > 0 {
+		cfg.ImgSpamThreshold = data.ImgSpamThreshold
+	}
+	if data.ImgMuteDuration > 0 {
+		cfg.ImgMuteDuration = data.ImgMuteDuration
+	}
+	cfg.EnableCopyCheck = data.EnableCopyCheck
+	if data.CopyThreshold > 0 {
+		cfg.CopyThreshold = data.CopyThreshold
+	}
+	if data.ViolationMuteSeconds > 0 {
+		cfg.ViolationMuteSeconds = data.ViolationMuteSeconds
+	}
 	cfg.ExcludeGroups = models.JSONSlice(data.ExcludeGroups)
 	cfg.LLMCriteria = data.LLMCriteria
 	cfg.LLMGrayPrompt = data.LLMGrayPrompt
@@ -355,8 +372,11 @@ func groupMgrConfigResp(cfg *models.GroupMgrConfig) dto.GroupMgrConfigResp {
 	return dto.GroupMgrConfigResp{
 		Enabled: cfg.Enabled, LLMReview: cfg.LLMReview,
 		HighScore: cfg.HighScore, LowScore: cfg.LowScore, FallbackScore: cfg.FallbackScore,
-		ExcludeGroups: cfg.ExcludeGroups,
-		LLMCriteria:   cfg.LLMCriteria, LLMGrayPrompt: cfg.LLMGrayPrompt, LLMHighRiskPrompt: cfg.LLMHighRiskPrompt,
+		ImgSpamWindow: cfg.ImgSpamWindow, ImgSpamThreshold: cfg.ImgSpamThreshold, ImgMuteDuration: cfg.ImgMuteDuration,
+		EnableCopyCheck: cfg.EnableCopyCheck, CopyThreshold: cfg.CopyThreshold,
+		ViolationMuteSeconds: cfg.ViolationMuteSeconds,
+		ExcludeGroups:        cfg.ExcludeGroups,
+		LLMCriteria:          cfg.LLMCriteria, LLMGrayPrompt: cfg.LLMGrayPrompt, LLMHighRiskPrompt: cfg.LLMHighRiskPrompt,
 	}
 }
 

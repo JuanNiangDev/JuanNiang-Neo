@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/metrics"
 )
 
@@ -20,10 +21,22 @@ func hasImage(raw string) bool {
 }
 
 // checkImageSpam 图片刷屏检测：窗口内 ≥ 阈值触发警告；已警告仍刷 → 禁言。
-// 返回 true = 已触发（消费消息）。
-func (m *Manager) checkImageSpam(ctx context.Context, ev adapter.Event) bool {
+// 参数（窗口/阈值/禁言时长）来自面板配置。返回 true = 已触发（消费消息）。
+func (m *Manager) checkImageSpam(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig) bool {
 	if !hasImage(ev.Message.RawMessage) {
 		return false
+	}
+	window := cfg.ImgSpamWindow
+	if window <= 0 {
+		window = 2
+	}
+	threshold := cfg.ImgSpamThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	duration := cfg.ImgMuteDuration
+	if duration <= 0 {
+		duration = 60
 	}
 	groupID, userID := ev.Message.GroupID, ev.Message.UserID
 	key := gkey(groupID, "ims:"+itoa(userID))
@@ -31,7 +44,7 @@ func (m *Manager) checkImageSpam(ctx context.Context, ev adapter.Event) bool {
 
 	m.imgMu.Lock()
 	times := m.imgState[key]
-	cutoff := now - imgSpamWindow
+	cutoff := now - int64(window)
 	recent := make([]int64, 0, len(times)+1)
 	for _, ts := range times {
 		if ts >= cutoff {
@@ -46,14 +59,14 @@ func (m *Manager) checkImageSpam(ctx context.Context, ev adapter.Event) bool {
 	// kv 持久化兜底（重启不丢窗口）
 	_ = m.dao.StatSet(ctx, key, joinInts(recent))
 
-	if len(recent) >= imgSpamThreshold {
+	if len(recent) >= threshold {
 		if warned {
 			// 已警告仍刷 → 禁言
-			_ = m.adp.BanGroupMember(groupID, userID, imgMuteDuration)
+			_ = m.adp.BanGroupMember(groupID, userID, duration)
 			_, _ = m.dao.StatIncr(ctx, gkey(groupID, "stats:mute"))
 			metrics.GroupMgrSpamTotal.WithLabelValues("image").Inc()
-			log.Info("图片刷屏禁言", "user", userID, "group", groupID, "duration", imgMuteDuration)
-			m.notifyAdmins(ev, itoa(userID)+" 因图片刷屏被禁言 "+itoa(imgMuteDuration)+"s")
+			log.Info("图片刷屏禁言", "user", userID, "group", groupID, "duration", duration)
+			m.notifyAdmins(ev, itoa(userID)+" 因图片刷屏被禁言 "+strconv.FormatInt(int64(duration), 10)+"s")
 			m.imgMu.Lock()
 			delete(m.imgState, key)
 			delete(m.imgWarn, key)

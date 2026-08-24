@@ -492,15 +492,21 @@ type ReplyStrategyResp struct {
 
 // GroupMgrConfigResp 群管理配置。
 type GroupMgrConfigResp struct {
-	Enabled           bool     `json:"enabled"`
-	LLMReview         bool     `json:"llm_review"`
-	HighScore         float64  `json:"high_score"`
-	LowScore          float64  `json:"low_score"`
-	FallbackScore     float64  `json:"fallback_score"`
-	ExcludeGroups     []string `json:"exclude_groups"`
-	LLMCriteria       string   `json:"llm_criteria"`
-	LLMGrayPrompt     string   `json:"llm_gray_prompt"`
-	LLMHighRiskPrompt string   `json:"llm_high_risk_prompt"`
+	Enabled              bool     `json:"enabled"`
+	LLMReview            bool     `json:"llm_review"`
+	HighScore            float64  `json:"high_score"`
+	LowScore             float64  `json:"low_score"`
+	FallbackScore        float64  `json:"fallback_score"`
+	ImgSpamWindow        int      `json:"img_spam_window"`
+	ImgSpamThreshold     int      `json:"img_spam_threshold"`
+	ImgMuteDuration      int      `json:"img_mute_duration"`
+	EnableCopyCheck      bool     `json:"enable_copy_check"`
+	CopyThreshold        int      `json:"copy_threshold"`
+	ViolationMuteSeconds int      `json:"violation_mute_seconds"`
+	ExcludeGroups        []string `json:"exclude_groups"`
+	LLMCriteria          string   `json:"llm_criteria"`
+	LLMGrayPrompt        string   `json:"llm_gray_prompt"`
+	LLMHighRiskPrompt    string   `json:"llm_high_risk_prompt"`
 }
 
 // GroupMgrWordResp 词条。

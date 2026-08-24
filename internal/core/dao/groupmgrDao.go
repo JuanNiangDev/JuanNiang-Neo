@@ -26,10 +26,16 @@ func u64toa(v uint64) string { return strconv.FormatUint(v, 10) }
 // InitConfig 初始化默认配置（不存在时插入；默认关闭，用户面板启用）。
 func (d *GroupMgrDAO) InitConfig(ctx context.Context) error {
 	return d.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&models.GroupMgrConfig{
-		ID:            1,
-		HighScore:     0.75,
-		LowScore:      0.5,
-		FallbackScore: 0.6,
+		ID:                   1,
+		HighScore:            0.75,
+		LowScore:             0.5,
+		FallbackScore:        0.6,
+		ImgSpamWindow:        2,
+		ImgSpamThreshold:     3,
+		ImgMuteDuration:      60,
+		EnableCopyCheck:      true,
+		CopyThreshold:        3,
+		ViolationMuteSeconds: 1800,
 	}).Error
 }
 

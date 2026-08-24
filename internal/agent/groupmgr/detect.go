@@ -51,10 +51,10 @@ func detectGroupCard(raw string) bool {
 // 顺序与旧插件一致：违禁言论（不消费）→ 图片刷屏（消费）→ +1 复读（消费）。
 func (m *Manager) detectMessage(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig) bool {
 	m.detectViolation(ctx, ev, cfg)
-	if m.checkImageSpam(ctx, ev) {
+	if m.checkImageSpam(ctx, ev, cfg) {
 		return true
 	}
-	if m.checkCopySpam(ctx, ev) {
+	if m.checkCopySpam(ctx, ev, cfg) {
 		return true
 	}
 	return false

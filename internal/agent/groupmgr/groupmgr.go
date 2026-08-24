@@ -30,14 +30,6 @@ import (
 // 配置内存缓存 TTL：Web 面板保存后调用 Reload 立即失效，TTL 仅兜底。
 const cfgCacheTTL = 30 * time.Second
 
-// 图片刷屏 / 复读的默认参数（与旧插件一致，面板不再暴露这些微调项）。
-const (
-	imgSpamWindow    = 2  // 秒
-	imgSpamThreshold = 3  // 张
-	imgMuteDuration  = 60 // 秒
-	copyThreshold    = 3  // 人
-)
-
 // Manager 群管理系统功能。
 type Manager struct {
 	dao       *dao.GroupMgrDAO
