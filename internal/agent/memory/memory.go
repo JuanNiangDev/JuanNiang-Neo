@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
@@ -35,8 +36,9 @@ type MemoryGroup struct {
 	SkillMemory *skillmem.SkillMemory
 	LLMProvider provider.Provider // 用于 Compact 中的技能记忆更新（兼容旧赋值，动态获取函数优先）
 
-	// RAGClient 向量检索客户端（Compact 双写记忆向量用）；nil=未启用时静默跳过。
-	RAGClient *ragcaller.Client
+	// RAGClient 向量检索客户端（Compact 双写记忆向量用）；Load()=nil 时静默跳过。
+	// 原子指针：Web 配置热更新（HTTP goroutine）与 Compact 双写（agent goroutine）并发读写无竞争。
+	RAGClient atomic.Pointer[ragcaller.Client]
 
 	// llmProviderFn 动态获取 Text LLM Provider：Compact 触发时实时取最新模型，
 	// 避免启动时序（Init 时 ProviderGroup 尚未加载）与 Provider 热更新导致的 nil/过期问题。
@@ -69,7 +71,7 @@ func (m *MemoryGroup) SetLLMProviderFn(fn func() provider.Provider) {
 
 // SetRAGClient 注入 RAG 向量检索客户端（双写记忆向量用；nil=未启用）。
 func (m *MemoryGroup) SetRAGClient(c *ragcaller.Client) {
-	m.RAGClient = c
+	m.RAGClient.Store(c)
 }
 
 // getLLMProvider 返回当前可用的 Text LLM Provider：优先动态获取函数，回退旧字段。
@@ -182,7 +184,7 @@ func (m *MemoryGroup) AddLongTermMemory(ctx context.Context, areaID, content str
 // syncMemoryVector 异步写记忆向量到 RAG-Service（goroutine + 短超时快速失败，不阻塞调用方）。
 func (m *MemoryGroup) syncMemoryVector(id, content string) {
 	go func() {
-		cli := m.RAGClient
+		cli := m.RAGClient.Load()
 		if cli == nil {
 			return
 		}

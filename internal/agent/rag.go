@@ -116,7 +116,8 @@ type ragHitWithTag struct {
 // tryKnowledgeRAGRecall 知识库语义召回：命中按 RAG 分数排序注入。
 // 返回 (条目列表, 是否走了 RAG 路径)。RAG 未配置/不可用/无候选 → false（调用方降级 SQL）。
 func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([]models.KnowledgeItem, bool) {
-	if h.RAGClient == nil {
+	cli := h.RAGClient.Load()
+	if cli == nil {
 		return nil, false
 	}
 	owned, ok := h.knowledgeRagTagSet(ctx)
@@ -126,7 +127,7 @@ func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([
 	// 1s 硬超时：热路径不能被挂起的 RAG 服务拖住（与 groupmgr 对齐）
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
-	searchHits, err := h.RAGClient.Search(cctx, query, 10, nil)
+	searchHits, err := cli.Search(cctx, query, 10, nil)
 	if err != nil {
 		log.Warn("知识 RAG 检索失败，降级 SQL 匹配", "err", err)
 		return nil, false
@@ -167,7 +168,8 @@ func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([
 // tryMemoryRAGRecall 长期记忆语义召回：命中按 RAG 分数排序返回内容。
 // 返回 (内容列表, 是否走了 RAG 路径)。降级链由调用方（memoryRecall）负责。
 func (h *HagoCenter) tryMemoryRAGRecall(ctx context.Context, query string) ([]string, bool) {
-	if h.RAGClient == nil {
+	cli := h.RAGClient.Load()
+	if cli == nil {
 		return nil, false
 	}
 	owned, ok := h.memoryRagTagSet(ctx)
@@ -177,7 +179,7 @@ func (h *HagoCenter) tryMemoryRAGRecall(ctx context.Context, query string) ([]st
 	// 1s 硬超时：记忆召回在 agent goroutine 内，不能被挂起的 RAG 服务拖住
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
-	searchHits, err := h.RAGClient.Search(cctx, query, 20, nil)
+	searchHits, err := cli.Search(cctx, query, 20, nil)
 	if err != nil {
 		log.Warn("记忆 RAG 检索失败，降级", "err", err)
 		return nil, false

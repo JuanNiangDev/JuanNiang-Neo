@@ -262,7 +262,7 @@ func main() {
 	// ---------- 6.5 群管理系统功能（Phase 0.5 检测闸门 + 系统命令） ----------
 	gm := groupmgr.New(coreInst.DAO.GroupMgr,
 		adapterProv,
-		func() *ragcaller.Client { return hago.RAGClient },
+		func() *ragcaller.Client { return hago.RAGClient.Load() },
 		hago.Providers)
 	if err := gm.Init(ctx); err != nil {
 		log.Error("群管理初始化失败", "err", err)
@@ -303,7 +303,7 @@ func main() {
 	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
 	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
 	svc.OnUpdateRAG = func(client *ragcaller.Client) {
-		hago.RAGClient = client
+		hago.RAGClient.Store(client)
 		hago.Memory.SetRAGClient(client) // 同步记忆双写客户端
 	}
 	svc.OnRebuildAgent = func() { hago.RebuildEinoAgent(ctx) }
@@ -375,7 +375,7 @@ func main() {
 				name   string
 				client interface{ HealthCheck() error }
 			}{
-				{"rag", hago.RAGClient},
+				{"rag", hago.RAGClient.Load()},
 				{"t2i", hago.T2IClient},
 				{"sandbox", hago.SandboxClient},
 			}
@@ -678,7 +678,10 @@ func loadRAGFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, 
 		return
 	}
 	svc.RAGClient = client
-	hago.RAGClient = client
+	hago.RAGClient.Store(client)
+	// 同步记忆双写客户端：启动路径不走 OnUpdateRAG 回调，必须在此注入
+	// （否则 Compact 双写记忆向量在启动加载 RAG 配置后永久失效）。
+	hago.Memory.SetRAGClient(client)
 	log.Info("RAG 客户端已就绪", "base_url", cfg.BaseURL)
 }
 

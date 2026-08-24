@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
@@ -52,9 +53,10 @@ type HagoCenter struct {
 	// T2I 和 Sandbox 运行时客户端（可通过 API 热更新）
 	SandboxClient *sandboxcaller.Client
 	T2IClient     *t2icaller.Client
-	// RAGClient 向量检索服务客户端（可通过 API 热更新）；nil=未启用，
+	// RAGClient 向量检索服务客户端（可通过 API 热更新）；Load() 为 nil=未启用，
 	// 记忆/知识检索自动降级到非 RAG 路径（pg_trgm / SQL 匹配）。
-	RAGClient *ragcaller.Client
+	// 原子指针：Web 配置热更新（HTTP goroutine）与 Compact/召回（agent goroutine）并发读写无竞争。
+	RAGClient atomic.Pointer[ragcaller.Client]
 
 	Concurrency    *ConcurrencyManager
 	CronJobManager *cronjob.Manager
@@ -182,7 +184,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	// 存储 T2I/Sandbox/RAG 运行时客户端
 	h.SandboxClient = cfg.Sandbox
 	h.T2IClient = cfg.T2I
-	h.RAGClient = cfg.RAG
+	h.RAGClient.Store(cfg.RAG)
 
 	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径) + 每日 Token 统计
 	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.DAO.TokenUsageDaily, cfg.Cache)
