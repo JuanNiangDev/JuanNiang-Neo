@@ -71,7 +71,7 @@
         </v-row>
       </v-card-text>
       <v-card-text v-else class="text-caption text-medium-emphasis">
-        尚未获取到服务信息，点击右上角刷新或启用服务后再试。
+        尚未获取到服务信息，点击「健康状态」中的 检查健康 按钮或启用服务后再试。
       </v-card-text>
     </v-card>
   </div>
