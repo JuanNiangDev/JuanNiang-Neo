@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/metrics"
 )
 
 // 静态图（go:embed，刷屏警告/复读警告配图，原 redrock_group_manager img/ 目录）。
@@ -89,34 +90,36 @@ func (m *Manager) punish(ev adapter.Event, reason, category string) {
 	action := ""
 	switch {
 	case count == 1:
-		action = "撤回并警告"
+		action = "warn"
 		_ = m.adp.DeleteMsg(ev.Message.MessageID)
 	case count == 2:
-		action = "撤回并禁言30分钟"
+		action = "mute"
 		_ = m.adp.DeleteMsg(ev.Message.MessageID)
 		_ = m.adp.BanGroupMember(groupID, userID, violationMuteSeconds)
 		_, _ = m.dao.StatIncr(context.Background(), gkey(groupID, "stats:mute"))
 	default:
-		action = "撤回并踢出群聊"
+		action = "kick"
 		_ = m.adp.DeleteMsg(ev.Message.MessageID)
 		if err := m.adp.KickGroupMember(groupID, userID, false); err != nil {
 			// 踢人失败：保留违规次数（下次仍按第 3 级），通知管理员人工处理
 			log.Warn("踢人失败", "user", userID, "group", groupID, "err", err)
-			action = "撤回并踢出群聊（失败）"
+			metrics.GroupMgrViolationsTotal.WithLabelValues(category, "kick_failed").Inc()
 			m.notifyAdmins(ev, itoa(userID)+" "+reason+"（第 "+strconv.Itoa(count)+" 次）-> 踢人失败: "+err.Error()+"，请管理员人工处理")
 		} else {
 			_ = m.dao.ViolationSet(context.Background(), groupID, userID, 0)
 			_, _ = m.dao.StatIncr(context.Background(), gkey(groupID, "stats:kick"))
 		}
 	}
+	metrics.GroupMgrViolationsTotal.WithLabelValues(category, action).Inc()
 	_, _ = m.dao.StatIncr(context.Background(), gkey(groupID, "stats:"+category))
 
 	// 回复话术
 	bucket := tierTemplates[category][min(count-1, 2)]
 	m.replyGroup(ev, bucket[rand.Intn(len(bucket))])
 
-	m.notifyAdmins(ev, itoa(userID)+" "+reason+"（第 "+strconv.Itoa(count)+" 次）-> "+action)
-	log.Info("群管理处罚", "user", userID, "group", groupID, "reason", reason, "count", count, "action", action)
+	actionText := map[string]string{"warn": "撤回并警告", "mute": "撤回并禁言30分钟", "kick": "撤回并踢出群聊"}[action]
+	m.notifyAdmins(ev, itoa(userID)+" "+reason+"（第 "+strconv.Itoa(count)+" 次）-> "+actionText)
+	log.Info("群管理处罚", "user", userID, "group", groupID, "reason", reason, "count", count, "action", actionText)
 }
 
 // replyGroup 群聊 @ 发信人回复。

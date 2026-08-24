@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/metrics"
 )
 
 // hasImage 消息中是否包含图片/表情（CQ 码或文本占位符）。
@@ -50,6 +51,7 @@ func (m *Manager) checkImageSpam(ctx context.Context, ev adapter.Event) bool {
 			// 已警告仍刷 → 禁言
 			_ = m.adp.BanGroupMember(groupID, userID, imgMuteDuration)
 			_, _ = m.dao.StatIncr(ctx, gkey(groupID, "stats:mute"))
+			metrics.GroupMgrSpamTotal.WithLabelValues("image").Inc()
 			log.Info("图片刷屏禁言", "user", userID, "group", groupID, "duration", imgMuteDuration)
 			m.notifyAdmins(ev, itoa(userID)+" 因图片刷屏被禁言 "+itoa(imgMuteDuration)+"s")
 			m.imgMu.Lock()

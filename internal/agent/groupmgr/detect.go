@@ -6,6 +6,7 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/metrics"
 )
 
 // QQ 群聊推荐卡片：OneBot 11 json 消息段 data 中的 app 标识（计入广告违规）。
@@ -108,6 +109,7 @@ func (m *Manager) handleRAGVerdict(ctx context.Context, ev adapter.Event, cfg *m
 		} else if card {
 			reason = "RAG语义核实(推荐卡片)"
 		}
+		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
 		m.punish(ev, reason, category)
 		m.sampleHit(ctx, v.tag)
 		return true
@@ -122,18 +124,22 @@ func (m *Manager) handleRAGVerdict(ctx context.Context, ev adapter.Event, cfg *m
 			ragScore: &v.score,
 			hard:     hasHardSignal,
 		}) {
+			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "review").Inc()
 			return true
 		}
 		// LLM 不可用：分数兜底（≥ FallbackScore 直罚）
 		if v.score >= cfg.FallbackScore {
+			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
 			m.punish(ev, "RAG语义核实(LLM不可用分数兜底)", categoryByWordOrCard(word, wordCat, card, v.category))
 			return true
 		}
+		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
 		log.Info("RAG 模棱两可且 LLM 不可用，分数兜底放行", "score", v.score, "user", ev.Message.UserID)
 		return false
 	default:
 		// 低置信：词/卡片是硬信号 → LLM 终审；否则放行
 		if !hasHardSignal {
+			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
 			log.Info("RAG 低置信且无硬信号，放行", "score", v.score, "user", ev.Message.UserID)
 			return false
 		}
@@ -145,13 +151,16 @@ func (m *Manager) handleRAGVerdict(ctx context.Context, ev adapter.Event, cfg *m
 			highRisk: wordCat == "sensitive" || wordCat == "black" || card,
 			hard:     true,
 		}) {
+			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "review").Inc()
 			return true
 		}
 		// LLM 不可用：回归旧语义——敏感/黑词/卡片直罚，灰词放行
 		if wordCat == "sensitive" || wordCat == "black" || card {
+			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
 			m.punish(ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, v.category))
 			return true
 		}
+		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
 		return false
 	}
 }
@@ -169,17 +178,24 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 		if m.submitReview(ctx, ev, reviewCtx{
 			word: word, wordCat: wordCat, kind: kind, highRisk: true, hard: true,
 		}) {
+			metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "review").Inc()
 			return true
 		}
+		metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "punish").Inc()
 		m.punish(ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, "ad"))
 		return true
 	case wordCat == "gray":
 		// 常规审查；LLM 不可用 → 放行（异步追罚语义）
-		m.submitReview(ctx, ev, reviewCtx{
+		if m.submitReview(ctx, ev, reviewCtx{
 			word: word, wordCat: "gray", kind: "gray", highRisk: false, hard: false,
-		})
+		}) {
+			metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "review").Inc()
+		} else {
+			metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "pass").Inc()
+		}
 		return false
 	default:
+		metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "pass").Inc()
 		return false
 	}
 }

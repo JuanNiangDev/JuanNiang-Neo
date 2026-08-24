@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/core/ragtag"
+	"JuanNiang-Neo/internal/metrics"
 
 	caller "JuanNiang-Neo/infrastructure/rag/handler"
 
@@ -74,8 +75,13 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 	}
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
+	start := time.Now()
 	hits, err := cli.Search(cctx, query, 10, nil)
+	metrics.RAGSearchLatency.Observe(time.Since(start).Seconds())
 	if err != nil || len(hits) == 0 {
+		if err != nil {
+			metrics.RAGSearchErrorsTotal.Inc()
+		}
 		return ragVerdict{}
 	}
 	// 命中过滤 + 按分数降序取最优
@@ -95,6 +101,7 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 	sort.Slice(list, func(i, j int) bool { return list[i].score > list[j].score })
 	best := list[0]
 	info := owned[best.tag]
+	metrics.GroupMgrRAGScore.Observe(best.score)
 	return ragVerdict{ok: true, score: best.score, tag: best.tag, text: info.text, category: info.category}
 }
 

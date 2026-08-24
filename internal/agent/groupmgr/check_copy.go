@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/metrics"
 )
 
 // checkCopySpam +1 复读检测：N 人连续发相同纯文本消息触发警告。
@@ -47,6 +48,7 @@ func (m *Manager) checkCopySpam(ctx context.Context, ev adapter.Event) bool {
 		{Type: "image", Data: map[string]any{"file": imgShuaping2B64}},
 	})
 	_, _ = m.dao.StatIncr(ctx, gkey(groupID, "stats:copy_warn"))
+	metrics.GroupMgrSpamTotal.WithLabelValues("copy").Inc()
 	log.Info("复读触发", "group", groupID, "count", st.count)
 	return true
 }

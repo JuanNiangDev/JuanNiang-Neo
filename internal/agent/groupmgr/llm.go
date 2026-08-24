@@ -201,6 +201,7 @@ func (m *Manager) handleReview(ctx context.Context, out reviewOutcome) {
 	highRisk := out.rc.highRisk
 	if out.err != nil {
 		log.Warn("LLM 审查失败", "err", out.err)
+		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("error").Inc()
 		if highRisk && out.rc.hard {
 			// 高危回退直罚（敏感/黑词/卡片）
 			m.punish(ev, reasonByWord(out.rc.word, out.rc.wordCat, out.rc.kind == "card"), categoryByWordOrCard(out.rc.word, out.rc.wordCat, out.rc.kind == "card", "ad"))
@@ -221,6 +222,7 @@ func (m *Manager) handleReview(ctx context.Context, out reviewOutcome) {
 	var verdict reviewResult
 	if err := json.Unmarshal([]byte(out.content), &verdict); err != nil {
 		log.Warn("LLM 审查返回非 JSON，按失败处理", "content", out.content)
+		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("error").Inc()
 		if highRisk && out.rc.hard {
 			m.punish(ev, reasonByWord(out.rc.word, out.rc.wordCat, out.rc.kind == "card"), categoryByWordOrCard(out.rc.word, out.rc.wordCat, out.rc.kind == "card", "ad"))
 			return
@@ -229,6 +231,7 @@ func (m *Manager) handleReview(ctx context.Context, out reviewOutcome) {
 	}
 	switch verdict.Violation {
 	case "ad", "sensitive":
+		metrics.GroupMgrLLMReviewsTotal.WithLabelValues(verdict.Violation).Inc()
 		category := verdict.Violation
 		reason := verdict.Reason
 		if reason == "" {
@@ -238,6 +241,7 @@ func (m *Manager) handleReview(ctx context.Context, out reviewOutcome) {
 		// 学习闭环：LLM 确认违规 → 样本入库 + RAG upsert（异步不影响处罚）
 		m.learnSample(ctx, out.content, ev, category)
 	default:
+		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("none").Inc()
 		log.Info("LLM 审查放行", "user", out.userID, "kind", out.rc.kind)
 	}
 }
