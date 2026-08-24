@@ -19,12 +19,7 @@
 
       <v-col cols="12" md="6">
         <v-card rounded="lg" elevation="1" class="h-100">
-          <v-card-item>
-            <template #title><span class="text-h6 font-weight-bold">健康状态</span></template>
-            <template #append>
-              <v-btn icon="mdi-refresh" size="small" variant="text" @click="refreshStatus" :loading="checking" />
-            </template>
-          </v-card-item>
+          <v-card-item><template #title><span class="text-h6 font-weight-bold">健康状态</span></template></v-card-item>
           <v-card-text>
             <v-list density="compact">
               <v-list-item>
@@ -33,6 +28,9 @@
                 <v-list-item-subtitle>{{ config.healthy ? '健康' : '异常' }}</v-list-item-subtitle>
               </v-list-item>
             </v-list>
+            <v-btn variant="tonal" class="mt-3" @click="checkHealth" :loading="checking" block>
+              <v-icon class="me-1">mdi-heart-pulse</v-icon> 检查健康
+            </v-btn>
           </v-card-text>
         </v-card>
       </v-col>
@@ -136,6 +134,18 @@ async function refreshStatus() {
     info.value = infoRes.data.data
     infoReady.value = true
   } catch { toastStore.error('状态刷新失败') } finally { checking.value = false }
+}
+// 健康检查按钮（与 T2I/Sandbox 一致）：探活 + 刷新服务信息 + toast 结果
+async function checkHealth() {
+  checking.value = true
+  try {
+    const res = await ragApi.health()
+    config.value.healthy = res.data.data.healthy
+    const infoRes = await ragApi.info()
+    info.value = infoRes.data.data
+    infoReady.value = true
+    toastStore.info(config.value.healthy ? '健康检查通过' : '健康检查失败')
+  } catch { toastStore.error('健康检查失败') } finally { checking.value = false }
 }
 onMounted(async () => { await fetchConfig(); if (config.value.is_active) await refreshStatus() })
 </script>
