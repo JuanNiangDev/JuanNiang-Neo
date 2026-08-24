@@ -280,6 +280,8 @@ type OverviewResp struct {
 	T2IHealthy     bool `json:"t2i_healthy"`     // HealthCheck 通过
 	SandboxActive  bool `json:"sandbox_active"`  // 客户端已加载
 	SandboxHealthy bool `json:"sandbox_healthy"` // HealthCheck 通过
+	RAGActive      bool `json:"rag_active"`      // 客户端已加载
+	RAGHealthy     bool `json:"rag_healthy"`     // HealthCheck 通过
 }
 
 // DailyTokenUsageResp 单日 Token 用量（折线图数据点）。

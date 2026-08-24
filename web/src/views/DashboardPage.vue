@@ -176,6 +176,22 @@
                   </tr>
                   <tr>
                     <td>
+                      <span class="status-dot" :class="overview?.rag_healthy ? 'active' : 'inactive'" />
+                      RAG-Service
+                    </td>
+                    <td>
+                      <v-chip :color="overview?.rag_active ? 'success' : 'grey'" size="x-small" variant="tonal">
+                        {{ overview?.rag_active ? 'Loaded' : 'Not Loaded' }}
+                      </v-chip>
+                    </td>
+                    <td>
+                      <v-chip :color="overview?.rag_healthy ? 'success' : 'error'" size="x-small" variant="tonal">
+                        {{ overview?.rag_healthy ? 'Healthy' : 'Unhealthy' }}
+                      </v-chip>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
                       <span class="status-dot active" />
                       API Server
                     </td>

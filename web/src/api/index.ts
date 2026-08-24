@@ -40,7 +40,7 @@ export interface ChatAreaResp { id: string; area_type: string; target_id: number
 export interface ChatRecordResp { id: number; chat_area_id: string; user_id: number; role: string; content: string; token_count: number; tool_calls: any; created_at: string }
 export interface ChatRecordListResp { total: number; list: ChatRecordResp[] }
 
-export interface OverviewResp { chat_area_count: number; mcp_count: number; adapter_count: number; plugin_count: number; provider_count: number; skill_count: number; session_count: number; total_token_usage: number; cpu_count: number; goroutine_num: number; mem_alloc_bytes: number; mem_sys_bytes: number; mem_heap_inuse_bytes: number; go_version: string; t2i_active: boolean; t2i_healthy: boolean; sandbox_active: boolean; sandbox_healthy: boolean }
+export interface OverviewResp { chat_area_count: number; mcp_count: number; adapter_count: number; plugin_count: number; provider_count: number; skill_count: number; session_count: number; total_token_usage: number; cpu_count: number; goroutine_num: number; mem_alloc_bytes: number; mem_sys_bytes: number; mem_heap_inuse_bytes: number; go_version: string; t2i_active: boolean; t2i_healthy: boolean; sandbox_active: boolean; sandbox_healthy: boolean; rag_active: boolean; rag_healthy: boolean }
 
 export interface DailyTokenUsageResp { date: string; token_count: number }
 

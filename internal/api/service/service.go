@@ -1790,7 +1790,7 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	// T2I / Sandbox 状态
+	// T2I / Sandbox / RAG 状态
 	t2iActive := s.T2IClient != nil
 	t2iHealthy := false
 	if t2iActive {
@@ -1800,6 +1800,11 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	sandboxHealthy := false
 	if sandboxActive {
 		sandboxHealthy = s.SandboxClient.HealthCheck() == nil
+	}
+	ragActive := s.RAGClient != nil
+	ragHealthy := false
+	if ragActive {
+		ragHealthy = s.RAGClient.HealthCheck() == nil
 	}
 
 	// Adapter 运行状态
@@ -1827,6 +1832,8 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 		T2IHealthy:     t2iHealthy,
 		SandboxActive:  sandboxActive,
 		SandboxHealthy: sandboxHealthy,
+		RAGActive:      ragActive,
+		RAGHealthy:     ragHealthy,
 	}))
 }
 

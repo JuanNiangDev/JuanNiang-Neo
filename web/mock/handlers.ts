@@ -631,6 +631,8 @@ export const mockHandlers: MockHandler[] = [
         t2i_healthy: t2iConfig.healthy,
         sandbox_active: sandboxConfig.is_active,
         sandbox_healthy: sandboxConfig.healthy,
+        rag_active: ragConfig.is_active,
+        rag_healthy: ragHealthy,
       })
     }
   },
