@@ -504,9 +504,9 @@ export interface UpdateGroupMgrConfigReq {
   llm_gray_prompt: string
   llm_high_risk_prompt: string
 }
-export interface GroupMgrWordResp { id: number; word: string; category: string; source: string }
+export interface GroupMgrWordResp { id: number; word: string; category: string; source: string; rag_synced: boolean; rag_tag: string }
 export interface GroupMgrSampleResp { id: number; text: string; category: string; source: string; hit_count: number; created_at: string }
-export interface GroupMgrViolationResp { id: number; group_id: number; user_id: number; count: number }
+export interface GroupMgrViolationResp { id: number; group_id: number; user_id: number; username: string; count: number; detection_path: string; llm_reason: string }
 export interface GroupMgrStatsResp {
   group_id: number
   date: string
@@ -553,6 +553,7 @@ export const groupMgrApi = {
   updateWhitelist: (qq_list: number[]) => client.put('/group-mgr/whitelist', { qq_list }),
   admins: () => client.get('/group-mgr/admins'),
   updateAdmins: (qq_list: number[]) => client.put('/group-mgr/admins', { qq_list }),
+  syncAdminsFromAdapter: () => client.post('/group-mgr/admins/sync-from-adapter'),
   stats: (group_id: number) => client.get('/group-mgr/stats', { params: { group_id } }),
   test: (text: string) => client.post('/group-mgr/test', { text }),
 }

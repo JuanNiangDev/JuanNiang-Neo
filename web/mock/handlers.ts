@@ -82,19 +82,20 @@ let groupMgrDefaultConfig = {
 let groupMgrConfig: any = null
 let groupMgrWordSeed = 100
 let groupMgrWords = [
-  { id: 1, word: '办校园卡', category: 'black', source: 'system' },
-  { id: 2, word: '贷款提额', category: 'black', source: 'system' },
-  { id: 3, word: '校园卡', category: 'gray', source: 'system' },
-  { id: 4, word: '考研机构', category: 'gray', source: 'system' },
-  { id: 5, word: '兼职刷单', category: 'sensitive', source: 'system' },
+  { id: 1, word: '办校园卡', category: 'black', source: 'system', rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b001' },
+  { id: 2, word: '贷款提额', category: 'black', source: 'system', rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b002' },
+  { id: 3, word: '校园卡', category: 'gray', source: 'system', rag_synced: false, rag_tag: '' },
+  { id: 4, word: '考研机构', category: 'gray', source: 'system', rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b003' },
+  { id: 5, word: '兼职刷单', category: 'sensitive', source: 'import', rag_synced: false, rag_tag: '' },
 ]
 let groupMgrSamples = [
   { id: 1, text: '办卡加群办套餐，低价流量卡', category: 'ad', source: 'learn', hit_count: 3, created_at: now() },
   { id: 2, text: '0元购送福利，加我微信领流量卡', category: 'ad', source: 'seed', hit_count: 1, created_at: now() },
 ]
 let groupMgrViolations = [
-  { id: 1, group_id: 10001, user_id: 20001, count: 1 },
-  { id: 2, group_id: 10001, user_id: 20002, count: 3 },
+  { id: 1, group_id: 10001, user_id: 20001, username: '张三', count: 1, detection_path: 'rag', llm_reason: '' },
+  { id: 2, group_id: 10001, user_id: 20002, username: '李四', count: 3, detection_path: 'llm', llm_reason: '明确广告引流：低价流量卡 + 加裙号，判 ad' },
+  { id: 3, group_id: 10002, user_id: 20003, username: '王五', count: 2, detection_path: 'keyword', llm_reason: '' },
 ]
 let groupMgrWhitelist: number[] = [30001]
 let groupMgrAdmins: number[] = [30002]
@@ -777,7 +778,7 @@ export const mockHandlers: MockHandler[] = [
   {
     method: 'POST', path: '/group-mgr/words',
     handler({ body }) {
-      const w = { id: ++groupMgrWordSeed, word: String(body.word).toLowerCase(), category: body.category, source: 'import' }
+      const w = { id: ++groupMgrWordSeed, word: String(body.word).toLowerCase(), category: body.category, source: 'import', rag_synced: true, rag_tag: UUID() }
       groupMgrWords.push(w)
       return ok(null)
     }
@@ -834,6 +835,17 @@ export const mockHandlers: MockHandler[] = [
   {
     method: 'PUT', path: '/group-mgr/admins',
     handler({ body }) { groupMgrAdmins = (body.qq_list || []).map(Number); return ok(null) }
+  },
+  {
+    method: 'POST', path: '/group-mgr/admins/sync-from-adapter',
+    handler() {
+      const adapterAdmins = [10001, 20000]
+      let added = 0
+      for (const qq of adapterAdmins) {
+        if (!groupMgrAdmins.includes(qq)) { groupMgrAdmins.push(qq); added++ }
+      }
+      return ok({ added })
+    }
   },
   {
     method: 'GET', path: '/group-mgr/stats',
