@@ -123,8 +123,19 @@ func Init(ctx context.Context, db *gorm.DB, redisClient *redis.Client) (*Core, e
 			"idx_sticker_tags_name",    // sticker_tags
 			"idx_plugins_name",         // plugins
 			"idx_admin_users_username", // admin_users
+			"idx_group_mgr_words_word", // group_mgr_words 旧普通唯一索引（软删后重建同名冲突）
 		} {
 			if err := db.Exec("DROP INDEX IF EXISTS " + idx).Error; err != nil {
+				initErr = err
+				return
+			}
+		}
+
+		// 群管理词条：PG 部分唯一索引（WHERE deleted_at IS NULL）——软删后允许重建同名词条，
+		// 且仍保证「活动词条不重名」。SQLite 测试环境无此索引，由 WordUpsert 软删行复活逻辑兕底。
+		if db.Dialector.Name() == "postgres" {
+			if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_gm_words_word_active " +
+				"ON group_mgr_words (word) WHERE deleted_at IS NULL").Error; err != nil {
 				initErr = err
 				return
 			}

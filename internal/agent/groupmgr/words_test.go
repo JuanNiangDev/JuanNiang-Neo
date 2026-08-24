@@ -1,6 +1,9 @@
 package groupmgr
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestCleanWord(t *testing.T) {
 	cases := []struct {
@@ -78,6 +81,36 @@ func TestParseTargetQQ(t *testing.T) {
 	}
 	if got := ParseTargetQQ([]string{"abc"}); got != 0 {
 		t.Errorf("非法参数 = %d", got)
+	}
+}
+
+// TestWordSoftDeleteRebuild 词条软删后重建同名：不得报唯一索引冲突。
+// 回归：GroupMgrWord.Word 曾为普通 uniqueIndex，WordDelete 软删后再次
+// WordUpsert 同名报 UNIQUE constraint failed（词库面板删词后再加同词直接失败）。
+func TestWordSoftDeleteRebuild(t *testing.T) {
+	m, gmdao := newTestManager(t, nil)
+	ctx := context.Background()
+
+	id, err := gmdao.WordUpsert(ctx, "测试重建词条", "gray", "import")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gmdao.WordDelete(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	// 软删后重建同名：不报错，且复用同一条记录（复活）
+	id2, err := gmdao.WordUpsert(ctx, "测试重建词条", "black", "import")
+	if err != nil {
+		t.Fatalf("软删后重建同名应成功，got %v", err)
+	}
+	if id2 != id {
+		t.Fatalf("复活应复用原记录 ID=%d，got %d", id, id2)
+	}
+	// 重建后应参与命中（内存缓存 Reload 后生效）
+	_ = m.Reload(ctx)
+	hit, cat := m.wordHit(ctx, "这是一个测试重建词条")
+	if hit != "测试重建词条" || cat != "black" {
+		t.Fatalf("重建词条应命中 black，got %q/%s", hit, cat)
 	}
 }
 

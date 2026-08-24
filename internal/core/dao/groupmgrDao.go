@@ -69,13 +69,25 @@ func (d *GroupMgrDAO) WordListByCategory(ctx context.Context, category string) (
 	return list, err
 }
 
-// WordUpsert 新增/更新词条（幂等）。返回词条 ID。
-// 插入后回填派生 RAG tag（ragtag.Word(id) → v5 UUID）；
-// 词条内容变更时同步状态不置位（由 syncRAG / AddWord 完成后置位）。
+// WordUpsert 新增/更新词条（幂等、并发安全）。
+// 处理路径：
+//  1. Unscoped 查询含软删行：软删行复活（deleted_at 置空）并更新分类/来源；活动行直接更新；
+//  2. 均不存在则插入（OnConflict DoNothing 防并发双插，冲突后重新查询返回已有行）；
+//  3. 新插入行回填派生 RAG tag（ragtag.Word(id) → v5 UUID）。
+//
+// 复活/更新不重置 RAGSynced（由 syncRAG / AddWord 完成后置位）。
 func (d *GroupMgrDAO) WordUpsert(ctx context.Context, word, category, source string) (uint, error) {
 	var w models.GroupMgrWord
-	err := d.db.WithContext(ctx).Where("word = ?", word).First(&w).Error
+	err := d.db.WithContext(ctx).Unscoped().Where("word = ?", word).First(&w).Error
 	if err == nil {
+		if w.DeletedAt.Valid {
+			// 软删行复活：普通唯一索引下也允许同词重建（清 deleted_at 后不与其他活动行冲突）
+			if err := d.db.WithContext(ctx).Unscoped().Model(&w).
+				UpdateColumns(map[string]any{"deleted_at": nil, "category": category, "source": source}).Error; err != nil {
+				return 0, err
+			}
+			return w.ID, nil
+		}
 		w.Category = category
 		w.Source = source
 		if err := d.db.WithContext(ctx).Save(&w).Error; err != nil {
@@ -86,9 +98,17 @@ func (d *GroupMgrDAO) WordUpsert(ctx context.Context, word, category, source str
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, err
 	}
+
 	w = models.GroupMgrWord{Word: word, Category: category, Source: source}
-	if err := d.db.WithContext(ctx).Create(&w).Error; err != nil {
+	// OnConflict DoNothing：并发双插时一方插入失败，重新查询返回已有行
+	if err := d.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&w).Error; err != nil {
 		return 0, err
+	}
+	if w.ID == 0 {
+		if err := d.db.WithContext(ctx).Where("word = ?", word).First(&w).Error; err != nil {
+			return 0, err
+		}
+		return w.ID, nil
 	}
 	// 派生 RAG tag（与检索侧 ragtag.Word(id) 一致，幂等可复现）
 	w.RAGTag = ragtag.Word(u64toa(uint64(w.ID))).String()
@@ -117,7 +137,8 @@ func (d *GroupMgrDAO) WordListUnsynced(ctx context.Context) ([]models.GroupMgrWo
 	return list, err
 }
 
-// WordDelete 删除词条（软删；唯一索引软删后重建同名由部分唯一索引约束）。
+// WordDelete 删除词条（软删）。软删后重建同名由部分唯一索引（PG）+
+// WordUpsert 软删行复活（全方言）双重保障，不报唯一索引冲突。
 func (d *GroupMgrDAO) WordDelete(ctx context.Context, id uint) error {
 	return d.db.WithContext(ctx).Delete(&models.GroupMgrWord{}, id).Error
 }
