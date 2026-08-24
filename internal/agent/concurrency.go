@@ -183,3 +183,13 @@ func (cm *ConcurrencyManager) ActiveCount(chatAreaID string) int {
 	}
 	return 0
 }
+
+// GlobalActive 返回全局并发槽当前占用数（0 = 未设置全局上限）。
+func (cm *ConcurrencyManager) GlobalActive() int {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	if cm.global == nil {
+		return 0
+	}
+	return len(cm.global)
+}

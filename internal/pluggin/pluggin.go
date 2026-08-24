@@ -24,6 +24,7 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/metrics"
 
 	"github.com/google/uuid"
 	lua "github.com/yuin/gopher-lua"
@@ -1104,11 +1105,14 @@ func (pe *PluginEngine) dispatchMessage(ev adapter.Event) DispatchResult {
 		table := eventToLuaTable(p.State, pluginEvent)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 2, nil); err != nil { // 返回值: consumed, skip_reply
 			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_message").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_message").Observe(time.Since(start).Seconds())
 
 		consumedRet := p.State.Get(-2)
 		skipReplyRet := p.State.Get(-1)
@@ -1150,11 +1154,14 @@ func (pe *PluginEngine) onCronJob(event EventData, pluginIDs []string) bool {
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 1, nil); err != nil {
 			log.Error("插件 on_cronjob 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_cronjob").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_cronjob").Observe(time.Since(start).Seconds())
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
 		p.stateMu.Unlock()
@@ -1193,11 +1200,14 @@ func (pe *PluginEngine) onNotice(event EventData) bool {
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 1, nil); err != nil {
 			log.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_notice").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_notice").Observe(time.Since(start).Seconds())
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
 		p.stateMu.Unlock()
@@ -1226,11 +1236,14 @@ func (pe *PluginEngine) onRequest(event EventData) bool {
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 1, nil); err != nil {
 			log.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_request").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_request").Observe(time.Since(start).Seconds())
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
 		p.stateMu.Unlock()
@@ -1262,11 +1275,14 @@ func (pe *PluginEngine) onWebhook(event EventData) (consumed bool, reply string)
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 2, nil); err != nil {
 			log.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_webhook").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_webhook").Observe(time.Since(start).Seconds())
 		replyRet := p.State.Get(-1)
 		consumedRet := p.State.Get(-2)
 		p.State.Pop(2)

@@ -37,6 +37,7 @@ import (
 	"JuanNiang-Neo/internal/core/imgstore"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
+	"JuanNiang-Neo/internal/metrics"
 	"JuanNiang-Neo/internal/pluggin"
 	"JuanNiang-Neo/internal/web"
 
@@ -330,6 +331,81 @@ func main() {
 	go schedMgr.Run(ctx)
 	svc.OnSchedMsgReload = func() { schedMgr.Reload(context.Background()) }
 	svc.OnSchedMsgTrigger = func(triggerCtx context.Context, id string) error { return schedMgr.TriggerNow(triggerCtx, id) }
+
+	// ---------- 6.8 Prometheus 运行时指标注入（/metrics scrape 时实时读取） ----------
+	metrics.SetRuntimeProviders(metrics.RuntimeProviders{
+		LoopsActive:      func() int { return len(hago.Loops.List()) },
+		ConcurrencyInUse: func() int { return hago.Concurrency.GlobalActive() },
+		PluginsLoaded:    func() int { return len(pluginEngine.List()) },
+		Inventory: metrics.CachedMap(60*time.Second, func() map[string]float64 {
+			ictx := context.Background()
+			m := map[string]float64{}
+			if ids, err := coreInst.DAO.Knowledge.ListAllIDs(ictx); err == nil {
+				m["knowledge_items"] = float64(len(ids))
+			}
+			if ids, err := coreInst.DAO.LongTermMemItem.ListAllIDs(ictx); err == nil {
+				m["memory_items"] = float64(len(ids))
+			}
+			if n, err := coreInst.DAO.ChatArea.Count(ictx); err == nil {
+				m["chat_areas"] = float64(n)
+			}
+			if list, err := coreInst.DAO.Session.List(ictx); err == nil {
+				m["sessions"] = float64(len(list))
+			}
+			if list, err := coreInst.DAO.CronJob.List(ictx); err == nil {
+				m["cron_jobs"] = float64(len(list))
+			}
+			if list, err := coreInst.DAO.ScheduledMsg.List(ictx, 1000, 0); err == nil {
+				m["scheduled_messages"] = float64(len(list))
+			}
+			m["providers_active"] = float64(len(hago.Providers.ListProviders()))
+			m["mcp_servers"] = float64(len(hago.MCP.ListMCPs()))
+			return m
+		}),
+		// 外部服务健康矩阵：未配置的服务不输出（避免误报 0）；已配置的服务并行探测
+		ExternalHealth: metrics.CachedMap(15*time.Second, func() map[string]float64 {
+			m := map[string]float64{}
+			if coreInst.Cache != nil {
+				m["redis"] = 1
+				if err := coreInst.Cache.Client().Ping(context.Background()).Err(); err != nil {
+					m["redis"] = 0
+				}
+			}
+			probes := []struct {
+				name   string
+				client interface{ HealthCheck() error }
+			}{
+				{"rag", hago.RAGClient},
+				{"t2i", hago.T2IClient},
+				{"sandbox", hago.SandboxClient},
+			}
+			type result struct {
+				name string
+				v    float64
+			}
+			ch := make(chan result, len(probes))
+			for _, p := range probes {
+				if p.client == nil {
+					continue // 未配置不输出
+				}
+				go func(name string, c interface{ HealthCheck() error }) {
+					v := float64(0)
+					if err := c.HealthCheck(); err == nil {
+						v = 1
+					}
+					ch <- result{name: name, v: v}
+				}(p.name, p.client)
+			}
+			for range probes {
+				select {
+				case r := <-ch:
+					m[r.name] = r.v
+				case <-time.After(3 * time.Second):
+				}
+			}
+			return m
+		}),
+	})
 
 	// 前端静态资源目录: 默认 web/dist (构建产物), 可通过 WEB_DIR 覆盖。
 	//   - 开发模式: 前端走 Vite (:3000) 代理 /api 到 :8090, 后端无需服务前端。
