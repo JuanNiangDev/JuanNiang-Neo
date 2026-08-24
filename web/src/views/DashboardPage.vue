@@ -79,7 +79,7 @@
               </template>
             </v-card-item>
             <v-card-text class="flex-grow-1 d-flex align-center">
-              <div class="d-flex align-center" style="gap: 28px">
+              <div class="d-flex align-center flex-grow-1" style="gap: 28px">
                 <!-- 左：Goroutine 仪表盘 -->
                 <div class="goroutine-box">
                   <div ref="goroutineGaugeEl" class="goroutine-gauge-chart" />
