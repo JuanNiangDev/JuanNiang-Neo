@@ -205,6 +205,18 @@
                 <v-btn color="info" variant="tonal" prepend-icon="mdi-cloud-sync-outline" :loading="syncing" @click="syncRAG">同步向量数据库</v-btn>
               </div>
             </template>
+            <template #subtitle>
+              <v-progress-linear
+                v-if="syncProgress.active"
+                color="info"
+                :model-value="syncProgress.percent"
+                height="6"
+                class="mt-1 rounded"
+              />
+              <div v-if="syncProgress.active" class="text-caption text-info mt-1">
+                向量库同步中：已写入 {{ syncProgress.done }} 条{{ syncProgress.failed > 0 ? `，失败 ${syncProgress.failed} 条` : '' }}
+              </div>
+            </template>
           </v-card-item>
           <v-card-text>
             <v-data-table :headers="wordHeaders" :items="words" density="compact" :items-per-page="15" class="elevation-0">
@@ -561,6 +573,8 @@ async function loadSystemAdmins() {
 const words = ref<GroupMgrWordResp[]>([])
 const samples = ref<GroupMgrSampleResp[]>([])
 const syncing = ref(false)
+// SSE 流式同步进度（词条量大时避免单次 HTTP 超时，逐批推送实时进度）
+const syncProgress = ref({ active: false, done: 0, failed: 0, percent: 0 })
 const wordDialog = ref(false)
 const addingWords = ref(false)
 const wordForm = ref<{ category: string; mode: string; input: string; file: File[] }>({ category: 'gray', mode: 'input', input: '', file: [] })
@@ -627,13 +641,48 @@ async function deleteWord(w: GroupMgrWordResp) {
   }
 }
 
+// syncRAG 同步向量库：SSE 流式（GET /group-mgr/sync-rag/stream），逐批推送进度，
+// 词条量大不再单次 HTTP 请求超时。fetch + ReadableStream 解析（EventSource 无法带 JWT）。
 async function syncRAG() {
   syncing.value = true
+  syncProgress.value = { active: true, done: 0, failed: 0, percent: 0 }
   try {
-    const res = (await groupMgrApi.syncRAG()).data.data
-    toastStore.success(`向量库同步完成：成功 ${res?.total ?? 0} 条，失败 ${res?.failed ?? 0} 条`)
-    await loadWords()
+    const token = localStorage.getItem('token') || ''
+    const res = await fetch('/api/v1/group-mgr/sync-rag/stream', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok || !res.body) throw new Error('同步失败（RAG-Service 未配置或不可达）')
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const blocks = buf.split('\n\n')
+      buf = blocks.pop() ?? ''
+      for (const block of blocks) {
+        const dataLine = block.split('\n').find(l => l.startsWith('data:'))
+        if (!dataLine) continue
+        let data: any
+        try { data = JSON.parse(dataLine.slice(5).trim()) } catch { continue }
+        if (data.error) throw new Error(data.error)
+        if (data.total !== undefined) {
+          // done 事件：同步结束
+          toastStore.success(`向量库同步完成：成功 ${data.total} 条，失败 ${data.failed} 条`)
+          syncProgress.value = { active: false, done: data.total, failed: data.failed ?? 0, percent: 100 }
+          await loadWords()
+          return
+        }
+        if (data.done !== undefined) {
+          syncProgress.value = { active: true, done: data.done, failed: data.failed ?? 0, percent: 0 }
+        }
+      }
+    }
+    throw new Error('同步中断（连接关闭）')
   } catch (e: any) {
+    syncProgress.value.active = false
     toastStore.error(e?.message || '同步失败（RAG-Service 未配置或不可达）')
   } finally {
     syncing.value = false

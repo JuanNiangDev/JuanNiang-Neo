@@ -213,6 +213,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.DELETE("/group-mgr/words/:id", auth, svc.DeleteGroupMgrWord)
 	api.POST("/group-mgr/words/import", auth, svc.ImportGroupMgrWords)
 	api.POST("/group-mgr/sync-rag", auth, svc.SyncGroupMgrRAG)
+	api.GET("/group-mgr/sync-rag/stream", auth, svc.SyncGroupMgrRAGStream)
 	api.GET("/group-mgr/samples", auth, svc.ListGroupMgrSamples)
 	api.DELETE("/group-mgr/samples/:id", auth, svc.DeleteGroupMgrSample)
 	api.GET("/group-mgr/violations", auth, svc.ListGroupMgrViolations)

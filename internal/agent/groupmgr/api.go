@@ -14,6 +14,12 @@ func (m *Manager) SyncRAG(ctx context.Context) (total, failed int, err error) {
 	return m.syncRAG(ctx)
 }
 
+// SyncRAGProgress 带进度回调的全量同步（SSE 流式同步进度展示用）：
+// 每批处理后回调 onProgress(done, failed)，回调返回错误（如客户端断开）即中止。
+func (m *Manager) SyncRAGProgress(ctx context.Context, onProgress func(done, failed int) error) (total, failed int, err error) {
+	return m.syncRAGProgress(ctx, onProgress)
+}
+
 // sampleCategoryByWord 词条分类 → 样本类别（样本契约：ad / sensitive；
 // 灰色/黑色词统一归 ad，敏感词映射 sensitive）。
 func sampleCategoryByWord(category string) string {
