@@ -488,17 +488,30 @@ export interface GroupMgrConfigResp {
   high_score: number
   low_score: number
   fallback_score: number
+  img_spam_window: number
+  img_spam_threshold: number
+  img_mute_duration: number
+  enable_copy_check: boolean
+  copy_threshold: number
+  violation_mute_seconds: number
   exclude_groups: string[]
   llm_criteria: string
   llm_gray_prompt: string
   llm_high_risk_prompt: string
 }
+
 export interface UpdateGroupMgrConfigReq {
   enabled: boolean
   llm_review: boolean
   high_score: number
   low_score: number
   fallback_score: number
+  img_spam_window: number
+  img_spam_threshold: number
+  img_mute_duration: number
+  enable_copy_check: boolean
+  copy_threshold: number
+  violation_mute_seconds: number
   exclude_groups: string[]
   llm_criteria: string
   llm_gray_prompt: string

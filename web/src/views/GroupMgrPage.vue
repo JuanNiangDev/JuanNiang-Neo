@@ -125,6 +125,38 @@
                 </div>
               </v-col>
             </v-row>
+            <v-divider class="my-3" />
+            <v-row>
+              <v-col cols="12" md="6">
+                <div class="text-body-2 text-medium-emphasis mb-2">图片刷屏检测</div>
+                <div class="d-flex align-center justify-space-between py-1">
+                  <span class="text-body-2">时间窗口（秒）</span>
+                  <v-text-field v-model.number="form.img_spam_window" type="number" min="1" density="compact" hide-details style="max-width:140px" @update:model-value="markDirty" />
+                </div>
+                <div class="d-flex align-center justify-space-between py-1">
+                  <span class="text-body-2">触发警告图片数</span>
+                  <v-text-field v-model.number="form.img_spam_threshold" type="number" min="1" density="compact" hide-details style="max-width:140px" @update:model-value="markDirty" />
+                </div>
+                <div class="d-flex align-center justify-space-between py-1">
+                  <span class="text-body-2">重复刷屏禁言时长（秒）</span>
+                  <v-text-field v-model.number="form.img_mute_duration" type="number" min="1" density="compact" hide-details style="max-width:140px" @update:model-value="markDirty" />
+                </div>
+              </v-col>
+              <v-col cols="12" md="6">
+                <div class="d-flex align-center justify-space-between py-1">
+                  <span class="text-body-1">复读检测</span>
+                  <v-switch v-model="form.enable_copy_check" color="primary" hide-details @change="markDirty" />
+                </div>
+                <div class="d-flex align-center justify-space-between py-1">
+                  <span class="text-body-2">复读触发人数</span>
+                  <v-text-field v-model.number="form.copy_threshold" type="number" min="1" density="compact" hide-details style="max-width:140px" @update:model-value="markDirty" />
+                </div>
+                <div class="d-flex align-center justify-space-between py-1">
+                  <span class="text-body-2">二次违规禁言时长（秒）</span>
+                  <v-text-field v-model.number="form.violation_mute_seconds" type="number" min="1" density="compact" hide-details style="max-width:140px" @update:model-value="markDirty" />
+                </div>
+              </v-col>
+            </v-row>
           </v-card-text>
           <v-card-actions class="pa-4 pt-0">
             <v-btn color="primary" variant="tonal" prepend-icon="mdi-content-save" :loading="savingCfg" @click="saveConfig">保存参数</v-btn>
@@ -375,6 +407,12 @@ const form = ref<GroupMgrConfigResp>({
   high_score: 0.75,
   low_score: 0.5,
   fallback_score: 0.6,
+  img_spam_window: 2,
+  img_spam_threshold: 3,
+  img_mute_duration: 60,
+  enable_copy_check: true,
+  copy_threshold: 3,
+  violation_mute_seconds: 1800,
   exclude_groups: [],
   llm_criteria: '',
   llm_gray_prompt: '',
@@ -392,6 +430,12 @@ async function loadConfig() {
       high_score: res.high_score,
       low_score: res.low_score,
       fallback_score: res.fallback_score,
+      img_spam_window: res.img_spam_window ?? 2,
+      img_spam_threshold: res.img_spam_threshold ?? 3,
+      img_mute_duration: res.img_mute_duration ?? 60,
+      enable_copy_check: res.enable_copy_check ?? true,
+      copy_threshold: res.copy_threshold ?? 3,
+      violation_mute_seconds: res.violation_mute_seconds ?? 1800,
       exclude_groups: res.exclude_groups ?? [],
       llm_criteria: res.llm_criteria ?? '',
       llm_gray_prompt: res.llm_gray_prompt ?? '',
@@ -411,6 +455,12 @@ async function saveConfig() {
       high_score: Number(form.value.high_score) || 0.75,
       low_score: Number(form.value.low_score) || 0.5,
       fallback_score: Number(form.value.fallback_score) || 0.6,
+      img_spam_window: Number(form.value.img_spam_window) || 2,
+      img_spam_threshold: Number(form.value.img_spam_threshold) || 3,
+      img_mute_duration: Number(form.value.img_mute_duration) || 60,
+      enable_copy_check: form.value.enable_copy_check,
+      copy_threshold: Number(form.value.copy_threshold) || 3,
+      violation_mute_seconds: Number(form.value.violation_mute_seconds) || 1800,
       exclude_groups: form.value.exclude_groups.filter((g) => /^\d+$/.test(String(g).trim())).map((g) => String(g).trim()),
       llm_criteria: form.value.llm_criteria,
       llm_gray_prompt: form.value.llm_gray_prompt,
@@ -462,6 +512,12 @@ async function savePrompt() {
       high_score: form.value.high_score,
       low_score: form.value.low_score,
       fallback_score: form.value.fallback_score,
+      img_spam_window: form.value.img_spam_window,
+      img_spam_threshold: form.value.img_spam_threshold,
+      img_mute_duration: form.value.img_mute_duration,
+      enable_copy_check: form.value.enable_copy_check,
+      copy_threshold: form.value.copy_threshold,
+      violation_mute_seconds: form.value.violation_mute_seconds,
       exclude_groups: form.value.exclude_groups,
       llm_criteria: form.value.llm_criteria,
       llm_gray_prompt: form.value.llm_gray_prompt,
@@ -729,6 +785,12 @@ async function saveExclude() {
       high_score: form.value.high_score,
       low_score: form.value.low_score,
       fallback_score: form.value.fallback_score,
+      img_spam_window: form.value.img_spam_window,
+      img_spam_threshold: form.value.img_spam_threshold,
+      img_mute_duration: form.value.img_mute_duration,
+      enable_copy_check: form.value.enable_copy_check,
+      copy_threshold: form.value.copy_threshold,
+      violation_mute_seconds: form.value.violation_mute_seconds,
       exclude_groups: excludeDraft.value,
       llm_criteria: form.value.llm_criteria,
       llm_gray_prompt: form.value.llm_gray_prompt,
