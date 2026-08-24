@@ -9,6 +9,8 @@
       <v-btn variant="tonal" color="info" prepend-icon="mdi-database-sync" @click="syncVector" :loading="syncing">同步向量库</v-btn>
       <v-btn color="primary" prepend-icon="mdi-plus" @click="openAdd">新增知识</v-btn>
     </div>
+    <v-progress-linear v-if="syncProgress.active" color="info" :model-value="100" indeterminate height="4" class="mb-2 rounded" />
+    <div v-if="syncProgress.active" class="text-caption text-info mb-2">向量同步中：已写入 {{ syncProgress.done }} 条{{ syncProgress.failed > 0 ? `，失败 ${syncProgress.failed} 条` : '' }}</div>
 
     <v-data-table-server :headers="headers" :items="items" :loading="loading" :page="page" :items-per-page="pageSize" :items-length="total" :items-per-page-options="[10, 20, 50]" @update:options="onPageChange">
       <template #item.title="{ item }">
@@ -82,19 +84,50 @@ import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
 const syncing = ref(false)
+// SSE 流式同步进度（知识量大时避免单次 HTTP 超时）
+const syncProgress = ref({ active: false, done: 0, failed: 0 })
 
-// 手动全量同步知识库到 RAG 向量库（未启用时后端直接返回提示）
+// 手动全量同步知识库到 RAG 向量库：SSE 流式（GET /knowledge/vector-sync/stream），逐批推送进度
 async function syncVector() {
   syncing.value = true
+  syncProgress.value = { active: true, done: 0, failed: 0 }
   try {
-    const res = (await knowledgeApi.syncVector()).data.data
-    if (res.ready === false) {
-      toastStore.warning(res.message || 'RAG 未启用，无法同步向量库')
-      return
+    const token = localStorage.getItem('token') || ''
+    const res = await window.fetch('/api/v1/knowledge/vector-sync/stream', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok || !res.body) throw new Error('向量同步失败（RAG-Service 未配置或不可达）')
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const blocks = buf.split('\n\n')
+      buf = blocks.pop() ?? ''
+      for (const block of blocks) {
+        const dataLine = block.split('\n').find(l => l.startsWith('data:'))
+        if (!dataLine) continue
+        let data: any
+        try { data = JSON.parse(dataLine.slice(5).trim()) } catch { continue }
+        if (data.message) { toastStore.warning(data.message); return } // RAG 未启用
+        if (data.total !== undefined) {
+          // done 事件
+          toastStore.success(`向量同步完成：共 ${data.total} 条，成功 ${data.synced}，失败 ${data.failed}`)
+          syncProgress.value = { active: false, done: data.synced, failed: data.failed ?? 0 }
+          return
+        }
+        if (data.done !== undefined) {
+          syncProgress.value = { active: true, done: data.done, failed: data.failed ?? 0 }
+        }
+      }
     }
-    toastStore.success(`向量同步完成：共 ${res.total} 条，成功 ${res.synced}，失败 ${res.failed}`)
+    throw new Error('同步中断（连接关闭）')
   } catch (e: any) {
-    toastStore.error(e?.response?.data?.info || '向量同步失败')
+    syncProgress.value.active = false
+    toastStore.error(e?.message || e?.response?.data?.info || '向量同步失败')
   } finally { syncing.value = false }
 }
 

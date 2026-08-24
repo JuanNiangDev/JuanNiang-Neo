@@ -2799,6 +2799,60 @@ func (s *Service) SyncKnowledgeVector(ctx context.Context, c *app.RequestContext
 	}))
 }
 
+// SyncKnowledgeVectorStream 全量同步知识库向量（SSE 流式）：每批推送进度，
+// 知识条目量大时避免单次 HTTP 请求超时。GET /knowledge/vector-sync/stream
+func (s *Service) SyncKnowledgeVectorStream(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+			"ready": false, "message": "RAG 未启用，无法同步向量库",
+		}))
+		return
+	}
+	items, err := s.DAO.Knowledge.ListAllContent(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.Response.Header.Set("Content-Type", "text/event-stream")
+	c.Response.Header.Set("Cache-Control", "no-cache")
+	c.Response.Header.Set("Connection", "keep-alive")
+
+	push := func(event string, data any) bool { return ssePush(c, event, data) }
+	push("start", map[string]string{"status": "syncing"})
+
+	const batchSize = 50
+	synced, failed := 0, 0
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batch := make([]ragcaller.BatchItem, 0, end-i)
+		for _, it := range items[i:end] {
+			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Knowledge(it.ID), Text: it.Content})
+		}
+		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		if err != nil {
+			log.Warn("知识向量同步批次失败", "batch", i/batchSize+1, "err", err)
+			failed += len(batch)
+		} else {
+			for _, r := range resp.Results {
+				if r.Error != nil {
+					failed++
+				} else {
+					synced++
+				}
+			}
+		}
+		// 每批推送进度；客户端断开（写入失败或 ctx 取消）即中止
+		if !push("progress", map[string]int{"done": synced, "failed": failed}) || ctx.Err() != nil {
+			return
+		}
+	}
+	log.Info("知识库向量同步完成", "total", len(items), "synced", synced, "failed", failed)
+	push("done", map[string]int{"ready": 1, "total": len(items), "synced": synced, "failed": failed})
+}
+
 // SyncMemoryRAG 手动全量同步长期记忆到 RAG 向量库（Memory 页按钮触发）：
 // 全部 LongTermMemItem 按 50 条一批 BatchUpsert（幂等），补齐 Compact 双写之前
 // 的历史记忆。RAG 未启用返回明确提示（不静默）。
@@ -2852,7 +2906,75 @@ func (s *Service) SyncMemoryRAG(ctx context.Context, c *app.RequestContext) {
 	}))
 }
 
+// SyncMemoryRAGStream 全量同步长期记忆向量（SSE 流式）：每批推送进度，
+// 记忆量大时避免单次 HTTP 请求超时。GET /memory/sync-rag/stream
+func (s *Service) SyncMemoryRAGStream(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+			"ready": false, "message": "RAG 未启用，无法同步记忆向量",
+		}))
+		return
+	}
+	ids, err := s.DAO.LongTermMemItem.ListAllIDs(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	items, err := s.DAO.LongTermMemItem.GetByIDs(ctx, ids)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.Response.Header.Set("Content-Type", "text/event-stream")
+	c.Response.Header.Set("Cache-Control", "no-cache")
+	c.Response.Header.Set("Connection", "keep-alive")
+
+	push := func(event string, data any) bool { return ssePush(c, event, data) }
+	push("start", map[string]string{"status": "syncing"})
+
+	const batchSize = 50
+	synced, failed := 0, 0
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batch := make([]ragcaller.BatchItem, 0, end-i)
+		for _, it := range items[i:end] {
+			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Memory(it.ID), Text: it.Content})
+		}
+		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		if err != nil {
+			log.Warn("记忆向量同步批次失败", "batch", i/batchSize+1, "err", err)
+			failed += len(batch)
+		} else {
+			for _, r := range resp.Results {
+				if r.Error != nil {
+					failed++
+				} else {
+					synced++
+				}
+			}
+		}
+		// 每批推送进度；客户端断开（写入失败或 ctx 取消）即中止
+		if !push("progress", map[string]int{"done": synced, "failed": failed}) || ctx.Err() != nil {
+			return
+		}
+	}
+	log.Info("长期记忆向量同步完成", "total", len(items), "synced", synced, "failed", failed)
+	push("done", map[string]int{"ready": 1, "total": len(items), "synced": synced, "failed": failed})
+}
+
 // ---------- 图床 ----------
+
+// ssePush 推送一个 SSE 事件（text/event-stream）。返回 false 表示写入/刷新失败（客户端断开）。
+func ssePush(c *app.RequestContext, event string, data any) bool {
+	b, _ := json.Marshal(data)
+	if _, err := c.Write([]byte("event: " + event + "\ndata: " + string(b) + "\n\n")); err != nil {
+		return false
+	}
+	return c.Flush() == nil
+}
 
 // maxImageSize 上传图片大小上限：1.5MB。
 const maxImageSize = 1536 * 1024

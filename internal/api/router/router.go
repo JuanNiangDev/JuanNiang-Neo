@@ -49,6 +49,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.GET("/memory/:chatAreaID/long-term", auth, svc.GetLongTermMemoryConfig)
 	api.PUT("/memory/:chatAreaID/long-term", auth, svc.UpdateLongTermMemoryConfig)
 	api.POST("/memory/sync-rag", auth, svc.SyncMemoryRAG)
+	api.GET("/memory/sync-rag/stream", auth, svc.SyncMemoryRAGStream)
 
 	// Prompts
 	api.GET("/prompts", auth, svc.ListPrompts)
@@ -167,6 +168,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.DELETE("/knowledge/:id", auth, svc.DeleteKnowledge)
 	api.POST("/knowledge/:id/re-extract", auth, svc.ReExtractKnowledge)
 	api.POST("/knowledge/vector-sync", auth, svc.SyncKnowledgeVector)
+	api.GET("/knowledge/vector-sync/stream", auth, svc.SyncKnowledgeVectorStream)
 
 	// 图床
 	api.GET("/images", auth, svc.ListImages)
