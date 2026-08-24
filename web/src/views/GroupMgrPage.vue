@@ -282,7 +282,7 @@
         </v-card>
 
         <!-- LLM 原因对话框 -->
-        <v-dialog v-model="reasonDialog !== null" max-width="560">
+        <v-dialog v-model="reasonDialogOpen" max-width="560">
           <v-card>
             <v-card-title class="py-3"><v-icon class="me-2" color="primary">mdi-message-text-outline</v-icon>LLM 判定原因</v-card-title>
             <v-card-text>
@@ -535,6 +535,11 @@ async function syncRAG() {
 // ---------- 违规记录 ----------
 const violations = ref<GroupMgrViolationResp[]>([])
 const reasonDialog = ref<GroupMgrViolationResp | null>(null)
+// v-model 需要合法成员表达式，用 computed 包装对话框显隐（关闭时置 null）
+const reasonDialogOpen = computed({
+  get: () => reasonDialog.value !== null,
+  set: (v: boolean) => { if (!v) reasonDialog.value = null },
+})
 const violationHeaders = [
   { title: '群号', key: 'group_id' },
   { title: 'QQ号', key: 'user_id' },
