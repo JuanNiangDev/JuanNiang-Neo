@@ -69,7 +69,7 @@
       <!-- System & Services -->
       <v-row class="mt-3">
         <v-col cols="12" md="6" class="d-flex">
-          <v-card rounded="lg" elevation="1" color="surface" class="flex-grow-1">
+          <v-card rounded="lg" elevation="1" color="surface" class="flex-grow-1 h-100 d-flex flex-column">
             <v-card-item>
               <template #title>
                 <div class="d-flex align-center justify-space-between">
@@ -78,7 +78,7 @@
                 </div>
               </template>
             </v-card-item>
-            <v-card-text>
+            <v-card-text class="flex-grow-1 d-flex align-center justify-center">
               <div class="d-flex align-center" style="gap: 28px">
                 <!-- 左：Goroutine 仪表盘 -->
                 <div class="goroutine-box">
