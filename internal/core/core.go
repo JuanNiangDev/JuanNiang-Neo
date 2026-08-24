@@ -150,17 +150,15 @@ func Init(ctx context.Context, db *gorm.DB, redisClient *redis.Client) (*Core, e
 		}
 
 		// 长期记忆语义召回索引：pg_trgm 三元组倒排（GIN），加速 content ILIKE 子串匹配
-		// 与 gram OR 候选召回。仅 PostgreSQL 方言生效（SQLite 测试环境无此扩展，跳过）；
-		// 幂等：已存在则不再创建。
+		// 与 gram OR 候选召回。仅 PostgreSQL 方言生效（SQLite 测试环境无此扩展，跳过）。
+		// 托管 PG（RDS/Cloud SQL 等）常禁止 CREATE EXTENSION 权限：失败降级 Warn，
+		// 语义召回自动回退 recent/SQL 匹配——与 RAG/群管理「降级不报错」设计一致，不阻断启动。
 		if db.Dialector.Name() == "postgres" {
 			if err := db.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm").Error; err != nil {
-				initErr = err
-				return
-			}
-			if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_ltm_content_trgm " +
+				log.Warn("pg_trgm 扩展创建失败，长期记忆语义召回降级为 recent/SQL 匹配", "err", err)
+			} else if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_ltm_content_trgm " +
 				"ON long_term_memory_items USING GIN (content gin_trgm_ops)").Error; err != nil {
-				initErr = err
-				return
+				log.Warn("长期记忆 trgm 索引创建失败，语义召回降级", "err", err)
 			}
 		}
 
