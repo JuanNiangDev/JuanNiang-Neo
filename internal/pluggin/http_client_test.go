@@ -3,6 +3,7 @@ package pluggin
 import (
 	"context"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,68 @@ func TestBuildHTTPTransportProxySchemes(t *testing.T) {
 				t.Fatalf("必须强制 HTTP/1.1（ForceAttemptHTTP2 应为 false）")
 			}
 		})
+	}
+}
+
+// TestHTTPClientCacheLRU 代理 client 缓存 LRU：超上限淘汰最久未使用并关闭空闲连接。
+// 回归：此前按代理地址无上限缓存，插件循环生成唯一代理串可无限创建 Transport + 连接池。
+func TestHTTPClientCacheLRU(t *testing.T) {
+	c := newHTTPClientCache()
+	// 填充到上限 + 1：第 65 个触发淘汰第一个
+	for i := 0; i < httpClientCacheLimit+1; i++ {
+		proxy := ""
+		if i > 0 {
+			proxy = "socks5://127.0.0.1:" + strconv.Itoa(10000+i) // 唯一代理串
+		}
+		if _, err := c.get(proxy); err != nil {
+			t.Fatalf("get(%q) 失败: %v", proxy, err)
+		}
+	}
+	if len(c.clients) != httpClientCacheLimit {
+		t.Fatalf("缓存应收敛到上限 %d，实际 %d", httpClientCacheLimit, len(c.clients))
+	}
+	// 最早的（直连 proxyURL=""）应被淘汰
+	if _, ok := c.clients[""]; ok {
+		t.Fatal("最久未使用的直连 client 应被淘汰")
+	}
+	// 命中已存在 key 不新建（回到 LRU 尾部，不淘汰新值）
+	last := c.order[len(c.order)-1]
+	if _, err := c.get(last); err != nil {
+		t.Fatalf("命中缓存失败: %v", err)
+	}
+	if c.order[len(c.order)-1] != last {
+		t.Fatal("命中后应移到 LRU 尾部")
+	}
+}
+
+// TestSocks4ConnectTimeout 代理 accept 后不响应：握手应在 deadline 内报错而非永久阻塞。
+// 回归：此前 conn.Read 无 SetReadDeadline，代理不响应时调用方 goroutine 永久泄漏。
+func TestSocks4ConnectTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 64)
+		conn.Read(buf) // 读请求后不响应
+		time.Sleep(2 * time.Second)
+	}()
+
+	// 用短 deadline 的 ctx 触发快速超时（不等 socks4HandshakeTimeout 10s）
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := socks4Connect(ctx, ln.Addr().String(), "example.com", 443); err == nil {
+		t.Fatal("代理不响应时应返回超时错误，实际 nil")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("握手应在 deadline 内失败，实际耗时 %s", elapsed)
 	}
 }
 

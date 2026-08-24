@@ -57,6 +57,7 @@ var (
 	ScheduledMsgNotExist    = Response{Status: 40044, Info: "定时消息任务不存在"}
 	T2IStyleInvalid         = Response{Status: 40049, Info: "T2I 渲染风格无效（仅允许空、random 或风格库中定义的风格名）"}
 	StickerTagSystem        = Response{Status: 40047, Info: "系统内置标签不可删除"}
+	WordImportTooLarge      = Response{Status: 40051, Info: "词库导入文件过大（≤1MB）或行数超限（≤20000）"}
 )
 
 type TokenResp struct {
