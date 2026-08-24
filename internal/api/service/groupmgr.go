@@ -220,7 +220,7 @@ func (s *Service) ListGroupMgrSamples(ctx context.Context, c *app.RequestContext
 	resp := make([]dto.GroupMgrSampleResp, 0, len(list))
 	for _, sp := range list {
 		resp = append(resp, dto.GroupMgrSampleResp{
-			ID: sp.ID, Text: sp.Text, Category: sp.Category, Source: sp.Source,
+			ID: sp.ID, WordID: sp.WordID, Text: sp.Text, Category: sp.Category, Source: sp.Source,
 			HitCount: sp.HitCount, CreatedAt: sp.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}

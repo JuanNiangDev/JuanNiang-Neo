@@ -523,6 +523,7 @@ type GroupMgrWordResp struct {
 // GroupMgrSampleResp 样本。
 type GroupMgrSampleResp struct {
 	ID        uint   `json:"id"`
+	WordID    uint   `json:"word_id"` // 关联词条 ID（0=非词条派生样本）
 	Text      string `json:"text"`
 	Category  string `json:"category"`
 	Source    string `json:"source"`
