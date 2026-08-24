@@ -27,7 +27,7 @@
       <v-col cols="12" md="6">
         <v-card rounded="lg" elevation="1" class="h-100 d-flex flex-column">
           <v-card-item><template #title><span class="text-h6 font-weight-bold">健康状态</span></template></v-card-item>
-          <v-card-text class="flex-grow-1 d-flex flex-column">
+          <v-card-text class="flex-grow-1">
             <v-list density="compact">
               <v-list-item>
                 <template #prepend><span class="status-dot" :class="config.healthy ? 'active' : 'error'" /></template>
@@ -45,10 +45,12 @@
                 <v-list-item-subtitle>{{ currentStyleLabel }}</v-list-item-subtitle>
               </v-list-item>
             </v-list>
-            <v-btn variant="tonal" class="mt-auto pt-1" @click="checkHealth" :loading="checking" block>
+          </v-card-text>
+          <v-card-actions class="px-4 pb-4">
+            <v-btn variant="tonal" block @click="checkHealth" :loading="checking">
               <v-icon class="me-1">mdi-heart-pulse</v-icon> 检查健康
             </v-btn>
-          </v-card-text>
+          </v-card-actions>
         </v-card>
       </v-col>
     </v-row>
