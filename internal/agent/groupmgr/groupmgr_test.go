@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,11 @@ func newTestManager(t *testing.T, ragScore *float64) (*Manager, *dao.GroupMgrDAO
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
+	}
+	// :memory: 库每连接独立：固定单连接（含空闲池），保证并发测试共享同一库
+	if sqlDB, derr := db.DB(); derr == nil {
+		sqlDB.SetMaxOpenConns(1)
+		sqlDB.SetMaxIdleConns(1)
 	}
 	if err := core.AutoMigrate(db); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -119,6 +125,41 @@ func TestViolationRAGLowScoreWithWordReview(t *testing.T) {
 	rep := m.TestViolation(context.Background(), "校园卡办理，找我办卡")
 	if rep.Verdict != "review" {
 		t.Fatalf("低置信有词应 review，got %s (%s)", rep.Verdict, rep.Reason)
+	}
+}
+
+// TestViolationIncrConcurrent 违规计数原子自增：并发 N 次自增最终计数 = N。
+// 回归：punish 曾 ViolationGet → count++ → ViolationSet 非原子，事件循环与
+// Run 循环双 goroutine 竞争会丢计数（双重处罚/错档惩罚）。
+func TestViolationIncrConcurrent(t *testing.T) {
+	_, gmdao := newTestManager(t, nil)
+	ctx := context.Background()
+
+	const n = 20
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = gmdao.ViolationIncr(ctx, 100, 200, dao.ViolationMeta{Username: "并发", DetectionPath: "keyword", LLMReason: "r"})
+		}()
+	}
+	wg.Wait()
+
+	c, err := gmdao.ViolationGet(ctx, 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c != n {
+		t.Fatalf("并发自增后计数应为 %d，实际 %d（read-modify-write 丢计数）", n, c)
+	}
+	// 现场信息为最后一次处罚覆盖
+	list, _ := gmdao.ViolationList(ctx)
+	if len(list) != 1 {
+		t.Fatalf("违规记录应 1 条，got %d", len(list))
+	}
+	if list[0].Count != n {
+		t.Fatalf("DB 内 count 应为 %d，got %d", n, list[0].Count)
 	}
 }
 

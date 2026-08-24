@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -196,6 +197,29 @@ func (d *GroupMgrDAO) SampleIncrHit(ctx context.Context, id uint) error {
 
 // ---------- 违规记录 ----------
 
+// ViolationIncr 原子自增违规计数并返回新值（单条 UPSERT ... RETURNING，无 read-modify-write 竞争）。
+// 事件循环（关键词直罚）与 Run 循环（LLM 追罚）双 goroutine 并发时不会丢计数/双重处罚。
+// PG 用 now()、SQLite 用 CURRENT_TIMESTAMP（两者均支持 RETURNING，SQLite ≥ 3.35）。
+func (d *GroupMgrDAO) ViolationIncr(ctx context.Context, groupID, userID int64, meta ViolationMeta) (int, error) {
+	nowExpr := "now()"
+	if d.db.Dialector.Name() != "postgres" {
+		nowExpr = "CURRENT_TIMESTAMP"
+	}
+	var count int
+	sql := fmt.Sprintf(`
+		INSERT INTO group_mgr_violations (group_id, user_id, count, username, detection_path, llm_reason, updated_at)
+		VALUES (?, ?, 1, ?, ?, ?, %s)
+		ON CONFLICT (group_id, user_id)
+		DO UPDATE SET count = group_mgr_violations.count + 1,
+			username = EXCLUDED.username,
+			detection_path = EXCLUDED.detection_path,
+			llm_reason = EXCLUDED.llm_reason,
+			updated_at = %s
+		RETURNING count`, nowExpr, nowExpr)
+	err := d.db.WithContext(ctx).Raw(sql, groupID, userID, meta.Username, meta.DetectionPath, meta.LLMReason).Scan(&count).Error
+	return count, err
+}
+
 // ViolationGet 读取某群某用户的违规次数（无记录返回 0, nil）。
 func (d *GroupMgrDAO) ViolationGet(ctx context.Context, groupID, userID int64) (int, error) {
 	var v models.GroupMgrViolation
@@ -321,8 +345,27 @@ func (d *GroupMgrDAO) StatSet(ctx context.Context, key, value string) error {
 	}).Create(&models.GroupMgrStat{Key: key, Value: value}).Error
 }
 
-// StatIncr 数值 +1（非数值态按 1 起算）。
+// StatIncr 数值 +1（数据库级原子自增，消除 read-modify-write 竞争；非数值态按 1 起算）。
+// PG：UPDATE 内 CASE 判断数值态后自增，RETURNING 返回新值；
+// 其他方言（SQLite 测试环境）：本地读改写回退（并发低，可接受）。
 func (d *GroupMgrDAO) StatIncr(ctx context.Context, key string) (int64, error) {
+	if d.db.Dialector.Name() == "postgres" {
+		var v string
+		err := d.db.WithContext(ctx).Raw(`
+			INSERT INTO group_mgr_stats (key, value)
+			VALUES (?, '1')
+			ON CONFLICT (key) DO UPDATE
+			SET value = CASE
+				WHEN group_mgr_stats.value ~ '^[0-9]+$' THEN (group_mgr_stats.value::bigint + 1)::text
+				ELSE '1'
+			END
+			RETURNING value`, key).Scan(&v).Error
+		if err != nil {
+			return 0, err
+		}
+		n, _ := strconv.ParseInt(v, 10, 64)
+		return n, nil
+	}
 	v, err := d.StatGet(ctx, key)
 	if err != nil {
 		return 0, err
