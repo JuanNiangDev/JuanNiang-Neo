@@ -165,14 +165,14 @@ func TestWhitelistCommands(t *testing.T) {
 	}
 }
 
-// TestLearnSampleDedup 学习闭环：同一文本重复入库只产生一条样本（幂等）。
+// TestLearnSampleDedup 学习闭环：同一违规原文重复入库只产生一条样本（幂等）。
 func TestLearnSampleDedup(t *testing.T) {
 	m, gmdao := newTestManager(t, nil)
 	ctx := context.Background()
 	ev := groupEv(100, 200, "办卡加群")
 
-	m.learnSample(ctx, `{"violation":"ad","reason":"广告"}`, ev, "ad")
-	m.learnSample(ctx, `{"violation":"ad","reason":"广告"}`, ev, "ad")
+	m.learnSample(ctx, "办卡加群", ev, "ad")
+	m.learnSample(ctx, "办卡加群", ev, "ad")
 
 	list, err := gmdao.SampleListAll(ctx)
 	if err != nil {
@@ -182,10 +182,50 @@ func TestLearnSampleDedup(t *testing.T) {
 	for _, s := range list {
 		if s.Source == "learn" {
 			learned++
+			if s.Text != "办卡加群" {
+				t.Fatalf("学习样本应为违规原文，got %q", s.Text)
+			}
 		}
 	}
 	if learned != 1 {
 		t.Fatalf("学习样本应幂等去重为 1 条，实际 %d", learned)
+	}
+}
+
+// TestLearnSampleUsesRawTextNotVerdict 学习闭环喂原文：LLM 裁决 JSON 不得入库为样本。
+// 回归：handleReview 曾把 out.content（{"violation":"ad",...}）当样本入库，污染样本表与向量库。
+func TestLearnSampleUsesRawTextNotVerdict(t *testing.T) {
+	m, gmdao := newTestManager(t, nil)
+	ctx := context.Background()
+
+	out := reviewOutcome{
+		groupID:   100,
+		userID:    200,
+		messageID: 1,
+		pk:        "100:200",
+		rawText:   "办卡加群，加我微信领流量卡",
+		content:   `{"violation":"ad","reason":"明确广告引流"}`,
+	}
+	m.handleReview(ctx, out)
+
+	list, err := gmdao.SampleListAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var learnTexts []string
+	for _, s := range list {
+		if s.Source == "learn" {
+			learnTexts = append(learnTexts, s.Text)
+		}
+	}
+	if len(learnTexts) != 1 {
+		t.Fatalf("应入库 1 条学习样本，got %d: %v", len(learnTexts), learnTexts)
+	}
+	if learnTexts[0] != out.rawText {
+		t.Fatalf("学习样本应为送审原文 %q，got %q", out.rawText, learnTexts[0])
+	}
+	if strings.Contains(learnTexts[0], "violation") || strings.Contains(learnTexts[0], "\"reason\"") {
+		t.Fatalf("学习样本不得包含 LLM 裁决 JSON，got %q", learnTexts[0])
 	}
 }
 

@@ -137,6 +137,7 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 			admins:    ev.Admins,
 			pk:        pk,
 			rc:        rc,
+			rawText:   text, // 送审原文（学习闭环用；裁决 JSON 不入库）
 			err:       err,
 		}
 		if resp != nil {
@@ -149,11 +150,13 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 }
 
 // reviewOutcome 审查结果（channel 消息，Run 串行消费）。
+// rawText 为送审原文（stripCQ 后），学习闭环用它入库——避免把 LLM 裁决 JSON 当违规样本。
 type reviewOutcome struct {
 	groupID, userID, messageID int64
 	admins                     []string
 	pk                         string
 	rc                         reviewCtx
+	rawText                    string
 	content                    string
 	tokens                     int
 	err                        error
@@ -238,15 +241,16 @@ func (m *Manager) handleReview(ctx context.Context, out reviewOutcome) {
 			reason = reasonByWord(out.rc.word, out.rc.wordCat, out.rc.kind == "card")
 		}
 		m.punish(ev, reason, category, "llm")
-		// 学习闭环：LLM 确认违规 → 样本入库 + RAG upsert（异步不影响处罚）
-		m.learnSample(ctx, out.content, ev, category)
+		// 学习闭环：LLM 确认违规 → 用送审原文入库 + RAG upsert（异步不影响处罚）
+		m.learnSample(ctx, out.rawText, ev, category)
 	default:
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("none").Inc()
 		log.Info("LLM 审查放行", "user", out.userID, "kind", out.rc.kind)
 	}
 }
 
-// learnSample 学习闭环：LLM 确认违规的消息入库为样本（幂等去重）。
+// learnSample 学习闭环：LLM 确认违规的消息原文入库为样本（幂等去重）。
+// raw 应为送审原文（stripCQ 后的消息文本），调用方不得传入 LLM 裁决 JSON。
 func (m *Manager) learnSample(ctx context.Context, raw string, ev adapter.Event, category string) {
 	text := strings.TrimSpace(stripCQ(raw))
 	if text == "" {
