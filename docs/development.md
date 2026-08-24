@@ -65,7 +65,7 @@ internal/
     concurrency.go      每 ChatArea 并发控制 (默认 8 goroutine)
     eino_middleware.go  Eino ADK 中间件 (BeforeAgent 动态指令注入 / AgentLite 工具过滤 / WrapInvokableToolCall 同步执行包装)
     event.go            三阶段事件循环 (Plugin.Dispatch → ReplyStrategy → dispatchToAgent)
-    reply_strategy.go   回复策略 (NeverReply/AtOnly/Always/Relevance)
+    reply_strategy.go   回复策略 (收敛为仅 Relevance：规则快路径 + 批量判断/缓存/降级)
   api/          Hertz Web (engine + middleware + router + service)
   core/         Init / dao.Bundle / models (31 表) / acl / cache / imgstore(图床文件存储)
   pluggin/      Lua 引擎 + 命令树 + 内嵌 SDK + 系统插件
@@ -133,7 +133,7 @@ docs/                   本文档树
 - `ChatRecord.id` 为自增 int64（不是 UUID，多数表用 UUID），保留这个差异
 - 单行配置表（`Onebot11Adapter`/`WebhookConfig`/`T2IConfig`/`SandboxConfig`）固定 `id=1`，首次 `InitConfig` 用 `OnConflict DoNothing` 建默认行
 - `ReplyStrategyConfig` 无 `DeletedAt`（单例）
-- 长期记忆 `Embedding []byte` 字段已就位但**当前未做向量检索**，搜索走 `ILIKE` 内容匹配
+- 长期记忆 `Embedding []byte` 字段已就位但**当前未做向量检索**；对话召回走**语义匹配**（消息 gram → pg_trgm GIN 倒排候选 + `similarity` 排序，空候选回退最近条目；环境变量 `LTM_RECALL_MODE=recent` 可回退为纯最近召回）
 
 ## 改动检查流程
 

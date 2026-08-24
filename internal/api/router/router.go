@@ -48,6 +48,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/memory/:chatAreaID/short-term", auth, svc.UpdateShortTermMemoryConfig)
 	api.GET("/memory/:chatAreaID/long-term", auth, svc.GetLongTermMemoryConfig)
 	api.PUT("/memory/:chatAreaID/long-term", auth, svc.UpdateLongTermMemoryConfig)
+	api.POST("/memory/sync-rag", auth, svc.SyncMemoryRAG)
 
 	// Prompts
 	api.GET("/prompts", auth, svc.ListPrompts)
@@ -128,6 +129,12 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/sandbox/config", auth, svc.UpdateSandboxConfig)
 	api.GET("/sandbox/health", auth, svc.CheckSandboxHealth)
 
+	// RAG（向量检索服务）
+	api.GET("/rag/config", auth, svc.GetRAGConfig)
+	api.PUT("/rag/config", auth, svc.UpdateRAGConfig)
+	api.GET("/rag/health", auth, svc.CheckRAGHealth)
+	api.GET("/rag/info", auth, svc.GetRAGInfo)
+
 	// Webhook
 	api.GET("/webhook/config", auth, svc.GetWebhookConfig)
 	api.PUT("/webhook/config", auth, svc.UpdateWebhookConfig)
@@ -152,12 +159,14 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.PUT("/reply-strategy", auth, svc.UpdateReplyStrategy)
 
 	// Knowledge 知识库
+	// 知识库
 	api.GET("/knowledge", auth, svc.ListKnowledge)
 	api.GET("/knowledge/:id", auth, svc.GetKnowledge)
 	api.POST("/knowledge", auth, svc.AddKnowledge)
 	api.PUT("/knowledge/:id", auth, svc.UpdateKnowledge)
 	api.DELETE("/knowledge/:id", auth, svc.DeleteKnowledge)
 	api.POST("/knowledge/:id/re-extract", auth, svc.ReExtractKnowledge)
+	api.POST("/knowledge/vector-sync", auth, svc.SyncKnowledgeVector)
 
 	// 图床
 	api.GET("/images", auth, svc.ListImages)
@@ -195,4 +204,24 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.DELETE("/scheduled-messages/:id", auth, svc.DeleteScheduledMessage)
 	api.PUT("/scheduled-messages/:id/toggle", auth, svc.ToggleScheduledMessage)
 	api.POST("/scheduled-messages/:id/trigger", auth, svc.TriggerScheduledMessage)
+
+	// 群管理（系统级功能）
+	api.GET("/group-mgr/config", auth, svc.GetGroupMgrConfig)
+	api.PUT("/group-mgr/config", auth, svc.UpdateGroupMgrConfig)
+	api.GET("/group-mgr/words", auth, svc.ListGroupMgrWords)
+	api.POST("/group-mgr/words", auth, svc.AddGroupMgrWord)
+	api.DELETE("/group-mgr/words/:id", auth, svc.DeleteGroupMgrWord)
+	api.POST("/group-mgr/words/import", auth, svc.ImportGroupMgrWords)
+	api.POST("/group-mgr/sync-rag", auth, svc.SyncGroupMgrRAG)
+	api.GET("/group-mgr/samples", auth, svc.ListGroupMgrSamples)
+	api.DELETE("/group-mgr/samples/:id", auth, svc.DeleteGroupMgrSample)
+	api.GET("/group-mgr/violations", auth, svc.ListGroupMgrViolations)
+	api.DELETE("/group-mgr/violations/:id", auth, svc.DeleteGroupMgrViolation)
+	api.GET("/group-mgr/whitelist", auth, svc.GetGroupMgrWhitelist)
+	api.PUT("/group-mgr/whitelist", auth, svc.UpdateGroupMgrWhitelist)
+	api.GET("/group-mgr/admins", auth, svc.GetGroupMgrAdmins)
+	api.PUT("/group-mgr/admins", auth, svc.UpdateGroupMgrAdmins)
+	api.POST("/group-mgr/admins/sync-from-adapter", auth, svc.SyncGroupMgrAdminsFromAdapter)
+	api.GET("/group-mgr/stats", auth, svc.GetGroupMgrStats)
+	api.POST("/group-mgr/test", auth, svc.TestGroupMgr)
 }

@@ -4,23 +4,32 @@
 
     <v-card rounded="lg" elevation="1" class="mb-4 pa-4">
       <v-row dense align="center">
-        <v-col cols="12" md="8">
-          <v-select
-            v-model="chatAreaId"
-            :items="chatAreaItems"
-            item-title="label"
-            item-value="value"
-            label="Chat Area"
-            placeholder="选择 ChatArea"
-            density="compact"
-            hide-details
-            clearable
-          />
-        </v-col>
-        <v-col cols="12" md="4">
-          <v-btn color="primary" variant="tonal" block @click="fetchBoth" :loading="loading">查询</v-btn>
-        </v-col>
-      </v-row>
+          <v-col cols="12" md="8">
+            <v-select
+              v-model="chatAreaId"
+              :items="chatAreaItems"
+              item-title="label"
+              item-value="value"
+              label="Chat Area"
+              placeholder="选择 ChatArea"
+              density="compact"
+              hide-details
+              clearable
+            />
+          </v-col>
+          <v-col cols="12" md="4">
+            <v-btn color="primary" variant="tonal" block @click="fetchBoth" :loading="loading">查询</v-btn>
+          </v-col>
+        </v-row>
+
+        <v-row dense align="center" class="mt-1">
+          <v-col cols="12">
+            <v-alert type="info" variant="tonal" density="compact">
+              长期记忆向量同步：将 Postgres 内全部长期记忆批量写入 RAG-Service 向量库（幂等），补齐 Compact 双写之前的历史记忆。
+            </v-alert>
+            <v-btn color="primary" variant="tonal" prepend-icon="mdi-cloud-sync-outline" :loading="syncingRAG" class="mt-2" @click="syncRAG">同步向量库</v-btn>
+          </v-col>
+        </v-row>
     </v-card>
 
     <v-row v-if="chatAreaId">
@@ -71,5 +80,7 @@ async function fetchChatAreas() { try { const list = (await chatAreaApi.list()).
 async function fetchBoth() { if (!chatAreaId.value) return; loading.value = true; try { const [st, lt] = await Promise.all([memoryApi.getShortTerm(chatAreaId.value), memoryApi.getLongTerm(chatAreaId.value)]); shortTerm.value = { window_size: st.data.data.window_size, auto_compact: st.data.data.auto_compact }; longTerm.value = { hot_area_size: lt.data.data.hot_area_size, hot_memory_ttl: lt.data.data.hot_memory_ttl } } catch (e: any) { toastStore.error('获取失败: ' + (e?.message || '')) } finally { loading.value = false } }
 async function saveShort() { savingShort.value = true; try { await memoryApi.updateShortTerm(chatAreaId.value, shortTerm.value); toastStore.success('短期记忆配置已保存') } catch { toastStore.error('保存失败') } finally { savingShort.value = false } }
 async function saveLong() { savingLong.value = true; try { await memoryApi.updateLongTerm(chatAreaId.value, longTerm.value); toastStore.success('长期记忆配置已保存') } catch { toastStore.error('保存失败') } finally { savingLong.value = false } }
+const syncingRAG = ref(false)
+async function syncRAG() { syncingRAG.value = true; try { const res = (await memoryApi.syncRAG()).data.data; if (res?.ready) { toastStore.success(`记忆向量同步完成：成功 ${res.synced} 条，失败 ${res.failed} 条（共 ${res.total} 条）`) } else { toastStore.error(res?.message || 'RAG 未启用，无法同步') } } catch (e: any) { toastStore.error('同步失败: ' + (e?.message || '')) } finally { syncingRAG.value = false } }
 onMounted(fetchChatAreas)
 </script>

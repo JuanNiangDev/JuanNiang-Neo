@@ -292,6 +292,13 @@ type UpdateT2IConfigReq struct {
 	SelectedStyle string `json:"selected_style"`
 }
 
+// UpdateRAGConfigReq RAG 向量检索服务配置更新请求。
+type UpdateRAGConfigReq struct {
+	BaseURL  string `json:"base_url"`
+	Timeout  int    `json:"timeout"`
+	IsActive bool   `json:"is_active"`
+}
+
 // ---------- Sandbox ----------
 
 type UpdateSandboxConfigReq struct {
@@ -339,9 +346,10 @@ type ToggleCronJobReq struct {
 }
 
 // ---------- 回复策略 ----------
+// 回复策略已收敛为仅 relevance：请求不再接受 strategy 字段，
+// 以下均为相关性判断的参数配置。
 
 type UpdateReplyStrategyReq struct {
-	Strategy           string  `json:"strategy"`
 	RelevanceThreshold float64 `json:"relevance_threshold"`
 	BotName            string  `json:"bot_name"`
 	StripMarkdown      bool    `json:"strip_markdown"`
@@ -350,4 +358,41 @@ type UpdateReplyStrategyReq struct {
 	RelevanceModel     string  `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID（空则用默认）
 	RelevanceTimeout   int     `json:"relevance_timeout"` // 相关性检测超时（秒），0=默认 10s
 	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop=不回复（默认）, reply=照常回复
+}
+
+// ---------- 群管理 ----------
+
+// UpdateGroupMgrConfigReq 更新群管理配置（含三档阈值/排除群/三份提示词/检测参数）。
+type UpdateGroupMgrConfigReq struct {
+	Enabled              bool     `json:"enabled"`
+	LLMReview            bool     `json:"llm_review"`
+	HighScore            float64  `json:"high_score"`
+	LowScore             float64  `json:"low_score"`
+	FallbackScore        float64  `json:"fallback_score"`
+	ImgSpamWindow        int      `json:"img_spam_window"`
+	ImgSpamThreshold     int      `json:"img_spam_threshold"`
+	ImgMuteDuration      int      `json:"img_mute_duration"`
+	EnableCopyCheck      bool     `json:"enable_copy_check"`
+	CopyThreshold        int      `json:"copy_threshold"`
+	ViolationMuteSeconds int      `json:"violation_mute_seconds"`
+	ExcludeGroups        []string `json:"exclude_groups"`
+	LLMCriteria          string   `json:"llm_criteria"`
+	LLMGrayPrompt        string   `json:"llm_gray_prompt"`
+	LLMHighRiskPrompt    string   `json:"llm_high_risk_prompt"`
+}
+
+// AddGroupMgrWordReq 新增词条。
+type AddGroupMgrWordReq struct {
+	Word     string `json:"word"`
+	Category string `json:"category"` // black / gray / sensitive
+}
+
+// UpdateGroupMgrQQListReq 更新白名单/管理员列表（全量覆盖）。
+type UpdateGroupMgrQQListReq struct {
+	QQList []int64 `json:"qq_list"`
+}
+
+// TestGroupMgrReq 链路测试。
+type TestGroupMgrReq struct {
+	Text string `json:"text"`
 }

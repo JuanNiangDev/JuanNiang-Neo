@@ -347,6 +347,16 @@ func RawT2IConfig2Resp(raw *models.T2IConfig, healthy bool) T2IConfigResp {
 	}
 }
 
+// RawRAGConfig2Resp 模型 → 响应。
+func RawRAGConfig2Resp(raw *models.RAGConfig, healthy bool) RAGConfigResp {
+	return RAGConfigResp{
+		BaseURL:  raw.BaseURL,
+		Timeout:  raw.Timeout,
+		IsActive: raw.IsActive,
+		Healthy:  healthy,
+	}
+}
+
 func RawSandboxConfig2Resp(raw *models.SandboxConfig, healthy bool) SandboxConfigResp {
 	return SandboxConfigResp{
 		BaseURL:  raw.BaseURL,

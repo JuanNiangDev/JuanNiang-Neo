@@ -2,10 +2,11 @@
   <div>
     <div class="page-header">
       <div class="page-title"><v-icon class="me-2" color="primary">mdi-book-open-variant</v-icon>知识库</div>
-      <div class="page-subtitle">SQL 驱动知识库：对话前自动模糊匹配并注入提示词</div>
+      <div class="page-subtitle">对话前自动匹配并注入提示词（首选 RAG 语义检索，未配置时降级 SQL 匹配）</div>
     </div>
 
-    <div class="d-flex justify-end mb-4">
+    <div class="d-flex justify-end mb-4" style="gap: 12px">
+      <v-btn variant="tonal" color="info" prepend-icon="mdi-database-sync" @click="syncVector" :loading="syncing">同步向量库</v-btn>
       <v-btn color="primary" prepend-icon="mdi-plus" @click="openAdd">新增知识</v-btn>
     </div>
 
@@ -80,6 +81,23 @@ import { knowledgeApi, type KnowledgeResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
+const syncing = ref(false)
+
+// 手动全量同步知识库到 RAG 向量库（未启用时后端直接返回提示）
+async function syncVector() {
+  syncing.value = true
+  try {
+    const res = (await knowledgeApi.syncVector()).data.data
+    if (res.ready === false) {
+      toastStore.warning(res.message || 'RAG 未启用，无法同步向量库')
+      return
+    }
+    toastStore.success(`向量同步完成：共 ${res.total} 条，成功 ${res.synced}，失败 ${res.failed}`)
+  } catch (e: any) {
+    toastStore.error(e?.response?.data?.info || '向量同步失败')
+  } finally { syncing.value = false }
+}
+
 const loading = ref(true)
 const saving = ref(false)
 const deleting = ref(false)
@@ -145,7 +163,6 @@ function openEdit(item: KnowledgeResp) {
 }
 
 async function handleSave() {
-  if (!form.value.content.trim()) return
   saving.value = true
   try {
     if (editing.value) {

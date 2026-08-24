@@ -15,94 +15,92 @@
           </v-card-item>
           <v-card-text>
             <v-form @submit.prevent="handleSave">
-              <v-radio-group v-model="form.strategy" class="mb-4">
-                <v-radio label="完全不回复 — 不处理任何消息" value="never_reply" color="error" />
-                <v-radio label="仅@我时回复 — 只有被@时才交给 Plugin 和 Agent" value="at_only" color="warning" />
-                <v-radio label="完全回复 — 正常处理所有消息（默认）" value="always" color="success" />
-                <v-radio label="按相关性回复 — 由 Agent 判断消息是否相关后再回复" value="relevance" color="primary" />
-              </v-radio-group>
+              <!-- 回复策略已收敛为仅支持按相关性回复：@/命令/提及名字必回，其余由 LLM 判断 -->
+              <v-alert type="info" variant="tonal" class="mb-4" density="comfortable">
+                <div class="text-subtitle-2 font-weight-bold">按相关性回复（当前唯一策略）</div>
+                <div class="text-caption">
+                  被@、触发插件命令或提及机器人名字时必回（规则快路径，不消耗 LLM 判断）；
+                  其余群聊消息由 LLM 按相关性分数决定是否回复，判断结果带 Redis 缓存与冷却。
+                </div>
+              </v-alert>
 
-              <v-expand-transition>
-                <v-card v-if="form.strategy === 'relevance'" variant="outlined" class="mb-4 pa-3" rounded="lg">
-                  <div class="text-subtitle-2 font-weight-bold mb-2">相关性阈值</div>
-                  <div class="d-flex align-center" style="gap: 16px">
-                    <v-slider
-                      v-model="form.relevance_threshold"
-                      :min="0" :max="1" :step="0.05"
-                      color="primary" thumb-label="always" hide-details style="flex: 1"
-                    />
-                    <v-text-field
-                      v-model.number="form.relevance_threshold"
-                      type="number" :min="0" :max="1" :step="0.05"
-                      density="compact" style="width: 90px" hide-details variant="outlined"
-                    />
-                  </div>
-                  <div class="text-caption text-medium-emphasis mt-2">
-                    Agent 判断消息相关性 &ge; 阈值时才会回复。被@时自动绕过此判断。
-                    <br />当前阈值: {{ form.relevance_threshold.toFixed(2) }}
-                  </div>
+              <div class="text-subtitle-2 font-weight-bold mb-2">相关性阈值</div>
+              <div class="d-flex align-center" style="gap: 16px">
+                <v-slider
+                  v-model="form.relevance_threshold"
+                  :min="0" :max="1" :step="0.05"
+                  color="primary" thumb-label="always" hide-details style="flex: 1"
+                />
+                <v-text-field
+                  v-model.number="form.relevance_threshold"
+                  type="number" :min="0" :max="1" :step="0.05"
+                  density="compact" style="width: 90px" hide-details variant="outlined"
+                />
+              </div>
+              <div class="text-caption text-medium-emphasis mt-2">
+                Agent 判断消息相关性 &ge; 阈值时才会回复。被@时自动绕过此判断。
+                <br />当前阈值: {{ form.relevance_threshold.toFixed(2) }}
+              </div>
 
-                  <v-divider class="my-3" />
+              <v-divider class="my-3" />
 
-                  <div class="text-subtitle-2 font-weight-bold mb-2">机器人名字</div>
-                  <v-text-field
-                    v-model="form.bot_name"
-                    label="用于相关性判断，如「小卷」"
-                    placeholder="例如：小卷"
-                    density="comfortable" variant="outlined" hide-details clearable
-                  />
+              <div class="text-subtitle-2 font-weight-bold mb-2">机器人名字</div>
+              <v-text-field
+                v-model="form.bot_name"
+                label="用于相关性判断，如「小卷」"
+                placeholder="例如：小卷"
+                density="comfortable" variant="outlined" hide-details clearable
+              />
 
-                  <v-divider class="my-3" />
+              <v-divider class="my-3" />
 
-                  <div class="text-subtitle-2 font-weight-bold mb-2">相关性检测模型</div>
-                  <v-select
-                    v-model="form.relevance_model"
-                    :items="textModelOptions"
-                    item-title="label"
-                    item-value="value"
-                    label="选择相关性判断使用的 Text 模型"
-                    placeholder="（默认 Text 模型）"
-                    density="comfortable" variant="outlined" clearable hide-details
-                  />
+              <div class="text-subtitle-2 font-weight-bold mb-2">相关性检测模型</div>
+              <v-select
+                v-model="form.relevance_model"
+                :items="textModelOptions"
+                item-title="label"
+                item-value="value"
+                label="选择相关性判断使用的 Text 模型"
+                placeholder="（默认 Text 模型）"
+                density="comfortable" variant="outlined" clearable hide-details
+              />
 
-                  <v-divider class="my-3" />
+              <v-divider class="my-3" />
 
-                  <div class="text-subtitle-2 font-weight-bold mb-2">相关性判断超时（秒）</div>
-                  <v-text-field
-                    v-model.number="form.relevance_timeout"
-                    type="number" :min="1" :max="120"
-                    label="相关性判断 LLM 调用总超时（含等待，默认 10s）"
-                    density="comfortable" variant="outlined" hide-details
-                  />
-                  <div class="text-caption text-medium-emphasis mt-1">
-                    慢速提供商可调大到 15-30s；信号量等待与 LLM 调用共享该预算。
-                  </div>
+              <div class="text-subtitle-2 font-weight-bold mb-2">相关性判断超时（秒）</div>
+              <v-text-field
+                v-model.number="form.relevance_timeout"
+                type="number" :min="1" :max="120"
+                label="相关性判断 LLM 调用总超时（含等待，默认 10s）"
+                density="comfortable" variant="outlined" hide-details
+              />
+              <div class="text-caption text-medium-emphasis mt-1">
+                慢速提供商可调大到 15-30s；信号量等待与 LLM 调用共享该预算。
+              </div>
 
-                  <v-divider class="my-3" />
+              <v-divider class="my-3" />
 
-                  <div class="text-subtitle-2 font-weight-bold mb-2">判断失败策略</div>
-                  <v-select
-                    v-model="form.judge_fail_policy"
-                    :items="[
-                      { label: '不回复 — 判断失败时保持沉默（默认）', value: 'drop' },
-                      { label: '照常回复 — 判断失败时交给 Agent 回复', value: 'reply' },
-                    ]"
-                    item-title="label"
-                    item-value="value"
-                    label="相关性判断 LLM 调用失败时的处理"
-                    density="comfortable" variant="outlined" hide-details
-                  />
-                  <div class="text-caption text-medium-emphasis mt-1">
-                    LLM 接口超时/限流等瞬态故障时生效；未配置模型不算失败。
-                  </div>
-                </v-card>
-              </v-expand-transition>
+              <div class="text-subtitle-2 font-weight-bold mb-2">判断失败策略</div>
+              <v-select
+                v-model="form.judge_fail_policy"
+                :items="[
+                  { label: '不回复 — 判断失败时保持沉默（默认）', value: 'drop' },
+                  { label: '照常回复 — 判断失败时交给 Agent 回复', value: 'reply' },
+                ]"
+                item-title="label"
+                item-value="value"
+                label="相关性判断 LLM 调用失败时的处理"
+                density="comfortable" variant="outlined" hide-details
+              />
+              <div class="text-caption text-medium-emphasis mt-1">
+                LLM 接口超时/限流等瞬态故障时生效；未配置模型不算失败。
+              </div>
 
               <div class="d-flex align-center" style="gap: 12px">
-                <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!form.strategy">
+                <v-btn type="submit" color="primary" variant="tonal" :loading="saving">
                   <v-icon class="me-1">mdi-content-save</v-icon> 保存
                 </v-btn>
-                <v-btn v-if="form.strategy === 'relevance'" variant="tonal" color="info" @click="openPromptDialog">
+                <v-btn variant="tonal" color="info" @click="openPromptDialog">
                   <v-icon class="me-1">mdi-text-box-edit-outline</v-icon> 自定义判断提示词
                 </v-btn>
               </div>
@@ -195,7 +193,6 @@ const promptDialog = ref(false)
 const promptDraft = ref('')
 
 const form = ref({
-  strategy: 'always',
   relevance_threshold: 0.5,
   bot_name: '',
   strip_markdown: false,
@@ -223,7 +220,6 @@ async function load() {
     const res = await replyStrategyApi.get()
     const d = (res.data as any)?.data
     if (d) {
-      form.value.strategy = d.strategy || 'always'
       form.value.relevance_threshold = d.relevance_threshold ?? 0.5
       form.value.bot_name = d.bot_name || ''
       form.value.strip_markdown = d.strip_markdown || false
@@ -251,7 +247,6 @@ async function handleSave() {
   saving.value = true
   try {
     await replyStrategyApi.update({
-      strategy: form.value.strategy,
       relevance_threshold: form.value.relevance_threshold,
       bot_name: form.value.bot_name,
       strip_markdown: form.value.strip_markdown,

@@ -32,6 +32,7 @@
 | `REDIS_PASSWORD` | `root` | |
 | `REDIS_DB` | `0` | Redis 逻辑库索引|
 | `REDIS_PREFIX` | `juan:` | ⚠ 未在 `.env.example` 但 `cache.NewCache` 实际读取|
+| `LTM_RECALL_MODE` | `semantic` | 长期记忆对话召回模式：`semantic`=按消息语义召回（pg_trgm 倒排候选 + similarity 排序，空候选回退最近）；`recent`=旧行为（最近 N 条）|
 | `IMG_DIR` | `data/imgs` | 图床图片存储目录（`imgstore`；元数据在 DB `image_assets`）|
 | `T2I_BASE_URL` | (空/注释) | ⚠ 仅文档；运行时实际从 DB `t2i_configs` 读取|
 | `SANDBOX_BASE_URL` | (空/注释) | ⚠ 同上，从 DB `sandbox_configs` 读取|
@@ -119,6 +120,51 @@ make lint
 - `GET /api/v1/overview` 含 `t2i_active`/`t2i_healthy`/`sandbox_active`/`sandbox_healthy`（需 token，前端仪表板调用）
 - `GET /api/v1/t2i/health` / `GET /api/v1/sandbox/health` 实时探活
 
+## Prometheus 监控
+
+### 指标端点
+
+`GET /metrics`（与 `/health` 同级，**无需 JWT**），输出 Prometheus 文本格式指标（前缀 `juanniang_`）：
+
+| 指标组 | 说明 |
+|--------|------|
+| `juanniang_events_total` / `juanniang_messages_total` | 事件与消息吞吐（按 post_type/message_type） |
+| `juanniang_message_dedup_dropped_total` / `juanniang_message_blocked_total` / `juanniang_message_dropped_total` | 去重丢弃 / 黑名单拦截 / 相关性-静默-刷屏丢弃 |
+| `juanniang_agent_loops_total` / `_active` / `_duration_seconds` | Agent 循环完成结果（ok/error/timeout）、活跃数、耗时直方图 |
+| `juanniang_agent_concurrency_in_use` / `_waits_total` / `_wait_seconds` | 全局并发槽占用与令牌等待 |
+| `juanniang_llm_requests_total` / `_tokens_total` / `_latency_seconds` | LLM 调用、Token 消耗（按 agent/review/relevance 用途）、延迟 |
+| `juanniang_groupmgr_violations_total` / `_detections_total` / `_rag_score` / `_llm_reviews_total` / `_spam_total` | 群管理处罚、判定流水（rag/keyword × punish/review/pass）、RAG 分数分布、审核结果、刷屏 |
+| `juanniang_rag_search_latency_seconds` / `_errors_total` | RAG 检索延迟与降级失败 |
+| `juanniang_plugins_loaded` / `juanniang_plugin_hook_errors_total` / `_duration_seconds` | 插件数、钩子错误（按 plugin+hook）、钩子耗时 |
+| `juanniang_http_requests_total` / `_request_duration_seconds` | API 请求数/耗时（路由模板化 path） |
+| `juanniang_inventory{resource=...}` | 业务库存（知识/记忆/会话/ChatArea/CronJob 等条目数，60s TTL 缓存） |
+| `juanniang_external_health{service=...}` | rag/t2i/sandbox/redis 健康（未配置的服务不输出） |
+| `go_*` / `process_*` | Go 运行时（goroutine/内存/GC）与进程指标（自带） |
+
+> 设计约束：所有标签均为低基数（不使用群号/QQ 号等高基数标签，按群分析请用 Web 统计面板）；gauge 由 scrape 时实时读取（DB 数据经 TTL 缓存，scrape 不打库）。
+
+### Prometheus 配置示例
+
+```yaml
+scrape_configs:
+  - job_name: juanniang-neo
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['127.0.0.1:8090']
+    metrics_path: /metrics
+```
+
+> ⚠️ `/metrics` 无鉴权，公网暴露时建议在部署层（防火墙/反代）限制来源 IP。
+
+### Grafana 建议面板
+
+1. **消息吞吐**：`sum(rate(juanniang_messages_total[5m]))` 与丢弃率（dedup/blocked/dropped 占比）
+2. **Agent 健康**：`juanniang_agent_loops_active`、循环耗时 P95（`histogram_quantile(0.95, ...)`）、`outcome="error|timeout"` 速率
+3. **LLM 成本**：`sum(rate(juanniang_llm_tokens_total[1h])) by (phase)` + 错误率
+4. **群管理**：处罚速率、RAG 直罚比例（`detections_total{verdict="punish",path="rag"}` / 总量）、`juanniang_groupmgr_rag_score` 分布（调阈值依据）
+5. **外部服务矩阵**：`juanniang_external_health`（0/1）
+6. **运行时**：`go_goroutines` 趋势（goroutine 泄漏）、`go_memstats_heap_alloc_bytes`
+
 ## 日志排查
 
 - 使用 `internal/logging` 自定义日志包（底层 `github.com/fatih/color`），支持彩色 stdout、JSON 格式化、WARN+ 调用栈
@@ -182,7 +228,7 @@ go tool pprof -http :8080 http://127.0.0.1:6060/debug/pprof/heap
 | 启动报 "Postgres 连接失败" | DB_HOST/PORT/USER/PASSWORD/NAME 错；compose 用 `postgres` 主机名 |
 | 启动报 "Redis 連接失败" | REDIS_ADDR/PASSWORD 错；compose 用 `redis:6379` |
 | OneBot 客户端连不上 8081 | OB_TOKEN 不匹配；浏览器访问无 `Authorization: Bearer`；检查防火墙 |
-| LLM 不回复消息 | 1) 没配置/激活 text_model Provider；2) 回复策略设了 `never_reply`；3) ACL 拒绝；4) 群聊不是 @ 也不是 always |
+| LLM 不回复消息 | 1) 没配置/激活 text_model Provider；2) 相关性判断未通过（@/命令/提及名字必回，其余按相关性阈值）；3) ACL 黑名单拒绝；4) 判断失败且策略为 `drop` |
 | Agent 提示"未启用 T2I" | Web 面板 T2I 配置未启用 / `base_url` 不可达；`GET /t2i/health` 为 false |
 | CronJob 不触发 | 留意这是 6 字段（秒级）cron；`0 0 9 * * *` 才是每天 9:00 |
 | 插件改了不生效 | 改 `pluggin.yaml` 必须 reload；改 Lua 文件也要 toggle 后才重新 DoFile |
@@ -244,7 +290,7 @@ WantedBy=multi-user.target
 5. 在"Providers"页配置 LLM Provider（OpenAI 兼容端点），激活
 6. 在"Adapter"页配置 OB_TOKEN 与 admin QQ，启用
 7. 让 OneBot11 实现（NapCat/Lagrange 等）反向 WS 连 `ws://host:8081/`，带 `Authorization: Bearer <OB_TOKEN>`
-8. 在"回复策略"页配置群聊行为
+8. 在"回复设置"页配置相关性阈值等群聊行为（回复策略已收敛为仅按相关性回复）
 
 ## FAQ
 

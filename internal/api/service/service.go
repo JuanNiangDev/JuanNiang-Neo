@@ -1,6 +1,7 @@
 package service
 
 import (
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
@@ -11,6 +12,7 @@ import (
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/core/ragtag"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/pluggin"
 	"archive/zip"
@@ -1788,7 +1790,7 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
 
-	// T2I / Sandbox 状态
+	// T2I / Sandbox / RAG 状态
 	t2iActive := s.T2IClient != nil
 	t2iHealthy := false
 	if t2iActive {
@@ -1798,6 +1800,11 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 	sandboxHealthy := false
 	if sandboxActive {
 		sandboxHealthy = s.SandboxClient.HealthCheck() == nil
+	}
+	ragActive := s.RAGClient != nil
+	ragHealthy := false
+	if ragActive {
+		ragHealthy = s.RAGClient.HealthCheck() == nil
 	}
 
 	// Adapter 运行状态
@@ -1825,6 +1832,8 @@ func (s *Service) GetOverview(ctx context.Context, c *app.RequestContext) {
 		T2IHealthy:     t2iHealthy,
 		SandboxActive:  sandboxActive,
 		SandboxHealthy: sandboxHealthy,
+		RAGActive:      ragActive,
+		RAGHealthy:     ragHealthy,
 	}))
 }
 
@@ -2092,6 +2101,96 @@ func (s *Service) CheckSandboxHealth(ctx context.Context, c *app.RequestContext)
 	}
 	err := s.SandboxClient.HealthCheck()
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": err == nil}))
+}
+
+// ---------- RAG ----------
+
+func (s *Service) GetRAGConfig(ctx context.Context, c *app.RequestContext) {
+	cfg, err := s.DAO.RAG.GetConfig(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.RAGConfigNotFound, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	healthy := false
+	if s.RAGClient != nil {
+		healthy = s.RAGClient.HealthCheck() == nil
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawRAGConfig2Resp(cfg, healthy)))
+}
+
+func (s *Service) UpdateRAGConfig(ctx context.Context, c *app.RequestContext) {
+	var data dto.UpdateRAGConfigReq
+	if err := c.BindJSON(&data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	cfg, err := s.DAO.RAG.GetConfig(ctx)
+	if err != nil {
+		// 数据库无配置 → 初始化默认配置
+		if initErr := s.DAO.RAG.InitConfig(ctx); initErr != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: initErr.Error()}))
+			return
+		}
+		cfg, err = s.DAO.RAG.GetConfig(ctx)
+		if err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.RAGConfigNotFound, dto.ErrorDetail{ErrorDetail: err.Error()}))
+			return
+		}
+	}
+
+	cfg.BaseURL = data.BaseURL
+	cfg.Timeout = data.Timeout
+	cfg.IsActive = data.IsActive
+
+	if err := s.DAO.RAG.UpdateConfig(ctx, cfg); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	// 运行时同步：启用且健康检查通过则注入客户端，否则置 nil（走降级路径）
+	if data.IsActive {
+		client := ragClientFactory(data.BaseURL, data.Timeout)
+		s.RAGClient = client
+		if s.OnUpdateRAG != nil {
+			s.OnUpdateRAG(client)
+		}
+	} else {
+		s.RAGClient = nil
+		if s.OnUpdateRAG != nil {
+			s.OnUpdateRAG(nil)
+		}
+	}
+
+	healthy := false
+	if s.RAGClient != nil {
+		healthy = s.RAGClient.HealthCheck() == nil
+	}
+
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawRAGConfig2Resp(cfg, healthy)))
+}
+
+func (s *Service) CheckRAGHealth(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": false}))
+		return
+	}
+	err := s.RAGClient.HealthCheck()
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]bool{"healthy": err == nil}))
+}
+
+// GetRAGInfo 查询 RAG-Service 运行状态（模型/内存/规模），供管理面板展示。
+func (s *Service) GetRAGInfo(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{"ready": false}))
+		return
+	}
+	info, err := s.RAGClient.Info(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{"ready": false, "error": err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, info))
 }
 
 // ---------- Webhook ----------
@@ -2414,27 +2513,16 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		return
 	}
 
-	// 验证策略值
-	validStrategies := map[string]bool{
-		string(models.StrategyNeverReply): true,
-		string(models.StrategyAtOnly):     true,
-		string(models.StrategyAlways):     true,
-		string(models.StrategyRelevance):  true,
-	}
-	if !validStrategies[data.Strategy] {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40031, Info: "无效的回复策略"}, nil))
-		return
-	}
+	// 回复策略已收敛为仅 relevance（不再接受 strategy 字段），
+	// 其余相关性参数仍需校验。
 
 	// 验证阈值
-	if data.Strategy == string(models.StrategyRelevance) {
-		if data.RelevanceThreshold < 0 || data.RelevanceThreshold > 1 {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: "相关性阈值必须在 0-1 之间"}, nil))
-			return
-		}
-		if data.RelevanceThreshold == 0 {
-			data.RelevanceThreshold = 0.5
-		}
+	if data.RelevanceThreshold < 0 || data.RelevanceThreshold > 1 {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: "相关性阈值必须在 0-1 之间"}, nil))
+		return
+	}
+	if data.RelevanceThreshold == 0 {
+		data.RelevanceThreshold = 0.5
 	}
 
 	// 验证相关性判断超时（1-120 秒，0=默认 10s）
@@ -2461,7 +2549,8 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		return
 	}
 
-	cfg.Strategy = models.ReplyStrategy(data.Strategy)
+	// 策略固定为 relevance（存量老化策略值由启动迁移收敛）
+	cfg.Strategy = models.StrategyRelevance
 	cfg.RelevanceThreshold = data.RelevanceThreshold
 	cfg.BotName = data.BotName
 	cfg.StripMarkdown = data.StripMarkdown
@@ -2553,6 +2642,9 @@ func (s *Service) AddKnowledge(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 双写：同步向量到 RAG-Service（未配置时静默跳过，不报错）
+	s.syncKnowledgeVector(item.ID, item.Content)
+
 	// 异步提取关键词 + 失效 LRU
 	if s.OnExtractKnowledge != nil {
 		s.OnExtractKnowledge(item.ID)
@@ -2588,6 +2680,9 @@ func (s *Service) UpdateKnowledge(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 
+	// 双写：内容变更后同步覆写向量（Upsert 幂等；未配置时静默跳过）
+	s.syncKnowledgeVector(item.ID, item.Content)
+
 	if s.OnExtractKnowledge != nil {
 		s.OnExtractKnowledge(item.ID)
 	}
@@ -2597,12 +2692,14 @@ func (s *Service) UpdateKnowledge(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.RawKnowledge2Resp(item)))
 }
 
-// DeleteKnowledge 删除知识库条目。
+// DeleteKnowledge 删除知识库条目（双删：Postgres + RAG 向量）。
 func (s *Service) DeleteKnowledge(ctx context.Context, c *app.RequestContext) {
 	if err := s.DAO.Knowledge.Delete(ctx, c.Param("id")); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
+	// 双删：同步删除 RAG 向量（未配置时静默跳过；失败仅告警，残留无害）
+	s.deleteKnowledgeVector(c.Param("id"))
 	if s.OnKnowledgeChanged != nil {
 		s.OnKnowledgeChanged()
 	}
@@ -2624,6 +2721,135 @@ func (s *Service) ReExtractKnowledge(ctx context.Context, c *app.RequestContext)
 		s.OnExtractKnowledge(item.ID)
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// ---------- RAG 向量同步 ----------
+
+// syncKnowledgeVector 把知识条目内容同步写入 RAG 向量库（双写）。
+// RAG 未配置 → 直接返回（不报错）；写入失败仅告警，由手动同步按钮兜底。
+func (s *Service) syncKnowledgeVector(itemID, content string) {
+	if s.RAGClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := s.RAGClient.Upsert(ctx, ragtag.Knowledge(itemID), content); err != nil {
+		log.Warn("知识向量同步失败（可在知识库页手动同步）", "id", itemID, "err", err)
+	}
+}
+
+// deleteKnowledgeVector 删除知识条目的 RAG 向量（双删）。
+// RAG 未配置 → 直接返回；删除失败仅告警（残留向量无害）。
+func (s *Service) deleteKnowledgeVector(itemID string) {
+	if s.RAGClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.RAGClient.Delete(ctx, ragtag.Knowledge(itemID)); err != nil {
+		log.Warn("知识向量删除失败", "id", itemID, "err", err)
+	}
+}
+
+// SyncKnowledgeVector 手动全量同步知识库到 RAG 向量库（页面按钮触发）：
+// 全部条目按 50 条一批 BatchUpsert（一次嵌入一次发布）；
+// RAG 未启用直接返回提示，不报错。
+func (s *Service) SyncKnowledgeVector(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+			"ready": false, "synced": 0, "failed": 0, "total": 0,
+			"message": "RAG 未启用，无法同步向量库",
+		}))
+		return
+	}
+	items, err := s.DAO.Knowledge.ListAllContent(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	const batchSize = 50
+	synced, failed := 0, 0
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batch := make([]ragcaller.BatchItem, 0, end-i)
+		for _, it := range items[i:end] {
+			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Knowledge(it.ID), Text: it.Content})
+		}
+		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		if err != nil {
+			log.Warn("知识向量同步批次失败", "batch", i/batchSize+1, "err", err)
+			failed += len(batch)
+			continue
+		}
+		for _, r := range resp.Results {
+			if r.Error != nil {
+				failed++
+			} else {
+				synced++
+			}
+		}
+	}
+	log.Info("知识库向量同步完成", "total", len(items), "synced", synced, "failed", failed)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+		"ready": true, "synced": synced, "failed": failed, "total": len(items),
+	}))
+}
+
+// SyncMemoryRAG 手动全量同步长期记忆到 RAG 向量库（Memory 页按钮触发）：
+// 全部 LongTermMemItem 按 50 条一批 BatchUpsert（幂等），补齐 Compact 双写之前
+// 的历史记忆。RAG 未启用返回明确提示（不静默）。
+func (s *Service) SyncMemoryRAG(ctx context.Context, c *app.RequestContext) {
+	if s.RAGClient == nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+			"ready": false, "synced": 0, "failed": 0, "total": 0,
+			"message": "RAG 未启用，无法同步记忆向量",
+		}))
+		return
+	}
+	ids, err := s.DAO.LongTermMemItem.ListAllIDs(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	items, err := s.DAO.LongTermMemItem.GetByIDs(ctx, ids)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+
+	const batchSize = 50
+	synced, failed := 0, 0
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		batch := make([]ragcaller.BatchItem, 0, end-i)
+		for _, it := range items[i:end] {
+			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Memory(it.ID), Text: it.Content})
+		}
+		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		if err != nil {
+			log.Warn("记忆向量同步批次失败", "batch", i/batchSize+1, "err", err)
+			failed += len(batch)
+			continue
+		}
+		for _, r := range resp.Results {
+			if r.Error != nil {
+				failed++
+			} else {
+				synced++
+			}
+		}
+	}
+	log.Info("长期记忆向量同步完成", "total", len(items), "synced", synced, "failed", failed)
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]any{
+		"ready": true, "synced": synced, "failed": failed, "total": len(items),
+	}))
 }
 
 // ---------- 图床 ----------

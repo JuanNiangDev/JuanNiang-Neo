@@ -40,6 +40,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.Onebot11Adapter{},
 		&models.T2IConfig{},
 		&models.SandboxConfig{},
+		&models.RAGConfig{},
 		&models.WebhookConfig{},
 		&models.CronJob{},
 		&models.ReplyStrategyConfig{},
@@ -53,6 +54,13 @@ func AutoMigrate(db *gorm.DB) error {
 		&models.FishCalendarConfig{},
 		&models.FishCalendarAffair{},
 		&models.ScheduledMessage{},
+		&models.GroupMgrConfig{},
+		&models.GroupMgrWord{},
+		&models.GroupMgrSample{},
+		&models.GroupMgrViolation{},
+		&models.GroupMgrWhitelist{},
+		&models.GroupMgrAdmin{},
+		&models.GroupMgrStat{},
 	)
 }
 
@@ -115,10 +123,42 @@ func Init(ctx context.Context, db *gorm.DB, redisClient *redis.Client) (*Core, e
 			"idx_sticker_tags_name",    // sticker_tags
 			"idx_plugins_name",         // plugins
 			"idx_admin_users_username", // admin_users
+			"idx_group_mgr_words_word", // group_mgr_words 旧普通唯一索引（软删后重建同名冲突）
 		} {
 			if err := db.Exec("DROP INDEX IF EXISTS " + idx).Error; err != nil {
 				initErr = err
 				return
+			}
+		}
+
+		// 群管理词条：PG 部分唯一索引（WHERE deleted_at IS NULL）——软删后允许重建同名词条，
+		// 且仍保证「活动词条不重名」。SQLite 测试环境无此索引，由 WordUpsert 软删行复活逻辑兕底。
+		if db.Dialector.Name() == "postgres" {
+			if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_gm_words_word_active " +
+				"ON group_mgr_words (word) WHERE deleted_at IS NULL").Error; err != nil {
+				initErr = err
+				return
+			}
+		}
+
+		// 回复策略收敛为仅 relevance：存量行（never_reply/at_only/always）
+		// 统一迁移到唯一策略，避免历史配置在只保留 relevance 后失效或行为歧义。
+		if err := db.Exec("UPDATE reply_strategy_config SET strategy = ? WHERE strategy <> ?",
+			models.StrategyRelevance, models.StrategyRelevance).Error; err != nil {
+			initErr = err
+			return
+		}
+
+		// 长期记忆语义召回索引：pg_trgm 三元组倒排（GIN），加速 content ILIKE 子串匹配
+		// 与 gram OR 候选召回。仅 PostgreSQL 方言生效（SQLite 测试环境无此扩展，跳过）。
+		// 托管 PG（RDS/Cloud SQL 等）常禁止 CREATE EXTENSION 权限：失败降级 Warn，
+		// 语义召回自动回退 recent/SQL 匹配——与 RAG/群管理「降级不报错」设计一致，不阻断启动。
+		if db.Dialector.Name() == "postgres" {
+			if err := db.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm").Error; err != nil {
+				log.Warn("pg_trgm 扩展创建失败，长期记忆语义召回降级为 recent/SQL 匹配", "err", err)
+			} else if err := db.Exec("CREATE INDEX IF NOT EXISTS idx_ltm_content_trgm " +
+				"ON long_term_memory_items USING GIN (content gin_trgm_ops)").Error; err != nil {
+				log.Warn("长期记忆 trgm 索引创建失败，语义召回降级", "err", err)
 			}
 		}
 

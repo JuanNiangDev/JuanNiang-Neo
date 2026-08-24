@@ -16,6 +16,7 @@ import (
 
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
+	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
 
 	lua "github.com/yuin/gopher-lua"
@@ -39,6 +40,12 @@ func (f *fakeAdapter) SendGroupMsg(groupID int64, message any) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.groups = append(f.groups, fmt.Sprintf("%v", message))
+	return 0, nil
+}
+func (f *fakeAdapter) SendGroupForwardMsg(groupID int64, nodes []adapter.ForwardNode) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.groups = append(f.groups, fmt.Sprintf("forward:%d", len(nodes)))
 	return 0, nil
 }
 func (f *fakeAdapter) DeleteMsg(messageID int64) error {

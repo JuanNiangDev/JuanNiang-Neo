@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	rag "JuanNiang-Neo/infrastructure/rag"
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	sandbox "JuanNiang-Neo/infrastructure/sandbox"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2i "JuanNiang-Neo/infrastructure/t2i"
@@ -11,6 +13,7 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
 	cronjobmgr "JuanNiang-Neo/internal/agent/cronjob"
+	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
 	"JuanNiang-Neo/internal/agent/prompt"
@@ -41,12 +44,14 @@ type Service struct {
 	// LogHub 是日志广播中心；前端通过 GET /logs 与 GET /logs/stream 消费。
 	LogHub *logging.Hub
 
-	// T2I / Sandbox 运行时客户端 + 同步回调
+	// T2I / Sandbox / RAG 运行时客户端 + 同步回调
 	T2IClient     *t2icaller.Client
 	SandboxClient *sandboxcaller.Client
+	RAGClient     *ragcaller.Client
 	// OnUpdateT2I 在 T2I 配置变更时调用，用于同步到 HagoCenter。
 	OnUpdateT2I     func(client *t2icaller.Client)
 	OnUpdateSandbox func(client *sandboxcaller.Client)
+	OnUpdateRAG     func(client *ragcaller.Client)
 	// CronJobManager 在 CronJob 变更时调用 Reload 同步调度器。
 	CronJobManager *cronjobmgr.Manager
 	// OnRebuildAgent MCP/Provider/Tool 热变更后重建 Eino Agent 工具列表。
@@ -75,6 +80,8 @@ type Service struct {
 	OnSchedMsgTrigger func(ctx context.Context, id string) error
 	// StoreClient 插件商店客户端（拉取元数据 / 安装 / 镜像源管理）。
 	StoreClient *pluggin.StoreClient
+	// GroupMgr 群管理系统功能（Web 面板配置/词库/统计/链路测试）。
+	GroupMgr *groupmgr.Manager
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {
@@ -99,6 +106,18 @@ func sandboxClientFactory(baseURL, apiKey string, timeoutSec int) *sandboxcaller
 		sandbox.WithBaseURL(baseURL),
 		sandbox.WithAPIKey(apiKey),
 		sandbox.WithTimeout(time.Duration(timeoutSec)*time.Second),
+	)
+	if err != nil {
+		return nil
+	}
+	return client
+}
+
+// ragClientFactory 根据配置创建 RAG 客户端（健康检查失败返回 nil → 调用方走降级路径）。
+func ragClientFactory(baseURL string, timeoutSec int) *ragcaller.Client {
+	client, err := rag.NewClient(
+		rag.WithBaseURL(baseURL),
+		rag.WithTimeout(time.Duration(timeoutSec)*time.Second),
 	)
 	if err != nil {
 		return nil

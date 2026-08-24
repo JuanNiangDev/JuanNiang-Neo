@@ -25,7 +25,7 @@ func (d *ReplyStrategyDAO) GetOrCreate(ctx context.Context) (*models.ReplyStrate
 	}
 	cfg = models.ReplyStrategyConfig{
 		ID:                 newUUID(),
-		Strategy:           models.StrategyAlways,
+		Strategy:           models.StrategyRelevance,
 		RelevanceThreshold: 0.5,
 		RelevanceTimeout:   10,
 		JudgeFailPolicy:    "drop",

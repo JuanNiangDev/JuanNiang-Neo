@@ -83,10 +83,12 @@ M.json = json
 -- ====================================================================
 
 ---@class jn.OneBot11
----@field send_private_msg fun(user_id: number, message: string|table): boolean, string? 异步发送私聊消息，不阻塞
----@field send_group_msg fun(group_id: number, message: string|table): boolean, string? 异步发送群消息，不阻塞
----@field send_private_msg_sync fun(user_id: number, message: string|table): boolean, string? 同步发送私聊消息，等待结果
----@field send_group_msg_sync fun(group_id: number, message: string|table): boolean, string? 同步发送群消息，等待结果
+---@field send_private_msg fun(user_id: number, message: string|table, reply_to?: number): boolean, string? 异步发送私聊消息，不阻塞（reply_to=引用回复的消息ID，可选）
+---@field send_group_msg fun(group_id: number, message: string|table, reply_to?: number): boolean, string? 异步发送群消息，不阻塞（reply_to=引用回复的消息ID，可选）
+---@field send_private_msg_sync fun(user_id: number, message: string|table, reply_to?: number): boolean, string? 同步发送私聊消息，等待结果（reply_to=引用回复的消息ID，可选）
+---@field send_group_msg_sync fun(group_id: number, message: string|table, reply_to?: number): boolean, string? 同步发送群消息，等待结果（reply_to=引用回复的消息ID，可选）
+---@field send_group_forward_msg fun(group_id: number, nodes: table[]): boolean, string? 异步发送群合并转发（转发卡片），不阻塞；nodes 为节点数组：构造节点 {user_id=…, nickname=“…”, content=“文本或消息段数组”} / 引用节点 {id=群内已有消息ID}
+---@field send_group_forward_msg_sync fun(group_id: number, nodes: table[]): number, string? 同步发送群合并转发，返回 message_id
 ---@field delete_msg fun(message_id: number|string): boolean, string? 撤回消息（事件表的 message_id 为字符串）
 ---@field get_msg fun(message_id: number|string): table, string? 根据消息 ID 获取消息完整内容
 ---@field get_group_info fun(group_id: number): table, string?
@@ -117,10 +119,10 @@ M.onebot11 = onebot11
 ---@field body string 响应正文
 
 ---@class jn.HTTP
----@field get fun(url: string): jn.HTTPResponse, string?
----@field post fun(url: string, content_type?: string, body?: string): jn.HTTPResponse, string?
----@field get_async fun(url: string, ctx?: table): number 异步 GET，立即返回 req_id；完成后引擎调用插件入口 on_http_response(req_id, ctx, result, err)
----@field post_async fun(url: string, content_type?: string, body?: string, ctx?: table): number 异步 POST（最后一个 table 参数视为 ctx）
+---@field get fun(url: string, proxy?: string): jn.HTTPResponse, string? 同步 GET；可选 proxy: 空/直连，http(s)://…，socks4://…，socks4a://…，socks5://[user:pass@]…
+---@field post fun(url: string, content_type?: string, body?: string, proxy?: string): jn.HTTPResponse, string? 同步 POST；可选第 4 位 proxy（同上）
+---@field get_async fun(url: string, ctx?: table, headers?: table, proxy?: string): number 异步 GET，立即返回 req_id；完成后引擎调用插件入口 on_http_response(req_id, ctx, result, err)。ctx 为第 2 位调用现场表（旧签名），headers 为第 3 位表，proxy 为第 4 位字符串；也可传第 2 位 opts 表 {proxy=…, headers=…, ctx=…}
+---@field post_async fun(url: string, content_type?: string, body?: string, proxy?: string, ctx?: table): number 异步 POST（最后一个 table 参数视为 ctx；第 4 位为 proxy 字符串时 ctx 后移至第 5 位）
 M.http = http
 
 -- 异步回调约定（引擎级异步注册表，kind "http"）：
@@ -303,6 +305,28 @@ M.llm = llm
 --- 串行调用（与事件派发互斥）。err 为 nil 表示正常到点；req_id 与 after 的返回值
 --- 一致；ctx 为调用时传入的可选现场表（未传为 nil）。
 M.timer = timer
+
+-- ====================================================================
+-- rag RAG 向量检索 (需要 rag 权限；RAG-Service 未启用时返回错误)
+-- ====================================================================
+-- 面向原始 JuanNiang-RAG-Service API（tag 必须是 UUID，全文入库自动分块），
+-- 不要与主程序知识/记忆集合的派生 tag 混用。
+
+---@class jn.RAGHit
+---@field tag string 命中 tag（UUID）
+---@field score number 相似度分数 (0~1)
+
+---@class jn.RAG
+---@field add fun(tag: string, text: string): boolean, string? 同步写入（幂等 upsert，长文自动分块）
+---@field add_async fun(tag: string, text: string, ctx?: table): number 异步写入，立即返回 req_id；完成后引擎调用 on_rag_response(req_id, ctx, tag, err)
+---@field search fun(query: string, k?: number, min_score?: number): jn.RAGHit[], string? 同步检索，返回 [{tag, score}]（按分数降序）
+---@field search_async fun(query: string, k?: number, min_score?: number, ctx?: table): number 异步检索（最后一个 table 参数视为 ctx），回调 on_rag_response(req_id, ctx, results, err)
+M.rag = rag
+
+-- 异步回调约定（引擎级异步注册表，kind "rag"）：
+-- 插件定义全局函数 on_rag_response(req_id, ctx, result, err)，引擎在请求完成后
+-- 串行调用（与事件派发互斥）。add_async 的 result 为 tag 字符串；search_async 的
+-- result 为 [{tag, score}] 表；err 为 nil 表示成功。
 
 -- ====================================================================
 -- config 动态配置 (无需权限，默认注入)

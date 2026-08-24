@@ -3,13 +3,18 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/cronjob"
+	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/mcp"
 	"JuanNiang-Neo/internal/agent/memory"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
@@ -28,6 +33,7 @@ import (
 	"github.com/cloudwego/eino/adk"
 	einotool "github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
+	"github.com/google/uuid"
 )
 
 // HagoCenter 是 Agent 系统的中央调度器，聚合所有子模块。
@@ -47,24 +53,24 @@ type HagoCenter struct {
 	// T2I 和 Sandbox 运行时客户端（可通过 API 热更新）
 	SandboxClient *sandboxcaller.Client
 	T2IClient     *t2icaller.Client
+	// RAGClient 向量检索服务客户端（可通过 API 热更新）；Load() 为 nil=未启用，
+	// 记忆/知识检索自动降级到非 RAG 路径（pg_trgm / SQL 匹配）。
+	// 原子指针：Web 配置热更新（HTTP goroutine）与 Compact/召回（agent goroutine）并发读写无竞争。
+	RAGClient atomic.Pointer[ragcaller.Client]
 
 	Concurrency    *ConcurrencyManager
 	CronJobManager *cronjob.Manager
 	CronJobEvents  chan adapter.Event // CronJob → 主 Agent 事件循环
 	PluginEngine   *pluggin.PluginEngine
-	Loops          *LoopTracker // 当前活跃的 Agent ReAct 循环（监控展示）
+	GroupMgr       *groupmgr.Manager // 群管理系统功能（Phase 0.5 检测闸门）
+	Loops          *LoopTracker      // 当前活跃的 Agent ReAct 循环（监控展示）
 
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
 	SelfQQ       int64
 	SelfNickname string
-
-	// 发送者群内信息缓存（避免每条群消息都调 OneBot11 get_group_member_info）
-	memberInfoMu    sync.RWMutex
-	memberInfoCache map[string]memberInfoEntry
-
 	// 消息批处理：同一 ChatArea 在短窗口内的消息合并为一次 Agent 处理
-	batchMu sync.Mutex
 	batches map[string]*pendingBatch
+	batchMu sync.Mutex
 
 	// sendMu 全局发送互斥锁：所有批次的发送动作串行执行，
 	// 避免多批次/多分组并行完成时回复交叉乱序（如一条完整回复被另一条插入打断）。
@@ -89,6 +95,13 @@ type HagoCenter struct {
 	// 知识库 LRU（50 条，缓存对话前检索结果，加速匹配）
 	knowledgeLRU *knowledgeLRU
 
+	// RAG 候选集缓存（内存态，丢失可重建）：知识侧随知识变更失效，记忆侧 TTL 兜底。
+	knowledgeRagSetMu sync.RWMutex
+	knowledgeRagSet   map[uuid.UUID]string // 知识 v5 tag → itemID
+	memoryRagSetMu    sync.RWMutex
+	memoryRagSet      map[uuid.UUID]string // 记忆 v5 tag → itemID
+	memoryRagSetAt    time.Time
+
 	// EinoAgent 是 Eino ADK 的 ChatModelAgent，替代手写的 ReAct 循环。
 	EinoAgent *adk.ChatModelAgent
 
@@ -104,21 +117,13 @@ type HagoCenter struct {
 	replySettingsExp time.Time
 }
 
-// memberInfoTTL 群成员信息缓存有效期（角色变更不频繁，10 分钟足够）。
-const memberInfoTTL = 10 * time.Minute
-
-// memberInfoEntry 缓存条目。
-type memberInfoEntry struct {
-	info      *adapter.GroupMemberInfo
-	expiresAt time.Time
-}
-
 // Config HagoCenter 初始化配置。
 type Config struct {
 	Adapter        *adapter.Adapter
 	WebhookAdapter *adapter.WebhookAdapter
 	Sandbox        *sandboxcaller.Client
 	T2I            *t2icaller.Client
+	RAG            *ragcaller.Client
 	Providers      *provider.ProviderGroup
 	MCPGroup       *mcp.MCPGroup
 	DAO            *dao.Bundle
@@ -129,19 +134,18 @@ type Config struct {
 // NewHagoCenter 创建并初始化 HagoCenter。
 func NewHagoCenter() *HagoCenter {
 	return &HagoCenter{
-		Providers:       provider.NewProviderGroup(),
-		MCP:             mcp.NewMCPGroup(),
-		Tools:           tool.NewToolRegistry(),
-		Skills:          skill.NewSkillEngine(),
-		CronJobEvents:   make(chan adapter.Event, 64),
-		Loops:           NewLoopTracker(),
-		memberInfoCache: make(map[string]memberInfoEntry),
-		batches:         make(map[string]*pendingBatch),
-		hotStats:        make(map[string]*hotStat),
-		relevanceSem:    make(chan struct{}, relevanceSemLimit),
-		toolAdminOnly:   make(map[string]bool),
-		knowledgeLRU:    newKnowledgeLRU(50),
-		msgDedup:        newMemoryDedup(dedupWindow), // 占位，Init 时按 Cache 可用性覆盖为 redisDedup
+		Providers:     provider.NewProviderGroup(),
+		MCP:           mcp.NewMCPGroup(),
+		Tools:         tool.NewToolRegistry(),
+		Skills:        skill.NewSkillEngine(),
+		CronJobEvents: make(chan adapter.Event, 64),
+		Loops:         NewLoopTracker(),
+		batches:       make(map[string]*pendingBatch),
+		hotStats:      make(map[string]*hotStat),
+		relevanceSem:  make(chan struct{}, relevanceSemLimit),
+		toolAdminOnly: make(map[string]bool),
+		knowledgeLRU:  newKnowledgeLRU(50),
+		msgDedup:      newMemoryDedup(dedupWindow), // 占位，Init 时按 Cache 可用性覆盖为 redisDedup
 	}
 }
 
@@ -177,16 +181,25 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	}
 	log.Info("机器人身份信息", "self_qq", h.SelfQQ, "self_nickname", h.SelfNickname)
 
-	// 存储 T2I/Sandbox 运行时客户端
+	// 存储 T2I/Sandbox/RAG 运行时客户端
 	h.SandboxClient = cfg.Sandbox
 	h.T2IClient = cfg.T2I
+	h.RAGClient.Store(cfg.RAG)
 
 	// Session 管理器: 同时维护 Postgres Session 表 + ChatRecord 表 + Redis (历史路径) + 每日 Token 统计
 	h.Session = session.NewSessionManager(cfg.DAO.Session, cfg.DAO.ChatRecord, cfg.DAO.TokenUsageDaily, cfg.Cache)
 
 	// Memory 组: 短期记忆 (Redis) + 长期记忆 (Postgres + 内存 HotArea)
 	stConf := shortterm.Config{WindowSize: 100, AutoCompact: true}
-	ltConf := longterm.Config{HotAreaSize: 10}
+	// 长期记忆对话召回：默认语义召回（pg_trgm 倒排 + similarity 排序）;
+	// 环境变量 LTM_RECALL_MODE=recent 可回退为旧"最近 N 条"行为（灰度/故障逃生）。
+	ltConf := longterm.Config{HotAreaSize: 10, RecallMode: longterm.RecallModeSemantic}
+	if strings.EqualFold(os.Getenv("LTM_RECALL_MODE"), "recent") {
+		ltConf.RecallMode = longterm.RecallModeRecent
+		log.Info("长期记忆召回模式: recent（环境变量 LTM_RECALL_MODE=recent）")
+	} else {
+		log.Info("长期记忆召回模式: semantic")
+	}
 	st := shortterm.New(stConf, cfg.Cache)
 	lt := longterm.New(ltConf, cfg.DAO.LongTermMemItem)
 	sm := skillmem.New(cfg.DAO.SkillMemory)
@@ -196,6 +209,8 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Memory = memory.NewMemoryGroup(st, lt, sm)
 	// 注入 Per-ChatArea 短期记忆配置读取源（cache → DB → 全局默认）
 	h.Memory.SetShortTermStore(cfg.DAO.ShortTermMemory)
+	// 注入 RAG 客户端（Compact 双写记忆向量；nil=未启用时静默跳过）
+	h.Memory.SetRAGClient(cfg.RAG)
 	// 注入 Text LLM Provider 动态获取函数（Compact 触发时实时取最新模型）：
 	// 必须在 loadProviders 之前调用，启动后 ProviderGroup 才加载完成，
 	// 直接赋值 SelectModel 的结果会是 nil，导致 AutoCompact 永不触发。
@@ -418,34 +433,13 @@ func (h *HagoCenter) Start(ctx context.Context) error {
 	return nil
 }
 
-// getGroupMemberInfoCached 带缓存的群成员信息查询：命中缓存直接返回，未命中调 OneBot11 API 并缓存。
+// getGroupMemberInfoCached 带缓存的群成员信息查询：委托 Adapter 层实现
+// （正缓存 10min + 负缓存 60s，见 adapter.Adapter.GetGroupMemberInfoCached）。
 func (h *HagoCenter) getGroupMemberInfoCached(groupID, userID int64) (*adapter.GroupMemberInfo, error) {
 	if h.Adapter == nil {
 		return nil, nil
 	}
-	key := fmt.Sprintf("%d:%d", groupID, userID)
-	now := time.Now()
-
-	h.memberInfoMu.RLock()
-	if e, ok := h.memberInfoCache[key]; ok && now.Before(e.expiresAt) {
-		h.memberInfoMu.RUnlock()
-		return e.info, nil
-	}
-	h.memberInfoMu.RUnlock()
-
-	info, err := h.Adapter.GetGroupMemberInfo(groupID, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	h.memberInfoMu.Lock()
-	h.memberInfoCache[key] = memberInfoEntry{info: info, expiresAt: now.Add(memberInfoTTL)}
-	// 防无界增长：超过上限时整体清空（简单策略）
-	if len(h.memberInfoCache) > 2048 {
-		h.memberInfoCache = make(map[string]memberInfoEntry)
-	}
-	h.memberInfoMu.Unlock()
-	return info, nil
+	return h.Adapter.GetGroupMemberInfoCached(groupID, userID)
 }
 
 // seedBuiltinToolGuard 为内置工具幂等创建 ToolConfig 行（首次创建时写入默认

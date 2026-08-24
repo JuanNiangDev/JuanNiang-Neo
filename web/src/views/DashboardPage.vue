@@ -69,7 +69,7 @@
       <!-- System & Services -->
       <v-row class="mt-3">
         <v-col cols="12" md="6" class="d-flex">
-          <v-card rounded="lg" elevation="1" color="surface" class="flex-grow-1">
+          <v-card rounded="lg" elevation="1" color="surface" class="flex-grow-1 h-100 d-flex flex-column">
             <v-card-item>
               <template #title>
                 <div class="d-flex align-center justify-space-between">
@@ -78,8 +78,8 @@
                 </div>
               </template>
             </v-card-item>
-            <v-card-text>
-              <div class="d-flex align-center" style="gap: 28px">
+            <v-card-text class="flex-grow-1 d-flex align-center">
+              <div class="d-flex align-center flex-grow-1" style="gap: 28px">
                 <!-- 左：Goroutine 仪表盘 -->
                 <div class="goroutine-box">
                   <div ref="goroutineGaugeEl" class="goroutine-gauge-chart" />
@@ -171,6 +171,22 @@
                     <td>
                       <v-chip :color="overview?.sandbox_healthy ? 'success' : 'error'" size="x-small" variant="tonal">
                         {{ overview?.sandbox_healthy ? 'Healthy' : 'Unhealthy' }}
+                      </v-chip>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <span class="status-dot" :class="overview?.rag_healthy ? 'active' : 'inactive'" />
+                      RAG-Service
+                    </td>
+                    <td>
+                      <v-chip :color="overview?.rag_active ? 'success' : 'grey'" size="x-small" variant="tonal">
+                        {{ overview?.rag_active ? 'Loaded' : 'Not Loaded' }}
+                      </v-chip>
+                    </td>
+                    <td>
+                      <v-chip :color="overview?.rag_healthy ? 'success' : 'error'" size="x-small" variant="tonal">
+                        {{ overview?.rag_healthy ? 'Healthy' : 'Unhealthy' }}
                       </v-chip>
                     </td>
                   </tr>

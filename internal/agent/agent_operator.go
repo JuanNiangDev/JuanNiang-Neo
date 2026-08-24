@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	sandbox "JuanNiang-Neo/infrastructure/sandbox"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2i "JuanNiang-Neo/infrastructure/t2i"
@@ -191,6 +192,11 @@ func (h *HagoCenter) GetToolRegistry() pluggin.ToolRegistryAccess {
 // GetT2IClient 返回当前 T2I 客户端。
 func (h *HagoCenter) GetT2IClient() *t2icaller.Client {
 	return h.T2IClient
+}
+
+// GetRAGClient 返回当前 RAG 客户端（nil=未启用）。
+func (h *HagoCenter) GetRAGClient() *ragcaller.Client {
+	return h.RAGClient.Load()
 }
 
 // GetSandboxClient 返回当前 Sandbox 客户端。

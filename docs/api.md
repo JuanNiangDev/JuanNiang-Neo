@@ -53,8 +53,10 @@
 | 40027 | Sandbox 配置不存在 |
 | 40028 | 系统插件不允许删除或停用 |
 | 40029 | 系统提示词不允许修改或删除 |
+| 40050 | RAG 配置不存在 |
+| 40051 | 词库导入文件过大（≤1MB）或行数超限（≤20000） |
 | 40030 | 内置工具运行时常驻，不支持启停 |
-| 40031 | 无效的回复策略 |
+| 40031 | 无效的回复策略（已废弃：策略收敛为仅 relevance，不再返回） |
 | 40032 | 相关性阈值非法 / 判断失败策略只能是 drop 或 reply |
 | 40033 | 知识内容不能为空 |
 | 40034 | 图片大小不能超过 1.5MB |
@@ -98,9 +100,9 @@
 - `ACLScope`: `chat` | `tool` | `mcp`（**当前仅 `chat` 生效**，`tool`/`mcp` 为历史保留）
 - `ACLPermission`: `allow` | `deny`
 - `ACLTargetType`: `all` | `list`（`list` 时 `user_ids` 才有效）
-- `ReplyStrategy`: `never_reply` | `at_only` | `always` | `relevance`
+- `ReplyStrategy`: 仅 `relevance`（历史 `never_reply`/`at_only`/`always` 已移除）
 
-**ACL 语义**（当前仅聊天黑名单）：无规则=允许所有；仅 `deny` 规则生效（`all`=禁止所有人、`list`=禁止指定 `user_ids`）；`allow` 规则不再生效；Admins 列表中的用户绕过 ACL。
+**ACL 语义**（当前仅聊天黑名单）：无规则=允许所有；仅 `deny` 规则生效（`all`=禁止所有人、`list`=禁止指定 `user_ids`）；`allow` 规则不再生效；黑名单对所有用户生效（**管理员不豁免**）。
 
 ---
 
@@ -302,7 +304,7 @@ MCP（Model Context Protocol，SSE 传输）服务器配置 CRUD，支持运行�
 
 ## 6. Memory
 
-短期/长期记忆**配置**管理（按 ChatArea）。短期消息实际存 Redis，长期条目存 Postgres，本组接口只管理配置元数据。
+短期/长期记忆**配置**管理（按 ChatArea）。短期消息实际存 Redis，长期条目存 Postgres，本组接口只管理配置元数据。对话时长期记忆默认**按消息语义召回**（gram → pg_trgm 倒排候选 + similarity 排序，空候选回退最近 5 条），环境变量 `LTM_RECALL_MODE=recent` 可回退旧行为。
 
 ### GET /memory/:chatAreaID/short-term
 获取短期记忆配置，不存在则自动创建（`window_size=100, auto_compact=true`）。
@@ -627,7 +629,27 @@ Text-to-Image 配置与健康管理。单行配置（ID=1）。详见 [external-
 **Body** `UpdateSandboxConfigReq`: `base_url`、`api_key`、`is_active`（必填），`timeout`（可选）。**data** `SandboxConfigResp`。
 
 ### GET /sandbox/health
+**data** `{"healthy": bool}`.
+
+---
+
+## 19.5 RAG 向量检索
+
+RAG-Service 配置与健康管理（记忆/知识语义检索）。单行配置（ID=1，**默认未启用**）。未启用或服务不可达时：记忆召回降级 pg_trgm 语义匹配、知识库检索降级 SQL 匹配，不影响正常对话。
+
+### GET /rag/config
+**data** `RAGConfigResp`: `base_url`、`timeout` int、`is_active` bool、`healthy` bool。
+
+### PUT /rag/config
+**Body** `UpdateRAGConfigReq`: `base_url`、`is_active`（必填），`timeout`（可选）。启用且健康检查通过才注入客户端（健康失败置 nil → 走降级路径）。**data** `RAGConfigResp`。
+
+### GET /rag/health
 **data** `{"healthy": bool}`。
+
+### GET /rag/info
+查询 RAG-Service 运行状态：`{status, model:{ready, model_name, dim, n_params, n_threads, error}, memory:{rss_kb, vsize_kb}, tags, chunks}`；未启用返回 `{ready:false}`。
+
+> 服务本体 `JuanNiang-RAG-Service`（Rust）需独立部署：`make download && cargo run --release`（默认 `127.0.0.1:3000`）。知识与记忆分集合由 UUID v5 派生 tag 隔离（`internal/core/ragtag`）。
 
 ---
 
@@ -700,38 +722,37 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 
 系统回复策略（单例，仅一行）。控制群聊中 Agent 对消息的回复行为。
 
-**ReplyStrategy 枚举**
+**ReplyStrategy 枚举**（已收敛为仅一种）
 
 | 值 | 含义 |
 |----|------|
-| `never_reply` | 完全不回复 |
-| `at_only` | 仅被 @ 时回复 |
-| `always` | 始终回复（默认） |
-| `relevance` | 按相关性回复：@/命令/提及名字必回；噪音消息规则过滤；其余候选批量合并为一次 LLM 判断（受 `relevance_threshold` 影响），带结果缓存/冷却与刷屏降级 |
+| `relevance` | 按相关性回复（唯一策略）：@/命令/提及名字必回；噪音消息规则过滤；其余候选批量合并为一次 LLM 判断（受 `relevance_threshold` 影响），带结果缓存/冷却与刷屏降级 |
+
+> 历史策略（`never_reply`/`at_only`/`always`）已移除；存量配置在启动时自动迁移为 `relevance`，`strategy` 字段保留在响应中供兼容。
 
 ### GET /reply-strategy
-获取配置。首次 GET 不存在时自动创建（`strategy=always, relevance_threshold=0.5`）。
+获取配置。首次 GET 不存在时自动创建（`strategy=relevance, relevance_threshold=0.5`）。
 
-**data** `ReplyStrategyResp`: `strategy`、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`relevance_timeout` int（相关性判断超时秒，默认 10）、`judge_fail_policy` string（`drop`=判断失败不回复（默认）/ `reply`=照常回复）。
+**data** `ReplyStrategyResp`: `strategy`（恒为 `relevance`）、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`relevance_timeout` int（相关性判断超时秒，默认 10）、`judge_fail_policy` string（`drop`=判断失败不回复（默认）/ `reply`=照常回复）。
 
 ### PUT /reply-strategy
-更新。
+更新（不再接受 `strategy` 字段，策略恒为 `relevance`）。
 
-**Body** `UpdateReplyStrategyReq`: `strategy`、`relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）、`relevance_timeout`（相关性判断超时秒，0=默认 10s，范围 1-120）、`judge_fail_policy`（`drop`/`reply`，空=默认 `drop`）。
+**Body** `UpdateReplyStrategyReq`: `relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）、`relevance_timeout`（相关性判断超时秒，0=默认 10s，范围 1-120）、`judge_fail_policy`（`drop`/`reply`，空=默认 `drop`）。
 
 **data** `ReplyStrategyResp`。
 
 ```bash
 curl -X PUT http://localhost:8090/api/v1/reply-strategy \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
-  -d '{"strategy":"relevance","relevance_threshold":0.6,"bot_name":"小卷","judge_fail_policy":"reply"}'
+  -d '{"relevance_threshold":0.6,"bot_name":"小卷","judge_fail_policy":"reply"}'
 ```
 
 ---
 
 ## 23. 知识库
 
-SQL 驱动知识库：Web 存入知识条目，Agent 异步提取关键词；对话前按关键词/内容模糊匹配，命中结果注入系统提示词（LRU 50 条缓存加速）。
+Web 存入知识条目，Agent 异步提取关键词；对话前**首选 RAG 语义检索**（向量命中按分数注入），未启用/未命中降级为关键词 + 内容前 20 字模糊匹配（LRU 50 条缓存加速）。新增/编辑/删除知识时同步双写/双删 RAG-Service 向量（未配置时静默跳过）。
 
 > `keyword_status`：`pending`（提取中，暂不参与匹配）→ `ready`（可匹配）→ `failed`（提取失败，可手动重试）。新增/编辑后自动异步提取关键词。
 
@@ -756,6 +777,9 @@ SQL 驱动知识库：Web 存入知识条目，Agent 异步提取关键词；对
 
 ### POST /knowledge/:id/re-extract
 手动重试关键词提取（`failed` 状态时用）。**data** `null`。
+
+### POST /knowledge/vector-sync
+手动全量同步知识库到 RAG 向量库（页面「同步向量库」按钮）：全部条目按 50 条一批 `BatchUpsert`（一次嵌入一次发布）。RAG 未启用时返回 `{ready:false, message}`（不报错）。**data** `{ready bool, sync_total int, synced int, failed int}`。
 
 `KnowledgeResp`: `id`、`title`、`content`、`keywords` string[]、`keyword_status`、`created_at`、`updated_at`。
 
@@ -948,6 +972,69 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 手动触发立即执行（沿块链顺序：消息块发一条消息，延时块等待）。**data** `null`。
 
 `ScheduledMessageResp`: `id`、`name`、`enabled`、`cron_expr`、`target_type`、`target_id`、`blocks`、`last_run_at`、`last_error`、`created_at`、`updated_at`。
+
+---
+
+## 28. 群管理
+
+系统级群违规检测（Phase 0.5 检测闸门，先于所有 Lua 插件）。判定链路：卡片文本化 → RAG 语义核实（首选，三档阈值）→ 模棱两可/低置信有词送 LLM 审核；RAG 不可用降级关键词路径。含图片刷屏、+1 复读、三级惩罚、白名单/管理员豁免、入群统计与学习闭环（LLM 确认违规自动入库样本）。
+
+### GET /group-mgr/config
+群管理配置。**data** `GroupMgrConfigResp`: `enabled`、`llm_review`、`high_score`（RAG 高置信直罚阈值，默认 0.75）、`low_score`（模棱两可下限，默认 0.5）、`fallback_score`（LLM 异常分数兜底，默认 0.6）、`exclude_groups`（排除检测的群 ID 列表）、`llm_criteria`、`llm_gray_prompt`、`llm_high_risk_prompt`（三份 LLM 审核提示词，空值回落内嵌默认）。
+
+### PUT /group-mgr/config
+更新配置并热重载。**Body** 同 `GroupMgrConfigResp`。**data** `GroupMgrConfigResp`。
+
+### GET /group-mgr/words?category=
+词条列表（`category` 可选：black/gray/sensitive）。**data** `GroupMgrWordResp[]`: `id`、`word`、`category`、`source`（system=种子 / import=导入）、`rag_synced`（是否已同步到 RAG 向量库）、`rag_tag`（派生的 RAG tag UUID，`ragtag.Word(id)` v5）。
+
+### POST /group-mgr/words
+新增词条。**Body** `{word string, category string}`。RAG 可用时同步写入样本表+向量库并标记 `rag_synced=true`，不可用仅存词库（面板展示未同步，可手动同步）。**data** `null`。
+
+### DELETE /group-mgr/words/:id
+删除词条（热重载词库）。**data** `null`。
+
+### POST /group-mgr/words/import?category=
+txt 导入词条（multipart `file`，一行一个，去注释/空白/小写/去重）。**data** `{imported int, skipped int}`。导入词条在 RAG 可用时同步写入向量库（种子样本）并标记 `rag_synced=true`。
+
+### POST /group-mgr/sync-rag
+手动全量同步向量库（词条 + 样本，50 条/批幂等 upsert），成功后全部词条标记 `rag_synced=true`。RAG 未配置返回错误。**data** `GroupMgrSyncResp`: `total`、`failed`。
+
+### GET /group-mgr/samples
+RAG 违规样本列表。**data** `GroupMgrSampleResp[]`: `id`、`text`、`category`、`source`（seed/learn/import）、`hit_count`（RAG 高置信直罚命中次数）、`created_at`。
+
+### DELETE /group-mgr/samples/:id
+删除样本（RAG 双删，未配置静默跳过）。**data** `null`。
+
+### GET /group-mgr/violations
+违规记录。**data** `GroupMgrViolationResp[]`: `id`、`group_id`、`user_id`、`username`（处罚时群名片/昵称）、`count`（当前违规等级）、`detection_path`（判定来源：rag / keyword / llm）、`llm_reason`（LLM 审核返回的 reason，`detection_path=llm` 时有值）。
+
+### DELETE /group-mgr/violations/:id
+删除某条违规记录（重置该用户违规）。**data** `null`。
+
+### GET /group-mgr/whitelist
+白名单 QQ 列表。**data** `{qq_list []int64}`。
+
+### PUT /group-mgr/whitelist
+白名单全量覆盖。**Body** `{qq_list []int64}`。**data** `null`。
+
+### GET /group-mgr/admins
+手动管理员 QQ 列表。**data** `{qq_list []int64}`。
+
+### PUT /group-mgr/admins
+手动管理员全量覆盖。**Body** `{qq_list []int64}`。**data** `null`。
+
+### POST /group-mgr/admins/sync-from-adapter
+把 Adapter.Admins（系统管理员 QQ）合并到手动管理员表（去重，已存在跳过）。**data** `{added int}`（新增数量）。
+
+### GET /group-mgr/stats?group_id=
+统计（与 /groupstats 命令同源）。**data** `GroupMgrStatsResp`: `group_id`、`date`、`join_today`、`warns`、`mutes`、`copy_warns`、`ad`、`sensitive`、`kicks`。
+
+### POST /group-mgr/test
+链路测试（不处罚、不写库）。**Body** `{text string}`。**data** `GroupMgrTestResp`: `text`、`card`、`word`、`word_cat`、`rag_ok`、`rag_score`、`rag_sample`、`rag_category`、`verdict`（punish/review/pass）、`reason`。
+
+### POST /memory/sync-rag
+长期记忆手动全量同步向量库（`LongTermMemItem` 按 50 条/批幂等 upsert，补齐 Compact 双写前的历史记忆）。RAG 未启用返回 `ready:false` + 提示。**data** `{ready bool, synced int, failed int, total int}`。
 
 ---
 

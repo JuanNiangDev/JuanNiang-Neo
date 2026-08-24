@@ -55,6 +55,63 @@ const tools = [
   { id: UUID(), name: 'send_qq_message', description: 'Send a message via QQ', parameters: { type: 'object', properties: { target_id: { type: 'number' }, message: { type: 'string' } }, required: ['target_id', 'message'] }, timeout: 10000, is_active: true, is_builtin: false, created_at: now() },
 ]
 
+// --- RAG 向量检索 ---
+let ragConfig = { base_url: 'http://localhost:3000', timeout: 30, is_active: true }
+let ragHealthy = true
+// GET /info 参考 JuanNiang-RAG-Service API 文档示例
+let ragInfo = {
+  status: 'ok',
+  model: { ready: true, model_name: 'bge-small-zh-v1.5', dim: 512, n_params: 23691264, n_threads: 4, n_ctx: 4096, error: null },
+  memory: { rss_kb: 81244, vsize_kb: 1915772 },
+  tags: 128,
+  chunks: 340,
+}
+
+// --- 群管理 ---
+let groupMgrDefaultConfig = {
+  enabled: true,
+  llm_review: true,
+  high_score: 0.75,
+  low_score: 0.5,
+  fallback_score: 0.6,
+  img_spam_window: 2,
+  img_spam_threshold: 3,
+  img_mute_duration: 60,
+  enable_copy_check: true,
+  copy_threshold: 3,
+  violation_mute_seconds: 1800,
+  exclude_groups: [],
+  llm_criteria: '',
+  llm_gray_prompt: '',
+  llm_high_risk_prompt: '',
+}
+let groupMgrConfig: any = null
+let groupMgrWordSeed = 100
+let groupMgrWords = [
+  { id: 1, word: '办校园卡', category: 'black', source: 'system', rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b001' },
+  { id: 2, word: '贷款提额', category: 'black', source: 'system', rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b002' },
+  { id: 3, word: '校园卡', category: 'gray', source: 'system', rag_synced: false, rag_tag: '' },
+  { id: 4, word: '考研机构', category: 'gray', source: 'system', rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b003' },
+  { id: 5, word: '兼职刷单', category: 'sensitive', source: 'import', rag_synced: false, rag_tag: '' },
+]
+let groupMgrSamples = [
+  { id: 1, text: '办卡加群办套餐，低价流量卡', category: 'ad', source: 'learn', hit_count: 3, created_at: now() },
+  { id: 2, text: '0元购送福利，加我微信领流量卡', category: 'ad', source: 'seed', hit_count: 1, created_at: now() },
+]
+let groupMgrViolations = [
+  { id: 1, group_id: 10001, user_id: 20001, username: '张三', count: 1, detection_path: 'rag', llm_reason: '' },
+  { id: 2, group_id: 10001, user_id: 20002, username: '李四', count: 3, detection_path: 'llm', llm_reason: '明确广告引流：低价流量卡 + 加裙号，判 ad' },
+  { id: 3, group_id: 10002, user_id: 20003, username: '王五', count: 2, detection_path: 'keyword', llm_reason: '' },
+]
+let groupMgrWhitelist: number[] = [30001]
+let groupMgrAdmins: number[] = [30002]
+
+// --- 知识库 ---
+let knowledgeItems = [
+  { id: UUID(), title: '红岩网校介绍', content: '红岩网校是重庆邮电大学的互联网团队，负责学校的网络信息化建设。', keywords: ['红岩网校', '重邮'], keyword_status: 'ready', created_at: now(), updated_at: now() },
+  { id: UUID(), title: '群规', content: '禁止广告、刷屏、侮辱谩骂；进群请修改群名片。', keywords: ['群规'], keyword_status: 'pending', created_at: now(), updated_at: now() },
+]
+
 // --- Plugins ---
 let plugins = [
   { id: 'weather-plugin', name: 'weather-plugin', version: '1.2.0', path: 'data/pluggins/weather-plugin/', config: { api_key: '***', default_city: 'Beijing' }, is_active: true, supports_cronjob: true, created_at: now() },
@@ -186,6 +243,10 @@ export const mockHandlers: MockHandler[] = [
       adapterState = { ...adapterState, listen_addr: `${body.addr}:${body.port}`, running: body.enabled }
       return ok(null)
     }
+  },
+  {
+    method: 'GET', path: '/adapter/config',
+    handler() { return ok(adapterConfig) }
   },
   {
     method: 'POST', path: '/adapter/restart',
@@ -576,6 +637,8 @@ export const mockHandlers: MockHandler[] = [
         t2i_healthy: t2iConfig.healthy,
         sandbox_active: sandboxConfig.is_active,
         sandbox_healthy: sandboxConfig.healthy,
+        rag_active: ragConfig.is_active,
+        rag_healthy: ragHealthy,
       })
     }
   },
@@ -671,5 +734,198 @@ export const mockHandlers: MockHandler[] = [
         attrs: i === 5 ? { error: 'ECONNREFUSED', address: 'localhost:8888' } : {},
       })))
     }
+  },
+
+  // ============ RAG 向量检索 ============
+  {
+    method: 'GET', path: '/rag/config',
+    handler() {
+      return ok({ base_url: ragConfig.base_url, timeout: ragConfig.timeout, is_active: ragConfig.is_active, healthy: ragHealthy })
+    }
+  },
+  {
+    method: 'PUT', path: '/rag/config',
+    handler({ body }) {
+      ragConfig = { base_url: body.base_url || 'http://localhost:3000', timeout: body.timeout || 30, is_active: body.is_active }
+      ragHealthy = ragConfig.is_active
+      return ok({ ...ragConfig, healthy: ragHealthy })
+    }
+  },
+  {
+    method: 'GET', path: '/rag/health',
+    handler() { return ok({ healthy: ragHealthy }) }
+  },
+  {
+    method: 'GET', path: '/rag/info',
+    handler() {
+      if (!ragHealthy) return ok({ ready: false, error: 'RAG 服务未启用' })
+      return ok(ragInfo)
+    }
+  },
+
+  // ============ 群管理 ============
+  {
+    method: 'GET', path: '/group-mgr/config',
+    handler() {
+      if (!groupMgrConfig) groupMgrConfig = { ...groupMgrDefaultConfig }
+      return ok(groupMgrConfig)
+    }
+  },
+  {
+    method: 'PUT', path: '/group-mgr/config',
+    handler({ body }) {
+      groupMgrConfig = { ...groupMgrDefaultConfig, ...body }
+      return ok(groupMgrConfig)
+    }
+  },
+  {
+    method: 'GET', path: '/group-mgr/words',
+    handler({ query }) {
+      const list = query.category
+        ? groupMgrWords.filter((w) => w.category === query.category)
+        : groupMgrWords
+      return ok(list)
+    }
+  },
+  {
+    method: 'POST', path: '/group-mgr/words',
+    handler({ body }) {
+      const w = { id: ++groupMgrWordSeed, word: String(body.word).toLowerCase(), category: body.category, source: 'import', rag_synced: true, rag_tag: UUID() }
+      groupMgrWords.push(w)
+      return ok(null)
+    }
+  },
+  {
+    method: 'DELETE', path: '/group-mgr/words/:id',
+    handler({ params }) {
+      groupMgrWords = groupMgrWords.filter((w) => w.id !== Number(params.id))
+      return ok(null)
+    }
+  },
+  {
+    method: 'POST', path: '/group-mgr/words/import',
+    handler() { return ok({ imported: 3, skipped: 2 }) }
+  },
+  {
+    method: 'POST', path: '/group-mgr/sync-rag',
+    handler() { return ok({ total: groupMgrWords.length + groupMgrSamples.length, failed: 0 }) }
+  },
+  {
+    method: 'GET', path: '/group-mgr/samples',
+    handler() { return ok(groupMgrSamples) }
+  },
+  {
+    method: 'DELETE', path: '/group-mgr/samples/:id',
+    handler({ params }) {
+      groupMgrSamples = groupMgrSamples.filter((s) => s.id !== Number(params.id))
+      return ok(null)
+    }
+  },
+  {
+    method: 'GET', path: '/group-mgr/violations',
+    handler() { return ok(groupMgrViolations) }
+  },
+  {
+    method: 'DELETE', path: '/group-mgr/violations/:id',
+    handler({ params }) {
+      groupMgrViolations = groupMgrViolations.filter((v) => v.id !== Number(params.id))
+      return ok(null)
+    }
+  },
+  {
+    method: 'GET', path: '/group-mgr/whitelist',
+    handler() { return ok({ qq_list: groupMgrWhitelist }) }
+  },
+  {
+    method: 'PUT', path: '/group-mgr/whitelist',
+    handler({ body }) { groupMgrWhitelist = (body.qq_list || []).map(Number); return ok(null) }
+  },
+  {
+    method: 'GET', path: '/group-mgr/admins',
+    handler() { return ok({ qq_list: groupMgrAdmins }) }
+  },
+  {
+    method: 'PUT', path: '/group-mgr/admins',
+    handler({ body }) { groupMgrAdmins = (body.qq_list || []).map(Number); return ok(null) }
+  },
+  {
+    method: 'POST', path: '/group-mgr/admins/sync-from-adapter',
+    handler() {
+      const adapterAdmins = [10001, 20000]
+      let added = 0
+      for (const qq of adapterAdmins) {
+        if (!groupMgrAdmins.includes(qq)) { groupMgrAdmins.push(qq); added++ }
+      }
+      return ok({ added })
+    }
+  },
+  {
+    method: 'GET', path: '/group-mgr/stats',
+    handler({ query }) {
+      return ok({ group_id: Number(query.group_id) || 0, date: '2026-08-24', join_today: 3, warns: 2, mutes: 1, copy_warns: 0, ad: 5, sensitive: 1, kicks: 0 })
+    }
+  },
+  {
+    method: 'POST', path: '/group-mgr/test',
+    handler({ body }) {
+      const text = String(body.text || '')
+      const keyword = ['卡', '群', '微信', '流量', '兼职', '贷款'].some((k) => text.includes(k))
+      const hardSignal = keyword || text.includes('com.tencent.troopsharecard')
+      return ok({
+        text,
+        card: text.includes('com.tencent.troopsharecard'),
+        word: keyword ? (text.match(/[卡群微信流量兼职贷款]/)?.[0] ?? '') : '',
+        word_cat: keyword ? 'gray' : '',
+        rag_ok: ragHealthy,
+        rag_score: ragHealthy ? 0.82 : 0,
+        rag_sample: ragHealthy ? '办卡加群办套餐，低价流量卡' : '',
+        rag_category: ragHealthy ? 'ad' : '',
+        verdict: keyword || text.includes('com.tencent.troopsharecard') ? 'review' : 'pass',
+        reason: hardSignal ? 'RAG 高置信命中样本 → 直接处罚' : 'RAG 低置信且无硬信号 → 放行',
+      })
+    }
+  },
+
+  // ============ 知识库 ============
+  {
+    method: 'GET', path: '/knowledge',
+    handler({ query }) {
+      const list = knowledgeItems.slice(0, Number(query.page_size) || 20)
+      return ok({ total: knowledgeItems.length, list })
+    }
+  },
+  {
+    method: 'POST', path: '/knowledge',
+    handler({ body }) {
+      const item = { id: UUID(), title: body.title, content: body.content, keywords: [], keyword_status: 'pending', created_at: now(), updated_at: now() }
+      knowledgeItems.unshift(item)
+      return ok(item)
+    }
+  },
+  {
+    method: 'PUT', path: '/knowledge/:id',
+    handler({ params, body }) {
+      const idx = knowledgeItems.findIndex((k) => k.id === params.id)
+      if (idx === -1) return err(40400, '知识条目不存在')
+      knowledgeItems[idx] = { ...knowledgeItems[idx], ...body, id: params.id, updated_at: now() }
+      return ok(knowledgeItems[idx])
+    }
+  },
+  {
+    method: 'DELETE', path: '/knowledge/:id',
+    handler({ params }) {
+      knowledgeItems = knowledgeItems.filter((k) => k.id !== params.id)
+      return ok(null)
+    }
+  },
+  {
+    method: 'POST', path: '/knowledge/vector-sync',
+    handler() { return ok({ ready: ragHealthy, synced: knowledgeItems.length, failed: 0, total: knowledgeItems.length, message: ragHealthy ? '' : 'RAG 未启用，无法同步向量库' }) }
+  },
+
+  // ============ 记忆同步 ============
+  {
+    method: 'POST', path: '/memory/sync-rag',
+    handler() { return ok({ ready: ragHealthy, synced: 42, failed: 0, total: 42, message: ragHealthy ? '' : 'RAG 未启用，无法同步记忆向量' }) }
   },
 ]

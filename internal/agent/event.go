@@ -11,9 +11,11 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/metrics"
 
 	"github.com/cloudwego/eino/adk"
 	einoschema "github.com/cloudwego/eino/schema"
@@ -111,6 +113,10 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 
 // processEvent 三阶段架构：Plugin 拦截 → 消息过滤 → 回复策略 → Agent。
 func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
+	metrics.EventsTotal.WithLabelValues(ev.PostType).Inc()
+	if ev.PostType == "message" && ev.Message != nil {
+		metrics.MessagesTotal.WithLabelValues(ev.Message.MessageType).Inc()
+	}
 	// Phase 0: 消息幂等去重。WS 断线重连/多连接时 OneBot 端可能重复推送同一条
 	// 消息（相同 message_id），重复消费会导致 Agent 重复执行任务与重复回复。
 	// 群/私聊的 message_id 各自独立递增，key 需带上 message_type。
@@ -118,6 +124,15 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		key := ev.Message.MessageType + ":" + strconv.FormatInt(ev.Message.MessageID, 10)
 		if h.msgDedup.SeenBefore(ctx, key) {
 			log.Info("重复消息已丢弃", "message_id", ev.Message.MessageID, "message_type", ev.Message.MessageType, "user_id", ev.Message.UserID)
+			metrics.DedupDroppedTotal.Inc()
+			return
+		}
+	}
+	// Phase 0.5: 系统级群管理检测（先于所有 Lua 插件，Go 原生）。
+	// consumed=true（图片刷屏/+1复读）直接拦截不进 Agent；
+	// 违禁类已内部处罚（不消费，消息继续流向插件与 Agent）。
+	if h.GroupMgr != nil {
+		if h.GroupMgr.Process(ctx, ev) {
 			return
 		}
 	}
@@ -162,23 +177,10 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 // 返回 true 表示继续处理；relevance 策略一律返回 true，其 LLM 判断
 // 由 dispatchToAgent 在 goroutine 内调用完整的 checkReplyStrategy 完成。
 func (h *HagoCenter) checkReplyStrategyFast(ctx context.Context, ev adapter.Event, rs ReplySettings) bool {
-	msg := ev.Message
-	switch rs.Strategy {
-	case models.StrategyNeverReply:
-		log.Debug("回复策略: 完全不回复", "group_id", msg.GroupID, "user_id", msg.UserID)
-		return false
-	case models.StrategyAtOnly:
-		if msg.MessageType == "group" && !h.isAtSelf(msg.RawMessage, ev.SelfID) {
-			log.Info("回复策略: 仅@我时回复，跳过", "group_id", msg.GroupID, "user_id", msg.UserID, "self_id", ev.SelfID)
-			return false
-		}
-		return true
-	case models.StrategyRelevance:
-		// 延迟到派发 goroutine 内判断（避免阻塞事件循环）
-		return true
-	default: // StrategyAlways
-		return true
-	}
+	// 回复策略已收敛为仅 relevance：@/命令/提及名字必回由规则快路径保证（零 LLM 调用），
+	// 其余候选消息的 LLM 相关性判断延迟到派发 goroutine 内执行（filterRelevant），
+	// 避免阻塞事件循环。这里恒放行，策略判断全部由 filterRelevant 接管。
+	return true
 }
 
 // replySettingsTTL 回复策略内存缓存有效期：策略是单例配置且极少变更，
@@ -198,7 +200,7 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
 		log.Warn("获取回复策略失败，使用默认值", "err", err)
-		return ReplySettings{Strategy: models.StrategyAlways}
+		return ReplySettings{Strategy: models.StrategyRelevance}
 	}
 	// 相关性判断超时（秒）；0/非法值回退到默认 10s
 	timeout := time.Duration(cfg.RelevanceTimeout) * time.Second
@@ -402,6 +404,9 @@ func memoryMsg(m *adapter.MessageEvent) string {
 
 // filterBlockedEvents 聊天黑名单过滤（管理员豁免），返回新 slice（不改原 events）。
 // 与 handleMessage 内过滤逻辑一致，供 spawnBatch 批次级记忆屏障使用。
+// filterBlockedEvents 黑名单过滤：命中聊天黑名单的用户消息直接丢弃。
+// 黑名单对所有用户生效（含 Admins 列表，管理员不豁免），保证被 ban 的 QQ 号
+// 无法使用 Agent 循环；插件拦截阶段（Phase 1）不受影响。
 func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea) []adapter.Event {
 	kept := make([]adapter.Event, 0, len(events))
 	for _, ev := range events {
@@ -409,13 +414,29 @@ func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.E
 		if m == nil {
 			continue
 		}
-		if isAdmin(m.UserID, ev.Admins) || h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
+		if h.ACL.CheckChat(ctx, m.UserID, chatArea.ID) {
 			kept = append(kept, ev)
 		} else {
 			log.Info("聊天黑名单丢弃消息", "user_id", m.UserID, "chat_area_id", chatArea.ID)
+			metrics.BlockedTotal.WithLabelValues("blacklist").Inc()
 		}
 	}
 	return kept
+}
+
+// memoryRecall 长期记忆对话召回（降级链：RAG 向量语义 → pg_trgm gram → 最近条目）。
+// RAG 路径由 tryMemoryRAGRecall 承担（未配置/失败返回 false），
+// 其余走 MemoryGroup.RecallLongTermMemory（内部含 gram 空回退最近）。
+func (h *HagoCenter) memoryRecall(ctx context.Context, areaID, msg string, limit int) ([]string, error) {
+	if h.Memory == nil {
+		return nil, nil
+	}
+	if query, _ := longterm.RecallTerms(msg); query != "" {
+		if items, ok := h.tryMemoryRAGRecall(ctx, query); ok {
+			return items, nil
+		}
+	}
+	return h.Memory.RecallLongTermMemory(ctx, areaID, msg, limit)
 }
 
 // writeBatchToMemory 批次级记忆屏障：把整批用户消息（黑名单过滤后、带发言人标识）
@@ -608,9 +629,7 @@ func groupEventsByUser(events []adapter.Event) [][]adapter.Event {
 // 流程（L1/L2.1）：规则快路径（@/命令/提及名字 → 必回；噪音 → 丢弃）→
 // 剩余候选消息合并为一次批量判断（含图消息标注 [图片]）。
 func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event, rs ReplySettings) []adapter.Event {
-	if rs.Strategy != models.StrategyRelevance {
-		return events
-	}
+	// 回复策略仅 relevance：全程执行下面的快路径 + 批量判断管线，无需策略分支。
 	var mustKeep, candidates []adapter.Event
 	for _, ev := range events {
 		if ev.SkipReplyCheck {
@@ -634,6 +653,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 		// L1 规则快路径：明显噪音 → 直接丢弃
 		if isDefinitelyIrrelevant(msg) {
 			log.Debug("相关性: 规则判定无关，丢弃", "user_id", msg.UserID, "group_id", msg.GroupID)
+			metrics.DroppedTotal.WithLabelValues("irrelevant").Inc()
 			continue
 		}
 		candidates = append(candidates, ev)
@@ -651,6 +671,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 	// L4.1 热度降级：刷屏时跳过 LLM 判断，只回必回消息（@/命令/提及名字）
 	if h.isChatFlooding(areaID) {
 		log.Debug("相关性: 群聊刷屏，降级为仅回@/命令/提及名字", "area", areaID)
+		metrics.DroppedTotal.WithLabelValues("flood").Add(float64(len(candidates)))
 		return mustKeep
 	}
 
@@ -661,6 +682,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 			return append(mustKeep, candidates...)
 		}
 		log.Debug("相关性: 命中 unrelated 冷却缓存，丢弃候选", "area", areaID)
+		metrics.DroppedTotal.WithLabelValues("irrelevant").Add(float64(len(candidates)))
 		return mustKeep
 	}
 
@@ -672,6 +694,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 	}
 	h.setRelevanceVerdict(ctx, areaID, verdictUnrelated)
 	log.Debug("相关性: 批量判断不相关，丢弃候选", "count", len(candidates))
+	metrics.DroppedTotal.WithLabelValues("irrelevant").Add(float64(len(candidates)))
 	return mustKeep
 }
 
@@ -704,6 +727,12 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	if len(events) == 0 {
 		return
 	}
+	start := time.Now()
+	outcome := "ok"
+	defer func() {
+		metrics.AgentLoopsTotal.WithLabelValues(outcome).Inc()
+		metrics.AgentLoopDuration.Observe(time.Since(start).Seconds())
+	}()
 	msg := events[len(events)-1].Message
 	userID := msg.UserID
 
@@ -805,7 +834,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// ---------- 构建系统提示词（长期记忆 + 核心提示词；工具感知交由 Eino tools 参数处理） ----------
 	var longTermMems []string
 	if h.Memory != nil {
-		longTermMems, _ = h.Memory.GetLongTermMemory(ctx, chatArea.ID, "", 5)
+		// 记忆召回：RAG 向量语义检索首选 → 降级 pg_trgm gram 召回 → 最近条目；
+		// LTM_RECALL_MODE=recent 可整体关闭语义/向量路径
+		longTermMems, _ = h.memoryRecall(ctx, chatArea.ID, combinedUserMsg, 5)
 	}
 
 	sessionCtxStr := h.buildSessionContext(ctx, msg, events[len(events)-1].Admins)
@@ -891,7 +922,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 
 	// ---------- 回复策略 & AgentLite ----------
-	skipSilenceCheck := rs.Strategy == models.StrategyAlways
+	// 注：回复策略已收敛为仅 relevance，skipSilenceCheck（旧 always 策略独占）已移除，
+	// 群聊静默响应（__NO_REPLY__ / 静默短语）始终检测丢弃。
 	agentLite := rs.AgentLite
 
 	// 构建注入给 Eino Agent 的系统指令（Instruction）
@@ -939,6 +971,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// ---------- 运行 Eino Agent ----------
 	if h.EinoAgent == nil {
 		log.Error("Eino Agent 未就绪")
+		outcome = "error"
 		return
 	}
 
@@ -960,6 +993,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		}
 		if event.Err != nil {
 			log.Error("Eino Agent 错误", "err", event.Err)
+			outcome = "error"
 			break
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
@@ -985,11 +1019,18 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		log.Warn("工具权限被拒，最终回复已覆盖为权限说明", "reason", msgCtx.PermDenied)
 	}
 
+	// 循环超时（provider 挂起被 cancel）：计入 timeout 而非 error
+	if agentCtx.Err() != nil {
+		outcome = "timeout"
+		log.Warn("Agent 循环超时", "err", agentCtx.Err(), "area", chatArea.ID)
+	}
+
 	// 工具调用记录（供聊天记录页展示）
 	callsJSON := marshalEinoToolCalls(toolCalls)
 
 	// ---------- Token 用量：会话总账（Session）+ 每日统计（TokenUsageDaily） ----------
 	if totalTokens > 0 {
+		metrics.LLMTokensTotal.WithLabelValues("agent").Add(float64(totalTokens))
 		if err := h.Session.RecordTokenUsage(ctx, sess.ID, totalTokens); err != nil {
 			log.Error("记录 Token 用量失败", "err", err)
 		}
@@ -1042,9 +1083,10 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 
 		// 后处理：静默检测 + 发送 + 记忆
 		if assistantContent != "" && !deliveredToCurrent {
-			silenced := !skipSilenceCheck && msg.MessageType == "group" && isSilenceResponse(assistantContent)
+			silenced := msg.MessageType == "group" && isSilenceResponse(assistantContent)
 			if silenced {
 				log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
+				metrics.DroppedTotal.WithLabelValues("silenced").Inc()
 			} else {
 				h.sendReply(msg, assistantContent, rs)
 				h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), callsJSON)

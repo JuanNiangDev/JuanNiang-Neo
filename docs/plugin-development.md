@@ -239,10 +239,12 @@ jn.file.append_line("data/log.txt", "事件发生于 " .. os.date())
 
 | 函数 | 说明 |
 |------|------|
-| `onebot11.send_private_msg(user_id, message) → bool, string` | **异步发送**私聊，立即返回。`message` 可为 string 或消息段数组 |
-| `onebot11.send_group_msg(group_id, message) → bool, string` | **异步发送**群聊，立即返回 |
-| `onebot11.send_private_msg_sync(user_id, message) → bool [, err]` | **同步发送**私聊，阻塞等待结果返回 |
-| `onebot11.send_group_msg_sync(group_id, message) → bool [, err]` | **同步发送**群聊，阻塞等待结果返回 |
+| `onebot11.send_private_msg(user_id, message, reply_to?) → bool, string` | **异步发送**私聊，立即返回。`message` 可为 string 或消息段数组；可选 `reply_to`（消息 ID）让本条消息**引用回复**指定消息 |
+| `onebot11.send_group_msg(group_id, message, reply_to?) → bool, string` | **异步发送**群聊，立即返回；可选 `reply_to` 同上 |
+| `onebot11.send_private_msg_sync(user_id, message, reply_to?) → bool [, err]` | **同步发送**私聊，阻塞等待结果返回；可选 `reply_to` 同上 |
+| `onebot11.send_group_msg_sync(group_id, message, reply_to?) → bool [, err]` | **同步发送**群聊，阻塞等待结果返回；可选 `reply_to` 同上 |
+| `onebot11.send_group_forward_msg(group_id, nodes) → bool, string` | **异步发送**群合并转发（转发卡片），立即返回。`nodes` 为节点数组：构造节点 `{user_id=…, nickname=“…”, content=“文本或消息段数组”}`；引用节点 `{id=群内已有消息ID}`（引用既有消息作为转发节点） |
+| `onebot11.send_group_forward_msg_sync(group_id, nodes) → number [, err]` | **同步发送**群合并转发，阻塞等待，返回 `message_id`（部分实现不返回时可能为 0，请以 `err` 判断成功） |
 | `onebot11.delete_msg(message_id) → bool [, err]` | 撤回消息；`message_id` 接受数字或字符串（事件表的 `message_id` 为字符串，避免 QQ 长 ID 精度丢失） |
 | `onebot11.read_file_base64(path) → string, err` | 从插件目录读取文件并返回 `base64://...` 字符串 |
 
@@ -320,18 +322,23 @@ local info, err = jn.onebot11.get_group_info(987654321)
 
 | 函数 | 返回 | 说明 |
 |------|------|------|
-| `http.get(url) → table` | `{status=number, body=string}` | GET，30s 超时 |
-| `http.post(url [, content_type, body]) → table` | `{status, body}` | POST，30s 超时 |
-| `http.get_async(url [, ctx]) → number` | `req_id` | GET 异步版：立即返回，完成回调 `on_http_response`（不阻塞事件循环） |
-| `http.post_async(url [, content_type, body, ctx]) → number` | `req_id` | POST 异步版 |
+| `http.get(url [, proxy]) → table` | `{status=number, body=string}` | GET，30s 超时；可选 `proxy` 走代理（见下方代理说明） |
+| `http.post(url [, content_type, body, proxy]) → table` | `{status, body}` | POST，30s 超时；可选第 4 位 `proxy` |
+| `http.get_async(url [, ctx, headers, proxy]) → number` | `req_id` | GET 异步版：立即返回，完成回调 `on_http_response`（不阻塞事件循环）。第 2 位 `ctx` 调用现场表（旧签名）、第 3 位 `headers` 表、第 4 位 `proxy`；也可用 opts 表 `get_async(url, {proxy=…, headers=…, ctx=…})` |
+| `http.post_async(url [, content_type, body, proxy, ctx]) → number` | `req_id` | POST 异步版；第 4 位 `proxy` 字符串，尾部 table 仍为 `ctx`（有 proxy 时后移至第 5 位） |
+
+**代理参数**（`proxy`，可选）：不传或传空串 = 直连（默认）；支持 `http://host:port`、`https://host:port`、`socks4://host:port`（或 `socks4a://`，域名目标）、`socks5://[user:pass@]host:port`。非法协议或地址直接返回错误。
 
 ```lua
 local r, err = jn.http.get("https://api.github.com/repos/x/y")
 local r, err = jn.http.post("https://httpbin.org/post", "application/json",
                             '{"k":"v"}')
 
--- 异步：立即返回 req_id，完成回调 on_http_response
-local rid = jn.http.get_async("https://api.github.com/repos/x/y")
+-- 走代理：socks5 / socks4 / http 均可
+local r, err = jn.http.get("https://www.google.com", "socks5://127.0.0.1:1080")
+
+-- 异步 + 代理（opts 表写法）
+local rid = jn.http.get_async("https://www.google.com", { proxy = "socks4://127.0.0.1:1081", ctx = { from = "demo" } })
 function on_http_response(req_id, ctx, result, err)
     if err then jn.log.warn("HTTP 请求失败: " .. err) return end
     jn.log.info("status=" .. result.status .. " body=" .. result.body)
@@ -440,6 +447,34 @@ local rid = jn.sandbox.exec_shell_async(sid, "ls -la /", { sid = sid })
 function on_sandbox_response(req_id, ctx, result, err)
     if err then jn.log.warn("沙箱执行失败: " .. err) return end
     jn.log.info("exit=" .. result.exit_code .. " output=" .. result.output)
+end
+```
+
+## 全局表: `rag`
+
+权限：`rag`。面向原始 JuanNiang-RAG-Service API（tag 必须是 **UUID** 字符串，全文入库自动分块）。**未启用时** 函数返回 `(nil, "RAG 服务未启用")`。不要与主程序知识/记忆集合的派生 tag 混用（避免污染两侧检索）。
+
+| 函数 | 返回 | 说明 |
+|------|------|------|
+| `rag.add(tag, text) → bool, err` | | 同步写入（幂等 upsert，长文自动分块） |
+| `rag.add_async(tag, text [, ctx]) → number` | `req_id` | 异步写入：立即返回，完成回调 `on_rag_response(req_id, ctx, tag, err)` |
+| `rag.search(query, k?, min_score?) → table [, err]` | `[{tag, score}]` | 同步检索，按分数降序（k 默认 10，上限 100） |
+| `rag.search_async(query, k?, min_score? [, ctx]) → number` | `req_id` | 异步检索：回调 `on_rag_response(req_id, ctx, results, err)`，results=`[{tag, score}]` |
+
+```lua
+-- 同步写入 + 检索
+local ok, err = jn.rag.add("7f6b2f8a-1111-4950-9c1f-000000000001", "这是一段用于入库的中文文本……")
+local hits, err = jn.rag.search("入库的中文文本", 5)
+for _, h in ipairs(hits or {}) do
+    jn.log.info(h.tag .. " score=" .. h.score)
+end
+
+-- 异步：完成回调 on_rag_response（写入与检索共用）
+local rid = jn.rag.add_async("7f6b2f8a-1111-4950-9c1f-000000000001", "异步入库内容", { from = "demo" })
+local rid2 = jn.rag.search_async("异步入库内容", 5, nil, { from = "demo" })
+function on_rag_response(req_id, ctx, result, err)
+    if err then jn.log.warn("RAG 请求失败: " .. err) return end
+    jn.log.info("result=" .. tostring(result))
 end
 ```
 
@@ -562,6 +597,7 @@ end
 | `chat` | `llm.chat_async(messages, opts?)` | `on_chat_response` | `(req_id, content, err)` |
 | `t2i` | `t2i.generate_async` / `t2i.generate_url_async` | `on_t2i_response` | `(req_id, ctx, result, err)` |
 | `http` | `http.get_async` / `http.post_async` | `on_http_response` | `(req_id, ctx, result, err)` |
+| `rag` | `rag.add_async` / `rag.search_async` | `on_rag_response` | `(req_id, ctx, result, err)` |
 | `sandbox` | `sandbox.create_async` / `exec_shell_async` / `exec_python_async` | `on_sandbox_response` | `(req_id, ctx, result, err)` |
 
 > **调用现场保存（ctx）**：`t2i` / `http` 异步回调带 `ctx` 参数——调用时把要保留的变量打包成一张表作为最后一个参数传入（如 `generate_async(html, opts, ctx)`），引擎按 `req_id` 关联保存，回调时**原样带回**（不序列化，可含函数）。用于延续调用前的业务状态（待处理消息、群号、临时标记等）；不传则为 `nil`。`llm.chat_async` 不带 `ctx`（回调签名保持 `(req_id, content, err)`，兼容现有插件）。
@@ -632,7 +668,7 @@ function on_message(event) → (consumed, skip_reply)
 
 **返回值：**
 - `consumed` (bool): `true` → 消息**不进 Agent**。注意：**不短路**——即使某个插件返回 `true`，其余插件的 `on_message` 仍会全部执行完（适合"多个监听插件都要看到消息"的场景）。
-- `skip_reply` (bool): `true` → 跳过回复策略检查（`at_only` / `never` / relevance 过滤），**强制进入 Agent 处理**；当 `consumed=true` 时以 `consumed` 为准（消息不进 Agent）。
+- `skip_reply` (bool): `true` → 跳过回复策略检查（relevance 过滤），**强制进入 Agent 处理**；当 `consumed=true` 时以 `consumed` 为准（消息不进 Agent）。
 
 > **已移除**：`modified_event`（修改事件）不再支持——插件不得中途改写事件内容（防止上下文失真）。需要拦截/处理消息时，在 `on_message` 中直接调用 `jn.onebot11` API 产生副作用（如 `delete_msg` 撤回、`ban_group_member` 禁言）。
 

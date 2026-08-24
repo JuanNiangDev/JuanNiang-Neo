@@ -48,8 +48,10 @@ func groupMsg(id int64) adapter.Event {
 			MessageID:   id,
 			UserID:      123,
 			GroupID:     456,
-			RawMessage:  "你好",
-			Message:     []adapter.Segment{{Type: "text", Data: map[string]any{"text": "你好"}}},
+			// 回复策略仅 relevance：文本含"机器人"关键词命中 isDefinitelyRelevant 必回快路径，
+			// 消息才能无 LLM Provider 地进入 handleMessage（去重测试不依赖相关性判断）。
+			RawMessage: "你好机器人",
+			Message:    []adapter.Segment{{Type: "text", Data: map[string]any{"text": "你好机器人"}}},
 		},
 	}
 }

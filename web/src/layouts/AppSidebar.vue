@@ -125,6 +125,7 @@ const navGroups = [
 			{ title: '表情包库', icon: 'mdi-emoticon-outline', to: '/advanced/stickers' },
 			{ title: '摸鱼人日历', icon: 'mdi-calendar-month-outline', to: '/advanced/fish-calendar' },
 			{ title: '定时消息', icon: 'mdi-message-text-clock-outline', to: '/advanced/scheduled-messages' },
+			{ title: '群管理', icon: 'mdi-shield-check-outline', to: '/advanced/group-mgr' },
 		],
 	},
 	{
@@ -133,6 +134,7 @@ const navGroups = [
 		items: [
 			{ title: 'T2I', icon: 'mdi-image-auto-adjust', to: '/t2i' },
 			{ title: 'Sandbox', icon: 'mdi-code-braces-box', to: '/sandbox' },
+			{ title: 'RAG 向量', icon: 'mdi-vector-polyline', to: '/rag' },
 			{ title: '修改密码', icon: 'mdi-key-change', to: '/settings' },
 		],
 	},

@@ -40,7 +40,7 @@ export interface ChatAreaResp { id: string; area_type: string; target_id: number
 export interface ChatRecordResp { id: number; chat_area_id: string; user_id: number; role: string; content: string; token_count: number; tool_calls: any; created_at: string }
 export interface ChatRecordListResp { total: number; list: ChatRecordResp[] }
 
-export interface OverviewResp { chat_area_count: number; mcp_count: number; adapter_count: number; plugin_count: number; provider_count: number; skill_count: number; session_count: number; total_token_usage: number; cpu_count: number; goroutine_num: number; mem_alloc_bytes: number; mem_sys_bytes: number; mem_heap_inuse_bytes: number; go_version: string; t2i_active: boolean; t2i_healthy: boolean; sandbox_active: boolean; sandbox_healthy: boolean }
+export interface OverviewResp { chat_area_count: number; mcp_count: number; adapter_count: number; plugin_count: number; provider_count: number; skill_count: number; session_count: number; total_token_usage: number; cpu_count: number; goroutine_num: number; mem_alloc_bytes: number; mem_sys_bytes: number; mem_heap_inuse_bytes: number; go_version: string; t2i_active: boolean; t2i_healthy: boolean; sandbox_active: boolean; sandbox_healthy: boolean; rag_active: boolean; rag_healthy: boolean }
 
 export interface DailyTokenUsageResp { date: string; token_count: number }
 
@@ -104,6 +104,7 @@ export const memoryApi = {
   updateShortTerm: (chatAreaID: string, data: { window_size: number; auto_compact: boolean }) => client.put(`/memory/${chatAreaID}/short-term`, data),
   getLongTerm: (chatAreaID: string) => client.get(`/memory/${chatAreaID}/long-term`),
   updateLongTerm: (chatAreaID: string, data: { hot_area_size: number; hot_memory_ttl: number }) => client.put(`/memory/${chatAreaID}/long-term`, data),
+  syncRAG: () => client.post('/memory/sync-rag'),
 }
 
 // ======== Prompts ========
@@ -203,6 +204,45 @@ export const sandboxApi = {
   health: () => client.get('/sandbox/health'),
 }
 
+// ======== RAG（向量检索服务） ========
+
+export interface RAGConfigResp {
+  base_url: string
+  timeout: number
+  is_active: boolean
+  healthy: boolean
+}
+
+export interface UpdateRAGConfigReq {
+  base_url: string
+  timeout: number
+  is_active: boolean
+}
+
+export interface RAGInfoResp {
+  status?: string
+  model?: {
+    ready: boolean
+    model_name?: string
+    dim?: number
+    n_params?: number
+    n_threads?: number
+    n_ctx?: number
+    error?: string
+  }
+  memory?: { rss_kb: number; vsize_kb: number }
+  tags?: number
+  chunks?: number
+  error?: string
+}
+
+export const ragApi = {
+  getConfig: () => client.get('/rag/config'),
+  updateConfig: (data: UpdateRAGConfigReq) => client.put('/rag/config', data),
+  health: () => client.get('/rag/health'),
+  info: () => client.get('/rag/info'),
+}
+
 // ======== Webhook ========
 export const webhookApi = {
   getConfig: () => client.get('/webhook/config'),
@@ -255,6 +295,7 @@ export const cronJobApi = {
 }
 
 // ======== Reply Strategy ========
+// 回复策略已收敛为仅 relevance（strategy 字段保留在响应中供兼容，请求不再接受）
 
 export interface ReplyStrategyResp {
   strategy: string
@@ -269,7 +310,6 @@ export interface ReplyStrategyResp {
 }
 
 export interface UpdateReplyStrategyReq {
-  strategy: string
   relevance_threshold: number
   bot_name: string
   strip_markdown: boolean
@@ -304,6 +344,7 @@ export const knowledgeApi = {
   update: (id: string, data: AddKnowledgeReq) => client.put(`/knowledge/${id}`, data),
   delete: (id: string) => client.delete(`/knowledge/${id}`),
   reExtract: (id: string) => client.post(`/knowledge/${id}/re-extract`),
+  syncVector: () => client.post('/knowledge/vector-sync'),
 }
 
 // ======== 图床 ========
@@ -438,4 +479,94 @@ export const scheduledMessageApi = {
   remove: (id: string) => client.delete(`/scheduled-messages/${id}`),
   toggle: (id: string, enabled: boolean) => client.put(`/scheduled-messages/${id}/toggle`, { enabled }),
   trigger: (id: string) => client.post(`/scheduled-messages/${id}/trigger`),
+}
+
+// ======== 群管理 ========
+export interface GroupMgrConfigResp {
+  enabled: boolean
+  llm_review: boolean
+  high_score: number
+  low_score: number
+  fallback_score: number
+  img_spam_window: number
+  img_spam_threshold: number
+  img_mute_duration: number
+  enable_copy_check: boolean
+  copy_threshold: number
+  violation_mute_seconds: number
+  exclude_groups: string[]
+  llm_criteria: string
+  llm_gray_prompt: string
+  llm_high_risk_prompt: string
+}
+
+export interface UpdateGroupMgrConfigReq {
+  enabled: boolean
+  llm_review: boolean
+  high_score: number
+  low_score: number
+  fallback_score: number
+  img_spam_window: number
+  img_spam_threshold: number
+  img_mute_duration: number
+  enable_copy_check: boolean
+  copy_threshold: number
+  violation_mute_seconds: number
+  exclude_groups: string[]
+  llm_criteria: string
+  llm_gray_prompt: string
+  llm_high_risk_prompt: string
+}
+export interface GroupMgrWordResp { id: number; word: string; category: string; source: string; rag_synced: boolean; rag_tag: string }
+export interface GroupMgrSampleResp { id: number; text: string; category: string; source: string; hit_count: number; created_at: string }
+export interface GroupMgrViolationResp { id: number; group_id: number; user_id: number; username: string; count: number; detection_path: string; llm_reason: string }
+export interface GroupMgrStatsResp {
+  group_id: number
+  date: string
+  join_today: number
+  warns: number
+  mutes: number
+  copy_warns: number
+  ad: number
+  sensitive: number
+  kicks: number
+}
+export interface GroupMgrTestResp {
+  text: string
+  card: boolean
+  word: string
+  word_cat: string
+  rag_ok: boolean
+  rag_score: number
+  rag_sample: string
+  rag_category: string
+  verdict: string
+  reason: string
+}
+
+export const groupMgrApi = {
+  getConfig: () => client.get('/group-mgr/config'),
+  updateConfig: (data: UpdateGroupMgrConfigReq) => client.put('/group-mgr/config', data),
+  words: (category?: string) => client.get('/group-mgr/words', { params: { category } }),
+  addWord: (word: string, category: string) => client.post('/group-mgr/words', { word, category }),
+  deleteWord: (id: number) => client.delete(`/group-mgr/words/${id}`),
+  importWords: (file: File, category: string) => {
+    const form = new FormData()
+    form.append('file', file)
+    return client.post(`/group-mgr/words/import?category=${category}`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+  syncRAG: () => client.post('/group-mgr/sync-rag'),
+  samples: () => client.get('/group-mgr/samples'),
+  deleteSample: (id: number) => client.delete(`/group-mgr/samples/${id}`),
+  violations: () => client.get('/group-mgr/violations'),
+  deleteViolation: (id: number) => client.delete(`/group-mgr/violations/${id}`),
+  whitelist: () => client.get('/group-mgr/whitelist'),
+  updateWhitelist: (qq_list: number[]) => client.put('/group-mgr/whitelist', { qq_list }),
+  admins: () => client.get('/group-mgr/admins'),
+  updateAdmins: (qq_list: number[]) => client.put('/group-mgr/admins', { qq_list }),
+  syncAdminsFromAdapter: () => client.post('/group-mgr/admins/sync-from-adapter'),
+  stats: (group_id: number) => client.get('/group-mgr/stats', { params: { group_id } }),
+  test: (text: string) => client.post('/group-mgr/test', { text }),
 }

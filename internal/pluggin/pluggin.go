@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	crand "crypto/rand"
-	"crypto/tls"
 	_ "embed"
 	"encoding/base64"
 	"encoding/json"
@@ -25,11 +24,14 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/metrics"
 
+	"github.com/google/uuid"
 	lua "github.com/yuin/gopher-lua"
 	"gopkg.in/yaml.v3"
 	"gorm.io/gorm"
 
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/core/cache"
@@ -92,6 +94,7 @@ func (p *LoadedPlugin) close() {
 type SendAdapter interface {
 	SendPrivateMsg(userID int64, message any) (int64, error)
 	SendGroupMsg(groupID int64, message any) (int64, error)
+	SendGroupForwardMsg(groupID int64, nodes []adapter.ForwardNode) (int64, error)
 	DeleteMsg(messageID int64) error
 	GetMsg(messageID int64) (map[string]any, error)
 	GetGroupInfo(groupID int64) (map[string]any, error)
@@ -130,6 +133,7 @@ type AgentOperator interface {
 	GetToolRegistry() ToolRegistryAccess
 	GetT2IClient() *t2icaller.Client
 	GetSandboxClient() *sandboxcaller.Client
+	GetRAGClient() *ragcaller.Client // RAG 向量检索客户端（nil=未启用）
 }
 
 // ProviderGroupAccess 暴露给插件的 Provider 管理接口。
@@ -343,6 +347,31 @@ func NewPluginEngine(basePath string, adapter SendAdapter, db *gorm.DB, c *cache
 			return []lua.LValue{lua.LNil, lua.LNil}
 		},
 	})
+	// rag → on_rag_response（带调用现场 ctx）；结果：add 回 tag 字符串，search 回 [{tag,score}] 表
+	pe.RegisterAsyncAPI("rag", AsyncAPI{
+		Entry:   "on_rag_response",
+		WithCtx: true,
+		Encode: func(L *lua.LState, result any, err error) []lua.LValue {
+			if err != nil {
+				return []lua.LValue{lua.LNil, lua.LString(err.Error())}
+			}
+			switch v := result.(type) {
+			case string:
+				return []lua.LValue{lua.LString(v), lua.LNil}
+			case []ragcaller.SearchHit:
+				t := L.NewTable()
+				for i, hit := range v {
+					item := L.NewTable()
+					item.RawSetString("tag", lua.LString(hit.Tag.String()))
+					item.RawSetString("score", lua.LNumber(hit.Score))
+					t.RawSetInt(i+1, item)
+				}
+				return []lua.LValue{t, lua.LNil}
+			default:
+				return []lua.LValue{lua.LNil, lua.LString("rag: 未知结果类型")}
+			}
+		},
+	})
 	// 注册内置 /help 命令
 	pe.registerBuiltinCommands()
 	// 异步任务消费者：与事件派发互斥执行 Lua，保证 LState 安全
@@ -376,6 +405,14 @@ func (pe *PluginEngine) registerBuiltinCommands() {
 		reply := pe.commands.FormatHelp(args)
 		return true, reply, nil
 	})
+}
+
+// RegisterBuiltinCommand 注册内置 Go 命令（纯闭包，不依赖插件加载状态）。
+// 供主仓库系统级功能（如群管理 /groupstats）注册命令；后注册覆盖先注册
+// （命令树 Register 覆盖语义），因此系统命令优先于插件同名命令。
+func (pe *PluginEngine) RegisterBuiltinCommand(path []string, opts CommandOpts, handler CommandHandler) {
+	opts.Builtin = true
+	pe.commands.Register("system", path, opts, handler)
 }
 
 func (pe *PluginEngine) LoadAll() error {
@@ -1068,11 +1105,14 @@ func (pe *PluginEngine) dispatchMessage(ev adapter.Event) DispatchResult {
 		table := eventToLuaTable(p.State, pluginEvent)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 2, nil); err != nil { // 返回值: consumed, skip_reply
 			log.Error("插件 on_message 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_message").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_message").Observe(time.Since(start).Seconds())
 
 		consumedRet := p.State.Get(-2)
 		skipReplyRet := p.State.Get(-1)
@@ -1114,11 +1154,14 @@ func (pe *PluginEngine) onCronJob(event EventData, pluginIDs []string) bool {
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 1, nil); err != nil {
 			log.Error("插件 on_cronjob 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_cronjob").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_cronjob").Observe(time.Since(start).Seconds())
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
 		p.stateMu.Unlock()
@@ -1157,11 +1200,14 @@ func (pe *PluginEngine) onNotice(event EventData) bool {
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 1, nil); err != nil {
 			log.Error("插件 on_notice 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_notice").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_notice").Observe(time.Since(start).Seconds())
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
 		p.stateMu.Unlock()
@@ -1190,11 +1236,14 @@ func (pe *PluginEngine) onRequest(event EventData) bool {
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 1, nil); err != nil {
 			log.Error("插件 on_request 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_request").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_request").Observe(time.Since(start).Seconds())
 		consumedRet := p.State.Get(-1)
 		p.State.Pop(1)
 		p.stateMu.Unlock()
@@ -1226,11 +1275,14 @@ func (pe *PluginEngine) onWebhook(event EventData) (consumed bool, reply string)
 		table := eventToLuaTable(p.State, event)
 		p.State.Push(fn)
 		p.State.Push(table)
+		start := time.Now()
 		if err := p.State.PCall(1, 2, nil); err != nil {
 			log.Error("插件 on_webhook 错误", "plugin", p.Manifest.Name, "err", err)
+			metrics.PluginHookErrorsTotal.WithLabelValues(filepath.Base(p.Dir), "on_webhook").Inc()
 			p.stateMu.Unlock()
 			continue
 		}
+		metrics.PluginHookDuration.WithLabelValues(filepath.Base(p.Dir), "on_webhook").Observe(time.Since(start).Seconds())
 		replyRet := p.State.Get(-1)
 		consumedRet := p.State.Get(-2)
 		p.State.Pop(2)
@@ -1362,6 +1414,11 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 	// Sandbox
 	if hasPerm("sandbox") {
 		pe.injectSandbox(L, pluginName)
+	}
+
+	// RAG（向量检索服务）
+	if hasPerm("rag") {
+		pe.injectRAG(L, pluginName)
 	}
 
 	// Agent
@@ -1606,6 +1663,64 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		return segs
 	}
 
+	// buildForwardNodes 将 Lua 合并转发节点数组转为 []adapter.ForwardNode：
+	//   构造节点 {user_id=…, nickname=“…”, content=“文本或消息段数组”}
+	//   引用节点 {id=消息ID}
+	buildForwardNodes := func(tbl *lua.LTable) []adapter.ForwardNode {
+		nodes := make([]adapter.ForwardNode, 0, tbl.Len())
+		tbl.ForEach(func(_, v lua.LValue) {
+			nt, ok := v.(*lua.LTable)
+			if !ok {
+				return
+			}
+			var n adapter.ForwardNode
+			if id := nt.RawGetString("id"); id.Type() == lua.LTNumber {
+				n.ID = int64(id.(lua.LNumber))
+			}
+			if u := nt.RawGetString("user_id"); u.Type() == lua.LTNumber {
+				n.Uin = int64(u.(lua.LNumber))
+			}
+			if nm := nt.RawGetString("nickname"); nm.Type() == lua.LTString {
+				n.Name = string(nm.(lua.LString))
+			}
+			if c := nt.RawGetString("content"); c != lua.LNil {
+				if ct, ok := c.(*lua.LTable); ok {
+					n.Content = buildSegments(ct)
+				} else {
+					n.Content = c.String()
+				}
+			}
+			nodes = append(nodes, n)
+		})
+		return nodes
+	}
+
+	// applyReplyTo 在消息前插入引用回复段（可选第 3 参数 reply_to=消息ID）：
+	// 字符串消息含 CQ 码时先解析为段数组再前插；纯文本与段数组统一前插 Reply 段。
+	// reply_to 为 nil/非法时原样返回消息。
+	applyReplyTo := func(msg any, replyTo lua.LValue) any {
+		if replyTo == lua.LNil {
+			return msg
+		}
+		id, err := luaMsgID(replyTo)
+		if err != nil {
+			log.Warn("插件 reply_to 参数无效，忽略引用", "reply_to", replyTo.String(), "err", err)
+			return msg
+		}
+		replySeg := adapter.Reply(strconv.FormatInt(id, 10))
+		switch v := msg.(type) {
+		case string:
+			if adapter.HasCQCode(v) {
+				return append([]adapter.Segment{replySeg}, adapter.ParseCQCodes(v)...)
+			}
+			return []adapter.Segment{replySeg, adapter.Text(v)}
+		case []adapter.Segment:
+			return append([]adapter.Segment{replySeg}, v...)
+		default:
+			return msg
+		}
+	}
+
 	obTable := L.NewTable()
 	funcs := map[string]lua.LGFunction{
 		"send_private_msg": func(L *lua.LState) int {
@@ -1619,6 +1734,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
+			msg = applyReplyTo(msg, L.Get(3)) // 可选 reply_to=被引用消息ID
 			// 插件发消息异步，不阻塞命令 handler 返回
 			go func() {
 				t0 := time.Now()
@@ -1641,6 +1757,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
+			msg = applyReplyTo(msg, L.Get(3)) // 可选 reply_to=被引用消息ID
 			// 插件发消息异步，不阻塞命令 handler 返回
 			go func() {
 				t0 := time.Now()
@@ -1687,6 +1804,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
+			msg = applyReplyTo(msg, L.Get(3)) // 可选 reply_to=被引用消息ID
 			_, err := sendAdp.SendPrivateMsg(userID, msg)
 			return pushResult(L, err)
 		},
@@ -1701,8 +1819,39 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			} else {
 				msg = arg.String()
 			}
+			msg = applyReplyTo(msg, L.Get(3)) // 可选 reply_to=被引用消息ID
 			_, err := sendAdp.SendGroupMsg(groupID, msg)
 			return pushResult(L, err)
+		},
+		// send_group_forward_msg / _sync 发送合并转发消息（转发卡片）：
+		//   构造节点 {user_id=…, nickname=“…”, content=“文本或消息段数组”}
+		//   引用节点 {id=群内已有消息ID}
+		"send_group_forward_msg": func(L *lua.LState) int {
+			groupID := int64(L.CheckNumber(1))
+			nodes := buildForwardNodes(L.CheckTable(2))
+			if len(nodes) == 0 {
+				return pushResult(L, fmt.Errorf("合并转发节点不能为空"))
+			}
+			// 插件发消息异步，不阻塞命令 handler 返回
+			go func() {
+				if _, err := sendAdp.SendGroupForwardMsg(groupID, nodes); err != nil {
+					log.Warn("插件异步发送群合并转发失败", "plugin", pluginName, "group_id", groupID, "nodes", len(nodes), "err", err)
+				}
+			}()
+			return pushOk(L)
+		},
+		"send_group_forward_msg_sync": func(L *lua.LState) int {
+			groupID := int64(L.CheckNumber(1))
+			nodes := buildForwardNodes(L.CheckTable(2))
+			if len(nodes) == 0 {
+				return pushResult(L, fmt.Errorf("合并转发节点不能为空"))
+			}
+			id, err := sendAdp.SendGroupForwardMsg(groupID, nodes)
+			if err != nil {
+				return pushResult(L, err)
+			}
+			L.Push(lua.LNumber(id))
+			return 1
 		},
 		"delete_msg": func(L *lua.LState) int {
 			id, err := luaMsgID(L.Get(1))
@@ -1821,31 +1970,49 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 const httpAsyncTimeout = 60 * time.Second
 
 func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
-	// 强制 HTTP/1.1：Go 默认 HTTP/2 与部分站点（api.github.com、mp.weixin.qq.com）
-	// 的连接偶发挂起（30s 等不到响应头，wget/HTTP/1.1 秒回），降级为 1.1 稳定。
-	// 基于 DefaultTransport.Clone()：保留代理等默认设置，仅覆盖 HTTP/2 协商。
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ForceAttemptHTTP2 = false
-	transport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
-	// Clone() 会先触发 DefaultTransport 的 h2 初始化（http2configureTransports 把
-	// "h2" 写进其 TLSClientConfig.NextProtos）。TLSNextProto 置空后必须同步从 ALPN
-	// 清掉 h2，否则 TLS 协商出 h2 却无处理器，请求直接 EOF。
-	if tcc := transport.TLSClientConfig; tcc != nil {
-		protos := tcc.NextProtos[:0]
-		for _, p := range tcc.NextProtos {
-			if p != "h2" {
-				protos = append(protos, p)
+	// 按代理地址缓存 http.Client；Transport 构造（HTTP/1.1 强制 + 代理拨号）
+	// 见 http_client.go::buildHTTPTransport。proxy 参数为可选字符串：
+	//   空 / http(s)://host:port / socks4://host:port / socks4a://host:port / socks5://[user:pass@]host:port
+	clientCache := newHTTPClientCache()
+
+	// parseStringTable 将 Lua 字符串表转为 map[string]string（如 headers）。
+	parseStringTable := func(tbl *lua.LTable) map[string]string {
+		m := make(map[string]string)
+		tbl.ForEach(func(k, v lua.LValue) {
+			if ks, ok := k.(lua.LString); ok {
+				if vs, ok2 := v.(lua.LString); ok2 {
+					m[string(ks)] = string(vs)
+				}
 			}
-		}
-		tcc.NextProtos = protos
+		})
+		return m
 	}
-	httpClient := &http.Client{Timeout: 30 * time.Second, Transport: transport}
+
+	// optProxy 取第 idx 位的代理地址参数（仅 string 视为 proxy，其余为空）。
+	optProxy := func(idx int) string {
+		v := L.Get(idx)
+		if v.Type() == lua.LTString {
+			return string(v.(lua.LString))
+		}
+		return ""
+	}
 
 	httpTable := L.NewTable()
 	L.SetFuncs(httpTable, map[string]lua.LGFunction{
+		// get(url, proxy?) 同步 GET。可选 proxy 指定代理。
 		"get": func(L *lua.LState) int {
 			url := L.CheckString(1)
-			resp, err := httpClient.Get(url)
+			proxyURL := ""
+			if L.GetTop() >= 2 {
+				proxyURL = optProxy(2)
+			}
+			cl, err := clientCache.get(proxyURL)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			resp, err := cl.Get(url)
 			if err != nil {
 				L.Push(lua.LNil)
 				L.Push(lua.LString(err.Error()))
@@ -1859,17 +2026,29 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 			L.Push(result)
 			return 1
 		},
+		// post(url, content_type?, body?, proxy?) 同步 POST。可选第 4 位 proxy。
 		"post": func(L *lua.LState) int {
 			url := L.CheckString(1)
 			contentType := "application/json"
 			var bodyStr string
-			if L.GetTop() >= 3 {
+			proxyURL := ""
+			top := L.GetTop()
+			if top >= 4 {
+				proxyURL = optProxy(4)
+			}
+			if top >= 3 {
 				contentType = L.CheckString(2)
 				bodyStr = L.CheckString(3)
-			} else if L.GetTop() >= 2 {
+			} else if top >= 2 {
 				bodyStr = L.CheckString(2)
 			}
-			resp, err := httpClient.Post(url, contentType, bytes.NewBufferString(bodyStr))
+			cl, err := clientCache.get(proxyURL)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			resp, err := cl.Post(url, contentType, bytes.NewBufferString(bodyStr))
 			if err != nil {
 				L.Push(lua.LNil)
 				L.Push(lua.LString(err.Error()))
@@ -1884,21 +2063,51 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 			return 1
 		},
 		// 异步版：立即返回 req_id（失败返回 0 + 错误串），完成回调 on_http_response(req_id, ctx, result, err)
-		// 可选第 3 位 headers 表：{ ["User-Agent"]="...", ["Referer"]="..." }，用于反爬/风控站点（如微信公众号）
+		// 参数签名（向后兼容）：
+		//   get_async(url, ctx?, headers?, proxy?)          旧签名 + 第 4 位 proxy 字符串；第 3 位 headers 表
+		//   get_async(url, {proxy=…, headers=…, ctx=…})     新 opts 表写法（proxy 为可选键）
 		"get_async": func(L *lua.LState) int {
 			url := L.CheckString(1)
 			var headers map[string]string
-			if L.GetTop() >= 3 && L.Get(3).Type() == lua.LTTable {
-				headers = make(map[string]string)
-				L.Get(3).(*lua.LTable).ForEach(func(k, v lua.LValue) {
-					if ks, ok := k.(lua.LString); ok {
-						if vs, ok2 := v.(lua.LString); ok2 {
-							headers[string(ks)] = string(vs)
-						}
+			proxyURL := ""
+			ctxIdx := 0
+			var optsCtx lua.LValue // opts 表内 ctx 键（新写法）
+			top := L.GetTop()
+			// 第 4 位：proxy 字符串（positional 写法）
+			if top >= 4 && L.Get(4).Type() == lua.LTString {
+				proxyURL = string(L.Get(4).(lua.LString))
+			}
+			// 第 3 位：headers 表（旧签名）
+			if top >= 3 && L.Get(3).Type() == lua.LTTable && headers == nil {
+				headers = parseStringTable(L.Get(3).(*lua.LTable))
+			}
+			// 第 2 位：opts 表（含 proxy/headers/ctx 任一已知键）或旧 ctx 现场表。
+			// 以「是否命中已知 opts 键」判定新签名——此前仅当含 proxy 键才走新分支，
+			// get_async(url, {headers={...}}) 的 headers 被静默丢弃并整体存为回调 ctx。
+			if top >= 2 && L.Get(2).Type() == lua.LTTable {
+				tbl := L.Get(2).(*lua.LTable)
+				hasProxy := tbl.RawGetString("proxy").Type() == lua.LTString
+				hasHeaders := tbl.RawGetString("headers").Type() == lua.LTTable
+				hasCtx := tbl.RawGetString("ctx") != lua.LNil
+				if hasProxy || hasHeaders || hasCtx {
+					if hasProxy {
+						proxyURL = string(tbl.RawGetString("proxy").(lua.LString))
 					}
-				})
+					if hasHeaders {
+						headers = parseStringTable(tbl.RawGetString("headers").(*lua.LTable))
+					}
+					if hasCtx {
+						optsCtx = tbl.RawGetString("ctx") // 回调 ctx=opts.ctx（任意 Lua 值）
+					}
+				} else {
+					ctxIdx = 2 // 旧语义：ctx 现场表
+				}
 			}
 			run := func(ctx context.Context) (any, error) {
+				cl, err := clientCache.get(proxyURL)
+				if err != nil {
+					return nil, err
+				}
 				req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 				if err != nil {
 					return nil, err
@@ -1906,7 +2115,7 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 				for k, v := range headers {
 					req.Header.Set(k, v)
 				}
-				resp, err := httpClient.Do(req)
+				resp, err := cl.Do(req)
 				if err != nil {
 					return nil, err
 				}
@@ -1920,19 +2129,49 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(err.Error()))
 				return 2
 			}
-			saveAsyncCtx(L, id, 2) // 第 2 位：可选 ctx 现场表
+			if optsCtx != nil {
+				saveAsyncCtxValue(L, id, optsCtx)
+			} else if ctxIdx > 0 {
+				saveAsyncCtx(L, id, ctxIdx)
+			}
 			L.Push(lua.LNumber(id))
 			return 1
 		},
+		// post_async(url, content_type?, body?, proxy?, ctx?) 异步 POST：
+		//   旧签名尾部 table = ctx；第 4 位 proxy 字符串（ctx 后移至第 5 位）；
+		//   尾部表含已知 opts 键（proxy/headers/ctx）时按新 opts 表解析（headers 不再静默丢失）
 		"post_async": func(L *lua.LState) int {
 			url := L.CheckString(1)
 			contentType := "application/json"
 			var bodyStr string
+			proxyURL := ""
+			var headers map[string]string
 			top := L.GetTop()
 			ctxIdx := 0
-			// 尾部 table 参数视为调用现场 ctx（与 body 字符串区分）
+			var optsCtx lua.LValue
+			// 第 4 位：proxy 字符串（positional 写法）
+			if top >= 4 && L.Get(4).Type() == lua.LTString {
+				proxyURL = string(L.Get(4).(lua.LString))
+			}
+			// 尾部 table：含已知 opts 键 → opts 表；否则旧 ctx 现场表
 			if top >= 2 && L.Get(top).Type() == lua.LTTable {
-				ctxIdx = top
+				tbl := L.Get(top).(*lua.LTable)
+				hasProxy := tbl.RawGetString("proxy").Type() == lua.LTString
+				hasHeaders := tbl.RawGetString("headers").Type() == lua.LTTable
+				hasCtx := tbl.RawGetString("ctx") != lua.LNil
+				if hasProxy || hasHeaders || hasCtx {
+					if hasProxy {
+						proxyURL = string(tbl.RawGetString("proxy").(lua.LString))
+					}
+					if hasHeaders {
+						headers = parseStringTable(tbl.RawGetString("headers").(*lua.LTable))
+					}
+					if hasCtx {
+						optsCtx = tbl.RawGetString("ctx")
+					}
+				} else {
+					ctxIdx = top // 旧语义：ctx 现场表
+				}
 				top--
 			}
 			if top >= 3 {
@@ -1942,12 +2181,19 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 				bodyStr = L.CheckString(2)
 			}
 			run := func(ctx context.Context) (any, error) {
+				cl, err := clientCache.get(proxyURL)
+				if err != nil {
+					return nil, err
+				}
 				req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBufferString(bodyStr))
 				if err != nil {
 					return nil, err
 				}
 				req.Header.Set("Content-Type", contentType)
-				resp, err := httpClient.Do(req)
+				for k, v := range headers {
+					req.Header.Set(k, v)
+				}
+				resp, err := cl.Do(req)
 				if err != nil {
 					return nil, err
 				}
@@ -1961,7 +2207,9 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(err.Error()))
 				return 2
 			}
-			if ctxIdx > 0 {
+			if optsCtx != nil {
+				saveAsyncCtxValue(L, id, optsCtx)
+			} else if ctxIdx > 0 {
 				saveAsyncCtx(L, id, ctxIdx)
 			}
 			L.Push(lua.LNumber(id))
@@ -2168,6 +2416,166 @@ func luaTableToT2IOptions(L *lua.LState, idx int) (*t2icaller.GenerateOptions, e
 		return nil, parseErr
 	}
 	return opts, nil
+}
+
+// ragAsyncTimeout RAG 异步 API 总超时（写入/检索本地服务，30s 足够）。
+const ragAsyncTimeout = 30 * time.Second
+
+// parseRagUUID 解析插件传入的 RAG tag（必须是合法 UUID 字符串）。
+func parseRagUUID(s string) (uuid.UUID, error) {
+	u, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("RAG tag 必须是 UUID 字符串: %s", s)
+	}
+	return u, nil
+}
+
+// injectRAG 注入 rag 全局表（需要 rag 权限）：RAG-Service 原始 API。
+//
+// 契约：面向原始 RAG-Service（tag=UUID，全文入库自动分块），
+// **不要**与知识/记忆集合的 v5 派生 tag 混用（避免污染两侧检索）。
+// 客户端始终经 AgentOperator 动态获取（Web 配置热更新即时生效）。
+func (pe *PluginEngine) injectRAG(L *lua.LState, pluginName string) {
+	getCurrentClient := func() *ragcaller.Client {
+		if pe.agentOp != nil {
+			return pe.agentOp.GetRAGClient()
+		}
+		return nil
+	}
+
+	// searchToLua 把检索结果转成 Lua 数组表 [{tag, score}]。
+	searchToLua := func(hits []ragcaller.SearchHit) *lua.LTable {
+		t := L.NewTable()
+		for i, hit := range hits {
+			item := L.NewTable()
+			item.RawSetString("tag", lua.LString(hit.Tag.String()))
+			item.RawSetString("score", lua.LNumber(hit.Score))
+			t.RawSetInt(i+1, item)
+		}
+		return t
+	}
+
+	ragTable := L.NewTable()
+	L.SetFuncs(ragTable, map[string]lua.LGFunction{
+		// add(tag, text) 同步写入（幂等 upsert，长文自动分块）
+		"add": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString("RAG 服务未启用"))
+				return 2
+			}
+			tag, err := parseRagUUID(L.CheckString(1))
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			text := L.CheckString(2)
+			_, err = client.Upsert(context.Background(), tag, text)
+			return pushResult(L, err)
+		},
+		// add_async(tag, text [, ctx]) → req_id；回调 on_rag_response(req_id, ctx, tag, err)
+		"add_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("RAG 服务未启用"))
+				return 2
+			}
+			tag, err := parseRagUUID(L.CheckString(1))
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			text := L.CheckString(2)
+			run := func(ctx context.Context) (any, error) {
+				if _, err := client.Upsert(ctx, tag, text); err != nil {
+					return nil, err
+				}
+				return tag.String(), nil
+			}
+			id, err := pe.submitAsync(L, pluginName, "rag", ragAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			saveAsyncCtx(L, id, 3) // 第 3 位：可选 ctx 现场表
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+		// search(query, k?, min_score?) 同步检索，返回 [{tag, score}]（按分数降序）
+		"search": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString("RAG 服务未启用"))
+				return 2
+			}
+			query := L.CheckString(1)
+			k := 10
+			var minScore *float64
+			top := L.GetTop()
+			if top >= 2 && L.Get(2).Type() == lua.LTNumber {
+				k = int(float64(L.Get(2).(lua.LNumber)))
+			}
+			if top >= 3 && L.Get(3).Type() == lua.LTNumber {
+				ms := float64(L.Get(3).(lua.LNumber))
+				minScore = &ms
+			}
+			hits, err := client.Search(context.Background(), query, k, minScore)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			L.Push(searchToLua(hits))
+			return 1
+		},
+		// search_async(query, k?, min_score? [, ctx]) → req_id；回调 on_rag_response(req_id, ctx, results, err)
+		"search_async": func(L *lua.LState) int {
+			client := getCurrentClient()
+			if client == nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString("RAG 服务未启用"))
+				return 2
+			}
+			query := L.CheckString(1)
+			k := 10
+			var minScore *float64
+			ctxIdx := 0
+			top := L.GetTop()
+			// 尾部 table = ctx 现场表（与 search 的数值参数区分）
+			if top >= 2 && L.Get(top).Type() == lua.LTTable {
+				ctxIdx = top
+				top--
+			}
+			if top >= 2 && L.Get(2).Type() == lua.LTNumber {
+				k = int(float64(L.Get(2).(lua.LNumber)))
+			}
+			if top >= 3 && L.Get(3).Type() == lua.LTNumber {
+				ms := float64(L.Get(3).(lua.LNumber))
+				minScore = &ms
+			}
+			run := func(ctx context.Context) (any, error) {
+				return client.Search(ctx, query, k, minScore)
+			}
+			id, err := pe.submitAsync(L, pluginName, "rag", ragAsyncTimeout, run)
+			if err != nil {
+				L.Push(lua.LNumber(0))
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			if ctxIdx > 0 {
+				saveAsyncCtx(L, id, ctxIdx)
+			}
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+	})
+	L.SetGlobal("rag", ragTable)
 }
 
 func (pe *PluginEngine) injectT2I(L *lua.LState, pluginName string) {
@@ -2960,6 +3368,19 @@ func (pe *PluginEngine) runAsyncCallbacks() {
 // ctx 缺省（非 table）时不保存；回调时由 runAsyncCallbacks 取出并删除。
 func saveAsyncCtx(L *lua.LState, reqID uint64, ctxIdx int) {
 	ctx := L.Get(ctxIdx)
+	if ctx.Type() != lua.LTTable {
+		return
+	}
+	t := L.GetGlobal("jn_async_ctx")
+	if t.Type() != lua.LTTable {
+		return
+	}
+	t.(*lua.LTable).RawSet(lua.LNumber(reqID), ctx)
+}
+
+// saveAsyncCtxValue 保存异步调用的调用现场值（如 opts 表内的 ctx 键，
+// 不支持从 LState 按索引读取的场景）。回调时由 runAsyncCallbacks 取出并删除。
+func saveAsyncCtxValue(L *lua.LState, reqID uint64, ctx lua.LValue) {
 	if ctx.Type() != lua.LTTable {
 		return
 	}

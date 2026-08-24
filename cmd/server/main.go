@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"JuanNiang-Neo/infrastructure/postgres"
+	"JuanNiang-Neo/infrastructure/rag"
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	"JuanNiang-Neo/infrastructure/redis"
 	sandbox "JuanNiang-Neo/infrastructure/sandbox"
 	sandboxcaller "JuanNiang-Neo/infrastructure/sandbox/handler"
@@ -24,6 +26,7 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent"
 	"JuanNiang-Neo/internal/agent/fishcal"
+	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/scheduledmsg"
 	"JuanNiang-Neo/internal/api/engine"
@@ -34,6 +37,7 @@ import (
 	"JuanNiang-Neo/internal/core/imgstore"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
+	"JuanNiang-Neo/internal/metrics"
 	"JuanNiang-Neo/internal/pluggin"
 	"JuanNiang-Neo/internal/web"
 
@@ -211,6 +215,7 @@ func main() {
 		WebhookAdapter: webhookAdapter,
 		Sandbox:        nil,
 		T2I:            nil,
+		RAG:            nil,
 		Providers:      hago.Providers,
 		MCPGroup:       hago.MCP,
 		DAO:            coreInst.DAO,
@@ -254,9 +259,33 @@ func main() {
 	// 将 PluginEngine 注册为 Webhook 插件路由器
 	webhookAdapter.SetPluginRouter(pluginEngine)
 
+	// ---------- 6.5 群管理系统功能（Phase 0.5 检测闸门 + 系统命令） ----------
+	gm := groupmgr.New(coreInst.DAO.GroupMgr,
+		adapterProv,
+		func() *ragcaller.Client { return hago.RAGClient.Load() },
+		hago.Providers)
+	if err := gm.Init(ctx); err != nil {
+		log.Error("群管理初始化失败", "err", err)
+	} else {
+		go gm.Run(ctx)
+	}
+	hago.GroupMgr = gm
+	// 系统命令：后注册覆盖插件同名命令（命令树覆盖语义），旧插件停用前不冲突
+	pluginEngine.RegisterBuiltinCommand([]string{"groupstats"}, pluggin.CommandOpts{
+		Description: "查看群管理统计数据（管理员）",
+		Usage:       "/groupstats",
+	}, func(args []string, ev pluggin.EventData) (bool, string, error) {
+		if !gm.IsCommandAdmin(ev.GroupID, ev.UserID, ev.Admins) {
+			return true, "只有管理员可以查看统计数据哦～", nil
+		}
+		return true, gm.CommandGroupStats(ev.GroupID), nil
+	})
+	registerGroupMgrCommands(pluginEngine, gm)
+
 	// ---------- 7. Web API ----------
 
 	svc := service.New(coreInst.DAO, adapterProv, webhookAdapter, pluginEngine)
+	svc.GroupMgr = gm
 	// 插件商店客户端（拉取元数据 / 安装 / 镜像源管理），数据目录持久化配置。
 	svc.StoreClient = pluggin.NewStoreClient("data")
 	svc.ProviderGroup = hago.Providers
@@ -270,8 +299,13 @@ func main() {
 	// T2I / Sandbox 运行时同步：从 DB 加载配置并设置回调
 	loadT2IFromDB(ctx, svc, coreInst.DAO, hago)
 	loadSandboxFromDB(ctx, svc, coreInst.DAO, hago)
+	loadRAGFromDB(ctx, svc, coreInst.DAO, hago)
 	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
 	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
+	svc.OnUpdateRAG = func(client *ragcaller.Client) {
+		hago.RAGClient.Store(client)
+		hago.Memory.SetRAGClient(client) // 同步记忆双写客户端
+	}
 	svc.OnRebuildAgent = func() { hago.RebuildEinoAgent(ctx) }
 	svc.OnUpdateToolAdminOnly = func() { hago.RefreshToolAdminOnly(ctx) }
 	svc.OnReplyStrategyChanged = func() { hago.InvalidateReplySettings() }
@@ -297,6 +331,95 @@ func main() {
 	go schedMgr.Run(ctx)
 	svc.OnSchedMsgReload = func() { schedMgr.Reload(context.Background()) }
 	svc.OnSchedMsgTrigger = func(triggerCtx context.Context, id string) error { return schedMgr.TriggerNow(triggerCtx, id) }
+
+	// ---------- 6.8 Prometheus 运行时指标注入（/metrics scrape 时实时读取） ----------
+	metrics.SetRuntimeProviders(metrics.RuntimeProviders{
+		LoopsActive:      func() int { return len(hago.Loops.List()) },
+		ConcurrencyInUse: func() int { return hago.Concurrency.GlobalActive() },
+		PluginsLoaded:    func() int { return len(pluginEngine.List()) },
+		Inventory: metrics.CachedMap(60*time.Second, func() map[string]float64 {
+			ictx := context.Background()
+			m := map[string]float64{}
+			if ids, err := coreInst.DAO.Knowledge.ListAllIDs(ictx); err == nil {
+				m["knowledge_items"] = float64(len(ids))
+			}
+			if ids, err := coreInst.DAO.LongTermMemItem.ListAllIDs(ictx); err == nil {
+				m["memory_items"] = float64(len(ids))
+			}
+			if n, err := coreInst.DAO.ChatArea.Count(ictx); err == nil {
+				m["chat_areas"] = float64(n)
+			}
+			if list, err := coreInst.DAO.Session.List(ictx); err == nil {
+				m["sessions"] = float64(len(list))
+			}
+			if list, err := coreInst.DAO.CronJob.List(ictx); err == nil {
+				m["cron_jobs"] = float64(len(list))
+			}
+			if list, err := coreInst.DAO.ScheduledMsg.List(ictx, 1000, 0); err == nil {
+				m["scheduled_messages"] = float64(len(list))
+			}
+			m["providers_active"] = float64(len(hago.Providers.ListProviders()))
+			m["mcp_servers"] = float64(len(hago.MCP.ListMCPs()))
+			return m
+		}),
+		// 外部服务健康矩阵：未配置的服务不输出（避免误报 0）；已配置的服务并行探测
+		ExternalHealth: metrics.CachedMap(15*time.Second, func() map[string]float64 {
+			m := map[string]float64{}
+			if coreInst.Cache != nil {
+				m["redis"] = 1
+				if err := coreInst.Cache.Client().Ping(context.Background()).Err(); err != nil {
+					m["redis"] = 0
+				}
+			}
+			probes := []struct {
+				name   string
+				client interface{ HealthCheck() error }
+			}{
+				{"rag", hago.RAGClient.Load()},
+				{"t2i", hago.T2IClient},
+				{"sandbox", hago.SandboxClient},
+			}
+			type result struct {
+				name string
+				v    float64
+			}
+			// 只 drain 实际启动的探测数：全部未配置时立即返回，避免空转 3×3s
+			// 拖慢 scrape（CachedMap 持锁执行，期间所有并发 /metrics 互相阻塞）。
+			started := 0
+			for _, p := range probes {
+				if p.client != nil {
+					started++
+				}
+			}
+			if started == 0 {
+				return m
+			}
+			ch := make(chan result, started)
+			for _, p := range probes {
+				if p.client == nil {
+					continue // 未配置不输出
+				}
+				go func(name string, c interface{ HealthCheck() error }) {
+					v := float64(0)
+					if err := c.HealthCheck(); err == nil {
+						v = 1
+					}
+					ch <- result{name: name, v: v}
+				}(p.name, p.client)
+			}
+			// 总 deadline：整个 fan-out 最多等 3s，收齐 started 个结果即返回
+			deadline := time.After(3 * time.Second)
+			for i := 0; i < started; i++ {
+				select {
+				case r := <-ch:
+					m[r.name] = r.v
+				case <-deadline:
+					return m
+				}
+			}
+			return m
+		}),
+	})
 
 	// 前端静态资源目录: 默认 web/dist (构建产物), 可通过 WEB_DIR 覆盖。
 	//   - 开发模式: 前端走 Vite (:3000) 代理 /api 到 :8090, 后端无需服务前端。
@@ -410,6 +533,65 @@ func parseAdmins(s string) []string {
 	return admins
 }
 
+// registerGroupMgrCommands 注册群管理系统命令（覆盖旧 Lua 插件的同名命令）。
+func registerGroupMgrCommands(pluginEngine *pluggin.PluginEngine, gm *groupmgr.Manager) {
+	// /豁免 —— 管理员对某用户执行一次豁免：解除禁言 + 清空违规记录（不加入白名单）
+	pluginEngine.RegisterBuiltinCommand([]string{"豁免"}, pluggin.CommandOpts{
+		Description: "豁免某用户：解除禁言并清空违规记录（不加入白名单，管理员）",
+		Usage:       "/豁免 QQ号 或 /豁免 @某人",
+	}, func(args []string, ev pluggin.EventData) (bool, string, error) {
+		if ev.MessageType != "group" {
+			return true, "该命令仅限群聊使用哦～", nil
+		}
+		if !gm.IsCommandAdmin(ev.GroupID, ev.UserID, ev.Admins) {
+			return true, groupmgr.CommandPardonDenied(), nil
+		}
+		qq := groupmgr.ParseTargetQQ(args)
+		if qq == 0 {
+			return true, groupmgr.CommandPardonUsage(), nil
+		}
+		return true, gm.CommandPardon(ev.GroupID, qq), nil
+	})
+
+	// /白名单 —— 管理员将某用户加入白名单（不再检测）+ 清违规 + 解禁言
+	pluginEngine.RegisterBuiltinCommand([]string{"白名单"}, pluggin.CommandOpts{
+		Description: "将某用户加入白名单：不再检测、清除违规记录，若被禁言自动解除（管理员）",
+		Usage:       "/白名单 QQ号 或 /白名单 @某人",
+	}, func(args []string, ev pluggin.EventData) (bool, string, error) {
+		if ev.MessageType != "group" {
+			return true, "该命令仅限群聊使用哦～", nil
+		}
+		if !gm.IsCommandAdmin(ev.GroupID, ev.UserID, ev.Admins) {
+			return true, groupmgr.CommandWhitelistDenied(), nil
+		}
+		qq := groupmgr.ParseTargetQQ(args)
+		if qq == 0 {
+			return true, groupmgr.CommandWhitelistUsage(), nil
+		}
+		return true, gm.CommandWhitelist(ev.GroupID, qq), nil
+	})
+
+	// /解除豁免 /取消豁免 —— 管理员从白名单移除某用户
+	for _, path := range []string{"解除豁免", "取消豁免"} {
+		pluginEngine.RegisterBuiltinCommand([]string{path}, pluggin.CommandOpts{
+			Description: "解除豁免某用户：从白名单移除，恢复检测（管理员）",
+			Usage:       "/" + path + " QQ号 或 /" + path + " @某人",
+		}, func(args []string, ev pluggin.EventData) (bool, string, error) {
+			if ev.MessageType != "group" {
+				return true, "该命令仅限群聊使用哦～", nil
+			}
+			if !gm.IsCommandAdmin(ev.GroupID, ev.UserID, ev.Admins) {
+				return true, groupmgr.CommandPardonDenied(), nil
+			}
+			qq := groupmgr.ParseTargetQQ(args)
+			if qq == 0 {
+				return true, groupmgr.CommandUnexemptUsage(), nil
+			}
+			return true, gm.CommandUnexempt(qq), nil
+		})
+	}
+}
+
 func loadT2IFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
 	cfg, err := daos.T2I.GetConfig(ctx)
 	if err != nil {
@@ -479,6 +661,42 @@ func loadSandboxFromDB(ctx context.Context, svc *service.Service, daos *dao.Bund
 
 	// Sandbox 客户端晚于 buildEinoAgent 就绪，重建 Agent 注册 sandbox 系列工具
 	hago.RebuildEinoAgent(ctx)
+}
+
+// loadRAGFromDB 从 DB 加载 RAG-Service 配置并创建客户端（未启用/失败时保持 nil，
+// 记忆与知识检索自动降级到非 RAG 路径；nil 客户端是降级开关，不是错误）。
+func loadRAGFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, hago *agent.HagoCenter) {
+	cfg, err := daos.RAG.GetConfig(ctx)
+	if err != nil {
+		// 数据库无配置 → 初始化默认配置，保证前端读取不报错
+		if initErr := daos.RAG.InitConfig(ctx); initErr != nil {
+			log.Warn("RAG 默认配置初始化失败", "err", initErr)
+			return
+		}
+		cfg, err = daos.RAG.GetConfig(ctx)
+		if err != nil {
+			log.Warn("RAG 配置加载失败，使用默认", "err", err)
+			return
+		}
+	}
+	if !cfg.IsActive {
+		log.Info("RAG 未启用（记忆/知识检索走降级路径）")
+		return
+	}
+	client, err := rag.NewClient(
+		rag.WithBaseURL(cfg.BaseURL),
+		rag.WithTimeout(time.Duration(cfg.Timeout)*time.Second),
+	)
+	if err != nil {
+		log.Warn("RAG 客户端创建失败，降级到非 RAG 路径", "err", err)
+		return
+	}
+	svc.RAGClient = client
+	hago.RAGClient.Store(client)
+	// 同步记忆双写客户端：启动路径不走 OnUpdateRAG 回调，必须在此注入
+	// （否则 Compact 双写记忆向量在启动加载 RAG 配置后永久失效）。
+	hago.Memory.SetRAGClient(client)
+	log.Info("RAG 客户端已就绪", "base_url", cfg.BaseURL)
 }
 
 // loadWebhookConfig 从 DB 加载 Webhook 配置；若不存在则使用默认值并初始化 DB。

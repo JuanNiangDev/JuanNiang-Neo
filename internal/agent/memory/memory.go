@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/memory/skillmem"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/core/ragtag"
 	"JuanNiang-Neo/internal/logging"
 )
 
@@ -32,6 +35,10 @@ type MemoryGroup struct {
 	LongTerm    *longterm.LongTermMemory
 	SkillMemory *skillmem.SkillMemory
 	LLMProvider provider.Provider // 用于 Compact 中的技能记忆更新（兼容旧赋值，动态获取函数优先）
+
+	// RAGClient 向量检索客户端（Compact 双写记忆向量用）；Load()=nil 时静默跳过。
+	// 原子指针：Web 配置热更新（HTTP goroutine）与 Compact 双写（agent goroutine）并发读写无竞争。
+	RAGClient atomic.Pointer[ragcaller.Client]
 
 	// llmProviderFn 动态获取 Text LLM Provider：Compact 触发时实时取最新模型，
 	// 避免启动时序（Init 时 ProviderGroup 尚未加载）与 Provider 热更新导致的 nil/过期问题。
@@ -60,6 +67,11 @@ func (m *MemoryGroup) SetShortTermStore(store ShortTermStore) {
 // SetLLMProviderFn 注入 Text LLM Provider 动态获取函数（由 agent.Init 调用）。
 func (m *MemoryGroup) SetLLMProviderFn(fn func() provider.Provider) {
 	m.llmProviderFn = fn
+}
+
+// SetRAGClient 注入 RAG 向量检索客户端（双写记忆向量用；nil=未启用）。
+func (m *MemoryGroup) SetRAGClient(c *ragcaller.Client) {
+	m.RAGClient.Store(c)
 }
 
 // getLLMProvider 返回当前可用的 Text LLM Provider：优先动态获取函数，回退旧字段。
@@ -152,8 +164,36 @@ func (m *MemoryGroup) UpdateShortTermConfig(areaID string, conf ShortTermMemoryC
 	m.shortTermConfMu.Unlock()
 }
 
+// ragMemSyncTimeout 记忆向量双写超时：RAG 属于可降级能力，短超时快速失败不拖主链路。
+const ragMemSyncTimeout = 5 * time.Second
+
+// AddLongTermMemory 写入长期记忆并异步双写 RAG 向量。
+// 双写异步化：Compact 落在 agent 路径内，同步 30s Upsert 会把 Agent 循环拖死；
+// RAG 未配置/不可用静默跳过，残留可由「记忆页手动同步向量库」补齐。
 func (m *MemoryGroup) AddLongTermMemory(ctx context.Context, areaID, content string) error {
-	return m.LongTerm.Add(ctx, areaID, content)
+	item, err := m.LongTerm.Add(ctx, areaID, content)
+	if err != nil {
+		return err
+	}
+	if item != nil {
+		m.syncMemoryVector(item.ID, content)
+	}
+	return nil
+}
+
+// syncMemoryVector 异步写记忆向量到 RAG-Service（goroutine + 短超时快速失败，不阻塞调用方）。
+func (m *MemoryGroup) syncMemoryVector(id, content string) {
+	go func() {
+		cli := m.RAGClient.Load()
+		if cli == nil {
+			return
+		}
+		ragCtx, cancel := context.WithTimeout(context.Background(), ragMemSyncTimeout)
+		defer cancel()
+		if _, err := cli.Upsert(ragCtx, ragtag.Memory(id), content); err != nil {
+			log.Warn("记忆向量同步失败", "id", id, "err", err)
+		}
+	}()
 }
 
 // GetExistingLongTermMemory 获取当前长期记忆内容（供 Compact 使用）。
@@ -171,6 +211,25 @@ func (m *MemoryGroup) GetExistingLongTermMemory(ctx context.Context, areaID stri
 
 func (m *MemoryGroup) GetLongTermMemory(ctx context.Context, areaID, query string, limit int) ([]string, error) {
 	items, err := m.LongTerm.Search(ctx, areaID, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i] = item.Content
+	}
+	return out, nil
+}
+
+// RecallLongTermMemory 对话主链路召回：按当前消息语义召回长期记忆
+// （消息 gram → pg_trgm 倒排候选 → similarity 排序；空候选/异常回退最近）。
+func (m *MemoryGroup) RecallLongTermMemory(ctx context.Context, areaID, msg string, limit int) ([]string, error) {
+	query, grams := longterm.RecallTerms(msg)
+	if query == "" {
+		// 无有效文本（纯表情/纯 CQ 码）：回退最近条目
+		return m.GetLongTermMemory(ctx, areaID, "", limit)
+	}
+	items, err := m.LongTerm.Recall(ctx, areaID, grams, query, limit)
 	if err != nil {
 		return nil, err
 	}

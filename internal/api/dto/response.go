@@ -36,6 +36,7 @@ var (
 	AdapterConfigNotFound   = Response{Status: 40025, Info: "adapter 配置不存在"}
 	T2IConfigNotFound       = Response{Status: 40026, Info: "T2I 配置不存在"}
 	SandboxConfigNotFound   = Response{Status: 40027, Info: "Sandbox 配置不存在"}
+	RAGConfigNotFound       = Response{Status: 40050, Info: "RAG 配置不存在"}
 	PluginIsSystem          = Response{Status: 40028, Info: "系统插件不允许删除或停用"}
 	PromptIsSystem          = Response{Status: 40029, Info: "系统提示词不允许修改或删除"}
 	ToolIsBuiltin           = Response{Status: 40030, Info: "内置工具运行时常驻, 不支持启停"}
@@ -56,6 +57,7 @@ var (
 	ScheduledMsgNotExist    = Response{Status: 40044, Info: "定时消息任务不存在"}
 	T2IStyleInvalid         = Response{Status: 40049, Info: "T2I 渲染风格无效（仅允许空、random 或风格库中定义的风格名）"}
 	StickerTagSystem        = Response{Status: 40047, Info: "系统内置标签不可删除"}
+	WordImportTooLarge      = Response{Status: 40051, Info: "词库导入文件过大（≤1MB）或行数超限（≤20000）"}
 )
 
 type TokenResp struct {
@@ -279,6 +281,8 @@ type OverviewResp struct {
 	T2IHealthy     bool `json:"t2i_healthy"`     // HealthCheck 通过
 	SandboxActive  bool `json:"sandbox_active"`  // 客户端已加载
 	SandboxHealthy bool `json:"sandbox_healthy"` // HealthCheck 通过
+	RAGActive      bool `json:"rag_active"`      // 客户端已加载
+	RAGHealthy     bool `json:"rag_healthy"`     // HealthCheck 通过
 }
 
 // DailyTokenUsageResp 单日 Token 用量（折线图数据点）。
@@ -403,6 +407,14 @@ type T2IConfigResp struct {
 	SelectedStyle string `json:"selected_style"`
 }
 
+// RAGConfigResp RAG 向量检索服务配置响应。
+type RAGConfigResp struct {
+	BaseURL  string `json:"base_url"`
+	Timeout  int    `json:"timeout"`
+	IsActive bool   `json:"is_active"`
+	Healthy  bool   `json:"healthy"`
+}
+
 type SandboxConfigResp struct {
 	BaseURL  string `json:"base_url"`
 	APIKey   string `json:"api_key"`
@@ -475,4 +487,81 @@ type ReplyStrategyResp struct {
 	RelevanceModel     string  `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID
 	RelevanceTimeout   int     `json:"relevance_timeout"` // 相关性检测超时（秒）
 	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop / reply
+}
+
+// ---------- 群管理 ----------
+
+// GroupMgrConfigResp 群管理配置。
+type GroupMgrConfigResp struct {
+	Enabled              bool     `json:"enabled"`
+	LLMReview            bool     `json:"llm_review"`
+	HighScore            float64  `json:"high_score"`
+	LowScore             float64  `json:"low_score"`
+	FallbackScore        float64  `json:"fallback_score"`
+	ImgSpamWindow        int      `json:"img_spam_window"`
+	ImgSpamThreshold     int      `json:"img_spam_threshold"`
+	ImgMuteDuration      int      `json:"img_mute_duration"`
+	EnableCopyCheck      bool     `json:"enable_copy_check"`
+	CopyThreshold        int      `json:"copy_threshold"`
+	ViolationMuteSeconds int      `json:"violation_mute_seconds"`
+	ExcludeGroups        []string `json:"exclude_groups"`
+	LLMCriteria          string   `json:"llm_criteria"`
+	LLMGrayPrompt        string   `json:"llm_gray_prompt"`
+	LLMHighRiskPrompt    string   `json:"llm_high_risk_prompt"`
+}
+
+// GroupMgrWordResp 词条。
+type GroupMgrWordResp struct {
+	ID        uint   `json:"id"`
+	Word      string `json:"word"`
+	Category  string `json:"category"`
+	Source    string `json:"source"`
+	RAGSynced bool   `json:"rag_synced"` // 是否已同步到 RAG 向量库
+	RAGTag    string `json:"rag_tag"`    // 派生 RAG tag UUID
+}
+
+// GroupMgrSampleResp 样本。
+type GroupMgrSampleResp struct {
+	ID        uint   `json:"id"`
+	WordID    uint   `json:"word_id"` // 关联词条 ID（0=非词条派生样本）
+	Text      string `json:"text"`
+	Category  string `json:"category"`
+	Source    string `json:"source"`
+	HitCount  int    `json:"hit_count"`
+	CreatedAt string `json:"created_at"`
+}
+
+// GroupMgrViolationResp 违规记录。
+type GroupMgrViolationResp struct {
+	ID            uint   `json:"id"`
+	GroupID       int64  `json:"group_id"`
+	UserID        int64  `json:"user_id"`
+	Username      string `json:"username"`       // 处罚时群名片/昵称
+	Count         int    `json:"count"`          // 当前违规等级
+	DetectionPath string `json:"detection_path"` // rag / keyword / llm
+	LLMReason     string `json:"llm_reason"`     // LLM 审核返回的 reason
+}
+
+// GroupMgrQQListResp 白名单/管理员列表。
+type GroupMgrQQListResp struct {
+	QQList []int64 `json:"qq_list"`
+}
+
+// GroupMgrStatsResp 统计。
+type GroupMgrStatsResp struct {
+	GroupID   int64  `json:"group_id"`
+	Date      string `json:"date"`
+	JoinToday int64  `json:"join_today"`
+	Warns     int64  `json:"warns"`
+	Mutes     int64  `json:"mutes"`
+	CopyWarns int64  `json:"copy_warns"`
+	Ad        int64  `json:"ad"`
+	Sensitive int64  `json:"sensitive"`
+	Kicks     int64  `json:"kicks"`
+}
+
+// GroupMgrSyncResp 同步向量库结果。
+type GroupMgrSyncResp struct {
+	Total  int `json:"total"`
+	Failed int `json:"failed"`
 }

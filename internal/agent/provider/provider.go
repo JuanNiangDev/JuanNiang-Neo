@@ -2,6 +2,7 @@ package provider
 
 import (
 	"JuanNiang-Neo/internal/logging"
+	"JuanNiang-Neo/internal/metrics"
 	"bufio"
 	"bytes"
 	"context"
@@ -43,15 +44,27 @@ func (p *openAIProvider) APIMode() APIMode { return p.cfg.apiMode() }
 // ---------- Chat ----------
 
 func (p *openAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	start := time.Now()
 	body, err := p.buildRequest(req, false)
 	if err != nil {
+		metrics.LLMRequestsTotal.WithLabelValues(p.ID(), "error").Inc()
+		metrics.LLMLatency.Observe(time.Since(start).Seconds())
 		return nil, err
 	}
 	respBody, err := p.doRequest(ctx, p.endpointURL(), body)
 	if err != nil {
+		metrics.LLMRequestsTotal.WithLabelValues(p.ID(), "error").Inc()
+		metrics.LLMLatency.Observe(time.Since(start).Seconds())
 		return nil, err
 	}
-	return p.parseResponse(respBody)
+	resp, err := p.parseResponse(respBody)
+	if err != nil {
+		metrics.LLMRequestsTotal.WithLabelValues(p.ID(), "error").Inc()
+	} else {
+		metrics.LLMRequestsTotal.WithLabelValues(p.ID(), "ok").Inc()
+	}
+	metrics.LLMLatency.Observe(time.Since(start).Seconds())
+	return resp, err
 }
 
 func (p *openAIProvider) ChatStream(ctx context.Context, req ChatRequest) (<-chan ChatStreamChunk, error) {
