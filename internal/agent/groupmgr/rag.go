@@ -17,8 +17,9 @@ import (
 // sampleSetTTL 样本候选集缓存有效期（样本变更即失效；TTL 兜底防长期不同步）。
 const sampleSetTTL = 5 * time.Minute
 
-// ragSearchTimeout RAG 语义核实的硬超时：本地部署毫秒级，最坏 1s 不让消息卡死。
-const ragSearchTimeout = time.Second
+// ragSearchTimeout RAG 语义核实的硬超时：本地部署毫秒级，但 bge 模型首次推理需加载
+// （冷启动可能 3-5s），给 5s 余量不让消息卡死，热路径稳定后毫秒级。
+const ragSearchTimeout = 5 * time.Second
 
 // sampleInfo 样本候选集条目（tag → 文本/类别/ID，检索命中过滤 + 直罚类别判断 + 命中计数）。
 type sampleInfo struct {
@@ -28,11 +29,12 @@ type sampleInfo struct {
 }
 
 // buildSampleSet 构建样本候选集（本地 样本ID → 派生 tag），供检索命中过滤。
-// 返回 nil 表示构建失败（调用方降级）。
+// 返回 nil 表示构建失败或无样本（调用方降级）。空样本集不缓存：
+// 首次为空时缓存 5 分钟会导致同步向量库后仍降级（空 map != nil 绕过 TTL 检查）。
 func (m *Manager) buildSampleSet(ctx context.Context) map[uuid.UUID]sampleInfo {
 	m.sampleMu.Lock()
 	defer m.sampleMu.Unlock()
-	if m.sampleSet != nil && time.Since(m.sampleSetAt) < sampleSetTTL {
+	if m.sampleSet != nil && len(m.sampleSet) > 0 && time.Since(m.sampleSetAt) < sampleSetTTL {
 		return m.sampleSet
 	}
 	samples, err := m.dao.SampleListAll(ctx)
@@ -44,8 +46,13 @@ func (m *Manager) buildSampleSet(ctx context.Context) map[uuid.UUID]sampleInfo {
 	for _, s := range samples {
 		set[ragtag.Sample(u32s(s.ID))] = sampleInfo{id: s.ID, text: s.Text, category: s.Category}
 	}
-	m.sampleSet = set
-	m.sampleSetAt = time.Now()
+	// 空样本集不缓存：同步向量库后应立即重新构建（词条已派生 seed 样本）
+	if len(set) > 0 {
+		m.sampleSet = set
+		m.sampleSetAt = time.Now()
+	} else {
+		m.sampleSet = nil // 不缓存空集，下次调用重新查 DB
+	}
 	return set
 }
 

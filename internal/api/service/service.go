@@ -2813,11 +2813,13 @@ func (s *Service) SyncKnowledgeVectorStream(ctx context.Context, c *app.RequestC
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	c.Response.Header.Set("Content-Type", "text/event-stream")
-	c.Response.Header.Set("Cache-Control", "no-cache")
-	c.Response.Header.Set("Connection", "keep-alive")
+	w := sse.NewWriter(c)
+	defer w.Close()
+	push := func(event string, data any) bool {
+		b, _ := json.Marshal(data)
+		return w.WriteEvent("", event, b) == nil
+	}
 
-	push := func(event string, data any) bool { return ssePush(c, event, data) }
 	push("start", map[string]string{"status": "syncing"})
 
 	const batchSize = 50
@@ -2844,7 +2846,7 @@ func (s *Service) SyncKnowledgeVectorStream(ctx context.Context, c *app.RequestC
 				}
 			}
 		}
-		// 每批推送进度；客户端断开（写入失败或 ctx 取消）即中止
+		// 每批推送进度；客户端断开即中止
 		if !push("progress", map[string]int{"done": synced, "failed": failed}) || ctx.Err() != nil {
 			return
 		}
@@ -2925,11 +2927,13 @@ func (s *Service) SyncMemoryRAGStream(ctx context.Context, c *app.RequestContext
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	c.Response.Header.Set("Content-Type", "text/event-stream")
-	c.Response.Header.Set("Cache-Control", "no-cache")
-	c.Response.Header.Set("Connection", "keep-alive")
+	w := sse.NewWriter(c)
+	defer w.Close()
+	push := func(event string, data any) bool {
+		b, _ := json.Marshal(data)
+		return w.WriteEvent("", event, b) == nil
+	}
 
-	push := func(event string, data any) bool { return ssePush(c, event, data) }
 	push("start", map[string]string{"status": "syncing"})
 
 	const batchSize = 50
@@ -2956,7 +2960,7 @@ func (s *Service) SyncMemoryRAGStream(ctx context.Context, c *app.RequestContext
 				}
 			}
 		}
-		// 每批推送进度；客户端断开（写入失败或 ctx 取消）即中止
+		// 每批推送进度；客户端断开即中止
 		if !push("progress", map[string]int{"done": synced, "failed": failed}) || ctx.Err() != nil {
 			return
 		}
@@ -2966,15 +2970,6 @@ func (s *Service) SyncMemoryRAGStream(ctx context.Context, c *app.RequestContext
 }
 
 // ---------- 图床 ----------
-
-// ssePush 推送一个 SSE 事件（text/event-stream）。返回 false 表示写入/刷新失败（客户端断开）。
-func ssePush(c *app.RequestContext, event string, data any) bool {
-	b, _ := json.Marshal(data)
-	if _, err := c.Write([]byte("event: " + event + "\ndata: " + string(b) + "\n\n")); err != nil {
-		return false
-	}
-	return c.Flush() == nil
-}
 
 // maxImageSize 上传图片大小上限：1.5MB。
 const maxImageSize = 1536 * 1024

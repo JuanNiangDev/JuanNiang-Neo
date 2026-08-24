@@ -78,9 +78,9 @@ func (h *HagoCenter) memoryRagTagSet(ctx context.Context) (map[uuid.UUID]string,
 
 // ---------- 语义召回（RAG 首选） ----------
 
-// ragSearchTimeout RAG 检索硬超时：与 groupmgr.verifyByRAG 对齐（1s），
-// 热路径（每轮对话知识注入 / 记忆召回）不能被挂起的 RAG 服务拖住。
-const ragSearchTimeout = time.Second
+// ragSearchTimeout RAG 检索硬超时：bge 模型首次推理需加载（冷启动 3-5s），
+// 给 5s 余量不让消息卡死，热路径稳定后毫秒级。
+const ragSearchTimeout = 5 * time.Second
 
 // ragHit 命中条目（tag → 本地 ID，按分数降序）。
 type ragHit struct {

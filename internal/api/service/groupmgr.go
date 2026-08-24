@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -11,6 +12,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
+	"github.com/cloudwego/hertz/pkg/protocol/sse"
 )
 
 // ---------- 群管理 ----------
@@ -219,20 +221,18 @@ func (s *Service) SyncGroupMgrRAGStream(ctx context.Context, c *app.RequestConte
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "群管理未初始化"}))
 		return
 	}
-	c.Response.Header.Set("Content-Type", "text/event-stream")
-	c.Response.Header.Set("Cache-Control", "no-cache")
-	c.Response.Header.Set("Connection", "keep-alive")
-
-	// push 推送一个 SSE 事件（data 为 JSON，调用方序列化）
-	push := func(event string, data any) {
+	w := sse.NewWriter(c)
+	defer w.Close()
+	push := func(event string, data any) bool {
 		b, _ := json.Marshal(data)
-		_, _ = c.Write([]byte("event: " + event + "\ndata: " + string(b) + "\n\n"))
-		_ = c.Flush()
+		return w.WriteEvent("", event, b) == nil
 	}
 
 	push("start", map[string]string{"status": "syncing"})
 	total, failed, err := s.GroupMgr.SyncRAGProgress(ctx, func(done, fail int) error {
-		push("progress", map[string]int{"done": done, "failed": fail})
+		if !push("progress", map[string]int{"done": done, "failed": fail}) {
+			return fmt.Errorf("客户端已断开")
+		}
 		return ctx.Err() // 客户端断开时中止同步
 	})
 	if err != nil {
