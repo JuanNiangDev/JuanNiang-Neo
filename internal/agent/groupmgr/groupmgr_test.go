@@ -163,6 +163,34 @@ func TestViolationIncrConcurrent(t *testing.T) {
 	}
 }
 
+// TestPunishTiersConcurrent 双 goroutine 并发处罚：同一用户两条违规消息同时处理，
+// 最终 count 精确为 2（ViolationIncr 单条 UPSERT 原子自增不丢级）；-race 下同时验证无数据竞争。
+func TestPunishTiersConcurrent(t *testing.T) {
+	m, gmdao := newTestManager(t, nil)
+	ctx := context.Background()
+	ev := groupEv(100, 200, "广告")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		m.punish(ev, "广告违规：并发路径1", "ad", "keyword")
+	}()
+	go func() {
+		defer wg.Done()
+		m.punish(ev, "广告违规：并发路径2", "ad", "llm")
+	}()
+	wg.Wait()
+
+	c, err := gmdao.ViolationGet(ctx, 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c != 2 {
+		t.Fatalf("并发处罚后 count 应为 2，实际 %d（read-modify-write 丢级）", c)
+	}
+}
+
 func TestDAOFixtures(t *testing.T) {
 	m, gmdao := newTestManager(t, nil)
 	ctx := context.Background()

@@ -107,7 +107,12 @@ func (m *Manager) CommandPardon(groupID, targetQQ int64) string {
 func (m *Manager) CommandWhitelist(groupID, targetQQ int64) string {
 	ctx := context.Background()
 	if m.isWhitelisted(ctx, targetQQ) {
-		m.unmuteAndClear(groupID, targetQQ)
+		// 白名单为全局豁免：已在白名单同样清空全部群违规记录 + 解当前群禁言
+		// （与新加入分支一致，避免已白名单用户在其它群的历史违规残留展示）
+		if _, err := m.dao.ViolationClearUserAll(ctx, targetQQ); err != nil {
+			log.Warn("违规记录全局清除失败", "qq", targetQQ, "err", err)
+		}
+		m.unbanOnly(groupID, targetQQ)
 		return pick(whitelistTemplates.already, targetQQ)
 	}
 	if err := m.dao.WlAdd(ctx, targetQQ); err != nil {
