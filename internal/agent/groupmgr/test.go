@@ -35,19 +35,22 @@ func (m *Manager) TestViolation(ctx context.Context, text string) *TestReport {
 		rep.RAGSample = v.text
 		rep.RAGCategory = v.category
 		hard := rep.Word != "" || card
+		if !hard {
+			// 无关键词/卡片硬信号：即使 RAG 高置信也放行（防知识/记忆语义干扰）
+			rep.Verdict = "pass"
+			rep.Reason = "RAG 命中但无关键词/卡片硬信号 → 放行（防知识/记忆语义干扰）"
+			return rep
+		}
 		switch {
 		case v.score >= cfg.HighScore:
 			rep.Verdict = "punish"
-			rep.Reason = "RAG 高置信 → 直接处罚"
+			rep.Reason = "RAG 高置信 + 命中关键词 → 直接处罚"
 		case v.score > cfg.LowScore:
 			rep.Verdict = "review"
-			rep.Reason = "RAG 模棱两可 → LLM 审核"
-		case hard:
+			rep.Reason = "RAG 模棱两可 + 命中关键词 → LLM 审核"
+		default:
 			rep.Verdict = "review"
 			rep.Reason = "RAG 低置信但命中词/卡片 → LLM 终审"
-		default:
-			rep.Verdict = "pass"
-			rep.Reason = "RAG 低置信且无硬信号 → 放行"
 		}
 		return rep
 	}

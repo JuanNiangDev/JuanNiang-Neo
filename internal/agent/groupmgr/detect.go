@@ -82,14 +82,27 @@ func (m *Manager) detectViolation(ctx context.Context, ev adapter.Event, cfg *mo
 
 // handleRAGVerdict RAG 核实后的分档决策：
 //
-//	高置信 ≥ HighScore          → 直接处罚（无词也直罚；卡片判 ad）
-//	模棱两可 (LowScore, High)   → LLM 审核（LLM 异常用 FallbackScore 分数兜底）
+//	高置信 ≥ HighScore          → 直接处罚（须命中词/卡片硬信号；卡片判 ad）
+//	模棱两可 (LowScore, High)   → LLM 审核（须命中词/卡片硬信号；LLM 异常用 FallbackScore 分数兜底）
 //	低置信 ≤ LowScore           → 有词/卡片送 LLM（硬信号终审）；无词放行
+//
+// 三档均要求硬信号（命中关键词或推荐卡片）：RAG-Service 向量库与知识/记忆共用，
+// 无硬信号时高置信命中可能是知识/记忆的语义干扰，不应仅凭向量分数处罚。
+// 无硬信号一律放行（回退到关键词路径已先判过，无词即无违规信号）。
 func (m *Manager) handleRAGVerdict(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig,
 	card bool, word, wordCat string, v ragVerdict) bool {
 	high := v.score >= cfg.HighScore
 	mid := v.score > cfg.LowScore && v.score < cfg.HighScore
 	hasHardSignal := word != "" || card
+
+	// 三档统一：无硬信号（未命中关键词且无推荐卡片）→ 放行
+	// RAG-Service 向量库与知识/记忆共用同一实例，无硬信号时高置信命中
+	// 可能是知识/记忆的语义干扰，不应仅凭向量分数处罚。
+	if !hasHardSignal {
+		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
+		log.Info("RAG 命中但无关键词/卡片硬信号，放行（防知识/记忆语义干扰）", "score", v.score, "user", ev.Message.UserID)
+		return false
+	}
 
 	switch {
 	case high:
@@ -137,12 +150,7 @@ func (m *Manager) handleRAGVerdict(ctx context.Context, ev adapter.Event, cfg *m
 		log.Info("RAG 模棱两可且 LLM 不可用，分数兜底放行", "score", v.score, "user", ev.Message.UserID)
 		return false
 	default:
-		// 低置信：词/卡片是硬信号 → LLM 终审；否则放行
-		if !hasHardSignal {
-			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
-			log.Info("RAG 低置信且无硬信号，放行", "score", v.score, "user", ev.Message.UserID)
-			return false
-		}
+		// 低置信：词/卡片是硬信号 → LLM 终审
 		if m.submitReview(ctx, ev, reviewCtx{
 			text:     v.text,
 			word:     word,

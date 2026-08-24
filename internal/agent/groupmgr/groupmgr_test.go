@@ -128,6 +128,25 @@ func TestViolationRAGLowScoreWithWordReview(t *testing.T) {
 	}
 }
 
+// TestViolationRAGHighScoreNoWordPass 高置信但无关键词命中 → 放行（防知识/记忆语义干扰）。
+// 回归：此前高置信不要求硬信号，RAG-Service 向量库与知识/记忆共用，无词时高置信
+// 命中可能是知识/记忆的语义干扰，会导致正常消息被误判违规。
+func TestViolationRAGHighScoreNoWordPass(t *testing.T) {
+	score := 0.92
+	m, _ := newTestManager(t, &score)
+	// "明天食堂吃什么"不含任何种子词库关键词，但 RAG mock 返回高置信
+	rep := m.TestViolation(context.Background(), "明天食堂吃什么")
+	if !rep.RAGOK {
+		t.Fatal("RAG 应可用")
+	}
+	if rep.Word != "" {
+		t.Fatalf("该文本不应命中关键词，got %q", rep.Word)
+	}
+	if rep.Verdict != "pass" {
+		t.Fatalf("高置信但无关键词应放行（防语义干扰），got %s (%s)", rep.Verdict, rep.Reason)
+	}
+}
+
 // TestViolationIncrConcurrent 违规计数原子自增：并发 N 次自增最终计数 = N。
 // 回归：punish 曾 ViolationGet → count++ → ViolationSet 非原子，事件循环与
 // Run 循环双 goroutine 竞争会丢计数（双重处罚/错档惩罚）。
