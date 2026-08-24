@@ -197,6 +197,55 @@ func TestLLMReviewPromptWrapsUserText(t *testing.T) {
 	}
 }
 
+// TestAdminSpamNotExempt 管理员豁免范围：违禁言论豁免，但图片刷屏 / +1 复读仍检测。
+// 回归：此前 Process 对管理员整体豁免，管理员刷屏/复读不触发警告与禁言。
+func TestAdminSpamNotExempt(t *testing.T) {
+	m, gmdao := newTestManager(t, nil)
+	ctx := context.Background()
+
+	// 启用群管理（Process 入口要求 cfg.Enabled）
+	cfg := m.getCfg(ctx)
+	cfg.Enabled = true
+	_ = gmdao.UpdateConfig(ctx, cfg)
+	_ = m.Reload(ctx)
+
+	// 管理员身份：Admins 列表包含操作者
+	ev := groupEv(100, 200, "[CQ:image,file=abc]")
+	ev.Admins = []string{"200"}
+
+	// 1. 刷屏 3 次触发警告（管理员也检测）
+	for i := 0; i < 3; i++ {
+		m.Process(ctx, ev)
+	}
+	if v, _ := gmdao.StatGet(ctx, gkey(100, "stats:warn")); v != "1" {
+		t.Fatalf("管理员刷屏也应警告，stats:warn = %q", v)
+	}
+	// 2. 已警告再刷 → 禁言
+	m.Process(ctx, ev)
+	if v, _ := gmdao.StatGet(ctx, gkey(100, "stats:mute")); v != "1" {
+		t.Fatalf("管理员刷屏也应禁言，stats:mute = %q", v)
+	}
+
+	// 3. 复读对管理员生效：3 个管理员连续相同文本触发
+	for _, uid := range []int64{1, 2, 3} {
+		e := groupEv(100, uid, "管理员复读测试")
+		e.Admins = []string{"1", "2", "3"}
+		m.Process(ctx, e)
+	}
+	if v, _ := gmdao.StatGet(ctx, gkey(100, "stats:copy_warn")); v != "1" {
+		t.Fatalf("管理员复读也应触发，stats:copy_warn = %q", v)
+	}
+
+	// 4. 违禁言论仍豁免：管理员发黑词消息不处罚（无违规记录）
+	adminEv := groupEv(100, 200, "校园卡办理免沸")
+	adminEv.Admins = []string{"200"}
+	m.Process(ctx, adminEv)
+	list, _ := gmdao.ViolationList(ctx)
+	if len(list) != 0 {
+		t.Fatalf("管理员违禁言论应豁免，违规记录 %d 条", len(list))
+	}
+}
+
 // TestWhitelistCommands 白名单命令：加白名单后豁免 + 解豁免恢复 + 豁免清违规。
 func TestWhitelistCommands(t *testing.T) {
 	m, gmdao := newTestManager(t, nil)

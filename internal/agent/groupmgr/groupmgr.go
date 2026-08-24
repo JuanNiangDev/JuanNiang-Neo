@@ -322,7 +322,8 @@ func (m *Manager) excludedGroup(ctx context.Context, groupID int64) bool {
 // ---------- 事件入口（Phase 0.5） ----------
 
 // Process 处理 OneBot11 事件，返回 consumed（true = 消息被本模块消费，不进 Agent）。
-// message 事件：白名单/管理员/排除群豁免 → 违规检测（违禁言论不消费、刷屏/复读消费）
+// message 事件：排除群/白名单完全豁免；管理员豁免违禁言论，但**图片刷屏 / +1 复读仍检测**
+// （与旧插件一致，管理员刷屏同样警告/禁言）；其余成员跑完整检测。
 // notice 事件：入群统计。
 func (m *Manager) Process(ctx context.Context, ev adapter.Event) bool {
 	cfg := m.getCfg(ctx)
@@ -338,7 +339,17 @@ func (m *Manager) Process(ctx context.Context, ev adapter.Event) bool {
 		if m.excludedGroup(ctx, msg.GroupID) {
 			return false
 		}
-		if m.isWhitelisted(ctx, msg.UserID) || m.isGroupAdmin(msg.UserID, ev.Admins, msg.GroupID) {
+		if m.isWhitelisted(ctx, msg.UserID) {
+			return false // 白名单完全豁免（含刷屏/复读）
+		}
+		if m.isGroupAdmin(msg.UserID, ev.Admins, msg.GroupID) {
+			// 管理员豁免违禁言论检测，但刷屏/复读不豁免
+			if m.checkImageSpam(ctx, ev, cfg) {
+				return true
+			}
+			if m.checkCopySpam(ctx, ev, cfg) {
+				return true
+			}
 			return false
 		}
 		return m.detectMessage(ctx, ev, cfg)
