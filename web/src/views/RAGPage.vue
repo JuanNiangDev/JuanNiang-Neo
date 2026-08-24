@@ -32,18 +32,6 @@
                 <v-list-item-title>健康状态</v-list-item-title>
                 <v-list-item-subtitle>{{ config.healthy ? '健康' : '异常' }}</v-list-item-subtitle>
               </v-list-item>
-              <v-list-item v-if="infoReady">
-                <template #prepend><span class="status-dot" :class="info?.model?.ready ? 'active' : 'error'" /></template>
-                <v-list-item-title>Embedding 模型</v-list-item-title>
-                <v-list-item-subtitle>
-                  <template v-if="info?.model?.ready">{{ info?.model?.model_name || 'bge' }}（{{ info?.model?.dim }} 维，{{ info?.model?.n_threads }} 线程）</template>
-                  <template v-else>{{ info?.model?.error || '未就绪' }}</template>
-                </v-list-item-subtitle>
-              </v-list-item>
-              <v-list-item v-if="infoReady">
-                <v-list-item-title>向量规模</v-list-item-title>
-                <v-list-item-subtitle>{{ info?.tags }} tag / {{ info?.chunks }} 块</v-list-item-subtitle>
-              </v-list-item>
             </v-list>
           </v-card-text>
         </v-card>
@@ -62,8 +50,8 @@
       </v-card-item>
       <v-card-text v-if="infoReady">
         <v-row>
-          <v-col cols="12" md="4">
-            <div class="text-subtitle-2 text-medium-emphasis mb-1">Embedding 模型</div>
+          <v-col cols="12" md="4" class="service-info-col">
+            <div class="text-subtitle-2 font-weight-bold mb-1">Embedding 模型</div>
             <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">模型</span><span>{{ info?.model?.model_name || '-' }}</span></div>
             <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">维度</span><span>{{ info?.model?.dim ?? '-' }}</span></div>
             <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">参数量</span><span>{{ formatParams(info?.model?.n_params) }}</span></div>
@@ -72,17 +60,15 @@
             <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">就绪</span><span>{{ info?.model?.ready ? '✅ 是' : '❌ 否' }}</span></div>
             <div v-if="info?.model?.error" class="text-caption text-error mt-1">{{ info.model.error }}</div>
           </v-col>
-          <v-col cols="12" md="4">
-            <div class="text-subtitle-2 text-medium-emphasis mb-1">进程内存</div>
+          <v-col cols="12" md="4" class="service-info-col">
+            <div class="text-subtitle-2 font-weight-bold mb-1">进程内存</div>
             <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">常驻内存 (RSS)</span><span>{{ formatKB(info?.memory?.rss_kb) }}</span></div>
             <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">虚拟内存</span><span>{{ formatKB(info?.memory?.vsize_kb) }}</span></div>
-            <div class="text-caption text-medium-emphasis mt-2">RSS 随向量库规模线性增长，可作为容量告警依据。</div>
           </v-col>
-          <v-col cols="12" md="4">
-            <div class="text-subtitle-2 text-medium-emphasis mb-1">向量库规模</div>
+          <v-col cols="12" md="4" class="service-info-col">
+            <div class="text-subtitle-2 font-weight-bold mb-1">向量库规模</div>
             <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">Tag 数</span><span>{{ info?.tags ?? '-' }}</span></div>
             <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">Chunk 数</span><span>{{ info?.chunks ?? '-' }}</span></div>
-            <div class="text-caption text-medium-emphasis mt-2">chunks ≥ tags（长文自动分块）；可与「知识库 / 群管理 / 记忆」页面的同步结果对账。</div>
           </v-col>
         </v-row>
       </v-card-text>
@@ -153,3 +139,13 @@ async function refreshStatus() {
 }
 onMounted(async () => { await fetchConfig(); if (config.value.is_active) await refreshStatus() })
 </script>
+
+<style scoped>
+/* 服务信息三板块 md+ 断点竖线分隔 */
+@media (min-width: 960px) {
+  .service-info-col:not(:first-child) {
+    border-left: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+    padding-left: 24px;
+  }
+}
+</style>
