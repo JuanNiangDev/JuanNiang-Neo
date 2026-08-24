@@ -14,6 +14,12 @@ import (
 
 // ---------- 群管理 ----------
 
+// 词库导入限制：单文件 ≤ 1MB、行数 ≤ 20000（防超大上传内存 DoS）。
+const (
+	maxWordImportSize  = 1 << 20
+	maxWordImportLines = 20000
+)
+
 // GetGroupMgrConfig 读取群管理配置（未初始化则写入默认配置）。
 func (s *Service) GetGroupMgrConfig(ctx context.Context, c *app.RequestContext) {
 	cfg, err := s.DAO.GroupMgr.GetConfig(ctx)
@@ -147,6 +153,7 @@ func (s *Service) DeleteGroupMgrWord(ctx context.Context, c *app.RequestContext)
 }
 
 // ImportGroupMgrWords txt 导入（multipart file，一行一个；?category= 指定分类）。
+// 限制：单文件 ≤ 1MB、行数 ≤ 20000（防超大上传触发大额内存分配/GC 压力）。
 func (s *Service) ImportGroupMgrWords(ctx context.Context, c *app.RequestContext) {
 	category := strings.TrimSpace(c.Query("category"))
 	if !validWordCategory(category) {
@@ -156,6 +163,10 @@ func (s *Service) ImportGroupMgrWords(ctx context.Context, c *app.RequestContext
 	fh, err := c.FormFile("file")
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "缺少 file 字段: " + err.Error()}))
+		return
+	}
+	if fh.Size > maxWordImportSize {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WordImportTooLarge, nil))
 		return
 	}
 	f, err := fh.Open()
@@ -174,6 +185,10 @@ func (s *Service) ImportGroupMgrWords(ctx context.Context, c *app.RequestContext
 		}
 	}
 	lines := strings.Split(string(data), "\n")
+	if len(lines) > maxWordImportLines {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WordImportTooLarge, nil))
+		return
+	}
 	imported, skipped := 0, 0
 	if s.GroupMgr != nil {
 		imported, skipped = s.GroupMgr.ImportWords(ctx, lines, category)

@@ -24,13 +24,20 @@ import (
 // ---------------------------------------------------------------------------
 
 // httpClientCache 按代理地址缓存 http.Client（连接池复用，避免每次请求重建）。
+// LRU 上限 64：插件循环生成唯一代理串不会无限创建 Transport + 连接池
+// （OOM / fd DoS），淘汰时关闭该 client 的空闲连接释放 fd。
 type httpClientCache struct {
 	mu      sync.Mutex
 	clients map[string]*http.Client
+	order   []string // LRU 顺序：头部最久未使用，尾部最近使用
+	limit   int
 }
 
+// httpClientCacheLimit 代理 client 缓存上限。
+const httpClientCacheLimit = 64
+
 func newHTTPClientCache() *httpClientCache {
-	return &httpClientCache{clients: make(map[string]*http.Client)}
+	return &httpClientCache{clients: make(map[string]*http.Client), limit: httpClientCacheLimit}
 }
 
 // get 返回 (可能新建的) client；proxyURL 为空表示直连。scheme 非法时返回错误。
@@ -38,6 +45,7 @@ func (c *httpClientCache) get(proxyURL string) (*http.Client, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if cl, ok := c.clients[proxyURL]; ok {
+		c.touch(proxyURL)
 		return cl, nil
 	}
 	tr, err := buildHTTPTransport(proxyURL)
@@ -45,8 +53,31 @@ func (c *httpClientCache) get(proxyURL string) (*http.Client, error) {
 		return nil, err
 	}
 	cl := &http.Client{Timeout: 30 * time.Second, Transport: tr}
+	// 超上限：淘汰最久未使用并关闭其空闲连接（防连接池泄漏）
+	if len(c.clients) >= c.limit {
+		evict := c.order[0]
+		c.order = c.order[1:]
+		if old, ok := c.clients[evict]; ok {
+			delete(c.clients, evict)
+			if tr, ok := old.Transport.(*http.Transport); ok {
+				tr.CloseIdleConnections()
+			}
+		}
+	}
 	c.clients[proxyURL] = cl
+	c.order = append(c.order, proxyURL)
 	return cl, nil
+}
+
+// touch 将 key 移到 LRU 尾部（最近使用）。
+func (c *httpClientCache) touch(key string) {
+	for i, k := range c.order {
+		if k == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			c.order = append(c.order, key)
+			return
+		}
+	}
 }
 
 // buildHTTPTransport 构造带代理的 Transport，保留 ForceAttemptHTTP2=false 与
@@ -132,6 +163,9 @@ const (
 	socks4Version    = 0x04
 	socks4CmdConnect = 0x01
 	socks4Granted    = 0x5A
+	// socks4HandshakeTimeout 握手硬超时：代理 accept 后不响应（或响应不完整）时
+	// 不再永久阻塞 goroutine，超时后报错释放连接。
+	socks4HandshakeTimeout = 10 * time.Second
 )
 
 func parsePort(s string) (int, error) {
@@ -154,6 +188,16 @@ func socks4Connect(ctx context.Context, proxyAddr, host string, port int) (net.C
 	closeOnErr := func(e error) (net.Conn, error) {
 		conn.Close()
 		return nil, e
+	}
+
+	// 握手全程设 deadline（优先继承调用方 ctx，否则 10s 兜底），
+	// 防代理 accept 后不发响应导致 readFull 永久阻塞泄漏 goroutine
+	deadline := time.Now().Add(socks4HandshakeTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return closeOnErr(fmt.Errorf("socks4 设置握手 deadline 失败: %w", err))
 	}
 
 	// 请求头：VN CD DSTPORT(2B 大端) DSTIP(4B) USERID(空) [socks4a: HOSTNAME NUL]
@@ -185,6 +229,8 @@ func socks4Connect(ctx context.Context, proxyAddr, host string, port int) (net.C
 	if resp[1] != socks4Granted {
 		return closeOnErr(fmt.Errorf("socks4 代理拒绝连接（code=0x%02X，目标 %s:%d）", resp[1], host, port))
 	}
+	// 握手完成：清除 deadline，后续读写交由 HTTP 传输层管理
+	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
 }
 

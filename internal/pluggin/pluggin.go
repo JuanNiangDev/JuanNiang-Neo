@@ -2081,16 +2081,23 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 			if top >= 3 && L.Get(3).Type() == lua.LTTable && headers == nil {
 				headers = parseStringTable(L.Get(3).(*lua.LTable))
 			}
-			// 第 2 位：opts 表（含 proxy 键）或旧 ctx 现场表
+			// 第 2 位：opts 表（含 proxy/headers/ctx 任一已知键）或旧 ctx 现场表。
+			// 以「是否命中已知 opts 键」判定新签名——此前仅当含 proxy 键才走新分支，
+			// get_async(url, {headers={...}}) 的 headers 被静默丢弃并整体存为回调 ctx。
 			if top >= 2 && L.Get(2).Type() == lua.LTTable {
 				tbl := L.Get(2).(*lua.LTable)
-				if p := tbl.RawGetString("proxy"); p.Type() == lua.LTString {
-					proxyURL = string(p.(lua.LString))
-					if h := tbl.RawGetString("headers"); h.Type() == lua.LTTable {
-						headers = parseStringTable(h.(*lua.LTable))
+				hasProxy := tbl.RawGetString("proxy").Type() == lua.LTString
+				hasHeaders := tbl.RawGetString("headers").Type() == lua.LTTable
+				hasCtx := tbl.RawGetString("ctx") != lua.LNil
+				if hasProxy || hasHeaders || hasCtx {
+					if hasProxy {
+						proxyURL = string(tbl.RawGetString("proxy").(lua.LString))
 					}
-					if c := tbl.RawGetString("ctx"); c != lua.LNil {
-						optsCtx = c // 回调 ctx=opts.ctx（任意 Lua 值）
+					if hasHeaders {
+						headers = parseStringTable(tbl.RawGetString("headers").(*lua.LTable))
+					}
+					if hasCtx {
+						optsCtx = tbl.RawGetString("ctx") // 回调 ctx=opts.ctx（任意 Lua 值）
 					}
 				} else {
 					ctxIdx = 2 // 旧语义：ctx 现场表
@@ -2131,22 +2138,40 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 			return 1
 		},
 		// post_async(url, content_type?, body?, proxy?, ctx?) 异步 POST：
-		//   旧签名尾部 table = ctx；新签名第 4 位为 proxy 字符串（ctx 自然后移至第 5 位）
+		//   旧签名尾部 table = ctx；第 4 位 proxy 字符串（ctx 后移至第 5 位）；
+		//   尾部表含已知 opts 键（proxy/headers/ctx）时按新 opts 表解析（headers 不再静默丢失）
 		"post_async": func(L *lua.LState) int {
 			url := L.CheckString(1)
 			contentType := "application/json"
 			var bodyStr string
 			proxyURL := ""
+			var headers map[string]string
 			top := L.GetTop()
 			ctxIdx := 0
-			// 第 4 位：proxy 字符串（新）
+			var optsCtx lua.LValue
+			// 第 4 位：proxy 字符串（positional 写法）
 			if top >= 4 && L.Get(4).Type() == lua.LTString {
 				proxyURL = string(L.Get(4).(lua.LString))
 			}
-			// 尾部 table 参数视为调用现场 ctx（与 body 字符串区分；
-			// 第 4 位被 proxy 占用时 ctx 在后移的第 5 位）
+			// 尾部 table：含已知 opts 键 → opts 表；否则旧 ctx 现场表
 			if top >= 2 && L.Get(top).Type() == lua.LTTable {
-				ctxIdx = top
+				tbl := L.Get(top).(*lua.LTable)
+				hasProxy := tbl.RawGetString("proxy").Type() == lua.LTString
+				hasHeaders := tbl.RawGetString("headers").Type() == lua.LTTable
+				hasCtx := tbl.RawGetString("ctx") != lua.LNil
+				if hasProxy || hasHeaders || hasCtx {
+					if hasProxy {
+						proxyURL = string(tbl.RawGetString("proxy").(lua.LString))
+					}
+					if hasHeaders {
+						headers = parseStringTable(tbl.RawGetString("headers").(*lua.LTable))
+					}
+					if hasCtx {
+						optsCtx = tbl.RawGetString("ctx")
+					}
+				} else {
+					ctxIdx = top // 旧语义：ctx 现场表
+				}
 				top--
 			}
 			if top >= 3 {
@@ -2165,6 +2190,9 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 					return nil, err
 				}
 				req.Header.Set("Content-Type", contentType)
+				for k, v := range headers {
+					req.Header.Set(k, v)
+				}
 				resp, err := cl.Do(req)
 				if err != nil {
 					return nil, err
@@ -2179,7 +2207,9 @@ func (pe *PluginEngine) injectHTTP(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(err.Error()))
 				return 2
 			}
-			if ctxIdx > 0 {
+			if optsCtx != nil {
+				saveAsyncCtxValue(L, id, optsCtx)
+			} else if ctxIdx > 0 {
 				saveAsyncCtx(L, id, ctxIdx)
 			}
 			L.Push(lua.LNumber(id))
