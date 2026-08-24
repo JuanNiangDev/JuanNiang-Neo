@@ -10,13 +10,16 @@
       检测到旧版 Lua 插件 redrock_group_manager 仍处于启用状态，会与本系统功能双重检测导致重复处罚。请到「Plugin 管理」页停用该插件。
     </v-alert>
 
-    <v-tabs v-model="tab" bg-color="transparent" class="mb-3">
-      <v-tab value="overview"><v-icon class="me-1">mdi-view-dashboard-outline</v-icon>数据总览</v-tab>
-      <v-tab value="params"><v-icon class="me-1">mdi-tune-variant</v-icon>参数设置</v-tab>
-      <v-tab value="prompts"><v-icon class="me-1">mdi-text-box-edit-outline</v-icon>提示词设置</v-tab>
-      <v-tab value="words"><v-icon class="me-1">mdi-format-list-bulleted-type</v-icon>词库管理</v-tab>
-      <v-tab value="violations"><v-icon class="me-1">mdi-clipboard-alert-outline</v-icon>违规记录</v-tab>
-    </v-tabs>
+    <div class="d-flex align-center mb-3">
+      <v-tabs v-model="tab" bg-color="transparent" class="flex-grow-1">
+        <v-tab value="overview"><v-icon class="me-1">mdi-view-dashboard-outline</v-icon>数据总览</v-tab>
+        <v-tab value="params"><v-icon class="me-1">mdi-tune-variant</v-icon>参数设置</v-tab>
+        <v-tab value="prompts"><v-icon class="me-1">mdi-text-box-edit-outline</v-icon>提示词设置</v-tab>
+        <v-tab value="words"><v-icon class="me-1">mdi-format-list-bulleted-type</v-icon>词库管理</v-tab>
+        <v-tab value="violations"><v-icon class="me-1">mdi-clipboard-alert-outline</v-icon>违规记录</v-tab>
+      </v-tabs>
+      <v-btn color="primary" variant="tonal" prepend-icon="mdi-flask-outline" @click="openTestDialog">链路测试</v-btn>
+    </div>
 
     <v-window v-model="tab">
       <!-- ================= 数据总览 ================= -->
@@ -24,24 +27,30 @@
         <!-- 统计仪表盘 -->
         <v-card rounded="lg" elevation="1" class="mb-4">
           <v-card-item>
-            <template #title><span class="text-h6 font-weight-bold">群管理统计（/groupstats 同源）</span></template>
+            <template #title><span class="text-h6 font-weight-bold">群管理统计</span></template>
             <template #append>
-              <div class="d-flex align-center ga-2">
-                <v-text-field v-model="statsGroupID" label="群号" density="compact" hide-details type="number" style="max-width: 180px" @keydown.enter="loadStats" />
-                <v-btn color="primary" variant="tonal" :loading="statsLoading" @click="loadStats">查询</v-btn>
-              </div>
+              <v-select
+                v-model="statsGroupID"
+                :items="groupOptions"
+                label="选择群"
+                density="compact"
+                hide-details
+                style="max-width: 240px"
+                @update:model-value="loadStats"
+              />
             </template>
           </v-card-item>
           <v-card-text>
             <v-row v-if="stats" dense>
               <v-col v-for="s in statCards" :key="s.label" cols="6" sm="4" md="3" lg="2">
                 <div class="stat-card pa-3">
-                  <div class="text-h6 font-weight-bold">{{ s.value }}</div>
+                  <v-icon :color="s.color" class="me-1" size="22">{{ s.icon }}</v-icon>
+                  <span class="text-h6 font-weight-bold">{{ s.value }}</span>
                   <div class="text-caption text-medium-emphasis">{{ s.label }}</div>
                 </div>
               </v-col>
             </v-row>
-            <div v-else class="text-caption text-medium-emphasis">输入群号查询统计（今日入群 / 刷屏 / 复读 / 广告 / 敏感 / 踢出）</div>
+            <div v-else class="text-caption text-medium-emphasis">选择群查看统计（今日入群 / 刷屏 / 复读 / 广告 / 敏感 / 踢出）</div>
           </v-card-text>
         </v-card>
 
@@ -72,34 +81,12 @@
               <v-card-item><template #title><span class="text-h6 font-weight-bold">白名单与管理员</span></template></v-card-item>
               <v-card-text class="d-flex flex-column">
                 <div class="d-flex justify-space-between py-2"><span class="text-medium-emphasis">白名单 QQ</span><span class="text-body-2">{{ whitelistQQs.length }} 个</span></div>
-                <div class="d-flex justify-space-between py-2"><span class="text-medium-emphasis">手动管理员</span><span class="text-body-2">{{ adminQQs.length }} 个</span></div>
+                <div class="d-flex justify-space-between py-2"><span class="text-medium-emphasis">系统管理员</span><span class="text-body-2">{{ systemAdminCount }} 个</span></div>
                 <div class="d-flex justify-space-between py-2"><span class="text-medium-emphasis">违规记录</span><span class="text-body-2">{{ violations.length }} 条</span></div>
               </v-card-text>
             </v-card>
           </v-col>
         </v-row>
-
-        <!-- 链路测试 -->
-        <v-card rounded="lg" elevation="1" class="mt-4">
-          <v-card-item><template #title><span class="text-h6 font-weight-bold">链路测试（不处罚、不写库）</span></template></v-card-item>
-          <v-card-text>
-            <div class="d-flex align-center ga-2">
-              <v-text-field v-model="testText" label="粘贴消息文本，查看判定流水" density="compact" hide-details class="flex-grow-1" @keydown.enter="runTest" />
-              <v-btn color="primary" variant="tonal" :loading="testing" @click="runTest">测试</v-btn>
-            </div>
-            <div v-if="testReport" class="mt-3">
-              <div class="d-flex flex-wrap ga-2 mb-2">
-                <v-chip size="small" :color="testReport.rag_ok ? 'success' : 'default'">RAG 可用: {{ testReport.rag_ok }}</v-chip>
-                <v-chip v-if="testReport.word" size="small" color="warning">命中词: {{ testReport.word }} ({{ testReport.word_cat }})</v-chip>
-                <v-chip v-if="testReport.card" size="small" color="error">推荐卡片</v-chip>
-                <v-chip v-if="testReport.rag_ok" size="small" color="info">RAG 分数: {{ testReport.rag_score.toFixed(3) }}</v-chip>
-              </div>
-              <v-alert :type="verdictColor(testReport.verdict)" density="compact" variant="tonal">
-                <b>{{ verdictLabel(testReport.verdict) }}</b> —— {{ testReport.reason }}
-              </v-alert>
-            </div>
-          </v-card-text>
-        </v-card>
       </v-window-item>
 
       <!-- ================= 参数设置 ================= -->
@@ -116,6 +103,10 @@
                 <div class="d-flex align-center justify-space-between py-1">
                   <span class="text-body-1">LLM 审核</span>
                   <v-switch v-model="form.llm_review" color="primary" hide-details @change="markDirty" />
+                </div>
+                <div class="d-flex align-center ga-2 mt-2">
+                  <v-btn color="warning" variant="tonal" prepend-icon="mdi-cancel" @click="openExcludeDialog">排除群设置</v-btn>
+                  <v-btn color="primary" variant="tonal" prepend-icon="mdi-shield-plus-outline" @click="openWhitelistDialog">白名单设置</v-btn>
                 </div>
               </v-col>
               <v-col cols="12" md="6">
@@ -138,14 +129,6 @@
               </v-col>
               <v-col cols="12" md="6">
                 <v-combobox v-model="whitelistQQs" label="白名单 QQ（不参与检测）" multiple chips hide-selected type="number" @update:model-value="markDirty" />
-              </v-col>
-              <v-col cols="12">
-                <div class="text-subtitle-2 font-weight-bold mb-1">手动管理员 QQ</div>
-                <div class="d-flex align-center ga-2">
-                  <v-combobox v-model="adminQQs" label="管理员（群角色无法识别时生效）" multiple chips hide-selected type="number" class="flex-grow-1" @update:model-value="markDirty" />
-                  <v-btn color="info" variant="tonal" prepend-icon="mdi-sync" :loading="syncingAdmins" @click="syncAdminsFromAdapter">从 Adapter 同步</v-btn>
-                </div>
-                <div class="text-caption text-medium-emphasis mt-1">「从 Adapter 同步」将系统管理员（Adapter.Admins 配置）合并到手动管理员列表。</div>
               </v-col>
             </v-row>
           </v-card-text>
@@ -297,13 +280,94 @@
           </v-card>
         </v-dialog>
       </v-window-item>
+
+      <!-- ================= 链路测试对话框（Tab 栏最右按钮） ================= -->
+      <v-dialog v-model="testDialog" max-width="640">
+        <v-card>
+          <v-card-title class="py-3"><v-icon class="me-2" color="primary">mdi-flask-outline</v-icon>链路测试</v-card-title>
+          <v-card-text>
+            <div class="d-flex align-center ga-2">
+              <v-text-field v-model="testText" label="粘贴消息文本，查看判定流水（不处罚、不写库）" density="compact" hide-details class="flex-grow-1" @keydown.enter="runTest" />
+              <v-btn color="primary" variant="tonal" :loading="testing" @click="runTest">测试</v-btn>
+            </div>
+            <div v-if="testReport" class="mt-3">
+              <div class="d-flex flex-wrap ga-2 mb-2">
+                <v-chip size="small" :color="testReport.rag_ok ? 'success' : 'default'">RAG 可用: {{ testReport.rag_ok }}</v-chip>
+                <v-chip v-if="testReport.word" size="small" color="warning">命中词: {{ testReport.word }} ({{ testReport.word_cat }})</v-chip>
+                <v-chip v-if="testReport.card" size="small" color="error">推荐卡片</v-chip>
+                <v-chip v-if="testReport.rag_ok" size="small" color="info">RAG 分数: {{ testReport.rag_score.toFixed(3) }}</v-chip>
+              </div>
+              <v-alert :type="verdictColor(testReport.verdict)" density="compact" variant="tonal">
+                <b>{{ verdictLabel(testReport.verdict) }}</b> —— {{ testReport.reason }}
+              </v-alert>
+            </div>
+          </v-card-text>
+          <v-card-actions class="pa-4 pt-0">
+            <v-btn variant="text" @click="testDialog = false">关闭</v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
+
+      <!-- ================= 排除群设置对话框 ================= -->
+      <v-dialog v-model="excludeDialog" max-width="480">
+        <v-card>
+          <v-card-title class="py-3"><v-icon class="me-2" color="warning">mdi-cancel</v-icon>排除检测的群</v-card-title>
+          <v-card-text>
+            <div class="text-caption text-medium-emphasis mb-3">这些群不跑任何群管理检测与处罚。</div>
+            <div class="d-flex align-center ga-2 mb-3">
+              <v-text-field v-model="excludeInput" label="群号" density="compact" hide-details type="number" @keydown.enter="addExclude" />
+              <v-btn color="primary" variant="tonal" size="small" @click="addExclude">添加</v-btn>
+            </div>
+            <v-list density="compact" max-height="320" style="overflow-y: auto">
+              <v-list-item v-for="g in excludeDraft" :key="g">
+                <v-list-item-title>群 {{ g }}</v-list-item-title>
+                <template #append>
+                  <v-btn icon="mdi-delete-outline" size="x-small" variant="text" color="error" @click="removeExclude(g)" />
+                </template>
+              </v-list-item>
+              <div v-if="!excludeDraft.length" class="text-caption text-medium-emphasis pa-2">暂无排除群</div>
+            </v-list>
+          </v-card-text>
+          <v-card-actions class="pa-4 pt-0">
+            <v-btn color="primary" variant="tonal" :loading="savingCfg" @click="saveExclude">保存</v-btn>
+            <v-btn variant="text" @click="excludeDialog = false">取消</v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
+
+      <!-- ================= 白名单设置对话框 ================= -->
+      <v-dialog v-model="whitelistDialog" max-width="480">
+        <v-card>
+          <v-card-title class="py-3"><v-icon class="me-2" color="primary">mdi-shield-plus-outline</v-icon>白名单 QQ</v-card-title>
+          <v-card-text>
+            <div class="text-caption text-medium-emphasis mb-3">白名单 QQ 不参与任何违规检测（加入时自动清违规记录并解禁言）。</div>
+            <div class="d-flex align-center ga-2 mb-3">
+              <v-text-field v-model="whitelistInput" label="QQ 号" density="compact" hide-details type="number" @keydown.enter="addWhitelist" />
+              <v-btn color="primary" variant="tonal" size="small" @click="addWhitelist">添加</v-btn>
+            </div>
+            <v-list density="compact" max-height="320" style="overflow-y: auto">
+              <v-list-item v-for="qq in whitelistDraft" :key="qq">
+                <v-list-item-title>{{ qq }}</v-list-item-title>
+                <template #append>
+                  <v-btn icon="mdi-delete-outline" size="x-small" variant="text" color="error" @click="removeWhitelist(qq)" />
+                </template>
+              </v-list-item>
+              <div v-if="!whitelistDraft.length" class="text-caption text-medium-emphasis pa-2">暂无白名单</div>
+            </v-list>
+          </v-card-text>
+          <v-card-actions class="pa-4 pt-0">
+            <v-btn color="primary" variant="tonal" :loading="savingList" @click="saveWhitelist">保存</v-btn>
+            <v-btn variant="text" @click="whitelistDialog = false">取消</v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-dialog>
     </v-window>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { groupMgrApi, pluginApi, type GroupMgrConfigResp, type GroupMgrWordResp, type GroupMgrSampleResp, type GroupMgrViolationResp, type GroupMgrStatsResp, type GroupMgrTestResp } from '@/api'
+import { groupMgrApi, pluginApi, chatAreaApi, adapterApi, type GroupMgrConfigResp, type GroupMgrWordResp, type GroupMgrSampleResp, type GroupMgrViolationResp, type GroupMgrStatsResp, type GroupMgrTestResp, type ChatAreaResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
@@ -419,33 +483,27 @@ async function savePrompt() {
   }
 }
 
-// ---------- 白名单 / 管理员 ----------
+// ---------- 白名单 ----------
 const whitelistQQs = ref<number[]>([])
-const adminQQs = ref<number[]>([])
 const savingList = ref(false)
-const syncingAdmins = ref(false)
 
 async function loadLists() {
   try {
     const wl = (await groupMgrApi.whitelist()).data.data
     whitelistQQs.value = wl?.qq_list ?? []
-    const ad = (await groupMgrApi.admins()).data.data
-    adminQQs.value = ad?.qq_list ?? []
   } catch (e: any) {
     toastStore.error(e?.message || '加载列表失败')
   }
 }
 
-async function syncAdminsFromAdapter() {
-  syncingAdmins.value = true
+// ---------- 系统管理员（Adapter.Admins，只读展示） ----------
+const systemAdminCount = ref(0)
+async function loadSystemAdmins() {
   try {
-    const res = (await groupMgrApi.syncAdminsFromAdapter()).data.data
-    toastStore.success(`已从 Adapter 同步管理员，新增 ${res?.added ?? 0} 个`)
-    await loadLists()
-  } catch (e: any) {
-    toastStore.error(e?.message || '同步失败')
-  } finally {
-    syncingAdmins.value = false
+    const c = (await adapterApi.getConfig()).data.data
+    systemAdminCount.value = (c?.admin_qq_numbers || []).length
+  } catch {
+    systemAdminCount.value = 0
   }
 }
 
@@ -570,7 +628,8 @@ async function deleteViolation(v: GroupMgrViolationResp) {
 }
 
 // ---------- 统计 ----------
-const statsGroupID = ref('')
+const groupOptions = ref<{ title: string; value: number }[]>([])
+const statsGroupID = ref<number | null>(null)
 const stats = ref<GroupMgrStatsResp | null>(null)
 const statsLoading = ref(false)
 
@@ -578,19 +637,35 @@ const statCards = computed(() => {
   const s = stats.value
   if (!s) return []
   return [
-    { label: '今日入群', value: s.join_today },
-    { label: '刷屏警告', value: s.warns },
-    { label: '刷屏禁言', value: s.mutes },
-    { label: '复读警告', value: s.copy_warns },
-    { label: '广告违规', value: s.ad },
-    { label: '敏感违规', value: s.sensitive },
-    { label: '踢出群聊', value: s.kicks },
+    { label: '今日入群', value: s.join_today, icon: 'mdi-account-plus-outline', color: 'primary' },
+    { label: '刷屏警告', value: s.warns, icon: 'mdi-image-multiple-outline', color: 'warning' },
+    { label: '刷屏禁言', value: s.mutes, icon: 'mdi-account-cancel-outline', color: 'error' },
+    { label: '复读警告', value: s.copy_warns, icon: 'mdi-repeat', color: 'info' },
+    { label: '广告违规', value: s.ad, icon: 'mdi-bullhorn-outline', color: 'deep-orange' },
+    { label: '敏感违规', value: s.sensitive, icon: 'mdi-alert-octagon-outline', color: 'purple' },
+    { label: '踢出群聊', value: s.kicks, icon: 'mdi-account-remove-outline', color: 'red' },
   ]
 })
 
+// 群下拉选项：ChatArea 中 area_type=group 的列表
+async function loadGroups() {
+  try {
+    const list = (await chatAreaApi.list()).data.data || []
+    const groups = list.filter((c: ChatAreaResp) => c.area_type === 'group')
+    groupOptions.value = groups.map((c: ChatAreaResp) => ({ title: `群 ${c.target_id}`, value: Number(c.target_id) }))
+    // 切到界面时默认展示第一个群聊
+    if (groupOptions.value.length && !groupOptions.value.some(o => o.value === statsGroupID.value)) {
+      statsGroupID.value = groupOptions.value[0].value
+      await loadStats()
+    }
+  } catch {
+    groupOptions.value = []
+  }
+}
+
 async function loadStats() {
-  const gid = Number(statsGroupID.value)
-  if (!gid) { toastStore.error('请输入群号'); return }
+  const gid = statsGroupID.value
+  if (!gid) { stats.value = null; return }
   statsLoading.value = true
   try {
     const res = (await groupMgrApi.stats(gid)).data.data
@@ -602,10 +677,15 @@ async function loadStats() {
   }
 }
 
-// ---------- 链路测试 ----------
+// ---------- 链路测试（Tab 栏最右按钮 → 对话框） ----------
+const testDialog = ref(false)
 const testText = ref('')
 const testing = ref(false)
 const testReport = ref<GroupMgrTestResp | null>(null)
+
+function openTestDialog() {
+  testDialog.value = true
+}
 
 async function runTest() {
   const t = testText.value.trim()
@@ -624,6 +704,88 @@ async function runTest() {
 function verdictLabel(v: string) { return { punish: '直接处罚', review: '送 LLM 审核', pass: '放行' }[v] ?? v }
 function verdictColor(v: string) { return v === 'punish' ? 'error' : v === 'review' ? 'warning' : 'success' }
 
+// ---------- 排除群设置对话框 ----------
+const excludeDialog = ref(false)
+const excludeInput = ref('')
+const excludeDraft = ref<string[]>([])
+
+function openExcludeDialog() {
+  excludeDraft.value = [...form.value.exclude_groups]
+  excludeInput.value = ''
+  excludeDialog.value = true
+}
+
+function addExclude() {
+  const g = excludeInput.value.trim()
+  if (!/^\d+$/.test(g)) return
+  if (!excludeDraft.value.includes(g)) excludeDraft.value.push(g)
+  excludeInput.value = ''
+}
+
+function removeExclude(g: string) {
+  excludeDraft.value = excludeDraft.value.filter(x => x !== g)
+}
+
+async function saveExclude() {
+  savingCfg.value = true
+  try {
+    await groupMgrApi.updateConfig({
+      enabled: form.value.enabled,
+      llm_review: form.value.llm_review,
+      high_score: form.value.high_score,
+      low_score: form.value.low_score,
+      fallback_score: form.value.fallback_score,
+      exclude_groups: excludeDraft.value,
+      llm_criteria: form.value.llm_criteria,
+      llm_gray_prompt: form.value.llm_gray_prompt,
+      llm_high_risk_prompt: form.value.llm_high_risk_prompt,
+    })
+    form.value.exclude_groups = [...excludeDraft.value]
+    toastStore.success('排除群已保存')
+    excludeDialog.value = false
+  } catch (e: any) {
+    toastStore.error(e?.message || '保存失败')
+  } finally {
+    savingCfg.value = false
+  }
+}
+
+// ---------- 白名单设置对话框 ----------
+const whitelistDialog = ref(false)
+const whitelistInput = ref('')
+const whitelistDraft = ref<number[]>([])
+
+function openWhitelistDialog() {
+  whitelistDraft.value = [...whitelistQQs.value]
+  whitelistInput.value = ''
+  whitelistDialog.value = true
+}
+
+function addWhitelist() {
+  const qq = Number(whitelistInput.value)
+  if (!qq) return
+  if (!whitelistDraft.value.includes(qq)) whitelistDraft.value.push(qq)
+  whitelistInput.value = ''
+}
+
+function removeWhitelist(qq: number) {
+  whitelistDraft.value = whitelistDraft.value.filter(x => x !== qq)
+}
+
+async function saveWhitelist() {
+  savingList.value = true
+  try {
+    await groupMgrApi.updateWhitelist(whitelistDraft.value)
+    whitelistQQs.value = [...whitelistDraft.value]
+    toastStore.success('白名单已保存')
+    whitelistDialog.value = false
+  } catch (e: any) {
+    toastStore.error(e?.message || '保存失败')
+  } finally {
+    savingList.value = false
+  }
+}
+
 // ---------- 展示辅助 ----------
 function wordCount(cat: string) { return words.value.filter(w => w.category === cat).length }
 function catLabel(c: string) { return { black: '黑色', gray: '灰色', sensitive: '敏感' }[c] ?? c }
@@ -633,7 +795,7 @@ function pathColor(p: string) { return { rag: 'info', llm: 'primary', keyword: '
 function shortUUID(u: string) { return u ? `${u.slice(0, 8)}…${u.slice(-4)}` : '-' }
 
 async function loadAll() {
-  await Promise.all([loadConfig(), loadWords(), loadLists(), loadViolations(), loadSamples()])
+  await Promise.all([loadConfig(), loadWords(), loadLists(), loadViolations(), loadSamples(), loadSystemAdmins()])
 }
 
 // ---------- 样本（数据总览用） ----------
@@ -661,6 +823,7 @@ async function checkLegacyPlugin() {
 onMounted(() => {
   loadAll()
   checkLegacyPlugin()
+  loadGroups()
 })
 </script>
 

@@ -239,6 +239,10 @@ export const mockHandlers: MockHandler[] = [
     }
   },
   {
+    method: 'GET', path: '/adapter/config',
+    handler() { return ok(adapterConfig) }
+  },
+  {
     method: 'POST', path: '/adapter/restart',
     handler() {
       adapterState.running = true
