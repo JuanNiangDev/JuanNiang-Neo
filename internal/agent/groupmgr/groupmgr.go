@@ -136,6 +136,11 @@ func (m *Manager) Init(ctx context.Context) error {
 		}
 		log.Info("群管理词库种子导入完成", "imported", imported)
 	}
+	// 图片刷屏窗口恢复（重启不丢窗口；顺带清理过期 ims: kv 行）
+	cfg, _ := m.dao.GetConfig(ctx)
+	if cfg != nil {
+		m.restoreImgState(ctx, cfg.ImgSpamWindow)
+	}
 	return m.Reload(ctx)
 }
 

@@ -196,7 +196,7 @@ func (h *HagoCenter) GetT2IClient() *t2icaller.Client {
 
 // GetRAGClient 返回当前 RAG 客户端（nil=未启用）。
 func (h *HagoCenter) GetRAGClient() *ragcaller.Client {
-	return h.RAGClient
+	return h.RAGClient.Load()
 }
 
 // GetSandboxClient 返回当前 Sandbox 客户端。

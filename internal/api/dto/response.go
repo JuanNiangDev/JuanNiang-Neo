@@ -36,7 +36,7 @@ var (
 	AdapterConfigNotFound   = Response{Status: 40025, Info: "adapter 配置不存在"}
 	T2IConfigNotFound       = Response{Status: 40026, Info: "T2I 配置不存在"}
 	SandboxConfigNotFound   = Response{Status: 40027, Info: "Sandbox 配置不存在"}
-	RAGConfigNotFound       = Response{Status: 40034, Info: "RAG 配置不存在"}
+	RAGConfigNotFound       = Response{Status: 40050, Info: "RAG 配置不存在"}
 	PluginIsSystem          = Response{Status: 40028, Info: "系统插件不允许删除或停用"}
 	PromptIsSystem          = Response{Status: 40029, Info: "系统提示词不允许修改或删除"}
 	ToolIsBuiltin           = Response{Status: 40030, Info: "内置工具运行时常驻, 不支持启停"}

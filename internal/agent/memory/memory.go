@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
@@ -35,8 +36,9 @@ type MemoryGroup struct {
 	SkillMemory *skillmem.SkillMemory
 	LLMProvider provider.Provider // 用于 Compact 中的技能记忆更新（兼容旧赋值，动态获取函数优先）
 
-	// RAGClient 向量检索客户端（Compact 双写记忆向量用）；nil=未启用时静默跳过。
-	RAGClient *ragcaller.Client
+	// RAGClient 向量检索客户端（Compact 双写记忆向量用）；Load()=nil 时静默跳过。
+	// 原子指针：Web 配置热更新（HTTP goroutine）与 Compact 双写（agent goroutine）并发读写无竞争。
+	RAGClient atomic.Pointer[ragcaller.Client]
 
 	// llmProviderFn 动态获取 Text LLM Provider：Compact 触发时实时取最新模型，
 	// 避免启动时序（Init 时 ProviderGroup 尚未加载）与 Provider 热更新导致的 nil/过期问题。
@@ -69,7 +71,7 @@ func (m *MemoryGroup) SetLLMProviderFn(fn func() provider.Provider) {
 
 // SetRAGClient 注入 RAG 向量检索客户端（双写记忆向量用；nil=未启用）。
 func (m *MemoryGroup) SetRAGClient(c *ragcaller.Client) {
-	m.RAGClient = c
+	m.RAGClient.Store(c)
 }
 
 // getLLMProvider 返回当前可用的 Text LLM Provider：优先动态获取函数，回退旧字段。
@@ -162,21 +164,36 @@ func (m *MemoryGroup) UpdateShortTermConfig(areaID string, conf ShortTermMemoryC
 	m.shortTermConfMu.Unlock()
 }
 
+// ragMemSyncTimeout 记忆向量双写超时：RAG 属于可降级能力，短超时快速失败不拖主链路。
+const ragMemSyncTimeout = 5 * time.Second
+
+// AddLongTermMemory 写入长期记忆并异步双写 RAG 向量。
+// 双写异步化：Compact 落在 agent 路径内，同步 30s Upsert 会把 Agent 循环拖死；
+// RAG 未配置/不可用静默跳过，残留可由「记忆页手动同步向量库」补齐。
 func (m *MemoryGroup) AddLongTermMemory(ctx context.Context, areaID, content string) error {
 	item, err := m.LongTerm.Add(ctx, areaID, content)
 	if err != nil {
 		return err
 	}
-	// 双写：同步记忆向量到 RAG-Service（Compact 落库后；未配置静默跳过，
-	// 失败仅告警——记忆量级小且无手动同步入口，残留影响可忽略）。
-	if m.RAGClient != nil && item != nil {
-		ragCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if _, err := m.RAGClient.Upsert(ragCtx, ragtag.Memory(item.ID), content); err != nil {
-			log.Warn("记忆向量同步失败", "id", item.ID, "err", err)
-		}
+	if item != nil {
+		m.syncMemoryVector(item.ID, content)
 	}
 	return nil
+}
+
+// syncMemoryVector 异步写记忆向量到 RAG-Service（goroutine + 短超时快速失败，不阻塞调用方）。
+func (m *MemoryGroup) syncMemoryVector(id, content string) {
+	go func() {
+		cli := m.RAGClient.Load()
+		if cli == nil {
+			return
+		}
+		ragCtx, cancel := context.WithTimeout(context.Background(), ragMemSyncTimeout)
+		defer cancel()
+		if _, err := cli.Upsert(ragCtx, ragtag.Memory(id), content); err != nil {
+			log.Warn("记忆向量同步失败", "id", id, "err", err)
+		}
+	}()
 }
 
 // GetExistingLongTermMemory 获取当前长期记忆内容（供 Compact 使用）。

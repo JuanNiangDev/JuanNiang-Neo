@@ -71,6 +71,8 @@ func (m *Manager) checkImageSpam(ctx context.Context, ev adapter.Event, cfg *mod
 			delete(m.imgState, key)
 			delete(m.imgWarn, key)
 			m.imgMu.Unlock()
+			// 禁言后清理 kv 持久化窗口（防无限增长：ims: 行只写不读/不清理会持续膨胀）
+			_ = m.dao.StatDelete(ctx, key)
 		} else {
 			m.imgMu.Lock()
 			m.imgWarn[key] = true
@@ -86,24 +88,40 @@ func (m *Manager) checkImageSpam(ctx context.Context, ev adapter.Event, cfg *mod
 		delete(m.imgWarn, key)
 		m.imgMu.Unlock()
 	}
+	// kv 持久化兜底（重启不丢窗口）：只写窗口内时间戳，过期即被过滤掉
+	_ = m.dao.StatSet(ctx, key, joinInts(recent))
 	return false
 }
 
-// restoreImgState 启动时从 kv 恢复图片刷屏窗口（内存态重建）。
-func (m *Manager) restoreImgState(ctx context.Context) {
+// restoreImgState 启动时从 kv 恢复图片刷屏窗口（内存态重建），并清理全部过期的
+// ims: 行（窗口外时间戳不再保留，防 kv 无限增长——此前 ims: 行只写不读不清理）。
+func (m *Manager) restoreImgState(ctx context.Context, window int) {
+	if window <= 0 {
+		window = 2
+	}
 	list, err := m.dao.StatListPrefix(ctx, "")
 	if err != nil {
 		return
 	}
+	now := time.Now().Unix()
+	cutoff := now - int64(window)
 	m.imgMu.Lock()
 	defer m.imgMu.Unlock()
 	for _, s := range list {
 		if !strings.Contains(s.Key, ":ims:") {
 			continue
 		}
-		times := parseInts(s.Value)
-		if len(times) > 0 {
-			m.imgState[s.Key] = times
+		valid := make([]int64, 0, 8)
+		for _, ts := range parseInts(s.Value) {
+			if ts >= cutoff {
+				valid = append(valid, ts)
+			}
+		}
+		if len(valid) > 0 {
+			m.imgState[s.Key] = valid
+		} else {
+			// 窗口外残留：清理 kv 行（防无限增长）
+			_ = m.dao.StatDelete(ctx, s.Key)
 		}
 	}
 }

@@ -262,7 +262,7 @@ func main() {
 	// ---------- 6.5 群管理系统功能（Phase 0.5 检测闸门 + 系统命令） ----------
 	gm := groupmgr.New(coreInst.DAO.GroupMgr,
 		adapterProv,
-		func() *ragcaller.Client { return hago.RAGClient },
+		func() *ragcaller.Client { return hago.RAGClient.Load() },
 		hago.Providers)
 	if err := gm.Init(ctx); err != nil {
 		log.Error("群管理初始化失败", "err", err)
@@ -303,7 +303,7 @@ func main() {
 	svc.OnUpdateT2I = func(client *t2icaller.Client) { hago.T2IClient = client }
 	svc.OnUpdateSandbox = func(client *sandboxcaller.Client) { hago.SandboxClient = client }
 	svc.OnUpdateRAG = func(client *ragcaller.Client) {
-		hago.RAGClient = client
+		hago.RAGClient.Store(client)
 		hago.Memory.SetRAGClient(client) // 同步记忆双写客户端
 	}
 	svc.OnRebuildAgent = func() { hago.RebuildEinoAgent(ctx) }
@@ -375,7 +375,7 @@ func main() {
 				name   string
 				client interface{ HealthCheck() error }
 			}{
-				{"rag", hago.RAGClient},
+				{"rag", hago.RAGClient.Load()},
 				{"t2i", hago.T2IClient},
 				{"sandbox", hago.SandboxClient},
 			}
@@ -383,7 +383,18 @@ func main() {
 				name string
 				v    float64
 			}
-			ch := make(chan result, len(probes))
+			// 只 drain 实际启动的探测数：全部未配置时立即返回，避免空转 3×3s
+			// 拖慢 scrape（CachedMap 持锁执行，期间所有并发 /metrics 互相阻塞）。
+			started := 0
+			for _, p := range probes {
+				if p.client != nil {
+					started++
+				}
+			}
+			if started == 0 {
+				return m
+			}
+			ch := make(chan result, started)
 			for _, p := range probes {
 				if p.client == nil {
 					continue // 未配置不输出
@@ -396,11 +407,14 @@ func main() {
 					ch <- result{name: name, v: v}
 				}(p.name, p.client)
 			}
-			for range probes {
+			// 总 deadline：整个 fan-out 最多等 3s，收齐 started 个结果即返回
+			deadline := time.After(3 * time.Second)
+			for i := 0; i < started; i++ {
 				select {
 				case r := <-ch:
 					m[r.name] = r.v
-				case <-time.After(3 * time.Second):
+				case <-deadline:
+					return m
 				}
 			}
 			return m
@@ -678,7 +692,10 @@ func loadRAGFromDB(ctx context.Context, svc *service.Service, daos *dao.Bundle, 
 		return
 	}
 	svc.RAGClient = client
-	hago.RAGClient = client
+	hago.RAGClient.Store(client)
+	// 同步记忆双写客户端：启动路径不走 OnUpdateRAG 回调，必须在此注入
+	// （否则 Compact 双写记忆向量在启动加载 RAG 配置后永久失效）。
+	hago.Memory.SetRAGClient(client)
 	log.Info("RAG 客户端已就绪", "base_url", cfg.BaseURL)
 }
 

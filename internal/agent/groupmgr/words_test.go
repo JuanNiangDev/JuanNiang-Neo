@@ -114,6 +114,46 @@ func TestWordSoftDeleteRebuild(t *testing.T) {
 	}
 }
 
+// TestDeleteWordRemovesSamples 删除词条时同步清理派生样本与 RAG 向量。
+// 回归：此前只软删 group_mgr_words，seed 样本与 RAG 向量仍活跃，删词后 RAG 照常命中。
+func TestDeleteWordRemovesSamples(t *testing.T) {
+	m, gmdao := newTestManager(t, nil)
+	ctx := context.Background()
+
+	id, err := gmdao.WordUpsert(ctx, "测试删词清理", "black", "import")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 模拟词条派生样本（source=seed，WordID 关联）
+	if _, err := gmdao.SampleAddWithWord(ctx, "测试删词清理", "ad", "seed", id); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.DeleteWord(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	// 词条软删 + 派生样本已清理
+	w, err := gmdao.WordGet(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.DeletedAt.Valid {
+		t.Fatal("词条应为软删状态")
+	}
+	list, err := gmdao.SampleListByText(ctx, "测试删词清理")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("词条派生样本应被删除，剩余 %d 条", len(list))
+	}
+	// 删除后命中不再成立
+	_ = m.Reload(ctx)
+	if hit, _ := m.wordHit(ctx, "测试删词清理内容"); hit != "" {
+		t.Fatalf("删词后不应命中，got %q", hit)
+	}
+}
+
 func TestReasonAndCategory(t *testing.T) {
 	if got := categoryByWordOrCard("x", "sensitive", false, "ad"); got != "sensitive" {
 		t.Errorf("敏感词类别 = %s", got)

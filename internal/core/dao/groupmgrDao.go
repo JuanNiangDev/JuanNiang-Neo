@@ -138,6 +138,15 @@ func (d *GroupMgrDAO) WordListUnsynced(ctx context.Context) ([]models.GroupMgrWo
 	return list, err
 }
 
+// WordGet 按 ID 读取词条（含软删行，删除词条时取文本用）。
+func (d *GroupMgrDAO) WordGet(ctx context.Context, id uint) (*models.GroupMgrWord, error) {
+	var w models.GroupMgrWord
+	if err := d.db.WithContext(ctx).Unscoped().First(&w, id).Error; err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
 // WordDelete 删除词条（软删）。软删后重建同名由部分唯一索引（PG）+
 // WordUpsert 软删行复活（全方言）双重保障，不报唯一索引冲突。
 func (d *GroupMgrDAO) WordDelete(ctx context.Context, id uint) error {
@@ -162,12 +171,21 @@ func (d *GroupMgrDAO) SampleListAll(ctx context.Context) ([]models.GroupMgrSampl
 
 // SampleAdd 新增样本（幂等：text 已存在则刷新分类/来源并返回其 ID）。
 func (d *GroupMgrDAO) SampleAdd(ctx context.Context, text, category, source string) (uint, error) {
+	return d.SampleAddWithWord(ctx, text, category, source, 0)
+}
+
+// SampleAddWithWord 新增样本并关联词条 ID（词条派生样本 source=seed 用；WordID=0 表示无关联）。
+// 幂等：text 已存在则刷新分类/来源并回填 WordID（不覆盖已有关联）。
+func (d *GroupMgrDAO) SampleAddWithWord(ctx context.Context, text, category, source string, wordID uint) (uint, error) {
 	var existing models.GroupMgrSample
 	err := d.db.WithContext(ctx).Where("text = ?", text).First(&existing).Error
 	if err == nil {
-		if existing.Category != category || existing.Source != source {
+		if existing.Category != category || existing.Source != source || (wordID > 0 && existing.WordID != wordID) {
 			existing.Category = category
 			existing.Source = source
+			if wordID > 0 {
+				existing.WordID = wordID
+			}
 			if uerr := d.db.WithContext(ctx).Save(&existing).Error; uerr != nil {
 				return 0, uerr
 			}
@@ -177,11 +195,25 @@ func (d *GroupMgrDAO) SampleAdd(ctx context.Context, text, category, source stri
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, err
 	}
-	s := models.GroupMgrSample{Text: text, Category: category, Source: source}
+	s := models.GroupMgrSample{WordID: wordID, Text: text, Category: category, Source: source}
 	if err := d.db.WithContext(ctx).Create(&s).Error; err != nil {
 		return 0, err
 	}
 	return s.ID, nil
+}
+
+// SampleListByText 按文本列出样本（词条删除时对账清理用，通常 1 条）。
+func (d *GroupMgrDAO) SampleListByText(ctx context.Context, text string) ([]models.GroupMgrSample, error) {
+	var list []models.GroupMgrSample
+	err := d.db.WithContext(ctx).Where("text = ?", text).Find(&list).Error
+	return list, err
+}
+
+// SampleListByWord 按词条 ID 列出派生样本（对账/面板展示用）。
+func (d *GroupMgrDAO) SampleListByWord(ctx context.Context, wordID uint) ([]models.GroupMgrSample, error) {
+	var list []models.GroupMgrSample
+	err := d.db.WithContext(ctx).Where("word_id = ?", wordID).Find(&list).Error
+	return list, err
 }
 
 // SampleDelete 删除样本。
@@ -373,6 +405,11 @@ func (d *GroupMgrDAO) StatIncr(ctx context.Context, key string) (int64, error) {
 	n, _ := strconv.ParseInt(v, 10, 64)
 	n++
 	return n, d.StatSet(ctx, key, strconv.FormatInt(n, 10))
+}
+
+// StatDelete 删除 kv（图片刷屏窗口清理等用，防无限增长）。
+func (d *GroupMgrDAO) StatDelete(ctx context.Context, key string) error {
+	return d.db.WithContext(ctx).Where("key = ?", key).Delete(&models.GroupMgrStat{}).Error
 }
 
 // StatListPrefix 列出前缀匹配的 kv（统计页聚合展示用）。
