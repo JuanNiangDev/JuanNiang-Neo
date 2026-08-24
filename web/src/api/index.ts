@@ -227,6 +227,7 @@ export interface RAGInfoResp {
     dim?: number
     n_params?: number
     n_threads?: number
+    n_ctx?: number
     error?: string
   }
   memory?: { rss_kb: number; vsize_kb: number }

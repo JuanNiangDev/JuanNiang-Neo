@@ -32,7 +32,7 @@ func WithTimeout(d time.Duration) Option {
 // 创建时执行健康检查，服务不可达返回错误（调用方决定是否降级）。
 func NewClient(opts ...Option) (*handler.Client, error) {
 	info := basicInfo{
-		BaseURL: "http://127.0.0.1:3000",
+		BaseURL: "http://localhost:3000",
 		Timeout: 30 * time.Second,
 	}
 	for _, opt := range opts {

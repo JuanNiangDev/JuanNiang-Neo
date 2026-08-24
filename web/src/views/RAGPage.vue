@@ -8,23 +8,23 @@
           <v-card-item><template #title><span class="text-h6 font-weight-bold">配置</span></template></v-card-item>
           <v-card-text>
             <v-form>
-              <v-text-field v-model="form.base_url" label="服务地址" hint="RAG-Service 监听地址，默认 http://127.0.0.1:3000" class="mb-2" />
+              <v-text-field v-model="form.base_url" label="服务地址" :placeholder="DEFAULT_RAG_URL" hint="RAG-Service 监听地址，默认 http://localhost:3000" class="mb-2" />
               <v-text-field v-model.number="form.timeout" label="超时 (秒)" type="number" class="mb-2" />
               <v-switch v-model="form.is_active" label="启用" color="primary" class="mb-2" />
               <v-btn color="primary" variant="tonal" block @click="save" :loading="saving">保存配置</v-btn>
             </v-form>
-            <v-alert type="info" variant="tonal" class="mt-4" density="comfortable">
-              <div class="text-caption">
-                未启用或服务不可达时，<b>记忆召回</b>自动降级为 pg_trgm 语义匹配、<b>知识库检索</b>降级为 SQL 匹配，
-                不影响正常对话。启用后知识库可在「知识库」页手动「同步向量库」。
-              </div>
-            </v-alert>
           </v-card-text>
         </v-card>
       </v-col>
+
       <v-col cols="12" md="6">
-        <v-card rounded="lg" elevation="1">
-          <v-card-item><template #title><span class="text-h6 font-weight-bold">健康状态</span></template></v-card-item>
+        <v-card rounded="lg" elevation="1" class="h-100">
+          <v-card-item>
+            <template #title><span class="text-h6 font-weight-bold">健康状态</span></template>
+            <template #append>
+              <v-btn icon="mdi-refresh" size="small" variant="text" @click="refreshStatus" :loading="checking" />
+            </template>
+          </v-card-item>
           <v-card-text>
             <v-list density="compact">
               <v-list-item>
@@ -42,28 +42,54 @@
               </v-list-item>
               <v-list-item v-if="infoReady">
                 <v-list-item-title>向量规模</v-list-item-title>
-                <v-list-item-subtitle>{{ info?.tags }} tag / {{ info?.chunks }} 块 / RSS {{ formatKB(info?.memory?.rss_kb) }}</v-list-item-subtitle>
+                <v-list-item-subtitle>{{ info?.tags }} tag / {{ info?.chunks }} 块</v-list-item-subtitle>
               </v-list-item>
             </v-list>
-            <v-btn variant="tonal" class="mt-3" @click="refreshStatus" :loading="checking" block>
-              <v-icon class="me-1">mdi-heart-pulse</v-icon> 检查健康 / 刷新状态
-            </v-btn>
           </v-card-text>
         </v-card>
       </v-col>
     </v-row>
 
-    <v-row class="mt-2">
-      <v-col cols="12">
-        <v-card rounded="lg" elevation="1">
-          <v-card-item><template #title><span class="text-h6 font-weight-bold">RAG-Service 部署提示</span></template></v-card-item>
-          <v-card-text class="text-body-2" style="line-height: 1.9">
-            <code>JuanNiang-RAG-Service</code> 是独立的 Rust 服务（bge 模型进程内推理，零外部依赖），先下载模型再启动：<br />
-            <code class="text-primary">make download && cargo run --release</code>（默认监听 <code>127.0.0.1:3000</code>，可用 <code>RAG_PORT</code> 等环境变量覆盖）
-          </v-card-text>
-        </v-card>
-      </v-col>
-    </v-row>
+    <!-- 服务信息面板（GET /info 数据展示） -->
+    <v-card rounded="lg" elevation="1" class="mt-2">
+      <v-card-item>
+        <template #title><span class="text-h6 font-weight-bold">服务信息</span></template>
+        <template #append>
+          <v-chip v-if="infoReady" size="small" :color="info?.status === 'ok' ? 'success' : 'warning'" variant="tonal">
+            status: {{ info?.status || '-' }}
+          </v-chip>
+        </template>
+      </v-card-item>
+      <v-card-text v-if="infoReady">
+        <v-row>
+          <v-col cols="12" md="4">
+            <div class="text-subtitle-2 text-medium-emphasis mb-1">Embedding 模型</div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">模型</span><span>{{ info?.model?.model_name || '-' }}</span></div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">维度</span><span>{{ info?.model?.dim ?? '-' }}</span></div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">参数量</span><span>{{ formatParams(info?.model?.n_params) }}</span></div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">线程数</span><span>{{ info?.model?.n_threads ?? '-' }}</span></div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">上下文长度</span><span>{{ info?.model?.n_ctx ?? '-' }}</span></div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">就绪</span><span>{{ info?.model?.ready ? '✅ 是' : '❌ 否' }}</span></div>
+            <div v-if="info?.model?.error" class="text-caption text-error mt-1">{{ info.model.error }}</div>
+          </v-col>
+          <v-col cols="12" md="4">
+            <div class="text-subtitle-2 text-medium-emphasis mb-1">进程内存</div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">常驻内存 (RSS)</span><span>{{ formatKB(info?.memory?.rss_kb) }}</span></div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">虚拟内存</span><span>{{ formatKB(info?.memory?.vsize_kb) }}</span></div>
+            <div class="text-caption text-medium-emphasis mt-2">RSS 随向量库规模线性增长，可作为容量告警依据。</div>
+          </v-col>
+          <v-col cols="12" md="4">
+            <div class="text-subtitle-2 text-medium-emphasis mb-1">向量库规模</div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">Tag 数</span><span>{{ info?.tags ?? '-' }}</span></div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">Chunk 数</span><span>{{ info?.chunks ?? '-' }}</span></div>
+            <div class="text-caption text-medium-emphasis mt-2">chunks ≥ tags（长文自动分块）；可与「知识库 / 群管理 / 记忆」页面的同步结果对账。</div>
+          </v-col>
+        </v-row>
+      </v-card-text>
+      <v-card-text v-else class="text-caption text-medium-emphasis">
+        尚未获取到服务信息，点击右上角刷新或启用服务后再试。
+      </v-card-text>
+    </v-card>
   </div>
 </template>
 
@@ -72,10 +98,12 @@ import { ref, onMounted } from 'vue'
 import { ragApi, type RAGConfigResp, type UpdateRAGConfigReq, type RAGInfoResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
+const DEFAULT_RAG_URL = 'http://localhost:3000'
+
 const toastStore = useToastStore()
 const saving = ref(false); const checking = ref(false)
 const config = ref<RAGConfigResp>({ base_url: '', timeout: 30, is_active: false, healthy: false })
-const form = ref<UpdateRAGConfigReq>({ base_url: '', timeout: 30, is_active: false })
+const form = ref<UpdateRAGConfigReq>({ base_url: DEFAULT_RAG_URL, timeout: 30, is_active: false })
 const info = ref<RAGInfoResp | null>(null)
 const infoReady = ref(false)
 
@@ -86,11 +114,22 @@ function formatKB(kb?: number) {
   return kb + ' KB'
 }
 
+function formatParams(n?: number) {
+  if (!n) return '-'
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + ' B'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + ' M'
+  return String(n)
+}
+
 async function fetchConfig() {
   try {
     const res = await ragApi.getConfig()
     config.value = res.data.data
-    form.value = { base_url: config.value.base_url, timeout: config.value.timeout, is_active: config.value.is_active }
+    form.value = {
+      base_url: config.value.base_url || DEFAULT_RAG_URL,
+      timeout: config.value.timeout || 30,
+      is_active: config.value.is_active,
+    }
   } catch { toastStore.error('获取配置失败') }
 }
 async function save() {

@@ -19,7 +19,7 @@ func NewRAGConfigDAO(db *gorm.DB) *RAGConfigDAO {
 func (d *RAGConfigDAO) InitConfig(ctx context.Context) error {
 	return d.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&models.RAGConfig{
 		ID:       1,
-		BaseURL:  "http://127.0.0.1:3000",
+		BaseURL:  "http://localhost:3000",
 		Timeout:  30,
 		IsActive: false,
 	}).Error
