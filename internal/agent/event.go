@@ -15,6 +15,7 @@ import (
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/metrics"
 
 	"github.com/cloudwego/eino/adk"
 	einoschema "github.com/cloudwego/eino/schema"
@@ -112,6 +113,10 @@ func (h *HagoCenter) runEventLoop(ctx context.Context) {
 
 // processEvent 三阶段架构：Plugin 拦截 → 消息过滤 → 回复策略 → Agent。
 func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
+	metrics.EventsTotal.WithLabelValues(ev.PostType).Inc()
+	if ev.PostType == "message" && ev.Message != nil {
+		metrics.MessagesTotal.WithLabelValues(ev.Message.MessageType).Inc()
+	}
 	// Phase 0: 消息幂等去重。WS 断线重连/多连接时 OneBot 端可能重复推送同一条
 	// 消息（相同 message_id），重复消费会导致 Agent 重复执行任务与重复回复。
 	// 群/私聊的 message_id 各自独立递增，key 需带上 message_type。
@@ -119,6 +124,7 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		key := ev.Message.MessageType + ":" + strconv.FormatInt(ev.Message.MessageID, 10)
 		if h.msgDedup.SeenBefore(ctx, key) {
 			log.Info("重复消息已丢弃", "message_id", ev.Message.MessageID, "message_type", ev.Message.MessageType, "user_id", ev.Message.UserID)
+			metrics.DedupDroppedTotal.Inc()
 			return
 		}
 	}
@@ -412,6 +418,7 @@ func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.E
 			kept = append(kept, ev)
 		} else {
 			log.Info("聊天黑名单丢弃消息", "user_id", m.UserID, "chat_area_id", chatArea.ID)
+			metrics.BlockedTotal.WithLabelValues("blacklist").Inc()
 		}
 	}
 	return kept
@@ -646,6 +653,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 		// L1 规则快路径：明显噪音 → 直接丢弃
 		if isDefinitelyIrrelevant(msg) {
 			log.Debug("相关性: 规则判定无关，丢弃", "user_id", msg.UserID, "group_id", msg.GroupID)
+			metrics.DroppedTotal.WithLabelValues("irrelevant").Inc()
 			continue
 		}
 		candidates = append(candidates, ev)
@@ -663,6 +671,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 	// L4.1 热度降级：刷屏时跳过 LLM 判断，只回必回消息（@/命令/提及名字）
 	if h.isChatFlooding(areaID) {
 		log.Debug("相关性: 群聊刷屏，降级为仅回@/命令/提及名字", "area", areaID)
+		metrics.DroppedTotal.WithLabelValues("flood").Add(float64(len(candidates)))
 		return mustKeep
 	}
 
@@ -673,6 +682,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 			return append(mustKeep, candidates...)
 		}
 		log.Debug("相关性: 命中 unrelated 冷却缓存，丢弃候选", "area", areaID)
+		metrics.DroppedTotal.WithLabelValues("irrelevant").Add(float64(len(candidates)))
 		return mustKeep
 	}
 
@@ -684,6 +694,7 @@ func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event,
 	}
 	h.setRelevanceVerdict(ctx, areaID, verdictUnrelated)
 	log.Debug("相关性: 批量判断不相关，丢弃候选", "count", len(candidates))
+	metrics.DroppedTotal.WithLabelValues("irrelevant").Add(float64(len(candidates)))
 	return mustKeep
 }
 
@@ -716,6 +727,12 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	if len(events) == 0 {
 		return
 	}
+	start := time.Now()
+	outcome := "ok"
+	defer func() {
+		metrics.AgentLoopsTotal.WithLabelValues(outcome).Inc()
+		metrics.AgentLoopDuration.Observe(time.Since(start).Seconds())
+	}()
 	msg := events[len(events)-1].Message
 	userID := msg.UserID
 
@@ -954,6 +971,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// ---------- 运行 Eino Agent ----------
 	if h.EinoAgent == nil {
 		log.Error("Eino Agent 未就绪")
+		outcome = "error"
 		return
 	}
 
@@ -975,6 +993,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		}
 		if event.Err != nil {
 			log.Error("Eino Agent 错误", "err", event.Err)
+			outcome = "error"
 			break
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
@@ -1000,11 +1019,18 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		log.Warn("工具权限被拒，最终回复已覆盖为权限说明", "reason", msgCtx.PermDenied)
 	}
 
+	// 循环超时（provider 挂起被 cancel）：计入 timeout 而非 error
+	if agentCtx.Err() != nil {
+		outcome = "timeout"
+		log.Warn("Agent 循环超时", "err", agentCtx.Err(), "area", chatArea.ID)
+	}
+
 	// 工具调用记录（供聊天记录页展示）
 	callsJSON := marshalEinoToolCalls(toolCalls)
 
 	// ---------- Token 用量：会话总账（Session）+ 每日统计（TokenUsageDaily） ----------
 	if totalTokens > 0 {
+		metrics.LLMTokensTotal.WithLabelValues("agent").Add(float64(totalTokens))
 		if err := h.Session.RecordTokenUsage(ctx, sess.ID, totalTokens); err != nil {
 			log.Error("记录 Token 用量失败", "err", err)
 		}
@@ -1060,6 +1086,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 			silenced := msg.MessageType == "group" && isSilenceResponse(assistantContent)
 			if silenced {
 				log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
+				metrics.DroppedTotal.WithLabelValues("silenced").Inc()
 			} else {
 				h.sendReply(msg, assistantContent, rs)
 				h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), callsJSON)

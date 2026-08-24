@@ -9,6 +9,7 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/metrics"
 )
 
 // LLM 审查参数（与旧插件一致）。
@@ -129,25 +130,22 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 		cctx, cancel := context.WithTimeout(context.Background(), llmTimeout)
 		defer cancel()
 		resp, err := p.Chat(cctx, req)
-		m.llmResults <- reviewOutcome{
+		out := reviewOutcome{
 			groupID:   msg.GroupID,
 			userID:    msg.UserID,
 			messageID: msg.MessageID,
 			admins:    ev.Admins,
 			pk:        pk,
 			rc:        rc,
-			content:   firstNonNil(resp, err),
 			err:       err,
 		}
+		if resp != nil {
+			out.content = resp.Message.Content
+			out.tokens = resp.TokenUsage
+		}
+		m.llmResults <- out
 	}()
 	return true
-}
-
-func firstNonNil(resp *provider.ChatResponse, err error) string {
-	if resp == nil {
-		return ""
-	}
-	return resp.Message.Content
 }
 
 // reviewOutcome 审查结果（channel 消息，Run 串行消费）。
@@ -157,6 +155,7 @@ type reviewOutcome struct {
 	pk                         string
 	rc                         reviewCtx
 	content                    string
+	tokens                     int
 	err                        error
 }
 
@@ -176,6 +175,9 @@ func (m *Manager) Run(ctx context.Context) {
 
 // handleReview 处理 LLM 审查结果（Run 内串行执行，天然互斥）。
 func (m *Manager) handleReview(ctx context.Context, out reviewOutcome) {
+	if out.tokens > 0 {
+		metrics.LLMTokensTotal.WithLabelValues("review").Add(float64(out.tokens))
+	}
 	m.llmMu.Lock()
 	delete(m.llmPending, out.pk)
 	m.llmMu.Unlock()

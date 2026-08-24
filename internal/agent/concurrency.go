@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"JuanNiang-Neo/internal/metrics"
 	"context"
 	"sync"
+	"time"
 )
 
 // ConcurrencyManager 控制每个 ChatArea 同时运行的 Agent ReAct 循环数量。
@@ -70,6 +72,10 @@ func (cm *ConcurrencyManager) getOrCreateSem(chatAreaID string) chan struct{} {
 // 若配置了全局上限，先获取全局令牌，再获取 ChatArea 令牌；
 // 后者失败（ctx 取消）时归还已获取的全局令牌。
 func (cm *ConcurrencyManager) Acquire(ctx context.Context, chatAreaID string) error {
+	start := time.Now()
+	defer func() {
+		metrics.ConcurrencyWaitDuration.Observe(time.Since(start).Seconds())
+	}()
 	cm.mu.RLock()
 	global := cm.global
 	cm.mu.RUnlock()
@@ -78,6 +84,7 @@ func (cm *ConcurrencyManager) Acquire(ctx context.Context, chatAreaID string) er
 		case global <- struct{}{}:
 			log.Debug("获取全局并发令牌", "available", len(global), "cap", cap(global))
 		case <-ctx.Done():
+			metrics.ConcurrencyWaitsTotal.WithLabelValues("timeout").Inc()
 			return ctx.Err()
 		}
 		if err := cm.acquireArea(ctx, chatAreaID); err != nil {
@@ -86,11 +93,18 @@ func (cm *ConcurrencyManager) Acquire(ctx context.Context, chatAreaID string) er
 			case <-global:
 			default:
 			}
+			metrics.ConcurrencyWaitsTotal.WithLabelValues("timeout").Inc()
 			return err
 		}
+		metrics.ConcurrencyWaitsTotal.WithLabelValues("acquired").Inc()
 		return nil
 	}
-	return cm.acquireArea(ctx, chatAreaID)
+	if err := cm.acquireArea(ctx, chatAreaID); err != nil {
+		metrics.ConcurrencyWaitsTotal.WithLabelValues("timeout").Inc()
+		return err
+	}
+	metrics.ConcurrencyWaitsTotal.WithLabelValues("acquired").Inc()
+	return nil
 }
 
 // acquireArea 获取指定 ChatArea 的令牌。

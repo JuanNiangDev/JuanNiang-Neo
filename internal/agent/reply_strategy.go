@@ -13,6 +13,7 @@ import (
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/metrics"
 )
 
 // RelevanceCheckResult 相关性检查结果。
@@ -234,6 +235,9 @@ func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapte
 		score, _ := judgeFailVerdict(rs, "批量相关性判断 LLM 调用失败")
 		return score >= 0.5
 	}
+	if resp.TokenUsage > 0 {
+		metrics.LLMTokensTotal.WithLabelValues("relevance").Add(float64(resp.TokenUsage))
+	}
 
 	content := strings.TrimSpace(resp.Message.Content)
 	var result struct {
@@ -395,6 +399,9 @@ func (h *HagoCenter) relevanceAgentEvaluate(ctx context.Context, msg *adapter.Me
 	if err != nil {
 		log.Warn("相关性检查 LLM 调用失败", "err", err)
 		return judgeFailVerdict(rs, "LLM 调用失败")
+	}
+	if resp.TokenUsage > 0 {
+		metrics.LLMTokensTotal.WithLabelValues("relevance").Add(float64(resp.TokenUsage))
 	}
 
 	content := strings.TrimSpace(resp.Message.Content)
