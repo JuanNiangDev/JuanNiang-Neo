@@ -142,8 +142,9 @@ func TestWhitelistCommands(t *testing.T) {
 	// 重复加白名单：already 话术
 	_ = m.CommandWhitelist(100, 300)
 
-	// 豁免命令（不加入白名单，清违规 + 解禁言）
+	// 豁免命令（不加入白名单，按群清违规 + 解禁言）
 	_ = gmdao.ViolationSet(ctx, 100, 400, 1, dao.ViolationMeta{})
+	_ = gmdao.ViolationSet(ctx, 200, 400, 3, dao.ViolationMeta{}) // 另一群的惩罚阶梯
 	reply = m.CommandPardon(100, 400)
 	if reply == "" {
 		t.Fatal("豁免回复为空")
@@ -152,7 +153,19 @@ func TestWhitelistCommands(t *testing.T) {
 		t.Fatal("豁免不应加入白名单")
 	}
 	if c, _ := gmdao.ViolationGet(ctx, 100, 400); c != 0 {
-		t.Fatalf("豁免应清违规，count = %d", c)
+		t.Fatalf("豁免应清当前群违规，count = %d", c)
+	}
+	// 回归：/豁免 不得跨群清空（群 200 的三级惩罚阶梯应保留）
+	if c, _ := gmdao.ViolationGet(ctx, 200, 400); c != 3 {
+		t.Fatalf("/豁免 跨群清空违规记录，群 200 count = %d（应为 3）", c)
+	}
+
+	// 白名单为全局豁免：加入后清空全部群的违规记录
+	_ = gmdao.ViolationSet(ctx, 100, 500, 1, dao.ViolationMeta{})
+	_ = gmdao.ViolationSet(ctx, 200, 500, 2, dao.ViolationMeta{})
+	_ = m.CommandWhitelist(100, 500)
+	if c, _ := gmdao.ViolationGet(ctx, 200, 500); c != 0 {
+		t.Fatalf("白名单应清空其它群违规，群 200 count = %d", c)
 	}
 
 	// 解豁免：移出白名单恢复检测

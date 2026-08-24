@@ -246,8 +246,16 @@ func (d *GroupMgrDAO) ViolationDelete(ctx context.Context, id uint) error {
 	return d.db.WithContext(ctx).Delete(&models.GroupMgrViolation{}, id).Error
 }
 
-// ViolationClearUser 清除某 QQ 号全部群的违规记录，返回清除条数。
-func (d *GroupMgrDAO) ViolationClearUser(ctx context.Context, userID int64) (int, error) {
+// ViolationClearUser 清除指定群内某 QQ 号的违规记录，返回清除条数。
+// （/豁免 按群清除，避免跨群清空其他群的惩罚阶梯）
+func (d *GroupMgrDAO) ViolationClearUser(ctx context.Context, groupID, userID int64) (int, error) {
+	res := d.db.WithContext(ctx).Where("group_id = ? AND user_id = ?", groupID, userID).Delete(&models.GroupMgrViolation{})
+	return int(res.RowsAffected), res.Error
+}
+
+// ViolationClearUserAll 清除某 QQ 号全部群的违规记录，返回清除条数。
+// （白名单等全局豁免语义使用；/豁免 请用按群版本的 ViolationClearUser）
+func (d *GroupMgrDAO) ViolationClearUserAll(ctx context.Context, userID int64) (int, error) {
 	res := d.db.WithContext(ctx).Where("user_id = ?", userID).Delete(&models.GroupMgrViolation{})
 	return int(res.RowsAffected), res.Error
 }
