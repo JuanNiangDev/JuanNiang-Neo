@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
@@ -69,13 +70,25 @@ func (d *GroupMgrDAO) WordListByCategory(ctx context.Context, category string) (
 	return list, err
 }
 
-// WordUpsert 新增/更新词条（幂等）。返回词条 ID。
-// 插入后回填派生 RAG tag（ragtag.Word(id) → v5 UUID）；
-// 词条内容变更时同步状态不置位（由 syncRAG / AddWord 完成后置位）。
+// WordUpsert 新增/更新词条（幂等、并发安全）。
+// 处理路径：
+//  1. Unscoped 查询含软删行：软删行复活（deleted_at 置空）并更新分类/来源；活动行直接更新；
+//  2. 均不存在则插入（OnConflict DoNothing 防并发双插，冲突后重新查询返回已有行）；
+//  3. 新插入行回填派生 RAG tag（ragtag.Word(id) → v5 UUID）。
+//
+// 复活/更新不重置 RAGSynced（由 syncRAG / AddWord 完成后置位）。
 func (d *GroupMgrDAO) WordUpsert(ctx context.Context, word, category, source string) (uint, error) {
 	var w models.GroupMgrWord
-	err := d.db.WithContext(ctx).Where("word = ?", word).First(&w).Error
+	err := d.db.WithContext(ctx).Unscoped().Where("word = ?", word).First(&w).Error
 	if err == nil {
+		if w.DeletedAt.Valid {
+			// 软删行复活：普通唯一索引下也允许同词重建（清 deleted_at 后不与其他活动行冲突）
+			if err := d.db.WithContext(ctx).Unscoped().Model(&w).
+				UpdateColumns(map[string]any{"deleted_at": nil, "category": category, "source": source}).Error; err != nil {
+				return 0, err
+			}
+			return w.ID, nil
+		}
 		w.Category = category
 		w.Source = source
 		if err := d.db.WithContext(ctx).Save(&w).Error; err != nil {
@@ -86,9 +99,17 @@ func (d *GroupMgrDAO) WordUpsert(ctx context.Context, word, category, source str
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, err
 	}
+
 	w = models.GroupMgrWord{Word: word, Category: category, Source: source}
-	if err := d.db.WithContext(ctx).Create(&w).Error; err != nil {
+	// OnConflict DoNothing：并发双插时一方插入失败，重新查询返回已有行
+	if err := d.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&w).Error; err != nil {
 		return 0, err
+	}
+	if w.ID == 0 {
+		if err := d.db.WithContext(ctx).Where("word = ?", word).First(&w).Error; err != nil {
+			return 0, err
+		}
+		return w.ID, nil
 	}
 	// 派生 RAG tag（与检索侧 ragtag.Word(id) 一致，幂等可复现）
 	w.RAGTag = ragtag.Word(u64toa(uint64(w.ID))).String()
@@ -117,7 +138,8 @@ func (d *GroupMgrDAO) WordListUnsynced(ctx context.Context) ([]models.GroupMgrWo
 	return list, err
 }
 
-// WordDelete 删除词条（软删；唯一索引软删后重建同名由部分唯一索引约束）。
+// WordDelete 删除词条（软删）。软删后重建同名由部分唯一索引（PG）+
+// WordUpsert 软删行复活（全方言）双重保障，不报唯一索引冲突。
 func (d *GroupMgrDAO) WordDelete(ctx context.Context, id uint) error {
 	return d.db.WithContext(ctx).Delete(&models.GroupMgrWord{}, id).Error
 }
@@ -175,6 +197,29 @@ func (d *GroupMgrDAO) SampleIncrHit(ctx context.Context, id uint) error {
 
 // ---------- 违规记录 ----------
 
+// ViolationIncr 原子自增违规计数并返回新值（单条 UPSERT ... RETURNING，无 read-modify-write 竞争）。
+// 事件循环（关键词直罚）与 Run 循环（LLM 追罚）双 goroutine 并发时不会丢计数/双重处罚。
+// PG 用 now()、SQLite 用 CURRENT_TIMESTAMP（两者均支持 RETURNING，SQLite ≥ 3.35）。
+func (d *GroupMgrDAO) ViolationIncr(ctx context.Context, groupID, userID int64, meta ViolationMeta) (int, error) {
+	nowExpr := "now()"
+	if d.db.Dialector.Name() != "postgres" {
+		nowExpr = "CURRENT_TIMESTAMP"
+	}
+	var count int
+	sql := fmt.Sprintf(`
+		INSERT INTO group_mgr_violations (group_id, user_id, count, username, detection_path, llm_reason, updated_at)
+		VALUES (?, ?, 1, ?, ?, ?, %s)
+		ON CONFLICT (group_id, user_id)
+		DO UPDATE SET count = group_mgr_violations.count + 1,
+			username = EXCLUDED.username,
+			detection_path = EXCLUDED.detection_path,
+			llm_reason = EXCLUDED.llm_reason,
+			updated_at = %s
+		RETURNING count`, nowExpr, nowExpr)
+	err := d.db.WithContext(ctx).Raw(sql, groupID, userID, meta.Username, meta.DetectionPath, meta.LLMReason).Scan(&count).Error
+	return count, err
+}
+
 // ViolationGet 读取某群某用户的违规次数（无记录返回 0, nil）。
 func (d *GroupMgrDAO) ViolationGet(ctx context.Context, groupID, userID int64) (int, error) {
 	var v models.GroupMgrViolation
@@ -225,8 +270,16 @@ func (d *GroupMgrDAO) ViolationDelete(ctx context.Context, id uint) error {
 	return d.db.WithContext(ctx).Delete(&models.GroupMgrViolation{}, id).Error
 }
 
-// ViolationClearUser 清除某 QQ 号全部群的违规记录，返回清除条数。
-func (d *GroupMgrDAO) ViolationClearUser(ctx context.Context, userID int64) (int, error) {
+// ViolationClearUser 清除指定群内某 QQ 号的违规记录，返回清除条数。
+// （/豁免 按群清除，避免跨群清空其他群的惩罚阶梯）
+func (d *GroupMgrDAO) ViolationClearUser(ctx context.Context, groupID, userID int64) (int, error) {
+	res := d.db.WithContext(ctx).Where("group_id = ? AND user_id = ?", groupID, userID).Delete(&models.GroupMgrViolation{})
+	return int(res.RowsAffected), res.Error
+}
+
+// ViolationClearUserAll 清除某 QQ 号全部群的违规记录，返回清除条数。
+// （白名单等全局豁免语义使用；/豁免 请用按群版本的 ViolationClearUser）
+func (d *GroupMgrDAO) ViolationClearUserAll(ctx context.Context, userID int64) (int, error) {
 	res := d.db.WithContext(ctx).Where("user_id = ?", userID).Delete(&models.GroupMgrViolation{})
 	return int(res.RowsAffected), res.Error
 }
@@ -292,8 +345,27 @@ func (d *GroupMgrDAO) StatSet(ctx context.Context, key, value string) error {
 	}).Create(&models.GroupMgrStat{Key: key, Value: value}).Error
 }
 
-// StatIncr 数值 +1（非数值态按 1 起算）。
+// StatIncr 数值 +1（数据库级原子自增，消除 read-modify-write 竞争；非数值态按 1 起算）。
+// PG：UPDATE 内 CASE 判断数值态后自增，RETURNING 返回新值；
+// 其他方言（SQLite 测试环境）：本地读改写回退（并发低，可接受）。
 func (d *GroupMgrDAO) StatIncr(ctx context.Context, key string) (int64, error) {
+	if d.db.Dialector.Name() == "postgres" {
+		var v string
+		err := d.db.WithContext(ctx).Raw(`
+			INSERT INTO group_mgr_stats (key, value)
+			VALUES (?, '1')
+			ON CONFLICT (key) DO UPDATE
+			SET value = CASE
+				WHEN group_mgr_stats.value ~ '^[0-9]+$' THEN (group_mgr_stats.value::bigint + 1)::text
+				ELSE '1'
+			END
+			RETURNING value`, key).Scan(&v).Error
+		if err != nil {
+			return 0, err
+		}
+		n, _ := strconv.ParseInt(v, 10, 64)
+		return n, nil
+	}
 	v, err := d.StatGet(ctx, key)
 	if err != nil {
 		return 0, err

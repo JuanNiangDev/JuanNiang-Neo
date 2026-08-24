@@ -103,17 +103,22 @@ func (m *Manager) CommandPardon(groupID, targetQQ int64) string {
 	return pick(pardonTemplates.ok, targetQQ)
 }
 
-// CommandWhitelist /白名单：加入白名单 + 清违规 + 解禁言。
+// CommandWhitelist /白名单：加入白名单 + 清违规（全局语义）+ 解禁言。
 func (m *Manager) CommandWhitelist(groupID, targetQQ int64) string {
 	ctx := context.Background()
 	if m.isWhitelisted(ctx, targetQQ) {
+		m.unmuteAndClear(groupID, targetQQ)
 		return pick(whitelistTemplates.already, targetQQ)
 	}
 	if err := m.dao.WlAdd(ctx, targetQQ); err != nil {
 		log.Warn("白名单写入失败", "qq", targetQQ, "err", err)
 	}
 	_ = m.Reload(ctx)
-	m.unmuteAndClear(groupID, targetQQ)
+	// 白名单是全局豁免：清空该用户全部群的违规记录（含当前群）+ 解除当前群禁言
+	if _, err := m.dao.ViolationClearUserAll(ctx, targetQQ); err != nil {
+		log.Warn("违规记录全局清除失败", "qq", targetQQ, "err", err)
+	}
+	m.unbanOnly(groupID, targetQQ)
 	return pick(whitelistTemplates.ok, targetQQ)
 }
 
@@ -137,13 +142,19 @@ func CommandWhitelistDenied() string { return pick(whitelistTemplates.denied) }
 func CommandWhitelistUsage() string  { return pick(whitelistTemplates.usage) }
 func CommandUnexemptUsage() string   { return pick(unexemptTemplates.usage) }
 
-// unmuteAndClear 解除禁言（duration=0 为 OneBot11 规范解禁语义）+ 清空违规记录。
+// unmuteAndClear /豁免：清空指定群的违规记录 + 解禁言（不加入白名单）。
+// 按群清除：避免 /豁免 把该用户在其它群的三级惩罚阶梯一并清零。
 func (m *Manager) unmuteAndClear(groupID, targetQQ int64) {
 	ctx := context.Background()
-	if _, err := m.dao.ViolationClearUser(ctx, targetQQ); err != nil {
-		log.Warn("违规记录清除失败", "qq", targetQQ, "err", err)
+	if _, err := m.dao.ViolationClearUser(ctx, groupID, targetQQ); err != nil {
+		log.Warn("违规记录清除失败", "qq", targetQQ, "group", groupID, "err", err)
 	}
-	// 不依赖 shut_up_timestamp 判断——部分实现该字段缺失/失效；对未禁言成员是无害 no-op
+	m.unbanOnly(groupID, targetQQ)
+}
+
+// unbanOnly 仅解除禁言（duration=0 为 OneBot11 规范解禁语义）。
+// 不依赖 shut_up_timestamp 判断——部分实现该字段缺失/失效；对未禁言成员是无害 no-op。
+func (m *Manager) unbanOnly(groupID, targetQQ int64) {
 	if err := m.adp.BanGroupMember(groupID, targetQQ, 0); err != nil {
 		log.Warn("解除禁言失败", "qq", targetQQ, "group", groupID, "err", err)
 	}

@@ -86,19 +86,17 @@ func (m *Manager) punish(ev adapter.Event, reason, category, path string) {
 		LLMReason:     reason,
 	}
 
-	count, err := m.dao.ViolationGet(context.Background(), groupID, userID)
+	// 原子自增违规计数并返回新值：事件循环（关键词直罚）与 Run 循环（LLM 追罚）
+	// 双 goroutine 并发时不会 read-modify-write 丢计数（单条 SQL 保证）。
+	count, err := m.dao.ViolationIncr(context.Background(), groupID, userID, meta)
 	if err != nil {
-		log.Warn("违规记录读取失败", "err", err)
+		log.Warn("违规计数自增失败", "err", err)
 		return
 	}
 	// 违规禁言时长取面板配置（默认 30 分钟）
 	muteSeconds := defaultViolationMuteSeconds
 	if cfg := m.getCfg(context.Background()); cfg != nil && cfg.ViolationMuteSeconds > 0 {
 		muteSeconds = cfg.ViolationMuteSeconds
-	}
-	count++
-	if err := m.dao.ViolationSet(context.Background(), groupID, userID, count, meta); err != nil {
-		log.Warn("违规记录写入失败", "err", err)
 	}
 
 	action := ""

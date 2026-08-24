@@ -51,9 +51,12 @@ func (GroupMgrConfig) TableName() string { return "group_mgr_configs" }
 // Word 统一小写去重；Source 区分系统种子（go:embed 首次导入）与用户导入。
 // RAGSynced 标记该词条是否已同步到 RAG 向量库（同步/导入成功时置 true，删除/新增时置 false）。
 // RAGTag 是该词条派生的 RAG-Service tag UUID（ragtag.Word(id)），供面板展示与对账。
+// 唯一性：普通唯一索引会阻塞「软删后重建同名」；改为 PG 部分唯一索引
+// （WHERE deleted_at IS NULL，见 core.go 迁移）+ DAO 软删行复活双重保障，
+// 此处仅保留普通索引用于精确匹配查询。
 type GroupMgrWord struct {
 	ID        uint   `gorm:"primarykey"`
-	Word      string `gorm:"not null;uniqueIndex"`
+	Word      string `gorm:"not null;index"`
 	Category  string `gorm:"not null;index"` // black / gray / sensitive
 	Source    string `gorm:"not null;default:'system'"`
 	RAGSynced bool   `gorm:"not null;default:false"` // 是否已同步到 RAG 向量库

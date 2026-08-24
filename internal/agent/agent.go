@@ -66,14 +66,9 @@ type HagoCenter struct {
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
 	SelfQQ       int64
 	SelfNickname string
-
-	// 发送者群内信息缓存（避免每条群消息都调 OneBot11 get_group_member_info）
-	memberInfoMu    sync.RWMutex
-	memberInfoCache map[string]memberInfoEntry
-
 	// 消息批处理：同一 ChatArea 在短窗口内的消息合并为一次 Agent 处理
-	batchMu sync.Mutex
 	batches map[string]*pendingBatch
+	batchMu sync.Mutex
 
 	// sendMu 全局发送互斥锁：所有批次的发送动作串行执行，
 	// 避免多批次/多分组并行完成时回复交叉乱序（如一条完整回复被另一条插入打断）。
@@ -120,15 +115,6 @@ type HagoCenter struct {
 	replySettingsExp time.Time
 }
 
-// memberInfoTTL 群成员信息缓存有效期（角色变更不频繁，10 分钟足够）。
-const memberInfoTTL = 10 * time.Minute
-
-// memberInfoEntry 缓存条目。
-type memberInfoEntry struct {
-	info      *adapter.GroupMemberInfo
-	expiresAt time.Time
-}
-
 // Config HagoCenter 初始化配置。
 type Config struct {
 	Adapter        *adapter.Adapter
@@ -146,19 +132,18 @@ type Config struct {
 // NewHagoCenter 创建并初始化 HagoCenter。
 func NewHagoCenter() *HagoCenter {
 	return &HagoCenter{
-		Providers:       provider.NewProviderGroup(),
-		MCP:             mcp.NewMCPGroup(),
-		Tools:           tool.NewToolRegistry(),
-		Skills:          skill.NewSkillEngine(),
-		CronJobEvents:   make(chan adapter.Event, 64),
-		Loops:           NewLoopTracker(),
-		memberInfoCache: make(map[string]memberInfoEntry),
-		batches:         make(map[string]*pendingBatch),
-		hotStats:        make(map[string]*hotStat),
-		relevanceSem:    make(chan struct{}, relevanceSemLimit),
-		toolAdminOnly:   make(map[string]bool),
-		knowledgeLRU:    newKnowledgeLRU(50),
-		msgDedup:        newMemoryDedup(dedupWindow), // 占位，Init 时按 Cache 可用性覆盖为 redisDedup
+		Providers:     provider.NewProviderGroup(),
+		MCP:           mcp.NewMCPGroup(),
+		Tools:         tool.NewToolRegistry(),
+		Skills:        skill.NewSkillEngine(),
+		CronJobEvents: make(chan adapter.Event, 64),
+		Loops:         NewLoopTracker(),
+		batches:       make(map[string]*pendingBatch),
+		hotStats:      make(map[string]*hotStat),
+		relevanceSem:  make(chan struct{}, relevanceSemLimit),
+		toolAdminOnly: make(map[string]bool),
+		knowledgeLRU:  newKnowledgeLRU(50),
+		msgDedup:      newMemoryDedup(dedupWindow), // 占位，Init 时按 Cache 可用性覆盖为 redisDedup
 	}
 }
 
@@ -446,34 +431,13 @@ func (h *HagoCenter) Start(ctx context.Context) error {
 	return nil
 }
 
-// getGroupMemberInfoCached 带缓存的群成员信息查询：命中缓存直接返回，未命中调 OneBot11 API 并缓存。
+// getGroupMemberInfoCached 带缓存的群成员信息查询：委托 Adapter 层实现
+// （正缓存 10min + 负缓存 60s，见 adapter.Adapter.GetGroupMemberInfoCached）。
 func (h *HagoCenter) getGroupMemberInfoCached(groupID, userID int64) (*adapter.GroupMemberInfo, error) {
 	if h.Adapter == nil {
 		return nil, nil
 	}
-	key := fmt.Sprintf("%d:%d", groupID, userID)
-	now := time.Now()
-
-	h.memberInfoMu.RLock()
-	if e, ok := h.memberInfoCache[key]; ok && now.Before(e.expiresAt) {
-		h.memberInfoMu.RUnlock()
-		return e.info, nil
-	}
-	h.memberInfoMu.RUnlock()
-
-	info, err := h.Adapter.GetGroupMemberInfo(groupID, userID)
-	if err != nil {
-		return nil, err
-	}
-
-	h.memberInfoMu.Lock()
-	h.memberInfoCache[key] = memberInfoEntry{info: info, expiresAt: now.Add(memberInfoTTL)}
-	// 防无界增长：超过上限时整体清空（简单策略）
-	if len(h.memberInfoCache) > 2048 {
-		h.memberInfoCache = make(map[string]memberInfoEntry)
-	}
-	h.memberInfoMu.Unlock()
-	return info, nil
+	return h.Adapter.GetGroupMemberInfoCached(groupID, userID)
 }
 
 // seedBuiltinToolGuard 为内置工具幂等创建 ToolConfig 行（首次创建时写入默认

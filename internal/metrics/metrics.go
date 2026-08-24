@@ -137,7 +137,8 @@ var (
 		Buckets: []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0},
 	})
 
-	// GroupMgrLLMReviewsTotal LLM 审核结果（result: ad/sensitive/none/error）。
+	// GroupMgrLLMReviewsTotal LLM 审核结果（result: ad/sensitive/none/error/conflict）。
+	// conflict = LLM 判 none 但存在黑/敏感词或卡片硬信号（注入防护 fail-closed 直罚）。
 	GroupMgrLLMReviewsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "juanniang_groupmgr_llm_reviews_total",
 		Help: "群管理 LLM 审核结果总数",
