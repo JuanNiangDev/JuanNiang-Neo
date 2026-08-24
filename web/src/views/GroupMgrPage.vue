@@ -124,12 +124,6 @@
                   <v-slider v-model="form.fallback_score" min="0" max="1" step="0.05" color="primary" hide-details @update:model-value="markDirty" />
                 </div>
               </v-col>
-              <v-col cols="12" md="6">
-                <v-combobox v-model="form.exclude_groups" label="排除检测的群 ID（回车添加）" multiple chips hide-selected @update:model-value="markDirty" />
-              </v-col>
-              <v-col cols="12" md="6">
-                <v-combobox v-model="whitelistQQs" label="白名单 QQ（不参与检测）" multiple chips hide-selected type="number" @update:model-value="markDirty" />
-              </v-col>
             </v-row>
           </v-card-text>
           <v-card-actions class="pa-4 pt-0">
