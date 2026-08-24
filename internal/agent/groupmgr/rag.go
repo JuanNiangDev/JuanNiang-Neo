@@ -111,6 +111,12 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 // RAGSynced 标记与实际同步状态对齐：仅成功写入 RAG 的词条置 true，
 // 失败/未同步的词条置 false（面板「已同步」状态可信）。
 func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
+	return m.syncRAGProgress(ctx, nil)
+}
+
+// syncRAGProgress 带进度回调的全量同步：每批处理后回调 onProgress(done, failed)，
+// 回调返回非 nil 错误则中止（如 SSE 客户端断开）。供 Web 流式同步进度展示。
+func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, failed int) error) (int, int, error) {
 	cli := m.getRAG()
 	if cli == nil {
 		return 0, 0, fmt.Errorf("RAG-Service 未配置或未启用")
@@ -124,16 +130,28 @@ func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 		return 0, 0, err
 	}
 
-	// 词条 → 样本（关键词导入/种子词条都以文本形式入库；幂等由样本表 text 唯一兜底）
+	// 词条并入样本路径：先确保 seed 样本行存在（幂等，text 唯一），向量以 Sample tag 写入。
+	// 这样样本表/候选集与词库恒对齐，RAG 核实（候选集=样本表）能命中全部词条向量——
+	// 此前词条用 Word tag 写入但检索侧只过滤 Sample tag，词条向量是死数据，
+	// 样本表为空时链路测试报「RAG 不可用」且词条不参与语义核实。
 	total, failed := 0, 0
 	seed := make([]caller.BatchItem, 0, len(words)+len(samples))
 	wordTagOf := make(map[uuid.UUID]uint, len(words)) // tag → 词条 ID（样本 tag 不在其中）
 	for _, w := range words {
-		tag := ragtag.Word(u32s(w.ID))
+		sid, err := m.dao.SampleAddWithWord(ctx, w.Word, sampleCategoryByWord(w.Category), "seed", w.ID)
+		if err != nil {
+			failed++
+			log.Warn("词条样本行创建失败，跳过同步", "word", w.Word, "err", err)
+			continue
+		}
+		tag := ragtag.Sample(u32s(sid))
 		seed = append(seed, caller.BatchItem{Tag: tag, Text: w.Word})
 		wordTagOf[tag] = w.ID
 	}
 	for _, s := range samples {
+		if s.WordID > 0 {
+			continue // 词条派生样本已由词条循环处理（避免同 tag 重复 upsert）
+		}
 		seed = append(seed, caller.BatchItem{Tag: ragtag.Sample(u32s(s.ID)), Text: s.Text})
 	}
 	for i := 0; i < len(seed); i += 50 {
@@ -159,6 +177,12 @@ func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 					log.Warn("词条同步状态标记失败", "word_id", id, "err", err)
 				}
 				delete(wordTagOf, seed[i+idx].Tag)
+			}
+		}
+		// 每批后推送进度（客户端断开即中止）
+		if onProgress != nil {
+			if err := onProgress(total, failed); err != nil {
+				return total, failed, err
 			}
 		}
 	}
