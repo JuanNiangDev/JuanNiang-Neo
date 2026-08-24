@@ -20,7 +20,7 @@
       <v-col cols="12" md="6">
         <v-card rounded="lg" elevation="1" class="h-100">
           <v-card-item><template #title><span class="text-h6 font-weight-bold">健康状态</span></template></v-card-item>
-          <v-card-text>
+          <v-card-text class="d-flex flex-column">
             <v-list density="compact">
               <v-list-item>
                 <template #prepend><span class="status-dot" :class="config.healthy ? 'active' : 'error'" /></template>
@@ -28,7 +28,7 @@
                 <v-list-item-subtitle>{{ config.healthy ? '健康' : '异常' }}</v-list-item-subtitle>
               </v-list-item>
             </v-list>
-            <v-btn variant="tonal" class="mt-3" @click="checkHealth" :loading="checking" block>
+            <v-btn variant="tonal" class="mt-auto pt-1" @click="checkHealth" :loading="checking" block>
               <v-icon class="me-1">mdi-heart-pulse</v-icon> 检查健康
             </v-btn>
           </v-card-text>
