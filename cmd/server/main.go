@@ -383,7 +383,18 @@ func main() {
 				name string
 				v    float64
 			}
-			ch := make(chan result, len(probes))
+			// 只 drain 实际启动的探测数：全部未配置时立即返回，避免空转 3×3s
+			// 拖慢 scrape（CachedMap 持锁执行，期间所有并发 /metrics 互相阻塞）。
+			started := 0
+			for _, p := range probes {
+				if p.client != nil {
+					started++
+				}
+			}
+			if started == 0 {
+				return m
+			}
+			ch := make(chan result, started)
 			for _, p := range probes {
 				if p.client == nil {
 					continue // 未配置不输出
@@ -396,11 +407,14 @@ func main() {
 					ch <- result{name: name, v: v}
 				}(p.name, p.client)
 			}
-			for range probes {
+			// 总 deadline：整个 fan-out 最多等 3s，收齐 started 个结果即返回
+			deadline := time.After(3 * time.Second)
+			for i := 0; i < started; i++ {
 				select {
 				case r := <-ch:
 					m[r.name] = r.v
-				case <-time.After(3 * time.Second):
+				case <-deadline:
+					return m
 				}
 			}
 			return m
