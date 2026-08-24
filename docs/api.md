@@ -985,19 +985,19 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 更新配置并热重载。**Body** 同 `GroupMgrConfigResp`。**data** `GroupMgrConfigResp`。
 
 ### GET /group-mgr/words?category=
-词条列表（`category` 可选：black/gray/sensitive）。**data** `GroupMgrWordResp[]`: `id`、`word`、`category`、`source`（system=种子 / import=导入）。
+词条列表（`category` 可选：black/gray/sensitive）。**data** `GroupMgrWordResp[]`: `id`、`word`、`category`、`source`（system=种子 / import=导入）、`rag_synced`（是否已同步到 RAG 向量库）、`rag_tag`（派生的 RAG tag UUID，`ragtag.Word(id)` v5）。
 
 ### POST /group-mgr/words
-新增词条。**Body** `{word string, category string}`。RAG 可用时同步写入样本表+向量库，不可用仅存词库。**data** `null`。
+新增词条。**Body** `{word string, category string}`。RAG 可用时同步写入样本表+向量库并标记 `rag_synced=true`，不可用仅存词库（面板展示未同步，可手动同步）。**data** `null`。
 
 ### DELETE /group-mgr/words/:id
 删除词条（热重载词库）。**data** `null`。
 
 ### POST /group-mgr/words/import?category=
-txt 导入词条（multipart `file`，一行一个，去注释/空白/小写/去重）。**data** `{imported int, skipped int}`。导入词条在 RAG 可用时同步写入向量库（种子样本）。
+txt 导入词条（multipart `file`，一行一个，去注释/空白/小写/去重）。**data** `{imported int, skipped int}`。导入词条在 RAG 可用时同步写入向量库（种子样本）并标记 `rag_synced=true`。
 
 ### POST /group-mgr/sync-rag
-手动全量同步向量库（词条 + 样本，50 条/批幂等 upsert）。RAG 未配置返回错误。**data** `GroupMgrSyncResp`: `total`、`failed`。
+手动全量同步向量库（词条 + 样本，50 条/批幂等 upsert），成功后全部词条标记 `rag_synced=true`。RAG 未配置返回错误。**data** `GroupMgrSyncResp`: `total`、`failed`。
 
 ### GET /group-mgr/samples
 RAG 违规样本列表。**data** `GroupMgrSampleResp[]`: `id`、`text`、`category`、`source`（seed/learn/import）、`hit_count`（RAG 高置信直罚命中次数）、`created_at`。
@@ -1006,7 +1006,7 @@ RAG 违规样本列表。**data** `GroupMgrSampleResp[]`: `id`、`text`、`categ
 删除样本（RAG 双删，未配置静默跳过）。**data** `null`。
 
 ### GET /group-mgr/violations
-违规记录。**data** `GroupMgrViolationResp[]`: `id`、`group_id`、`user_id`、`count`。
+违规记录。**data** `GroupMgrViolationResp[]`: `id`、`group_id`、`user_id`、`username`（处罚时群名片/昵称）、`count`（当前违规等级）、`detection_path`（判定来源：rag / keyword / llm）、`llm_reason`（LLM 审核返回的 reason，`detection_path=llm` 时有值）。
 
 ### DELETE /group-mgr/violations/:id
 删除某条违规记录（重置该用户违规）。**data** `null`。
@@ -1022,6 +1022,9 @@ RAG 违规样本列表。**data** `GroupMgrSampleResp[]`: `id`、`text`、`categ
 
 ### PUT /group-mgr/admins
 手动管理员全量覆盖。**Body** `{qq_list []int64}`。**data** `null`。
+
+### POST /group-mgr/admins/sync-from-adapter
+把 Adapter.Admins（系统管理员 QQ）合并到手动管理员表（去重，已存在跳过）。**data** `{added int}`（新增数量）。
 
 ### GET /group-mgr/stats?group_id=
 统计（与 /groupstats 命令同源）。**data** `GroupMgrStatsResp`: `group_id`、`date`、`join_today`、`warns`、`mutes`、`copy_warns`、`ad`、`sensitive`、`kicks`。
