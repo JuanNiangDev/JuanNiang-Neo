@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/core/dao"
@@ -21,6 +22,43 @@ func groupEv(groupID, userID int64, raw string) adapter.Event {
 			MessageID:   int64(userID), // 简单唯一
 			RawMessage:  raw,
 		},
+	}
+}
+
+// TestImgSpamKVCleanup 图片刷屏 kv 持久化：禁言后清理 ims: 行；restoreImgState
+// 恢复窗口内时间戳并清理过期行（回归：ims: kv 只写不读不清理，无限增长）。
+func TestImgSpamKVCleanup(t *testing.T) {
+	m, gmdao := newTestManager(t, nil)
+	ctx := context.Background()
+	ev := groupEv(100, 200, "[CQ:image,file=abc]")
+	cfg := m.getCfg(ctx)
+	key := gkey(100, "ims:200")
+
+	// 触发警告（达阈值 3）
+	m.checkImageSpam(ctx, ev, cfg)
+	m.checkImageSpam(ctx, ev, cfg)
+	m.checkImageSpam(ctx, ev, cfg)
+	if v, _ := gmdao.StatGet(ctx, key); v == "" {
+		t.Fatal("警告后 ims: kv 应有持久化时间戳")
+	}
+
+	// 已警告再刷 → 禁言 → kv 行清理
+	m.checkImageSpam(ctx, ev, cfg)
+	if v, _ := gmdao.StatGet(ctx, key); v != "" {
+		t.Fatalf("禁言后 ims: kv 应清理，got %q", v)
+	}
+
+	// restoreImgState：窗口内时间戳恢复 + 过期行清理
+	_ = gmdao.StatSet(ctx, key, joinInts([]int64{time.Now().Unix() - 1000})) // 过期行
+	m.restoreImgState(ctx, 2)
+	if v, _ := gmdao.StatGet(ctx, key); v != "" {
+		t.Fatalf("过期 ims: 行应被清理，got %q", v)
+	}
+	m.imgMu.Lock()
+	_, ok := m.imgState[key]
+	m.imgMu.Unlock()
+	if ok {
+		t.Fatal("过期 ims 行不应恢复进内存态")
 	}
 }
 

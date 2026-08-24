@@ -407,6 +407,11 @@ func (d *GroupMgrDAO) StatIncr(ctx context.Context, key string) (int64, error) {
 	return n, d.StatSet(ctx, key, strconv.FormatInt(n, 10))
 }
 
+// StatDelete 删除 kv（图片刷屏窗口清理等用，防无限增长）。
+func (d *GroupMgrDAO) StatDelete(ctx context.Context, key string) error {
+	return d.db.WithContext(ctx).Where("key = ?", key).Delete(&models.GroupMgrStat{}).Error
+}
+
 // StatListPrefix 列出前缀匹配的 kv（统计页聚合展示用）。
 func (d *GroupMgrDAO) StatListPrefix(ctx context.Context, prefix string) ([]models.GroupMgrStat, error) {
 	var list []models.GroupMgrStat
