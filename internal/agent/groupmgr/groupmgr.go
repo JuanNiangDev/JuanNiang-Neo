@@ -59,7 +59,6 @@ type Manager struct {
 	llmResults    chan reviewOutcome
 	llmBatchMu    sync.Mutex
 	llmBatchItems []reviewItem // 批队列（到点/满批统一提交）
-	llmBatchTimer *time.Timer
 
 	// 图片刷屏状态（内存态 + kv 持久化兜底）
 	imgMu    sync.Mutex
