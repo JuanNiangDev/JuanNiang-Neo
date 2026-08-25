@@ -535,6 +535,7 @@ type GroupMgrSampleResp struct {
 	Source     string  `json:"source"`
 	HitCount   int     `json:"hit_count"`
 	RAGSynced  bool    `json:"rag_synced"`   // 已同步到 RAG 向量库
+	RAGTag     string  `json:"rag_tag"`      // 派生 RAG tag UUID（面板展示/对账用）
 	LastUsedAt *string `json:"last_used_at"` // 最近命中时间（可空）
 	CreatedAt  string  `json:"created_at"`
 }

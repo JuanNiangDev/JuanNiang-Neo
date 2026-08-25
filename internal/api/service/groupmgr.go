@@ -9,6 +9,7 @@ import (
 
 	"JuanNiang-Neo/internal/api/dto"
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/core/ragtag"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
@@ -22,6 +23,9 @@ const (
 	maxWordImportSize  = 1 << 20
 	maxWordImportLines = 20000
 )
+
+// u32str uint → 十进制字符串（RAG tag 派生用）。
+func u32str(v uint) string { return strconv.FormatUint(uint64(v), 10) }
 
 // GetGroupMgrConfig 读取群管理配置（未初始化则写入默认配置）。
 func (s *Service) GetGroupMgrConfig(ctx context.Context, c *app.RequestContext) {
@@ -270,9 +274,15 @@ func (s *Service) ListGroupMgrSamples(ctx context.Context, c *app.RequestContext
 		if sp.LastUsedAt != nil {
 			lu = sp.LastUsedAt.Format("2006-01-02 15:04:05")
 		}
+		// 派生 RAG tag（面板 UUID 展示/对账用，与检索侧一致）
+		tag := ragtag.Sample(u32str(sp.ID))
+		if sp.ListType == "white" {
+			tag = ragtag.WhitePhrase(u32str(sp.ID))
+		}
 		resp = append(resp, dto.GroupMgrSampleResp{
 			ID: sp.ID, WordID: sp.WordID, ListType: sp.ListType, Text: sp.Text, Category: sp.Category, Source: sp.Source,
-			HitCount: sp.HitCount, RAGSynced: sp.RAGSynced, LastUsedAt: &lu, CreatedAt: sp.CreatedAt.Format("2006-01-02 15:04:05"),
+			HitCount: sp.HitCount, RAGSynced: sp.RAGSynced, RAGTag: tag.String(),
+			LastUsedAt: &lu, CreatedAt: sp.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
