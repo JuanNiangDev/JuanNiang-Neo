@@ -166,3 +166,21 @@ func (m *LongTermMemory) addToHot(areaID string, item *models.LongTermMemoryItem
 	}
 	m.hotArea[areaID] = items
 }
+
+// Remove 从热区移除条目（GC 删除后同步清理缓存，避免热区残留已删记忆）。
+func (m *LongTermMemory) Remove(ids map[string]bool) {
+	if len(ids) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for areaID, items := range m.hotArea {
+		kept := items[:0]
+		for _, it := range items {
+			if !ids[it.ID] {
+				kept = append(kept, it)
+			}
+		}
+		m.hotArea[areaID] = kept
+	}
+}
