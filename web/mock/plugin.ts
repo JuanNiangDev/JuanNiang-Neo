@@ -42,6 +42,22 @@ export function mockPlugin(): Plugin {
           await delay(100 + Math.random() * 200)
 
           const result = handler.handler({ params, query, body })
+          // SSE 流式 handler：handler 返回 { __sse: true, events: [...] }，逐事件推送
+          if (result && (result as any).__sse) {
+            res.setHeader('Content-Type', 'text/event-stream')
+            res.setHeader('Cache-Control', 'no-cache')
+            res.setHeader('Connection', 'keep-alive')
+            res.setHeader('Access-Control-Allow-Origin', '*')
+            res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')
+            res.statusCode = 200
+            for (const ev of (result as any).events || []) {
+              res.write(`data: ${JSON.stringify(ev)}\n\n`)
+              // 模拟真实逐批推送的间隔
+              await delay(50)
+            }
+            res.end()
+            return
+          }
           res.setHeader('Content-Type', 'application/json')
           res.setHeader('Access-Control-Allow-Origin', '*')
           res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type')

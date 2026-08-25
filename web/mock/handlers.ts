@@ -71,9 +71,9 @@ let ragInfo = {
 let groupMgrDefaultConfig = {
   enabled: true,
   llm_review: true,
-  high_score: 0.75,
-  low_score: 0.5,
-  fallback_score: 0.6,
+  black_min_score: 0.7,
+  white_min_score: 0.75,
+  llm_batch_window: 3,
   img_spam_window: 2,
   img_spam_threshold: 3,
   img_mute_duration: 60,
@@ -81,9 +81,11 @@ let groupMgrDefaultConfig = {
   copy_threshold: 3,
   violation_mute_seconds: 1800,
   exclude_groups: [],
+  llm_prompt: '',
   llm_criteria: '',
   llm_gray_prompt: '',
   llm_high_risk_prompt: '',
+  white_gc_interval_days: 7,
 }
 let groupMgrConfig: any = null
 let groupMgrWordSeed = 100
@@ -94,9 +96,12 @@ let groupMgrWords = [
   { id: 4, word: '考研机构', category: 'gray', source: 'system', rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b003' },
   { id: 5, word: '兼职刷单', category: 'sensitive', source: 'import', rag_synced: false, rag_tag: '' },
 ]
+let groupMgrSampleSeed = 100
 let groupMgrSamples = [
-  { id: 1, text: '办卡加群办套餐，低价流量卡', category: 'ad', source: 'learn', hit_count: 3, created_at: now() },
-  { id: 2, text: '0元购送福利，加我微信领流量卡', category: 'ad', source: 'seed', hit_count: 1, created_at: now() },
+  { id: 1, word_id: 0, list_type: 'black', text: '办卡加群办套餐，低价流量卡', category: 'ad', source: 'learn', hit_count: 3, rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b011', last_used_at: now(), created_at: now() },
+  { id: 2, word_id: 0, list_type: 'black', text: '0元购送福利，加我微信领流量卡', category: 'ad', source: 'seed', hit_count: 1, rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b012', last_used_at: null, created_at: now() },
+  { id: 3, word_id: 0, list_type: 'white', text: '明天一起食堂吃饭吗', category: 'ok', source: 'seed', hit_count: 5, rag_synced: true, rag_tag: '3af2b489-b13a-42e4-af98-fe89d0e6b013', last_used_at: now(), created_at: now() },
+  { id: 4, word_id: 0, list_type: 'white', text: '周末去爬山吗，新版本出了', category: 'ok', source: 'learn', hit_count: 0, rag_synced: false, rag_tag: '', last_used_at: null, created_at: now() },
 ]
 let groupMgrViolations = [
   { id: 1, group_id: 10001, user_id: 20001, username: '张三', count: 1, detection_path: 'rag', llm_reason: '' },
@@ -378,7 +383,7 @@ export const mockHandlers: MockHandler[] = [
     method: 'GET', path: '/memory/:chatAreaID/long-term',
     handler({ params }) {
       if (!memoryConfigs[`lt_${params.chatAreaID}`]) {
-        memoryConfigs[`lt_${params.chatAreaID}`] = { id: UUID(), chat_area_id: params.chatAreaID, hot_area_size: 10, hot_memory_ttl: 86400, created_at: now() }
+        memoryConfigs[`lt_${params.chatAreaID}`] = { id: UUID(), chat_area_id: params.chatAreaID, hot_area_size: 10, hot_memory_ttl: 86400, gc_interval_days: 7, created_at: now() }
       }
       return ok(memoryConfigs[`lt_${params.chatAreaID}`])
     }
@@ -386,7 +391,7 @@ export const mockHandlers: MockHandler[] = [
   {
     method: 'PUT', path: '/memory/:chatAreaID/long-term',
     handler({ params, body }) {
-      memoryConfigs[`lt_${params.chatAreaID}`] = { id: UUID(), chat_area_id: params.chatAreaID, hot_area_size: body.hot_area_size, hot_memory_ttl: body.hot_memory_ttl, created_at: now() }
+      memoryConfigs[`lt_${params.chatAreaID}`] = { id: UUID(), chat_area_id: params.chatAreaID, hot_area_size: body.hot_area_size, hot_memory_ttl: body.hot_memory_ttl, gc_interval_days: body.gc_interval_days ?? 7, created_at: now() }
       return ok(memoryConfigs[`lt_${params.chatAreaID}`])
     }
   },
@@ -811,14 +816,71 @@ export const mockHandlers: MockHandler[] = [
     handler() { return ok({ total: groupMgrWords.length + groupMgrSamples.length, failed: 0 }) }
   },
   {
+    // SSE 流式同步进度：逐批推 {done, failed}，结束推 {total, failed}
+    method: 'GET', path: '/group-mgr/sync-rag/stream',
+    handler() {
+      if (!ragHealthy) return ok({ message: 'RAG-Service 未配置或不可达，同步失败' })
+      const total = groupMgrWords.length + groupMgrSamples.length
+      return {
+        __sse: true,
+        events: [
+          { done: Math.min(5, total), failed: 0 },
+          ...(total > 5 ? [{ done: total, failed: 0 }] : []),
+          { total, failed: 0 },
+        ],
+      }
+    }
+  },
+  {
     method: 'GET', path: '/group-mgr/samples',
-    handler() { return ok(groupMgrSamples) }
+    handler({ query }) {
+      if (query.list_type === 'white') return ok(groupMgrSamples.filter((s) => s.list_type === 'white'))
+      if (query.list_type === 'black') return ok(groupMgrSamples.filter((s) => s.list_type !== 'white'))
+      return ok(groupMgrSamples)
+    }
   },
   {
     method: 'DELETE', path: '/group-mgr/samples/:id',
     handler({ params }) {
       groupMgrSamples = groupMgrSamples.filter((s) => s.id !== Number(params.id))
       return ok(null)
+    }
+  },
+  {
+    method: 'POST', path: '/group-mgr/phrases',
+    handler({ body }) {
+      const listType = body.list_type === 'white' ? 'white' : 'black'
+      const s = {
+        id: ++groupMgrSampleSeed,
+        word_id: 0,
+        list_type: listType,
+        text: String(body.text || ''),
+        category: body.category === 'sensitive' ? 'sensitive' : 'ad',
+        source: 'import',
+        hit_count: 0,
+        rag_synced: ragHealthy,
+        rag_tag: ragHealthy ? UUID() : '',
+        last_used_at: null,
+        created_at: now(),
+      }
+      groupMgrSamples.push(s)
+      return ok(null)
+    }
+  },
+  {
+    method: 'POST', path: '/group-mgr/phrases/import',
+    handler({ query }) {
+      const listType = query.list_type === 'white' ? 'white' : 'black'
+      const lines = ['新导入语录A', '新导入语录B', '新导入语录C']
+      for (const t of lines) {
+        groupMgrSamples.push({
+          id: ++groupMgrSampleSeed, word_id: 0, list_type: listType, text: t,
+          category: 'ad', source: 'import', hit_count: 0,
+          rag_synced: ragHealthy, rag_tag: ragHealthy ? UUID() : '',
+          last_used_at: null, created_at: now(),
+        })
+      }
+      return ok({ imported: 3, skipped: 2 })
     }
   },
   {
@@ -871,17 +933,40 @@ export const mockHandlers: MockHandler[] = [
       const text = String(body.text || '')
       const keyword = ['卡', '群', '微信', '流量', '兼职', '贷款'].some((k) => text.includes(k))
       const hardSignal = keyword || text.includes('com.tencent.troopsharecard')
+      // 黑白双集合判定：仿真实链路
+      const blackPhrase = ['办卡', '流量卡', '0元购', '加微信'].find((p) => text.includes(p))
+      const whitePhrase = ['食堂', '明天', '爬山'].find((p) => text.includes(p))
+      const blackScore = blackPhrase ? 0.88 : null
+      const whiteScore = whitePhrase ? 0.82 : null
+      let verdict = 'pass', reason = ''
+      if (ragHealthy && (blackScore ?? 0) >= (groupMgrConfig?.black_min_score ?? 0.7)) {
+        verdict = 'punish'
+        reason = `RAG 黑名单命中（分数 ${blackScore} ≥ ${groupMgrConfig?.black_min_score ?? 0.7}）→ 直接处罚`
+      } else if (ragHealthy && (whiteScore ?? 0) >= (groupMgrConfig?.white_min_score ?? 0.75)) {
+        verdict = 'pass'
+        reason = `RAG 白名单命中（分数 ${whiteScore} ≥ ${groupMgrConfig?.white_min_score ?? 0.75}）→ 放行`
+      } else if (ragHealthy) {
+        verdict = 'review'
+        reason = '未命中黑白名单 → LLM 统一判定（3s 批窗口，逐条独立）'
+      } else if (hardSignal) {
+        verdict = 'review'
+        reason = 'RAG 不可用 → 关键词兜底（高危复核）'
+      } else {
+        verdict = 'pass'
+        reason = 'RAG 不可用且无关键词命中 → 放行'
+      }
       return ok({
         text,
         card: text.includes('com.tencent.troopsharecard'),
         word: keyword ? (text.match(/[卡群微信流量兼职贷款]/)?.[0] ?? '') : '',
         word_cat: keyword ? 'gray' : '',
         rag_ok: ragHealthy,
-        rag_score: ragHealthy ? 0.82 : 0,
-        rag_sample: ragHealthy ? '办卡加群办套餐，低价流量卡' : '',
-        rag_category: ragHealthy ? 'ad' : '',
-        verdict: keyword || text.includes('com.tencent.troopsharecard') ? 'review' : 'pass',
-        reason: hardSignal ? 'RAG 高置信命中样本 → 直接处罚' : 'RAG 低置信且无硬信号 → 放行',
+        black_score: blackScore,
+        black_phrase: blackPhrase ?? '',
+        white_score: whiteScore,
+        white_phrase: whitePhrase ?? '',
+        verdict,
+        reason,
       })
     }
   },
@@ -922,10 +1007,43 @@ export const mockHandlers: MockHandler[] = [
     method: 'POST', path: '/knowledge/vector-sync',
     handler() { return ok({ ready: ragHealthy, synced: knowledgeItems.length, failed: 0, total: knowledgeItems.length, message: ragHealthy ? '' : 'RAG 未启用，无法同步向量库' }) }
   },
+  {
+    // SSE 流式同步进度：逐批推 {done, failed}，结束推 {total, synced, failed}
+    method: 'GET', path: '/knowledge/vector-sync/stream',
+    handler() {
+      if (!ragHealthy) return ok({ message: 'RAG 未启用，无法同步向量库' })
+      const total = knowledgeItems.length
+      return {
+        __sse: true,
+        events: [
+          { done: Math.min(5, total), failed: 0 },
+          ...(total > 5 ? [{ done: total, failed: 0 }] : []),
+          { total, synced: total, failed: 0 },
+        ],
+      }
+    }
+  },
 
   // ============ 记忆同步 ============
   {
     method: 'POST', path: '/memory/sync-rag',
     handler() { return ok({ ready: ragHealthy, synced: 42, failed: 0, total: 42, message: ragHealthy ? '' : 'RAG 未启用，无法同步记忆向量' }) }
+  },
+  {
+    // SSE 流式同步进度：逐批推 {done, failed}，结束推 {total, synced, failed}
+    method: 'GET', path: '/memory/sync-rag/stream',
+    handler() {
+      if (!ragHealthy) return ok({ message: 'RAG 未启用，无法同步记忆向量' })
+      const total = 42
+      return {
+        __sse: true,
+        events: [
+          { done: 10, failed: 0 },
+          { done: 30, failed: 0 },
+          { done: 42, failed: 0 },
+          { total, synced: 42, failed: 0 },
+        ],
+      }
+    }
   },
 ]

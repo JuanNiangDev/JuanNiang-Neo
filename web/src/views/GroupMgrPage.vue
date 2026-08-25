@@ -598,11 +598,9 @@ async function loadPhrases() {
 
 async function checkRAGHealth() {
   try {
-    const res = (await ragApi.getConfig()).data.data
-    const base = res?.base_url
-    if (!base) { ragHealthy.value = false; return }
-    const hres = await fetch(`${base.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(2000) })
-    ragHealthy.value = hres.ok
+    // 走 /rag/health（经后端代理或 mock 拦截），不直连 base_url，mock 模式同样可用
+    const res = (await ragApi.health()).data.data
+    ragHealthy.value = !!res?.healthy
   } catch {
     ragHealthy.value = false
   }
