@@ -234,6 +234,14 @@ func (d *GroupMgrDAO) SampleListUnused(ctx context.Context, listType string, sin
 	return list, err
 }
 
+// SampleCountByList 语录集合数量（自学习上限控制用）。
+func (d *GroupMgrDAO) SampleCountByList(ctx context.Context, listType string) (int64, error) {
+	var n int64
+	err := d.db.WithContext(ctx).Model(&models.GroupMgrSample{}).
+		Where("list_type = ?", listType).Count(&n).Error
+	return n, err
+}
+
 // SampleListByText 按文本列出样本（词条删除时对账清理用，通常 1 条）。
 func (d *GroupMgrDAO) SampleListByText(ctx context.Context, text string) ([]models.GroupMgrSample, error) {
 	var list []models.GroupMgrSample

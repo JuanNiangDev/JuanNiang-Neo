@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/core/ragtag"
 )
 
 // API 层公开方法（Web REST 调用）。
@@ -27,6 +28,23 @@ func sampleCategoryByWord(category string) string {
 		return "sensitive"
 	}
 	return "ad"
+}
+
+// AddPhrase 新增违禁语录（黑/白名单）：写语录表 + RAG 双向同步（可用时）。
+// 返回语录 ID；RAG 未配置/失败不影响入库（面板可手动同步）。
+func (m *Manager) AddPhrase(ctx context.Context, text, category, listType string) (uint, error) {
+	if listType != "white" {
+		listType = "black"
+	}
+	id, err := m.dao.SampleAddPhrase(ctx, text, category, "import", listType)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := m.upsertRAGPhrase(ctx, id, text, listType); err != nil {
+		log.Warn("语录写入 RAG 失败（可手动同步）", "phrase", id, "list", listType, "err", err)
+	}
+	m.invalidateSampleSet()
+	return id, nil
 }
 
 // AddWord 新增词条（Web/导入共用）：
@@ -108,12 +126,41 @@ func (m *Manager) DeleteWord(ctx context.Context, id uint) error {
 	return m.Reload(ctx)
 }
 
-// DeleteSample 删除样本（双删 RAG，不可用静默跳过）。
+// deleteRAGPhrase 删除语录向量（双删，RAG 不可用静默跳过）。按集合选择 tag 前缀。
+func (m *Manager) deleteRAGPhrase(ctx context.Context, sampleID uint, listType string) {
+	cli := m.getRAG()
+	if cli == nil {
+		return
+	}
+	tag := ragtag.Sample(u32s(sampleID))
+	if listType == "white" {
+		tag = ragtag.WhitePhrase(u32s(sampleID))
+	}
+	if err := cli.Delete(ctx, tag); err != nil {
+		log.Warn("语录从 RAG 删除失败", "phrase", sampleID, "list", listType, "err", err)
+	}
+	m.invalidateSampleSet()
+}
+
+// DeleteSample 删除语录（双删 RAG 向量，按黑白集合选 tag；不可用静默跳过）。
 func (m *Manager) DeleteSample(ctx context.Context, id uint) error {
+	// 先查集合类型（决定 RAG tag 前缀），再删除
+	var listType string
+	if list, err := m.dao.SampleListAll(ctx); err == nil {
+		for _, s := range list {
+			if s.ID == id {
+				listType = s.ListType
+				break
+			}
+		}
+	}
 	if err := m.dao.SampleDelete(ctx, id); err != nil {
 		return err
 	}
-	m.deleteRAGSample(ctx, id)
+	if listType == "" {
+		listType = "black"
+	}
+	m.deleteRAGPhrase(ctx, id, listType)
 	return nil
 }
 

@@ -176,7 +176,12 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 		if s.WordID > 0 {
 			continue // 词条派生样本已由词条循环处理（避免同 tag 重复 upsert）
 		}
-		seed = append(seed, caller.BatchItem{Tag: ragtag.Sample(u32s(s.ID)), Text: s.Text})
+		// 语录 tag 按集合选择：白名单语录用 WhitePhrase 前缀（检索侧按前缀归类）
+		tag := ragtag.Sample(u32s(s.ID))
+		if s.ListType == "white" {
+			tag = ragtag.WhitePhrase(u32s(s.ID))
+		}
+		seed = append(seed, caller.BatchItem{Tag: tag, Text: s.Text})
 	}
 	for i := 0; i < len(seed); i += 50 {
 		end := i + 50
