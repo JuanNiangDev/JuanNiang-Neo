@@ -51,6 +51,9 @@ func (c *knowledgeLRU) Get(key string) ([]models.KnowledgeItem, bool) {
 }
 
 func (c *knowledgeLRU) Put(key string, val []models.KnowledgeItem) {
+	if len(val) == 0 {
+		return // 空结果不缓存：避免 Get 命中空切片后调用方 items[0] 越界
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if el, ok := c.items[key]; ok {
@@ -188,7 +191,7 @@ func (h *HagoCenter) buildKnowledgeContext(ctx context.Context, msg string) stri
 
 	// 降级：LRU + SQL 模糊匹配（现状）
 	key := knowledgeQueryKey(query)
-	if items, ok := h.knowledgeLRU.Get(key); ok {
+	if items, ok := h.knowledgeLRU.Get(key); ok && len(items) > 0 {
 		// 检索追踪日志：方式=关键词缓存（SQL 匹配的 LRU 命中）
 		log.Info("知识检索: 方式=关键词缓存", "query", headText(query, 20), "hits", len(items), "top", headText(items[0].Content, 20))
 		return formatKnowledgeContext(items)
