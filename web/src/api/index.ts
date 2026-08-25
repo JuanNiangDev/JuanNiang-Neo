@@ -18,7 +18,7 @@ export interface MCPServerResp { id: string; name: string; server_url: string; h
 export interface AddMCPServerReq { name: string; server_url: string; headers?: Record<string, any>; timeout?: number; retry_count?: number; tool_filter?: string[]; auto_reconnect?: boolean; is_active: boolean }
 
 export interface ShortTermMemoryResp { id: string; chat_area_id: string; window_size: number; auto_compact: boolean; created_at: string }
-export interface LongTermMemoryResp { id: string; chat_area_id: string; hot_area_size: number; hot_memory_ttl: number; created_at: string }
+export interface LongTermMemoryResp { id: string; chat_area_id: string; hot_area_size: number; hot_memory_ttl: number; gc_interval_days: number; created_at: string }
 
 export interface PromptResp { id: string; name: string; content: string; type: string; is_active: boolean; is_system: boolean; created_at: string }
 export interface AddPromptReq { name: string; content: string; type: string; is_active: boolean }
@@ -103,7 +103,7 @@ export const memoryApi = {
   getShortTerm: (chatAreaID: string) => client.get(`/memory/${chatAreaID}/short-term`),
   updateShortTerm: (chatAreaID: string, data: { window_size: number; auto_compact: boolean }) => client.put(`/memory/${chatAreaID}/short-term`, data),
   getLongTerm: (chatAreaID: string) => client.get(`/memory/${chatAreaID}/long-term`),
-  updateLongTerm: (chatAreaID: string, data: { hot_area_size: number; hot_memory_ttl: number }) => client.put(`/memory/${chatAreaID}/long-term`, data),
+  updateLongTerm: (chatAreaID: string, data: { hot_area_size: number; hot_memory_ttl: number; gc_interval_days?: number }) => client.put(`/memory/${chatAreaID}/long-term`, data),
   syncRAG: () => client.post('/memory/sync-rag'),
 }
 
@@ -530,6 +530,8 @@ export interface GroupMgrSampleResp {
   category: string
   source: string
   hit_count: number
+  rag_synced: boolean
+  rag_tag: string
   last_used_at: string | null
   created_at: string
 }
@@ -551,9 +553,10 @@ export interface GroupMgrTestResp {
   word: string
   word_cat: string
   rag_ok: boolean
-  rag_score: number
-  rag_sample: string
-  rag_category: string
+  black_score: number | null
+  black_phrase: string
+  white_score: number | null
+  white_phrase: string
   verdict: string
   reason: string
 }
