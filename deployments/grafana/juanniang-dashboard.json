@@ -170,7 +170,7 @@
           "refId": "A"
         }
       ],
-      "title": "群管理处罚（warn / mute / kick）",
+      "title": "群管理处罚（warn / mute / kick / kick_failed）",
       "type": "timeseries"
     },
     {
@@ -795,7 +795,7 @@
           "refId": "A"
         }
       ],
-      "title": "违禁判定流水（path: rag/keyword × verdict: punish/review/pass）",
+      "title": "违禁判定流水（rag: 黑白命中处罚/放行/送审；keyword: 兜底）",
       "type": "timeseries"
     },
     {
