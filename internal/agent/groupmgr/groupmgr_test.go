@@ -199,11 +199,11 @@ func TestPunishTiersConcurrent(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		m.punish(ev, "广告违规：并发路径1", "ad", "keyword")
+		m.punish(ctx, ev, "广告违规：并发路径1", "ad", "keyword")
 	}()
 	go func() {
 		defer wg.Done()
-		m.punish(ev, "广告违规：并发路径2", "ad", "llm")
+		m.punish(ctx, ev, "广告违规：并发路径2", "ad", "llm")
 	}()
 	wg.Wait()
 

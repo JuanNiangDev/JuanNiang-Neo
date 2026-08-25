@@ -104,7 +104,7 @@ func (m *Manager) handleRAGMatch(ctx context.Context, ev adapter.Event, cfg *mod
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
 		// 检索追踪日志：方式=RAG + 命中集合/分数 + 命中语录前 20 字
 		log.Info("违禁检测: 方式=RAG", "list", "black", "score", v.black.score, "hit", headText(v.black.text, 20), "user", ev.Message.UserID)
-		m.punish(ev, reason, category, "rag")
+		m.punish(ctx, ev, reason, category, "rag")
 		m.phraseHit(ctx, v.black.tag)
 		log.Info("RAG 黑名单命中，处罚", "score", v.black.score, "phrase", v.black.text, "user", ev.Message.UserID)
 		return true
@@ -170,7 +170,7 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 			return true
 		}
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "punish").Inc()
-		m.punish(ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, "ad"), "keyword")
+		m.punish(ctx, ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, "ad"), "keyword")
 		return true
 	case wordCat == "gray":
 		// 检索追踪日志：方式=关键词兜底（灰色词命中）

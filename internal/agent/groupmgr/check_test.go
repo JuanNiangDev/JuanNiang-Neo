@@ -154,17 +154,17 @@ func TestPunishTiers(t *testing.T) {
 	ev := groupEv(100, 200, "广告")
 
 	// 第 1 次：警告（violation count 1）
-	m.punish(ev, "广告违规：测试", "ad", "keyword")
+	m.punish(ctx, ev, "广告违规：测试", "ad", "keyword")
 	if c, _ := gmdao.ViolationGet(ctx, 100, 200); c != 1 {
 		t.Fatalf("第 1 次后 count = %d", c)
 	}
 	// 第 2 次：禁言（count 2）
-	m.punish(ev, "广告违规：测试", "ad", "keyword")
+	m.punish(ctx, ev, "广告违规：测试", "ad", "keyword")
 	if c, _ := gmdao.ViolationGet(ctx, 100, 200); c != 2 {
 		t.Fatalf("第 2 次后 count = %d", c)
 	}
 	// 第 3 次：踢出（adapter 未启动 → 踢人失败，count 保留 3 供下次仍按第 3 级）
-	m.punish(ev, "广告违规：测试", "ad", "keyword")
+	m.punish(ctx, ev, "广告违规：测试", "ad", "keyword")
 	if c, _ := gmdao.ViolationGet(ctx, 100, 200); c != 3 {
 		t.Fatalf("踢人失败后 count 应保留 = 3，got %d", c)
 	}

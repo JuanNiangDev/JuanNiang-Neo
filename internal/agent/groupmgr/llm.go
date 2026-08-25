@@ -304,7 +304,7 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 			metrics.GroupMgrLLMReviewsTotal.WithLabelValues("error").Inc()
 			// 检索追踪日志：方式=LLM失败（高危硬信号直罚兜底）
 			log.Info("违禁检测: 方式=LLM失败直罚", "msg", headText(it.rawText, 20), "user", it.userID)
-			m.punish(ev, reasonByWord(rc.word, rc.wordCat, rc.card), categoryByWordOrCard(rc.word, rc.wordCat, rc.card, "ad"), "llm")
+			m.punish(ctx, ev, reasonByWord(rc.word, rc.wordCat, rc.card), categoryByWordOrCard(rc.word, rc.wordCat, rc.card, "ad"), "llm")
 			return
 		}
 		if !failed {
@@ -330,7 +330,7 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 		}
 		// 检索追踪日志：方式=LLM + 判定结果 + 消息前 20 字
 		log.Info("违禁检测: 方式=LLM", "verdict", "black", "msg", headText(it.rawText, 20), "reason", reason, "user", it.userID)
-		m.punish(ev, reason, category, "llm")
+		m.punish(ctx, ev, reason, category, "llm")
 		// 学习闭环：异步写入黑名单语录（不阻塞）
 		m.learnPhraseAsync(ctx, it.rawText, "black", category, ev)
 	case "white":

@@ -74,9 +74,10 @@ var tierTemplates = map[string][3][]string{
 
 // punish 三级惩罚：第 1 次撤回+警告；第 2 次撤回+禁言 30min；第 3 次撤回+踢出（成功重置次数）。
 // 每次处罚 @ 回复违规者 + 私聊通知所有管理员。踢人失败保留次数并通知人工处理。
+// ctx 透传请求作用域（OneBot11 适配器调用可被取消，避免阻塞消息处理）；
 // path 为判定来源（rag / keyword / llm），与 reason（LLM 确认违规时为 LLM 输出的 reason）
 // 一并写入违规记录，供面板展示分析类型与 LLM 原因。
-func (m *Manager) punish(ev adapter.Event, reason, category, path string) {
+func (m *Manager) punish(ctx context.Context, ev adapter.Event, reason, category, path string) {
 	groupID := ev.Message.GroupID
 	userID := ev.Message.UserID
 
@@ -88,14 +89,14 @@ func (m *Manager) punish(ev adapter.Event, reason, category, path string) {
 
 	// 原子自增违规计数并返回新值：事件循环（关键词直罚）与 Run 循环（LLM 追罚）
 	// 双 goroutine 并发时不会 read-modify-write 丢计数（单条 SQL 保证）。
-	count, err := m.dao.ViolationIncr(context.Background(), groupID, userID, meta)
+	count, err := m.dao.ViolationIncr(ctx, groupID, userID, meta)
 	if err != nil {
 		log.Warn("违规计数自增失败", "err", err)
 		return
 	}
 	// 违规禁言时长取面板配置（默认 30 分钟）
 	muteSeconds := defaultViolationMuteSeconds
-	if cfg := m.getCfg(context.Background()); cfg != nil && cfg.ViolationMuteSeconds > 0 {
+	if cfg := m.getCfg(ctx); cfg != nil && cfg.ViolationMuteSeconds > 0 {
 		muteSeconds = cfg.ViolationMuteSeconds
 	}
 
@@ -108,7 +109,7 @@ func (m *Manager) punish(ev adapter.Event, reason, category, path string) {
 		action = "mute"
 		_ = m.adp.DeleteMsg(ev.Message.MessageID)
 		_ = m.adp.BanGroupMember(groupID, userID, muteSeconds)
-		_, _ = m.dao.StatIncr(context.Background(), gkey(groupID, "stats:mute"))
+		_, _ = m.dao.StatIncr(ctx, gkey(groupID, "stats:mute"))
 	default:
 		action = "kick"
 		_ = m.adp.DeleteMsg(ev.Message.MessageID)
@@ -118,12 +119,12 @@ func (m *Manager) punish(ev adapter.Event, reason, category, path string) {
 			metrics.GroupMgrViolationsTotal.WithLabelValues(category, "kick_failed").Inc()
 			m.notifyAdmins(ev, itoa(userID)+" "+reason+"（第 "+strconv.Itoa(count)+" 次）-> 踢人失败: "+err.Error()+"，请管理员人工处理")
 		} else {
-			_ = m.dao.ViolationSet(context.Background(), groupID, userID, 0, dao.ViolationMeta{})
-			_, _ = m.dao.StatIncr(context.Background(), gkey(groupID, "stats:kick"))
+			_ = m.dao.ViolationSet(ctx, groupID, userID, 0, dao.ViolationMeta{})
+			_, _ = m.dao.StatIncr(ctx, gkey(groupID, "stats:kick"))
 		}
 	}
 	metrics.GroupMgrViolationsTotal.WithLabelValues(category, action).Inc()
-	_, _ = m.dao.StatIncr(context.Background(), gkey(groupID, "stats:"+category))
+	_, _ = m.dao.StatIncr(ctx, gkey(groupID, "stats:"+category))
 
 	// 回复话术
 	bucket := tierTemplates[category][min(count-1, 2)]

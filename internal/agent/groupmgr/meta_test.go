@@ -16,7 +16,7 @@ func TestPunishRecordsMeta(t *testing.T) {
 	ev.Message.Sender.Nickname = "nick张三"
 
 	// RAG 路径处罚
-	m.punish(ev, "RAG语义核实(校园卡)", "ad", "rag")
+	m.punish(ctx, ev, "RAG语义核实(校园卡)", "ad", "rag")
 	list, err := gmdao.ViolationList(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -33,7 +33,7 @@ func TestPunishRecordsMeta(t *testing.T) {
 	}
 
 	// LLM 路径覆盖（reason 为 LLM 输出）
-	m.punish(ev, "明确广告引流：低价流量卡", "ad", "llm")
+	m.punish(ctx, ev, "明确广告引流：低价流量卡", "ad", "llm")
 	list, _ = gmdao.ViolationList(ctx)
 	v = list[0]
 	if v.Count != 2 {
