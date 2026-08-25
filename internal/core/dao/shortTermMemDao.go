@@ -53,10 +53,11 @@ func (d *LongTermMemoryDAO) GetOrCreate(ctx context.Context, chatAreaID string) 
 	}
 
 	m = models.LongTermMemory{
-		ID:           newUUID(),
-		ChatAreaID:   chatAreaID,
-		HotAreaSize:  10,
-		HotMemoryTTL: 86400,
+		ID:             newUUID(),
+		ChatAreaID:     chatAreaID,
+		HotAreaSize:    10,
+		HotMemoryTTL:   86400,
+		GCIntervalDays: 7,
 	}
 	if err := d.db.WithContext(ctx).Create(&m).Error; err != nil {
 		return nil, err

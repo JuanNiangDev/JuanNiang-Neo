@@ -48,6 +48,9 @@ type GroupMgrConfig struct {
 	LLMGrayPrompt     string `gorm:"type:text"` // 已废弃（保留兼容）
 	LLMHighRiskPrompt string `gorm:"type:text"` // 已废弃（保留兼容）
 
+	// WhiteGCIntervalDays 白名单语录 GC 周期（天）：周期内未被命中（LastUsedAt）的语录被清理。
+	WhiteGCIntervalDays int `gorm:"not null;default:7"`
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`

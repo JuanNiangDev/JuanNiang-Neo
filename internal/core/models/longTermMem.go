@@ -9,14 +9,15 @@ import (
 // ---------- 长期记忆 ----------
 
 type LongTermMemory struct {
-	ID           string   `gorm:"primaryKey;type:uuid"`
-	ChatAreaID   string   `gorm:"uniqueIndex;not null"`
-	ChatArea     ChatArea `gorm:"foreignKey:ChatAreaID"`
-	HotAreaSize  int      `gorm:"default:10"`
-	HotMemoryTTL int      `gorm:"default:86400"`
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	DeletedAt    gorm.DeletedAt `gorm:"index"`
+	ID             string   `gorm:"primaryKey;type:uuid"`
+	ChatAreaID     string   `gorm:"uniqueIndex;not null"`
+	ChatArea       ChatArea `gorm:"foreignKey:ChatAreaID"`
+	HotAreaSize    int      `gorm:"default:10"`
+	HotMemoryTTL   int      `gorm:"default:86400"`
+	GCIntervalDays int      `gorm:"default:7"` // 记忆 GC 周期（天）：周期内未被召回的条目会被清理
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	DeletedAt      gorm.DeletedAt `gorm:"index"`
 }
 
 func (LongTermMemory) TableName() string {
