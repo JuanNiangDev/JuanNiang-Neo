@@ -129,6 +129,14 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 			}
 		}
 	}
+	// RAG 核实分数分布（调阈值依据）：黑白各报最优分，命中即观测
+	// （重构后曾丢失该上报，导致 Grafana 分数分布面板无数据）
+	if v.black != nil {
+		metrics.GroupMgrRAGScore.Observe(v.black.score)
+	}
+	if v.white != nil {
+		metrics.GroupMgrRAGScore.Observe(v.white.score)
+	}
 	return v
 }
 
