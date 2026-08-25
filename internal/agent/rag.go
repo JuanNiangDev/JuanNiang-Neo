@@ -83,6 +83,16 @@ func (h *HagoCenter) memoryRagTagSet(ctx context.Context) (map[uuid.UUID]string,
 // 给 5s 余量不让消息卡死，热路径稳定后毫秒级。
 const ragSearchTimeout = 5 * time.Second
 
+// RAG 检索候选数量（k）：调大让本集合向量更可能进入 top-k。
+// embedding 模型（bge-small 512 维）区分度有限时，小 k 会把本集合命中挤出 top-k
+// （日志表现为「命中的均为外来 tag」）；候选集过滤会丢弃外来 tag，
+// 调大 k 只增加本集合命中概率，不引入误判。
+const (
+	ragSearchKnowledgeK = 50 // 知识库：条目量级小，充分召回
+	ragSearchMemoryK    = 50 // 长期记忆：同上
+	ragSearchPhraseK    = 30 // 群管理黑白语录：命中后仍需过阈值，30 足够
+)
+
 // ragHit 命中条目（tag → 本地 ID，按分数降序）。
 type ragHit struct {
 	score float64
@@ -138,7 +148,7 @@ func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([
 	// 1s 硬超时：热路径不能被挂起的 RAG 服务拖住（与 groupmgr 对齐）
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
-	searchHits, err := cli.Search(cctx, query, 10, nil)
+	searchHits, err := cli.Search(cctx, query, ragSearchKnowledgeK, nil)
 	if err != nil {
 		log.Warn("知识检索: 方式=RAG失败", "query", headText(query, 20), "err", err, "degrade", "SQL")
 		return nil, false
@@ -212,7 +222,7 @@ func (h *HagoCenter) tryMemoryRAGRecall(ctx context.Context, query string) ([]st
 	// 1s 硬超时：记忆召回在 agent goroutine 内，不能被挂起的 RAG 服务拖住
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
-	searchHits, err := cli.Search(cctx, query, 20, nil)
+	searchHits, err := cli.Search(cctx, query, ragSearchMemoryK, nil)
 	if err != nil {
 		log.Warn("记忆检索: 方式=RAG失败", "query", headText(query, 20), "err", err, "degrade", "pg_trgm")
 		return nil, false

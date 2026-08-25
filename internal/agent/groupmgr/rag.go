@@ -16,6 +16,11 @@ import (
 // sampleSetTTL 样本候选集缓存有效期（样本变更即失效；TTL 兜底防长期不同步）。
 const sampleSetTTL = 5 * time.Minute
 
+// ragSearchPhraseK 群管理黑白语录检索候选数：命中后仍需过阈值，30 足够。
+// embedding 区分度有限时小 k 会把本集合命中挤出 top-k（日志表现「外来 tag」）；
+// 候选集过滤会丢弃外来 tag，调大只增加本集合命中概率，不引入误判。
+const ragSearchPhraseK = 30
+
 // ragSearchTimeout RAG 语义核实的硬超时：本地部署毫秒级，但 bge 模型首次推理需加载
 // （冷启动可能 3-5s），给 5s 余量不让消息卡死，热路径稳定后毫秒级。
 const ragSearchTimeout = 5 * time.Second
@@ -102,7 +107,7 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
 	start := time.Now()
-	hits, err := cli.Search(cctx, query, 10, nil)
+	hits, err := cli.Search(cctx, query, ragSearchPhraseK, nil)
 	metrics.RAGSearchLatency.Observe(time.Since(start).Seconds())
 	if err != nil {
 		metrics.RAGSearchErrorsTotal.Inc()
