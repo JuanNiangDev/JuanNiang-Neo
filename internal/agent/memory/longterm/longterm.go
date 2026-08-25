@@ -136,6 +136,7 @@ func (m *LongTermMemory) GetHot(areaID string) []models.LongTermMemoryItem {
 	return out
 }
 
+// UpdateConfig 更新长期记忆配置（召回模式/热区大小）。
 func (m *LongTermMemory) UpdateConfig(conf Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

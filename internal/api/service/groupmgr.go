@@ -470,6 +470,7 @@ func (s *Service) UpdateGroupMgrAdmins(ctx context.Context, c *app.RequestContex
 	s.updateGroupMgrQQList(ctx, c, false)
 }
 
+// updateGroupMgrQQList 全量覆盖白名单/手动管理员（whitelist=true 时操作白名单，否则操作管理员）。
 func (s *Service) updateGroupMgrQQList(ctx context.Context, c *app.RequestContext, whitelist bool) {
 	var data dto.UpdateGroupMgrQQListReq
 	if err := c.BindJSON(&data); err != nil {
@@ -536,6 +537,7 @@ func (s *Service) TestGroupMgr(ctx context.Context, c *app.RequestContext) {
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, rep))
 }
 
+// groupMgrConfigResp 模型 → DTO 响应映射（面板展示用）。
 func groupMgrConfigResp(cfg *models.GroupMgrConfig) dto.GroupMgrConfigResp {
 	return dto.GroupMgrConfigResp{
 		Enabled: cfg.Enabled, LLMReview: cfg.LLMReview,
@@ -550,10 +552,12 @@ func groupMgrConfigResp(cfg *models.GroupMgrConfig) dto.GroupMgrConfigResp {
 	}
 }
 
+// validWordCategory 词条分类是否合法（black/gray/sensitive）。
 func validWordCategory(c string) bool {
 	return c == "black" || c == "gray" || c == "sensitive"
 }
 
+// parseUintParam 解析路径参数为 uint（非法返回 0）。
 func parseUintParam(c *app.RequestContext, name string) uint {
 	id, err := strconv.ParseUint(c.Param(name), 10, 64)
 	if err != nil {
@@ -562,6 +566,7 @@ func parseUintParam(c *app.RequestContext, name string) uint {
 	return uint(id)
 }
 
+// parseI64Param 解析查询参数为 int64。
 func parseI64Param(c *app.RequestContext, name string) (int64, error) {
 	return strconv.ParseInt(c.Query(name), 10, 64)
 }

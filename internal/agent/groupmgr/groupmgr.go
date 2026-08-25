@@ -204,6 +204,7 @@ func (m *Manager) Reload(ctx context.Context) error {
 // InvalidateSampleSet 样本候选集失效（样本增删改后调用，供 Web API 触发）。
 func (m *Manager) InvalidateSampleSet() { m.invalidateSampleSet() }
 
+// invalidateSampleSet 置空语录候选集缓存（下次 buildPhraseSet 重建）。
 func (m *Manager) invalidateSampleSet() {
 	m.sampleMu.Lock()
 	m.sampleSet = nil
@@ -212,6 +213,7 @@ func (m *Manager) invalidateSampleSet() {
 
 // ---------- 内存缓存读取 ----------
 
+// getCfg 读取配置缓存（TTL 内直接返回；过期重载，失败回退缓存/默认）。
 func (m *Manager) getCfg(ctx context.Context) *models.GroupMgrConfig {
 	m.mu.RLock()
 	cfg, at := m.cfg, m.cfgAt
@@ -366,6 +368,7 @@ func (m *Manager) Process(ctx context.Context, ev adapter.Event) bool {
 	return false
 }
 
+// itoa int64 → 十进制字符串。
 func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }

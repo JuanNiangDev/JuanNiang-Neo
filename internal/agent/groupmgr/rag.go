@@ -292,6 +292,7 @@ func (m *Manager) deleteRAGSample(ctx context.Context, sampleID uint) {
 	m.invalidateSampleSet()
 }
 
+// u32s uint → 十进制字符串（RAG tag 派生用）。
 func u32s(v uint) string {
 	return fmt.Sprintf("%d", v)
 }

@@ -190,6 +190,8 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 	}
 }
 
+// categoryByWordOrCard 处罚分类：推荐卡片优先 ad；敏感词 → sensitive；黑/灰词 → ad；
+// 否则取样本分类（sensitive → sensitive，其余 ad）。
 func categoryByWordOrCard(word, wordCat string, card bool, sampleCat string) string {
 	if card {
 		return "ad"
@@ -206,6 +208,7 @@ func categoryByWordOrCard(word, wordCat string, card bool, sampleCat string) str
 	return "ad"
 }
 
+// reasonByWord 关键词兜底路径的违规理由文案（按命中类别/卡片拼装）。
 func reasonByWord(word, wordCat string, card bool) string {
 	switch {
 	case card:

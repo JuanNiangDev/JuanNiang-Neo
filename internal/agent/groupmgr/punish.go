@@ -23,6 +23,7 @@ var (
 	imgShuaping2B64 = loadImageB64("shuaping_2.png")
 )
 
+// loadImageB64 读取 go:embed 图片并编码为 base64:// 前缀数据（供群聊回复发送）。
 func loadImageB64(name string) string {
 	data, err := warnImages.ReadFile(name)
 	if err != nil {
@@ -244,6 +245,7 @@ func (m *Manager) groupName(groupID int64) string {
 	return name
 }
 
+// gkey 群级统计/状态 kv key 拼装（{group_id}:{suffix}）。
 func gkey(groupID int64, suffix string) string {
 	return itoa(groupID) + ":" + suffix
 }

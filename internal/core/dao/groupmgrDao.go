@@ -17,6 +17,7 @@ import (
 // GroupMgrDAO 群管理系统功能的全部持久化（config/words/samples/violations/whitelist/admins/stats）。
 type GroupMgrDAO struct{ db *gorm.DB }
 
+// NewGroupMgrDAO 构造群管理 DAO。
 func NewGroupMgrDAO(db *gorm.DB) *GroupMgrDAO { return &GroupMgrDAO{db: db} }
 
 // u64toa uint64 → 十进制字符串（RAG tag 派生用）。

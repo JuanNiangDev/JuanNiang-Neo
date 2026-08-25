@@ -12,10 +12,12 @@ import (
 
 type LongTermMemoryItemDAO struct{ db *gorm.DB }
 
+// NewLongTermMemoryItemDAO 构造长期记忆条目 DAO。
 func NewLongTermMemoryItemDAO(db *gorm.DB) *LongTermMemoryItemDAO {
 	return &LongTermMemoryItemDAO{db: db}
 }
 
+// Create 写入一条长期记忆条目（ID 为空时自动生成 UUID）。
 func (d *LongTermMemoryItemDAO) Create(ctx context.Context, item *models.LongTermMemoryItem) error {
 	if item.ID == "" {
 		item.ID = newUUID()
@@ -23,6 +25,7 @@ func (d *LongTermMemoryItemDAO) Create(ctx context.Context, item *models.LongTer
 	return d.db.WithContext(ctx).Create(item).Error
 }
 
+// ListByChatArea 按 ChatArea 列出条目（创建时间倒序，取 limit 条）。
 func (d *LongTermMemoryItemDAO) ListByChatArea(ctx context.Context, chatAreaID string, limit int) ([]models.LongTermMemoryItem, error) {
 	var list []models.LongTermMemoryItem
 	err := d.db.WithContext(ctx).
@@ -60,6 +63,7 @@ func (d *LongTermMemoryItemDAO) likePred() string {
 	return "LIKE"
 }
 
+// SearchByContent 关键词子串搜索（PG 用 ILIKE，其余方言 LIKE）。
 func (d *LongTermMemoryItemDAO) SearchByContent(ctx context.Context, chatAreaID string, keyword string, limit int) ([]models.LongTermMemoryItem, error) {
 	var list []models.LongTermMemoryItem
 	err := d.db.WithContext(ctx).
@@ -108,6 +112,7 @@ func (d *LongTermMemoryItemDAO) SemanticSearch(ctx context.Context, chatAreaID s
 	return list, err
 }
 
+// Delete 删除条目（GC 清理用）。
 func (d *LongTermMemoryItemDAO) Delete(ctx context.Context, id string) error {
 	return d.db.WithContext(ctx).Where("id = ?", id).Delete(&models.LongTermMemoryItem{}).Error
 }
@@ -141,6 +146,7 @@ func (d *LongTermMemoryItemDAO) ListUnused(ctx context.Context, since time.Time,
 	return list, err
 }
 
+// CountByChatArea 统计某 ChatArea 的条目数。
 func (d *LongTermMemoryItemDAO) CountByChatArea(ctx context.Context, chatAreaID string) (int64, error) {
 	var count int64
 	err := d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).
@@ -148,6 +154,7 @@ func (d *LongTermMemoryItemDAO) CountByChatArea(ctx context.Context, chatAreaID 
 	return count, err
 }
 
+// DeleteOldest 删除某 ChatArea 最旧的条目，保留最近 keep 条（容量控制用）。
 func (d *LongTermMemoryItemDAO) DeleteOldest(ctx context.Context, chatAreaID string, keep int) error {
 	sub := d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).
 		Select("id").
