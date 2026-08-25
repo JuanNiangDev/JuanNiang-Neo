@@ -118,6 +118,15 @@ func (d *LongTermMemoryItemDAO) Touch(ctx context.Context, id string) error {
 		UpdateColumn("last_recalled_at", time.Now()).Error
 }
 
+// TouchMany 批量更新最近召回时间（召回命中多条时一次 SQL）。
+func (d *LongTermMemoryItemDAO) TouchMany(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).Where("id IN ?", ids).
+		UpdateColumn("last_recalled_at", time.Now()).Error
+}
+
 // ListUnused 列出最近窗口内未被召回的条目（GC 用），按最近召回时间升序取 limit 条。
 func (d *LongTermMemoryItemDAO) ListUnused(ctx context.Context, since time.Time, limit int) ([]models.LongTermMemoryItem, error) {
 	var list []models.LongTermMemoryItem
