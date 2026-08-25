@@ -122,6 +122,9 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 		admins: ev.Admins, pk: pk, rc: rc, rawText: text,
 	}
 
+	// 检索追踪日志：方式=LLM 送审（入批窗口，等待批裁决）
+	log.Info("违禁检测: 方式=LLM送审", "msg", headText(text, 20), "user", msg.UserID)
+
 	// 入批窗口
 	m.llmBatchMu.Lock()
 	m.llmBatchItems = append(m.llmBatchItems, item)
@@ -283,6 +286,8 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 		if rc.highRisk && rc.hard {
 			// 高危回退直罚（敏感/黑词/卡片）
 			metrics.GroupMgrLLMReviewsTotal.WithLabelValues("error").Inc()
+			// 检索追踪日志：方式=LLM失败（高危硬信号直罚兜底）
+			log.Info("违禁检测: 方式=LLM失败直罚", "msg", headText(it.rawText, 20), "user", it.userID)
 			m.punish(ev, reasonByWord(rc.word, rc.wordCat, rc.card), categoryByWordOrCard(rc.word, rc.wordCat, rc.card, "ad"), "llm")
 			return
 		}
@@ -290,6 +295,8 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 			log.Warn("LLM 批量裁决非法，按失败处理", "content", res.Verdict)
 		}
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("error").Inc()
+		// 检索追踪日志：方式=LLM失败放行（无硬信号，宁放勿杀）
+		log.Info("违禁检测: 方式=LLM失败放行", "msg", headText(it.rawText, 20), "user", it.userID)
 		log.Info("LLM 审查失败，放行", "user", it.userID)
 		return
 	}

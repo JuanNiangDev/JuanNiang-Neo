@@ -120,6 +120,20 @@ func (m *Manager) handleRAGMatch(ctx context.Context, ev adapter.Event, cfg *mod
 	}
 
 	// 均未达阈值 → LLM 统一判定（批窗口异步，不阻塞主循环）
+	// 检索追踪日志：方式=RAG 但未命中黑白语录（含知识/记忆向量干扰时的低分命中）→ 送 LLM
+	if v.black == nil && v.white == nil {
+		log.Info("违禁检测: 方式=RAG未命中", "list", "none", "score", 0.0, "hit", "", "user", ev.Message.UserID)
+	} else {
+		var score float64
+		var hit string
+		var list string
+		if v.black != nil {
+			score, hit, list = v.black.score, v.black.text, "black"
+		} else if v.white != nil {
+			score, hit, list = v.white.score, v.white.text, "white"
+		}
+		log.Info("违禁检测: 方式=RAG未达阈值", "list", list, "score", score, "hit", headText(hit, 20), "user", ev.Message.UserID)
+	}
 	rc := reviewCtx{word: word, wordCat: wordCat, card: card}
 	if v.black != nil {
 		rc.ragScore = &v.black.score

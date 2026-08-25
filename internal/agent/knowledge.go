@@ -202,6 +202,9 @@ func (h *HagoCenter) buildKnowledgeContext(ctx context.Context, msg string) stri
 	if len(items) > 0 {
 		// 检索追踪日志：方式=关键词（SQL 倒排匹配）
 		log.Info("知识检索: 方式=关键词(SQL)", "query", headText(query, 20), "hits", len(items), "top", headText(items[0].Content, 20))
+	} else {
+		// 检索追踪日志：方式=关键词(SQL) 无命中
+		log.Info("知识检索: 方式=关键词(SQL)无命中", "query", headText(query, 20), "hits", 0, "top", "")
 	}
 	return formatKnowledgeContext(items)
 }
