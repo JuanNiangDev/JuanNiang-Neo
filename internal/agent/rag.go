@@ -88,9 +88,9 @@ const ragSearchTimeout = 5 * time.Second
 // （日志表现为「命中的均为外来 tag」）；候选集过滤会丢弃外来 tag，
 // 调大 k 只增加本集合命中概率，不引入误判。
 const (
-	ragSearchKnowledgeK = 50 // 知识库：条目量级小，充分召回
-	ragSearchMemoryK    = 50 // 长期记忆：同上
-	ragSearchPhraseK    = 30 // 群管理黑白语录：命中后仍需过阈值，30 足够
+	ragSearchKnowledgeK = 15 // 知识库：条目量级小，充分召回
+	ragSearchMemoryK    = 20 // 长期记忆：同上
+	ragSearchPhraseK    = 15 // 群管理黑白语录：命中后仍需过阈值，30 足够
 )
 
 // ragHit 命中条目（tag → 本地 ID，按分数降序）。
