@@ -421,11 +421,11 @@ func extractJSON(raw string) string {
 }
 
 // truncateLog 截断字符串用于日志展示（防止超长日志刷屏）。
-func truncateLog(s string, max int) string {
-	if len(s) <= max {
+func truncateLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
 		return s
 	}
-	return s[:max] + "...(truncated)"
+	return s[:maxLen] + "...(truncated)"
 }
 
 // headText 截取文本前 n 个字符（rune-safe，中文不会切坏）。
