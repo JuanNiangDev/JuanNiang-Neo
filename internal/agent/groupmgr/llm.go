@@ -179,9 +179,14 @@ func (m *Manager) flushBatch() {
 			out.content = resp.Message.Content
 			out.tokens = resp.TokenUsage
 			if err == nil {
+				// LLM 输出可能被 markdown 代码块包裹（```json ... ```），
+				// 需提取纯 JSON 再解析，否则 json.Unmarshal 静默失败导致学习闭环失效
+				jsonStr := extractJSON(resp.Message.Content)
 				var bat reviewBatch
-				if jerr := json.Unmarshal([]byte(resp.Message.Content), &bat); jerr == nil {
+				if jerr := json.Unmarshal([]byte(jsonStr), &bat); jerr == nil {
 					out.results = bat.Results
+				} else {
+					log.Warn("LLM 批量裁决 JSON 解析失败", "err", jerr, "raw_len", len(resp.Message.Content), "raw_head", truncateLog(resp.Message.Content, 200))
 				}
 			}
 		}
@@ -264,6 +269,7 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 			GroupID:     it.groupID,
 			UserID:      it.userID,
 			MessageID:   it.messageID,
+			RawMessage:  it.rawText, // 学习闭环兜底用（learnPhraseAsync 第二选择）
 		},
 	}
 	rc := it.rc
@@ -344,4 +350,47 @@ func (m *Manager) learnPhraseAsync(ctx context.Context, raw, listType, category 
 		m.invalidateSampleSet()
 		log.Info("学习语录已入库", "list", listType, "text", text)
 	}()
+}
+
+// extractJSON 从 LLM 输出中提取纯 JSON 文本。
+// 处理 markdown 代码块包裹（```json ... ``` 或 ``` ... ```）、前后多余文本。
+// DeepSeek/GPT/Claude 等模型即使提示词要求"只输出 JSON"，仍经常用代码块包裹。
+func extractJSON(raw string) string {
+	s := strings.TrimSpace(raw)
+	// 1. 尝试整体解析（最理想情况：纯 JSON）
+	if strings.HasPrefix(s, "{") {
+		return s
+	}
+	// 2. 提取 markdown 代码块内容（```json\n...\n``` 或 ```\n...\n```）
+	if idx := strings.Index(s, "```"); idx >= 0 {
+		after := s[idx+3:]
+		// 跳过语言标识（json/JSON 等）
+		if nl := strings.IndexByte(after, '\n'); nl >= 0 {
+			lang := strings.TrimSpace(after[:nl])
+			if lang == "json" || lang == "JSON" || lang == "" {
+				after = after[nl+1:]
+			}
+		}
+		// 找结束 ```
+		if end := strings.Index(after, "```"); end >= 0 {
+			return strings.TrimSpace(after[:end])
+		}
+		// 没有结束标记，取到末尾
+		return strings.TrimSpace(after)
+	}
+	// 3. 兜底：找第一个 { 到最后一个 }（处理前后有解释性文本的情况）
+	start := strings.IndexByte(s, '{')
+	end := strings.LastIndexByte(s, '}')
+	if start >= 0 && end > start {
+		return s[start : end+1]
+	}
+	return s
+}
+
+// truncateLog 截断字符串用于日志展示（防止超长日志刷屏）。
+func truncateLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
