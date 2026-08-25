@@ -47,3 +47,7 @@ dev.yaml
 data/pluggins/*/
 data/imgs/
 data/plugin_store.json
+
+pr_comments.json
+pr_review_issues.md
+pr_fix_plan.md
