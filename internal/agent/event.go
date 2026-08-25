@@ -436,7 +436,12 @@ func (h *HagoCenter) memoryRecall(ctx context.Context, areaID, msg string, limit
 			return items, nil
 		}
 	}
-	return h.Memory.RecallLongTermMemory(ctx, areaID, msg, limit)
+	items, err := h.Memory.RecallLongTermMemory(ctx, areaID, msg, limit)
+	if err == nil && len(items) > 0 {
+		// 检索追踪日志：方式=pg_trgm/最近（RAG 未命中或不可用）
+		log.Info("记忆检索: 方式=pg_trgm/最近", "query", headText(msg, 20), "hits", len(items), "top", headText(items[0], 20))
+	}
+	return items, err
 }
 
 // writeBatchToMemory 批次级记忆屏障：把整批用户消息（黑名单过滤后、带发言人标识）

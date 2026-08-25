@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	caller "JuanNiang-Neo/infrastructure/rag/handler"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/core/ragtag"
 
@@ -113,6 +114,15 @@ type ragHitWithTag struct {
 	score float64
 }
 
+// headText 截取文本前 n 个字符（rune-safe，中文不会切坏），超长加省略号。
+func headText(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 // tryKnowledgeRAGRecall 知识库语义召回：命中按 RAG 分数排序注入。
 // 返回 (条目列表, 是否走了 RAG 路径)。RAG 未配置/不可用/无候选 → false（调用方降级 SQL）。
 func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([]models.KnowledgeItem, bool) {
@@ -162,7 +172,26 @@ func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([
 	if len(ordered) == 0 {
 		return nil, false
 	}
+	// 检索追踪日志：方式=RAG + 最高分 + 首条内容前 20 字
+	if top, ok := topRAGHitScore(searchHits, owned); ok {
+		log.Info("知识检索: 方式=RAG", "query", headText(query, 20), "score", top, "hits", len(ordered), "top", headText(ordered[0].Content, 20))
+	} else {
+		log.Info("知识检索: 方式=RAG", "query", headText(query, 20), "hits", len(ordered), "top", headText(ordered[0].Content, 20))
+	}
 	return ordered, true
+}
+
+// topRAGHitScore 返回候选集内命中最高分（追踪日志用）。
+func topRAGHitScore(hits []caller.SearchHit, owner map[uuid.UUID]string) (float64, bool) {
+	best := 0.0
+	found := false
+	for _, hit := range hits {
+		if _, ok := owner[hit.Tag]; ok && (!found || hit.Score > best) {
+			best = hit.Score
+			found = true
+		}
+	}
+	return best, found
 }
 
 // tryMemoryRAGRecall 长期记忆语义召回：命中按 RAG 分数排序返回内容。
@@ -217,5 +246,8 @@ func (h *HagoCenter) tryMemoryRAGRecall(ctx context.Context, query string) ([]st
 	if err := h.DAO.LongTermMemItem.TouchMany(ctx, ids); err != nil {
 		log.Warn("记忆 RAG 召回时间记录失败", "err", err)
 	}
+	// 检索追踪日志：方式=RAG + 最高分 + 首条内容前 20 字
+	top, _ := topRAGHitScore(searchHits, owned)
+	log.Info("记忆检索: 方式=RAG", "query", headText(query, 20), "score", top, "hits", len(content), "top", headText(content[0], 20))
 	return content, true
 }
