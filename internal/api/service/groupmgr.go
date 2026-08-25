@@ -272,7 +272,7 @@ func (s *Service) ListGroupMgrSamples(ctx context.Context, c *app.RequestContext
 		}
 		resp = append(resp, dto.GroupMgrSampleResp{
 			ID: sp.ID, WordID: sp.WordID, ListType: sp.ListType, Text: sp.Text, Category: sp.Category, Source: sp.Source,
-			HitCount: sp.HitCount, LastUsedAt: &lu, CreatedAt: sp.CreatedAt.Format("2006-01-02 15:04:05"),
+			HitCount: sp.HitCount, RAGSynced: sp.RAGSynced, LastUsedAt: &lu, CreatedAt: sp.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))

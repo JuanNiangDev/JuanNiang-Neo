@@ -40,8 +40,11 @@ func (m *Manager) AddPhrase(ctx context.Context, text, category, listType string
 	if err != nil {
 		return 0, err
 	}
-	if _, err := m.upsertRAGPhrase(ctx, id, text, listType); err != nil {
-		log.Warn("语录写入 RAG 失败（可手动同步）", "phrase", id, "list", listType, "err", err)
+	// 仅真实写入 RAG 成功才标记已同步（区分「客户端存在」与「upsert 成功」）
+	synced, _ := m.upsertRAGPhrase(ctx, id, text, listType)
+	_ = m.dao.SampleMarkRAGSynced(ctx, id, synced)
+	if !synced {
+		log.Warn("语录写入 RAG 失败（可手动同步）", "phrase", id, "list", listType)
 	}
 	m.invalidateSampleSet()
 	return id, nil
@@ -63,6 +66,7 @@ func (m *Manager) AddWord(ctx context.Context, word, category string) (uint, err
 		if sid, err := m.dao.SampleAddWithWord(ctx, word, sampleCategoryByWord(category), "seed", id); err == nil {
 			sampleID = sid
 			synced, _ = m.upsertRAGSample(ctx, sid, word)
+			_ = m.dao.SampleMarkRAGSynced(ctx, sid, synced)
 		}
 	}
 	// 仅当样本真实写入 RAG 成功才标记已同步（区分「客户端存在」与「upsert 成功」）
@@ -91,6 +95,7 @@ func (m *Manager) ImportWords(ctx context.Context, lines []string, category stri
 		if m.getRAG() != nil {
 			if sid, err := m.dao.SampleAddWithWord(ctx, w, sampleCategoryByWord(category), "seed", id); err == nil {
 				synced, _ = m.upsertRAGSample(ctx, sid, w)
+				_ = m.dao.SampleMarkRAGSynced(ctx, sid, synced)
 			}
 		}
 		_ = m.dao.WordMarkRAGSynced(ctx, id, synced)

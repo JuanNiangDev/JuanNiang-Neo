@@ -90,8 +90,9 @@ type GroupMgrSample struct {
 	Text       string     `gorm:"type:text;not null"`
 	Category   string     `gorm:"not null;index"` // ad / sensitive（仅 black 语录有意义）
 	Source     string     `gorm:"not null;default:'seed'"`
-	HitCount   int        `gorm:"not null;default:0"` // 命中次数（黑=处罚 / 白=放行）
-	LastUsedAt *time.Time `gorm:"index"`              // 最近命中时间（GC 用；NULL=从未命中）
+	HitCount   int        `gorm:"not null;default:0"`     // 命中次数（黑=处罚 / 白=放行）
+	LastUsedAt *time.Time `gorm:"index"`                  // 最近命中时间（GC 用；NULL=从未命中）
+	RAGSynced  bool       `gorm:"not null;default:false"` // 已同步到 RAG 向量库（同步/导入成功置 true）
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	DeletedAt  gorm.DeletedAt `gorm:"index"`

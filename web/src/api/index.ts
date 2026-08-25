@@ -485,9 +485,9 @@ export const scheduledMessageApi = {
 export interface GroupMgrConfigResp {
   enabled: boolean
   llm_review: boolean
-  high_score: number
-  low_score: number
-  fallback_score: number
+  black_min_score: number
+  white_min_score: number
+  llm_batch_window: number
   img_spam_window: number
   img_spam_threshold: number
   img_mute_duration: number
@@ -495,17 +495,19 @@ export interface GroupMgrConfigResp {
   copy_threshold: number
   violation_mute_seconds: number
   exclude_groups: string[]
+  llm_prompt: string
   llm_criteria: string
   llm_gray_prompt: string
   llm_high_risk_prompt: string
+  white_gc_interval_days: number
 }
 
 export interface UpdateGroupMgrConfigReq {
   enabled: boolean
   llm_review: boolean
-  high_score: number
-  low_score: number
-  fallback_score: number
+  black_min_score: number
+  white_min_score: number
+  llm_batch_window: number
   img_spam_window: number
   img_spam_threshold: number
   img_mute_duration: number
@@ -513,12 +515,24 @@ export interface UpdateGroupMgrConfigReq {
   copy_threshold: number
   violation_mute_seconds: number
   exclude_groups: string[]
+  llm_prompt: string
   llm_criteria: string
   llm_gray_prompt: string
   llm_high_risk_prompt: string
+  white_gc_interval_days: number
 }
 export interface GroupMgrWordResp { id: number; word: string; category: string; source: string; rag_synced: boolean; rag_tag: string }
-export interface GroupMgrSampleResp { id: number; text: string; category: string; source: string; hit_count: number; created_at: string }
+export interface GroupMgrSampleResp {
+  id: number
+  word_id: number
+  list_type: string
+  text: string
+  category: string
+  source: string
+  hit_count: number
+  last_used_at: string | null
+  created_at: string
+}
 export interface GroupMgrViolationResp { id: number; group_id: number; user_id: number; username: string; count: number; detection_path: string; llm_reason: string }
 export interface GroupMgrStatsResp {
   group_id: number
@@ -558,8 +572,17 @@ export const groupMgrApi = {
     })
   },
   syncRAG: () => client.post('/group-mgr/sync-rag'),
-  samples: () => client.get('/group-mgr/samples'),
+  samples: (listType?: string) => client.get('/group-mgr/samples', { params: { list_type: listType } }),
   deleteSample: (id: number) => client.delete(`/group-mgr/samples/${id}`),
+  addPhrase: (text: string, listType: string, category?: string) =>
+    client.post('/group-mgr/phrases', { text, list_type: listType, category }),
+  importPhrases: (file: File, listType: string) => {
+    const form = new FormData()
+    form.append('file', file)
+    return client.post(`/group-mgr/phrases/import?list_type=${listType}`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
   violations: () => client.get('/group-mgr/violations'),
   deleteViolation: (id: number) => client.delete(`/group-mgr/violations/${id}`),
   whitelist: () => client.get('/group-mgr/whitelist'),

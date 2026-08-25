@@ -267,6 +267,12 @@ func (d *GroupMgrDAO) SampleIncrHit(ctx context.Context, id uint) error {
 		UpdateColumn("hit_count", gorm.Expr("hit_count + 1")).Error
 }
 
+// SampleMarkRAGSynced 标记样本 RAG 同步状态（同步/删除失败时置 false，面板展示可信）。
+func (d *GroupMgrDAO) SampleMarkRAGSynced(ctx context.Context, id uint, synced bool) error {
+	return d.db.WithContext(ctx).Model(&models.GroupMgrSample{}).Where("id = ?", id).
+		UpdateColumn("rag_synced", synced).Error
+}
+
 // ---------- 违规记录 ----------
 
 // ViolationIncr 原子自增违规计数并返回新值（单条 UPSERT ... RETURNING，无 read-modify-write 竞争）。

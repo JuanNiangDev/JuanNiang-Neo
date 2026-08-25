@@ -160,7 +160,8 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 	// 样本表为空时链路测试报「RAG 不可用」且词条不参与语义核实。
 	total, failed := 0, 0
 	seed := make([]caller.BatchItem, 0, len(words)+len(samples))
-	wordTagOf := make(map[uuid.UUID]uint, len(words)) // tag → 词条 ID（样本 tag 不在其中）
+	wordTagOf := make(map[uuid.UUID]uint, len(words))     // tag → 词条 ID（样本 tag 不在其中）
+	sampleTagOf := make(map[uuid.UUID]uint, len(samples)) // tag → 语录 ID（词条派生样本也记录）
 	for _, w := range words {
 		sid, err := m.dao.SampleAddWithWord(ctx, w.Word, sampleCategoryByWord(w.Category), "seed", w.ID)
 		if err != nil {
@@ -171,6 +172,7 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 		tag := ragtag.Sample(u32s(sid))
 		seed = append(seed, caller.BatchItem{Tag: tag, Text: w.Word})
 		wordTagOf[tag] = w.ID
+		sampleTagOf[tag] = sid
 	}
 	for _, s := range samples {
 		if s.WordID > 0 {
@@ -182,6 +184,7 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 			tag = ragtag.WhitePhrase(u32s(s.ID))
 		}
 		seed = append(seed, caller.BatchItem{Tag: tag, Text: s.Text})
+		sampleTagOf[tag] = s.ID
 	}
 	for i := 0; i < len(seed); i += 50 {
 		end := i + 50
@@ -191,15 +194,29 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 		resp, err := cli.BatchUpsert(ctx, seed[i:end])
 		if err != nil {
 			failed += end - i
+			// 整批失败：本批涉及语录/样本全部置未同步
+			for _, item := range seed[i:end] {
+				if err := m.dao.SampleMarkRAGSynced(ctx, sampleTagOf[item.Tag], false); err != nil {
+					log.Warn("样本同步状态标记失败", "tag", item.Tag, "err", err)
+				}
+			}
 			log.Warn("RAG 批量同步失败", "err", err)
 			continue
 		}
 		for idx, r := range resp.Results {
 			if r.Error != nil {
 				failed++
+				// 单条失败：该样本置未同步
+				_ = m.dao.SampleMarkRAGSynced(ctx, sampleTagOf[seed[i+idx].Tag], false)
 				continue
 			}
 			total++
+			// 样本级：成功写回向量 → 标记已同步（语录面板状态可信）
+			if sid, ok := sampleTagOf[seed[i+idx].Tag]; ok {
+				if err := m.dao.SampleMarkRAGSynced(ctx, sid, true); err != nil {
+					log.Warn("样本同步状态标记失败", "sample", sid, "err", err)
+				}
+			}
 			// 词条写入成功 → 从待标记集合移除（剩余词条保持/置为未同步）
 			if id, ok := wordTagOf[seed[i+idx].Tag]; ok {
 				if err := m.dao.WordMarkRAGSynced(ctx, id, true); err != nil {
@@ -215,7 +232,7 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 			}
 		}
 	}
-	// 未成功写入的词条（失败批次/失败条目）标记为未同步，面板状态与实际对齐
+	// 未成功写入的词条/语录（失败批次/失败条目）标记为未同步，面板状态与实际对齐
 	for _, id := range wordTagOf {
 		if err := m.dao.WordMarkRAGSynced(ctx, id, false); err != nil {
 			log.Warn("词条同步状态标记失败", "word_id", id, "err", err)

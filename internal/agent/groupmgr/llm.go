@@ -334,9 +334,12 @@ func (m *Manager) learnPhraseAsync(ctx context.Context, raw, listType, category 
 		if id, err := m.dao.SampleAddPhrase(lctx, text, category, "learn", listType); err != nil {
 			log.Warn("学习语录入库失败", "err", err)
 			return
-		} else if _, err := m.upsertRAGPhrase(lctx, id, text, listType); err != nil {
-			log.Warn("学习语录写入 RAG 失败", "err", err)
+		} else if synced, uerr := m.upsertRAGPhrase(lctx, id, text, listType); uerr != nil {
+			log.Warn("学习语录写入 RAG 失败", "err", uerr)
+			_ = m.dao.SampleMarkRAGSynced(lctx, id, false)
 			return
+		} else if synced {
+			_ = m.dao.SampleMarkRAGSynced(lctx, id, true)
 		}
 		m.invalidateSampleSet()
 		log.Info("学习语录已入库", "list", listType, "text", text)
