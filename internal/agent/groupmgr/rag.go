@@ -214,6 +214,11 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 			continue
 		}
 		for idx, r := range resp.Results {
+			// 边界校验：结果超出本批请求范围时安全跳过（防越界 panic/串批标记）
+			if i+idx >= end {
+				log.Warn("RAG 批量同步返回超出批次范围的结果，跳过", "idx", idx, "batch_size", end-i)
+				continue
+			}
 			if r.Error != nil {
 				failed++
 				// 单条失败：该样本置未同步

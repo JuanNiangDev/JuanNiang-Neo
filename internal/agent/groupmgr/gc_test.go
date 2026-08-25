@@ -147,6 +147,41 @@ func TestWhiteGCRAGDeleteOKRemovesRow(t *testing.T) {
 	}
 }
 
+// TestWhiteGCRAGNilKeepsSyncedRow 回归：RAG 不可用（client 为 nil）时，
+// 已同步语录不得删 PG 行（向量仍在 RAG 库，待 RAG 恢复后先删向量再删主库，防孤儿向量）；
+// 未同步语录仍直接删主库（与白名单 GC 一致，防孤儿向量）。
+func TestWhiteGCRAGNilKeepsSyncedRow(t *testing.T) {
+	m, gmdao := newTestManager(t, nil) // getRAG 返回 nil
+	ctx := context.Background()
+
+	// 1 条已同步语录（RAG 不可用时须保留）
+	syncedID, err := gmdao.SampleAddPhrase(ctx, "已同步的白名单语录", "ok", "seed", "white")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gmdao.SampleMarkRAGSynced(ctx, syncedID, true); err != nil {
+		t.Fatal(err)
+	}
+	// 1 条未同步语录（RAG 不可用时仍直接删主库）
+	if _, err := gmdao.SampleAddPhrase(ctx, "未同步的白名单语录", "ok", "seed", "white"); err != nil {
+		t.Fatal(err)
+	}
+
+	if removed := mustRunWhiteGC(m, ctx, 1); removed != 1 {
+		t.Fatalf("应仅删除未同步语录，got removed=%d", removed)
+	}
+	list, err := gmdao.SampleListByList(ctx, "white")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != syncedID {
+		t.Fatalf("已同步语录应保留，got %v", list)
+	}
+	if !list[0].RAGSynced {
+		t.Fatal("保留的语录应保持 rag_synced=true（向量仍存在，待 RAG 恢复后重试删除）")
+	}
+}
+
 func mustRunWhiteGC(m *Manager, ctx context.Context, days int) int {
 	return mustRunWhiteGCWithDB(m, ctx, days)
 }

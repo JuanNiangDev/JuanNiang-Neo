@@ -66,7 +66,14 @@ func (m *Manager) runWhiteGC(ctx context.Context, days int) error {
 	removed := 0
 	for _, s := range samples {
 		// 先删 RAG 向量：失败则保留 PG 行并标记未同步，下次 GC 重试（防孤儿向量）
-		if rerr := m.deleteRAGPhrase(ctx, s.ID, "white"); rerr != nil {
+		cli := m.getRAG()
+		if cli == nil {
+			// RAG 不可用：仅未同步语录直接删主库，已同步语录保留待重试（防孤儿向量）
+			if s.RAGSynced {
+				log.Warn("白名单 GC：RAG 不可用，保留已同步语录待重试", "phrase", s.ID)
+				continue
+			}
+		} else if rerr := m.deleteRAGPhrase(ctx, s.ID, "white"); rerr != nil {
 			if merr := m.dao.SampleMarkRAGSynced(ctx, s.ID, false); merr != nil {
 				log.Warn("白名单 GC：标记未同步失败", "phrase", s.ID, "err", merr)
 			}

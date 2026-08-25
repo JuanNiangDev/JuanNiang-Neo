@@ -274,9 +274,10 @@ func (s *Service) ListGroupMgrSamples(ctx context.Context, c *app.RequestContext
 	}
 	resp := make([]dto.GroupMgrSampleResp, 0, len(list))
 	for _, sp := range list {
-		lu := ""
+		var lu *string
 		if sp.LastUsedAt != nil {
-			lu = sp.LastUsedAt.Format("2006-01-02 15:04:05")
+			s := sp.LastUsedAt.Format("2006-01-02 15:04:05")
+			lu = &s
 		}
 		// 派生 RAG tag（面板 UUID 展示/对账用，与检索侧一致）
 		tag := ragtag.Sample(u32str(sp.ID))
@@ -286,7 +287,7 @@ func (s *Service) ListGroupMgrSamples(ctx context.Context, c *app.RequestContext
 		resp = append(resp, dto.GroupMgrSampleResp{
 			ID: sp.ID, WordID: sp.WordID, ListType: sp.ListType, Text: sp.Text, Category: sp.Category, Source: sp.Source,
 			HitCount: sp.HitCount, RAGSynced: sp.RAGSynced, RAGTag: tag.String(),
-			LastUsedAt: &lu, CreatedAt: sp.CreatedAt.Format("2006-01-02 15:04:05"),
+			LastUsedAt: lu, CreatedAt: sp.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))

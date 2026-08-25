@@ -259,7 +259,14 @@ func (m *Manager) handleReviewBatch(ctx context.Context, out reviewOutcome) {
 	}
 	var verdicts = make(map[int]reviewResult)
 	if out.err == nil {
+		seen := make(map[int]bool, len(out.results))
 		for _, r := range out.results {
+			// 校验 Index 位于当前批次范围内且不重复；越界/重复按未裁决处理（fail-closed）
+			if r.Index < 0 || r.Index >= len(out.items) || seen[r.Index] {
+				log.Warn("LLM 批量裁决索引非法，忽略", "index", r.Index, "batch_size", len(out.items))
+				continue
+			}
+			seen[r.Index] = true
 			verdicts[r.Index] = r
 		}
 	}

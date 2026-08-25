@@ -108,7 +108,7 @@ async function syncRAG() {
         if (!dataLine) continue
         let data: any
         try { data = JSON.parse(dataLine.slice(5).trim()) } catch { continue }
-        if (data.message) { toastStore.error(data.message); return } // RAG 未启用
+        if (data.message) { syncProgress.value.active = false; toastStore.error(data.message); return } // RAG 未启用
         if (data.total !== undefined) {
           // done 事件
           toastStore.success(`记忆向量同步完成：成功 ${data.synced} 条，失败 ${data.failed} 条（共 ${data.total} 条）`)

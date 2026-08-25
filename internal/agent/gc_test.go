@@ -128,3 +128,29 @@ func TestLongTermMemoryGCRAGNilRemovesRow(t *testing.T) {
 		t.Fatalf("RAG 未配置应直接删除 PG 行，got %d 行", n)
 	}
 }
+
+// TestLongTermMemoryGCRAGNilKeepsSyncedRow 回归：RAG 不可用（client 为 nil）时，
+// 已同步条目不得删 PG 行（向量仍在 RAG 库，待 RAG 恢复后先删向量再删主库，防孤儿向量）。
+func TestLongTermMemoryGCRAGNilKeepsSyncedRow(t *testing.T) {
+	h, bundle, db := newGCTestHago(t, "")
+	ctx := context.Background()
+	const id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
+	seedUnusedMemory(t, bundle, id)
+	if err := bundle.LongTermMemItem.MarkRAGSynced(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.runLongTermMemoryGC(ctx, 1); err != nil {
+		t.Fatalf("runLongTermMemoryGC: %v", err)
+	}
+	if n := countMemoryRows(t, db); n != 1 {
+		t.Fatalf("RAG 不可用时已同步条目应保留，got %d 行", n)
+	}
+	var item models.LongTermMemoryItem
+	if err := db.Where("id = ?", id).First(&item).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !item.RAGSynced {
+		t.Fatal("保留的条目应保持 rag_synced=true（向量仍存在，待 RAG 恢复后重试删除）")
+	}
+}

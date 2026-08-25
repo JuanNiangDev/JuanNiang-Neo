@@ -11,7 +11,8 @@ import (
 //
 // 周期（默认 7 天）与使用窗口（默认 7 天，由 LongTermMemory.GCIntervalDays 配置）
 // 均可在 Web 记忆页设置；每次执行删除全局最久未使用（last_recalled_at 最旧）
-// 的 5 条。RAG 未配置/删除失败不影响 PG 删除（下次执行重试向量）。
+// 的 5 条。RAG 删除失败保留 PG 行并标记未同步，下次执行重试向量；
+// RAG 未配置时已同步条目保留待重试（防孤儿向量），未同步条目直接删主库。
 const (
 	memoryGCInterval    = time.Hour // 心跳检查间隔（每次检查是否到执行周期）
 	memoryGCPageSize    = 5         // 每次执行删除条数上限
@@ -57,7 +58,8 @@ func (h *HagoCenter) memoryGCDays(ctx context.Context) int {
 
 // runLongTermMemoryGC 执行一次长期记忆 GC：删除最近 days 天未被召回的 5 条
 // （PG 行 + RAG 向量双删）。RAG 删除失败保留 PG 行并标记未同步，下次执行重试
-// （先删向量成功再删主库，避免孤儿向量）；RAG 未配置时直接删主库。
+// （先删向量成功再删主库，避免孤儿向量）；RAG 未配置时仅未同步条目直接删主库，
+// 已同步条目保留待 RAG 恢复后重试。
 func (h *HagoCenter) runLongTermMemoryGC(ctx context.Context, days int) error {
 	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	items, err := h.DAO.LongTermMemItem.ListUnused(ctx, since, memoryGCPageSize)
@@ -79,6 +81,10 @@ func (h *HagoCenter) runLongTermMemoryGC(ctx context.Context, days int) error {
 				}
 				continue
 			}
+		} else if it.RAGSynced {
+			// RAG 不可用但条目已同步：保留 PG 行，待 RAG 恢复后先删向量再删主库（防孤儿向量）
+			log.Warn("记忆 GC：RAG 不可用，保留已同步条目待重试", "mem_id", it.ID)
+			continue
 		}
 		if derr := h.DAO.LongTermMemItem.Delete(ctx, it.ID); derr != nil {
 			log.Warn("记忆 GC：Postgres 删除失败", "mem_id", it.ID, "err", derr)
