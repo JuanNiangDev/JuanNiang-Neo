@@ -329,11 +329,12 @@ func RawShortTermMemory2Resp(raw *models.ShortTermMemory) ShortTermMemoryResp {
 
 func RawLongTermMemory2Resp(raw *models.LongTermMemory) LongTermMemoryResp {
 	return LongTermMemoryResp{
-		ID:           raw.ID,
-		ChatAreaID:   raw.ChatAreaID,
-		HotAreaSize:  raw.HotAreaSize,
-		HotMemoryTTL: raw.HotMemoryTTL,
-		CreatedAt:    raw.CreatedAt,
+		ID:             raw.ID,
+		ChatAreaID:     raw.ChatAreaID,
+		HotAreaSize:    raw.HotAreaSize,
+		HotMemoryTTL:   raw.HotMemoryTTL,
+		GCIntervalDays: raw.GCIntervalDays,
+		CreatedAt:      raw.CreatedAt,
 	}
 }
 

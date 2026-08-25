@@ -281,6 +281,8 @@ type UpdateShortTermMemoryReq struct {
 type UpdateLongTermMemoryReq struct {
 	HotAreaSize  int `json:"hot_area_size"`
 	HotMemoryTTL int `json:"hot_memory_ttl"`
+	// GCIntervalDays 记忆 GC 周期（天）：0 表示不修改（保持原值）
+	GCIntervalDays int `json:"gc_interval_days"`
 }
 
 // ---------- T2I ----------
@@ -380,6 +382,9 @@ type UpdateGroupMgrConfigReq struct {
 	LLMCriteria          string   `json:"llm_criteria"`
 	LLMGrayPrompt        string   `json:"llm_gray_prompt"`
 	LLMHighRiskPrompt    string   `json:"llm_high_risk_prompt"`
+
+	// WhiteGCIntervalDays 白名单语录 GC 周期（天），默认 7
+	WhiteGCIntervalDays int `json:"white_gc_interval_days"`
 }
 
 // AddGroupMgrPhraseReq 新增违禁语录（黑/白名单）。

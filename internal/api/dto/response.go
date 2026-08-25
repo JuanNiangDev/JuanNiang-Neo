@@ -232,11 +232,12 @@ type ShortTermMemoryResp struct {
 }
 
 type LongTermMemoryResp struct {
-	ID           string    `json:"id"`
-	ChatAreaID   string    `json:"chat_area_id"`
-	HotAreaSize  int       `json:"hot_area_size"`
-	HotMemoryTTL int       `json:"hot_memory_ttl"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	ChatAreaID     string    `json:"chat_area_id"`
+	HotAreaSize    int       `json:"hot_area_size"`
+	HotMemoryTTL   int       `json:"hot_memory_ttl"`
+	GCIntervalDays int       `json:"gc_interval_days"` // 记忆 GC 周期（天），默认 7
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type ChatAreaResp struct {
@@ -509,6 +510,9 @@ type GroupMgrConfigResp struct {
 	LLMCriteria          string   `json:"llm_criteria"` // 已废弃（兼容）
 	LLMGrayPrompt        string   `json:"llm_gray_prompt"`
 	LLMHighRiskPrompt    string   `json:"llm_high_risk_prompt"`
+
+	// WhiteGCIntervalDays 白名单语录 GC 周期（天），默认 7
+	WhiteGCIntervalDays int `json:"white_gc_interval_days"`
 }
 
 // GroupMgrWordResp 词条。

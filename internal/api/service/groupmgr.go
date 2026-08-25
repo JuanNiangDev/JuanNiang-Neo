@@ -89,6 +89,10 @@ func (s *Service) UpdateGroupMgrConfig(ctx context.Context, c *app.RequestContex
 	cfg.LLMCriteria = data.LLMCriteria
 	cfg.LLMGrayPrompt = data.LLMGrayPrompt
 	cfg.LLMHighRiskPrompt = data.LLMHighRiskPrompt
+	// GC 周期（天），非法值忽略保留原值
+	if data.WhiteGCIntervalDays > 0 {
+		cfg.WhiteGCIntervalDays = data.WhiteGCIntervalDays
+	}
 	if err := s.DAO.GroupMgr.UpdateConfig(ctx, cfg); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
@@ -528,6 +532,7 @@ func groupMgrConfigResp(cfg *models.GroupMgrConfig) dto.GroupMgrConfigResp {
 		ViolationMuteSeconds: cfg.ViolationMuteSeconds,
 		ExcludeGroups:        cfg.ExcludeGroups,
 		LLMPrompt:            cfg.LLMPrompt, LLMCriteria: cfg.LLMCriteria, LLMGrayPrompt: cfg.LLMGrayPrompt, LLMHighRiskPrompt: cfg.LLMHighRiskPrompt,
+		WhiteGCIntervalDays: cfg.WhiteGCIntervalDays,
 	}
 }
 
