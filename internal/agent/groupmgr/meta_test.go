@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestPunishRecordsMeta 处罚记录现场信息：用户名/判定来源/LLM reason。
@@ -40,6 +41,64 @@ func TestPunishRecordsMeta(t *testing.T) {
 	}
 	if v.DetectionPath != "llm" || !strings.Contains(v.LLMReason, "广告引流") {
 		t.Errorf("LLM 路径应记录 reason，path=%q reason=%q", v.DetectionPath, v.LLMReason)
+	}
+}
+
+// TestPunishLLMBatchKeepsUsername LLM 批量追罚（异步路径）处罚记录用户名不应丢失：
+// applyVerdict 重建 ev 时使用入批快照的群名片/昵称（回归：曾因缺 Sender 导致 Username 为空）。
+func TestPunishLLMBatchKeepsUsername(t *testing.T) {
+	m, gmdao := newTestManager(t, nil)
+	ctx := context.Background()
+
+	// 构造一条带群名片的消息（模拟 RAG 未命中送审后的入批快照）
+	ev := groupEv(100, 200, "低价流量卡办理")
+	ev.Message.Sender.Card = "李四"
+	ev.Message.Sender.Nickname = "nick李四"
+
+	// 直接构造批结果：black 判定 + 快照用户名，走 handleReviewBatch 完整链路
+	item := reviewItem{
+		groupID: 100, userID: 200, messageID: ev.Message.MessageID,
+		admins: ev.Admins, pk: "100:200",
+		rawText:    "低价流量卡办理",
+		senderCard: "李四", senderNickname: "nick李四",
+	}
+	m.handleReviewBatch(ctx, reviewOutcome{
+		items:   []reviewItem{item},
+		results: []reviewResult{{Index: 0, Verdict: "black", Reason: "广告引流"}},
+	})
+
+	list, err := gmdao.ViolationList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("应 1 条违规记录，got %d", len(list))
+	}
+	v := list[0]
+	if v.Username != "李四" {
+		t.Errorf("LLM 追罚用户名应为快照群名片 李四，got %q", v.Username)
+	}
+	if v.DetectionPath != "llm" {
+		t.Errorf("判定来源应为 llm，got %q", v.DetectionPath)
+	}
+	// 学习闭环应把该消息写入黑名单语录（LLM 判 black；异步 goroutine，轮询等待）
+	deadline := time.Now().Add(3 * time.Second)
+	found := false
+	for time.Now().Before(deadline) {
+		samples, _ := gmdao.SampleListByList(ctx, "black")
+		for _, s := range samples {
+			if strings.Contains(s.Text, "流量卡") {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !found {
+		t.Error("LLM 判 black 后应写入黑名单语录（学习闭环）")
 	}
 }
 

@@ -43,6 +43,10 @@ type reviewItem struct {
 	pk                         string // "群:QQ"
 	rc                         reviewCtx
 	rawText                    string // 送审原文（学习闭环入库用）
+	// senderCard / senderNickname 处罚时记录用户身份（LLM 异步追罚时原始 ev 不在场，
+	// 违规记录 Username 依赖群名片/昵称，必须随入批快照保存）
+	senderCard     string
+	senderNickname string
 }
 
 // reviewResult 批量判定结果中单条消息的裁决。
@@ -120,6 +124,7 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 	item := reviewItem{
 		groupID: msg.GroupID, userID: msg.UserID, messageID: msg.MessageID,
 		admins: ev.Admins, pk: pk, rc: rc, rawText: text,
+		senderCard: msg.Sender.Card, senderNickname: msg.Sender.Nickname,
 	}
 
 	// 检索追踪日志：方式=LLM 送审（入批窗口，等待批裁决）
@@ -279,6 +284,10 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 			RawMessage:  it.rawText, // 学习闭环兜底用（learnPhraseAsync 第二选择）
 		},
 	}
+	// 违规记录 Username：入批时快照的群名片/昵称（LLM 异步追罚路径原始 ev 不在场）
+	ev.Message.Sender.UserID = it.userID
+	ev.Message.Sender.Card = it.senderCard
+	ev.Message.Sender.Nickname = it.senderNickname
 	rc := it.rc
 
 	// LLM 请求失败 / 该条裁决缺失或非法 → fail-closed：硬信号直罚，否则放行
