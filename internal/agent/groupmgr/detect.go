@@ -48,7 +48,7 @@ func detectGroupCard(raw string) bool {
 }
 
 // detectMessage 群消息检测入口（Phase 0.5）。
-// 顺序与旧插件一致：违禁言论（不消费）→ 图片刷屏（消费）→ +1 复读（消费）。
+// 顺序：违禁言论（不消费）→ 图片刷屏（消费）→ +1 复读（消费）。
 func (m *Manager) detectMessage(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig) bool {
 	m.detectViolation(ctx, ev, cfg)
 	if m.checkImageSpam(ctx, ev, cfg) {
@@ -60,7 +60,13 @@ func (m *Manager) detectMessage(ctx context.Context, ev adapter.Event, cfg *mode
 	return false
 }
 
-// detectViolation 违禁言论检测：卡片文本化 → RAG 核实（首选）→ 降级关键词。
+// detectViolation 违禁言论检测：RAG 语义匹配（第一核实人）→ LLM 统一判定 → 关键词兜底。
+// 流程：
+//  1. RAG 检索黑/白语录双集合：
+//     黑名单命中（score ≥ BlackMinScore）→ 处罚；白名单命中（score ≥ WhiteMinScore）→ 放行；
+//  2. 均未命中 → LLM 批量判定（3s 窗口凑批，逐条独立黑白判定）；
+//  3. RAG/LLM 均不可用 → 关键词兜底（敏感/黑词直罚、灰词 LLM/放行）。
+//
 // 返回 true 仅表示"已发起同步处罚"，不影响消费语义（违禁类一律不消费消息）。
 func (m *Manager) detectViolation(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig) bool {
 	msg := ev.Message
@@ -70,110 +76,64 @@ func (m *Manager) detectViolation(ctx context.Context, ev adapter.Event, cfg *mo
 		return false
 	}
 	card := detectGroupCard(raw)
+	// 关键词命中仅作最后兜底（RAG/LLM 均不可用时），不参与 RAG 判据
 	word, wordCat := m.wordHit(ctx, text)
 
-	// 第一核实人：RAG 语义核实（卡片/词/无词统一跑）
+	// 第一核实人：RAG 语义匹配（黑白语录双集合）
 	if v := m.verifyByRAG(ctx, text); v.ok {
-		return m.handleRAGVerdict(ctx, ev, cfg, card, word, wordCat, v)
+		return m.handleRAGMatch(ctx, ev, cfg, card, word, wordCat, v)
 	}
-	// RAG 不可用 → 降级关键词路径（= 旧插件行为）
+	// RAG 不可用 → 关键词兜底（= 旧插件行为）
 	return m.handleKeywordPath(ctx, ev, cfg, card, word, wordCat)
 }
 
-// handleRAGVerdict RAG 核实后的分档决策：
+// handleRAGMatch RAG 语义匹配后的分档决策：
 //
-//	高置信 ≥ HighScore          → 直接处罚（须命中词/卡片硬信号；卡片判 ad）
-//	模棱两可 (LowScore, High)   → LLM 审核（须命中词/卡片硬信号；LLM 异常用 FallbackScore 分数兜底）
-//	低置信 ≤ LowScore           → 有词/卡片送 LLM（硬信号终审）；无词放行
-//
-// 三档均要求硬信号（命中关键词或推荐卡片）：RAG-Service 向量库与知识/记忆共用，
-// 无硬信号时高置信命中可能是知识/记忆的语义干扰，不应仅凭向量分数处罚。
-// 无硬信号一律放行（回退到关键词路径已先判过，无词即无违规信号）。
-func (m *Manager) handleRAGVerdict(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig,
+//	黑名单命中 score ≥ BlackMinScore  → 直接处罚（白名单即使更高分也以黑优先，fail-closed）
+//	白名单命中 score ≥ WhiteMinScore  → 放行
+//	均未达阈值                         → LLM 统一判定（批窗口）；LLM 不可用 → 关键词兜底
+func (m *Manager) handleRAGMatch(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig,
 	card bool, word, wordCat string, v ragVerdict) bool {
-	high := v.score >= cfg.HighScore
-	mid := v.score > cfg.LowScore && v.score < cfg.HighScore
-	hasHardSignal := word != "" || card
-
-	// 三档统一：无硬信号（未命中关键词且无推荐卡片）→ 放行
-	// RAG-Service 向量库与知识/记忆共用同一实例，无硬信号时高置信命中
-	// 可能是知识/记忆的语义干扰，不应仅凭向量分数处罚。
-	if !hasHardSignal {
-		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
-		log.Info("RAG 命中但无关键词/卡片硬信号，放行（防知识/记忆语义干扰）", "score", v.score, "user", ev.Message.UserID)
-		return false
-	}
-
-	switch {
-	case high:
-		// 直接处罚：类别优先词类别 → 样本类别 → 卡片/黑词默认 ad
+	// 黑名单优先（fail-closed）：黑白同时命中且都过阈值时按黑处罚
+	if v.black != nil && v.black.score >= cfg.BlackMinScore {
 		category := "ad"
-		switch {
-		case wordCat == "sensitive":
-			category = "sensitive"
-		case wordCat == "gray" || wordCat == "black":
-			category = "ad"
-		case v.category == "sensitive":
+		if v.black.category == "sensitive" {
 			category = "sensitive"
 		}
-		reason := "RAG语义核实"
-		if word != "" {
-			reason = "RAG语义核实(" + word + ")"
-		} else if card {
-			reason = "RAG语义核实(推荐卡片)"
-		}
+		reason := "RAG黑名单语义匹配"
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
 		m.punish(ev, reason, category, "rag")
-		m.sampleHit(ctx, v.tag)
+		m.phraseHit(ctx, v.black.tag)
+		log.Info("RAG 黑名单命中，处罚", "score", v.black.score, "phrase", v.black.text, "user", ev.Message.UserID)
 		return true
-	case mid:
-		// 模棱两可 → LLM 审核
-		if m.submitReview(ctx, ev, reviewCtx{
-			text:     v.text,
-			word:     word,
-			wordCat:  wordCat,
-			kind:     reviewKindBySignal(word, wordCat, card, "rag-mid"),
-			highRisk: false,
-			ragScore: &v.score,
-			hard:     hasHardSignal,
-		}) {
-			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "review").Inc()
-			return true
-		}
-		// LLM 不可用：分数兜底（≥ FallbackScore 直罚）
-		if v.score >= cfg.FallbackScore {
-			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
-			m.punish(ev, "RAG语义核实(LLM不可用分数兜底)", categoryByWordOrCard(word, wordCat, card, v.category), "rag")
-			return true
-		}
+	}
+	// 白名单：命中即放行（须达阈值，防低分噪声误放行）
+	if v.white != nil && v.white.score >= cfg.WhiteMinScore {
+		m.phraseTouch(ctx, v.white.tag)
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
-		log.Info("RAG 模棱两可且 LLM 不可用，分数兜底放行", "score", v.score, "user", ev.Message.UserID)
-		return false
-	default:
-		// 低置信：词/卡片是硬信号 → LLM 终审
-		if m.submitReview(ctx, ev, reviewCtx{
-			text:     v.text,
-			word:     word,
-			wordCat:  wordCat,
-			kind:     reviewKindBySignal(word, wordCat, card, "rag-low"),
-			highRisk: wordCat == "sensitive" || wordCat == "black" || card,
-			hard:     true,
-		}) {
-			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "review").Inc()
-			return true
-		}
-		// LLM 不可用：回归旧语义——敏感/黑词/卡片直罚，灰词放行
-		if wordCat == "sensitive" || wordCat == "black" || card {
-			metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
-			m.punish(ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, v.category), "rag")
-			return true
-		}
-		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
+		log.Info("RAG 白名单命中，放行", "score", v.white.score, "phrase", v.white.text, "user", ev.Message.UserID)
 		return false
 	}
+
+	// 均未达阈值 → LLM 统一判定（批窗口异步，不阻塞主循环）
+	rc := reviewCtx{word: word, wordCat: wordCat, card: card}
+	if v.black != nil {
+		rc.ragScore = &v.black.score
+		rc.ragPhrase = v.black.text
+	} else if v.white != nil {
+		rc.ragScore = &v.white.score
+		rc.ragPhrase = v.white.text
+	}
+	if m.submitReview(ctx, ev, rc) {
+		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "review").Inc()
+		return true
+	}
+	// LLM 不可用 → 关键词兜底
+	metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
+	return m.handleKeywordPath(ctx, ev, cfg, card, word, wordCat)
 }
 
-// handleKeywordPath RAG 不可用时的降级路径（= 旧插件行为）。
+// handleKeywordPath 关键词兜底路径（仅 RAG 或 LLM 不可用时使用，= 旧插件行为）。
 func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig,
 	card bool, word, wordCat string) bool {
 	switch {
@@ -184,7 +144,7 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 			kind = "card"
 		}
 		if m.submitReview(ctx, ev, reviewCtx{
-			word: word, wordCat: wordCat, kind: kind, highRisk: true, hard: true,
+			word: word, wordCat: wordCat, kind: kind, highRisk: true, hard: true, card: card,
 		}) {
 			metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "review").Inc()
 			return true
@@ -195,7 +155,7 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 	case wordCat == "gray":
 		// 常规审查；LLM 不可用 → 放行（异步追罚语义）
 		if m.submitReview(ctx, ev, reviewCtx{
-			word: word, wordCat: "gray", kind: "gray", highRisk: false, hard: false,
+			word: word, wordCat: "gray", kind: "gray", highRisk: false, hard: false, card: card,
 		}) {
 			metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "review").Inc()
 		} else {
@@ -205,20 +165,6 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 	default:
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("keyword", "pass").Inc()
 		return false
-	}
-}
-
-// reviewKindBySignal 决定 LLM 审查类型。
-func reviewKindBySignal(word, wordCat string, card bool, base string) string {
-	switch {
-	case card:
-		return "card"
-	case wordCat == "sensitive" || wordCat == "black":
-		return "high-risk"
-	case wordCat == "gray":
-		return "gray"
-	default:
-		return base // rag-mid / rag-low：无词语义疑似
 	}
 }
 

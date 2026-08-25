@@ -23,8 +23,6 @@ import (
 	"JuanNiang-Neo/internal/core/models"
 
 	caller "JuanNiang-Neo/infrastructure/rag/handler"
-
-	"github.com/google/uuid"
 )
 
 // 配置内存缓存 TTL：Web 面板保存后调用 Reload 立即失效，TTL 仅兜底。
@@ -47,16 +45,21 @@ type Manager struct {
 	admins    map[int64]bool
 	listAt    time.Time
 
-	// RAG 样本候选集（本地 id → tag 映射，供检索命中过滤；变更即重建）
+	// RAG 语录候选集（本地 语录ID → 派生 tag，黑白双集合；变更即重建）
 	sampleMu    sync.Mutex
-	sampleSet   map[uuid.UUID]sampleInfo // tag → 样本信息
+	sampleSet   *phraseSet
 	sampleSetAt time.Time
 
-	// 异步 LLM 审查去重/在途
-	llmMu       sync.Mutex
-	llmPending  map[string]bool // "群:QQ" 在途审查
-	llmReviewed map[int64]int64 // message_id → 审查时间（10min 去重）
-	llmResults  chan reviewOutcome
+	// 异步学习闭环（黑/白语录写入）串行化：并发双插会绕过幂等去重（Text 无唯一索引）
+	learnMu sync.Mutex
+	// 异步 LLM 审查去重/在途 + 批窗口（3s 凑批统一提交，逐条独立判定）
+	llmMu         sync.Mutex
+	llmPending    map[string]bool // "群:QQ" 在途审查
+	llmReviewed   map[int64]int64 // message_id → 审查时间（10min 去重）
+	llmResults    chan reviewOutcome
+	llmBatchMu    sync.Mutex
+	llmBatchItems []reviewItem // 批队列（到点/满批统一提交）
+	llmBatchTimer *time.Timer
 
 	// 图片刷屏状态（内存态 + kv 持久化兜底）
 	imgMu    sync.Mutex

@@ -22,16 +22,28 @@ func (m *Manager) recordJoin(ctx context.Context, groupID int64) {
 	}
 }
 
-// sampleHit 样本命中计数（RAG 高置信直罚时 +1）。
-// 候选集 sampleInfo 已携带样本 ID，命中直接按 ID 自增，不再 O(n) 文本反查。
-func (m *Manager) sampleHit(ctx context.Context, tag uuid.UUID) {
+// phraseHit 黑名单语录命中计数（RAG 处罚时 +1 并更新最近命中时间）。
+// 候选集 phraseInfo 已携带 ID，直接按 ID 更新，不再 O(n) 文本反查。
+func (m *Manager) phraseHit(ctx context.Context, tag uuid.UUID) {
 	m.sampleMu.Lock()
-	info, ok := m.sampleSet[tag]
+	info, ok := m.sampleSet.black[tag]
 	m.sampleMu.Unlock()
 	if !ok || info.id == 0 {
 		return
 	}
 	_ = m.dao.SampleIncrHit(ctx, info.id)
+	_ = m.dao.SampleTouch(ctx, info.id)
+}
+
+// phraseTouch 白名单语录命中（放行时更新最近命中时间，GC 判定未使用记录用）。
+func (m *Manager) phraseTouch(ctx context.Context, tag uuid.UUID) {
+	m.sampleMu.Lock()
+	info, ok := m.sampleSet.white[tag]
+	m.sampleMu.Unlock()
+	if !ok || info.id == 0 {
+		return
+	}
+	_ = m.dao.SampleTouch(ctx, info.id)
 }
 
 // Stats 统计摘要（/groupstats 命令与 Web 面板共用）。
