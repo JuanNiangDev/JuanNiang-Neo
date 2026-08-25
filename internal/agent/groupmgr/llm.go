@@ -367,7 +367,8 @@ func (m *Manager) learnPhraseAsync(ctx context.Context, raw, listType, category 
 		// 学习写入串行化：并发双插会绕过幂等去重（Text 无唯一索引）
 		m.learnMu.Lock()
 		defer m.learnMu.Unlock()
-		lctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// 派生自调用方 ctx（继承 trace 值），消息处理返回取消不中断 30s 学习窗口
+		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		if id, err := m.dao.SampleAddPhrase(lctx, text, category, "learn", listType); err != nil {
 			log.Warn("学习语录入库失败", "err", err)
