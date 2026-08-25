@@ -142,16 +142,24 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 		if cfg.LLMBatchWindow > 0 {
 			window = cfg.LLMBatchWindow
 		}
-		time.AfterFunc(time.Duration(window)*time.Second, m.flushBatch)
+		time.AfterFunc(time.Duration(window)*time.Second, func() { m.flushBatch(ctx) })
 	}
 	if full {
-		m.flushBatch()
+		// 满批也异步：此前同步调用 flushBatch 会阻塞消息处理主循环至 LLM 返回（最长 90s）
+		go m.flushBatch(ctx)
 	}
 	return true
 }
 
-// flushBatch 取走整批并提交 LLM（goroutine，结果经 channel 由 Run 串行消费）。
-func (m *Manager) flushBatch() {
+// flushBatch 取走整批并提交 LLM（仅由 AfterFunc 回调 / go 触发，异步执行不阻塞消息处理；
+// 结果经 channel 由 Run 串行消费）。派生调用方 ctx（继承 trace），但不被消息返回取消。
+func (m *Manager) flushBatch(ctx context.Context) {
+	defer func() {
+		// 防御：批处理内 panic 不波及调用方 goroutine（AfterFunc 线程 / submitReview 的 go）
+		if r := recover(); r != nil {
+			log.Error("flushBatch panic", "recover", r)
+		}
+	}()
 	m.llmBatchMu.Lock()
 	if len(m.llmBatchItems) == 0 {
 		m.llmBatchMu.Unlock()
@@ -169,7 +177,7 @@ func (m *Manager) flushBatch() {
 	}
 
 	// 提示词装配：统一检测提示词（面板 LLMPrompt，默认内置）
-	sysPrompt := m.batchSysPrompt()
+	sysPrompt := m.batchSysPrompt(ctx)
 	userPrompt := m.batchUserPrompt(items)
 	req := provider.ChatRequest{
 		Messages: []provider.ChatMessage{
@@ -178,33 +186,32 @@ func (m *Manager) flushBatch() {
 		},
 	}
 
-	go func() {
-		cctx, cancel := context.WithTimeout(context.Background(), llmTimeout)
-		defer cancel()
-		resp, err := p.Chat(cctx, req)
-		out := reviewOutcome{items: items, err: err}
-		if resp != nil {
-			out.content = resp.Message.Content
-			out.tokens = resp.TokenUsage
-			if err == nil {
-				// LLM 输出可能被 markdown 代码块包裹（```json ... ```），
-				// 需提取纯 JSON 再解析，否则 json.Unmarshal 静默失败导致学习闭环失效
-				jsonStr := extractJSON(resp.Message.Content)
-				var bat reviewBatch
-				if jerr := json.Unmarshal([]byte(jsonStr), &bat); jerr == nil {
-					out.results = bat.Results
-				} else {
-					log.Warn("LLM 批量裁决 JSON 解析失败", "err", jerr, "raw_len", len(resp.Message.Content), "raw_head", truncateLog(resp.Message.Content, 200))
-				}
+	// 派生自调用方 ctx（继承 trace/取消信号），批量 LLM 请求超时窗口 llmTimeout
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), llmTimeout)
+	defer cancel()
+	resp, err := p.Chat(cctx, req)
+	out := reviewOutcome{items: items, err: err}
+	if resp != nil {
+		out.content = resp.Message.Content
+		out.tokens = resp.TokenUsage
+		if err == nil {
+			// LLM 输出可能被 markdown 代码块包裹（```json ... ```），
+			// 需提取纯 JSON 再解析，否则 json.Unmarshal 静默失败导致学习闭环失效
+			jsonStr := extractJSON(resp.Message.Content)
+			var bat reviewBatch
+			if jerr := json.Unmarshal([]byte(jsonStr), &bat); jerr == nil {
+				out.results = bat.Results
+			} else {
+				log.Warn("LLM 批量裁决 JSON 解析失败", "err", jerr, "raw_len", len(resp.Message.Content), "raw_head", truncateLog(resp.Message.Content, 200))
 			}
 		}
-		m.llmResults <- out
-	}()
+	}
+	m.llmResults <- out
 }
 
 // batchSysPrompt 统一检测提示词（LLMPrompt 面板可编辑，默认内置）。
-func (m *Manager) batchSysPrompt() string {
-	cfg := m.getCfg(context.Background())
+func (m *Manager) batchSysPrompt(ctx context.Context) string {
+	cfg := m.getCfg(ctx)
 	if cfg != nil && strings.TrimSpace(cfg.LLMPrompt) != "" {
 		return cfg.LLMPrompt
 	}
