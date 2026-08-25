@@ -132,6 +132,17 @@ func TestCheckCopySpamTrigger(t *testing.T) {
 	if m.checkCopySpam(ctx, groupEv(100, 5, "[CQ:face,id=14]"), m.getCfg(ctx)) {
 		t.Fatal("CQ 消息不应参与复读")
 	}
+	// 命令消息不参与复读检测（回归：插件命令如 /qd、签到曾可触发复读警告）
+	for i, uid := range []int64{6, 7, 8} {
+		ev := groupEv(100, uid, "/qd")
+		ev.Admins = nil
+		if m.checkCopySpam(ctx, ev, m.getCfg(ctx)) && i == 2 {
+			t.Fatal("命令消息不应触发复读")
+		}
+	}
+	if v, _ := gmdao.StatGet(ctx, gkey(100, "stats:copy_warn")); v != "1" {
+		t.Fatalf("命令消息不应产生复读警告，stats:copy_warn = %q", v)
+	}
 }
 
 // TestPunishTiers 三级惩罚：计数递增；第 3 次踢人失败（adapter 未启动）时计数保留。

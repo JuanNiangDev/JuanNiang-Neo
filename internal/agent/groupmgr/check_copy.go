@@ -11,9 +11,12 @@ import (
 
 // checkCopySpam +1 复读检测：N 人连续发相同纯文本消息触发警告。
 // 开关/阈值来自面板配置。返回 true = 已触发（消费消息）。
+// 排除：命令消息（/ 前缀，插件/系统命令统一形态）不参与复读。
 func (m *Manager) checkCopySpam(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig) bool {
 	raw := strings.TrimSpace(ev.Message.RawMessage)
-	if raw == "" || strings.Contains(raw, "[CQ:") {
+	// 命令消息（/qd、/签到 等插件/系统命令）不参与复读检测，
+	// 否则群友连发同一条命令（如每日签到）会被误判刷屏
+	if raw == "" || strings.HasPrefix(raw, "/") || strings.Contains(raw, "[CQ:") {
 		return false
 	}
 	// 复读检测开关（面板配置）
