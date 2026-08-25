@@ -122,6 +122,9 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 		admins: ev.Admins, pk: pk, rc: rc, rawText: text,
 	}
 
+	// 检索追踪日志：方式=LLM 送审（入批窗口，等待批裁决）
+	log.Info("违禁检测: 方式=LLM送审", "msg", headText(text, 20), "user", msg.UserID)
+
 	// 入批窗口
 	m.llmBatchMu.Lock()
 	m.llmBatchItems = append(m.llmBatchItems, item)
@@ -283,6 +286,8 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 		if rc.highRisk && rc.hard {
 			// 高危回退直罚（敏感/黑词/卡片）
 			metrics.GroupMgrLLMReviewsTotal.WithLabelValues("error").Inc()
+			// 检索追踪日志：方式=LLM失败（高危硬信号直罚兜底）
+			log.Info("违禁检测: 方式=LLM失败直罚", "msg", headText(it.rawText, 20), "user", it.userID)
 			m.punish(ev, reasonByWord(rc.word, rc.wordCat, rc.card), categoryByWordOrCard(rc.word, rc.wordCat, rc.card, "ad"), "llm")
 			return
 		}
@@ -290,6 +295,8 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 			log.Warn("LLM 批量裁决非法，按失败处理", "content", res.Verdict)
 		}
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("error").Inc()
+		// 检索追踪日志：方式=LLM失败放行（无硬信号，宁放勿杀）
+		log.Info("违禁检测: 方式=LLM失败放行", "msg", headText(it.rawText, 20), "user", it.userID)
 		log.Info("LLM 审查失败，放行", "user", it.userID)
 		return
 	}
@@ -305,16 +312,21 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 		if reason == "" {
 			reason = reasonByWord(rc.word, rc.wordCat, rc.card)
 		}
+		// 检索追踪日志：方式=LLM + 判定结果 + 消息前 20 字
+		log.Info("违禁检测: 方式=LLM", "verdict", "black", "msg", headText(it.rawText, 20), "reason", reason, "user", it.userID)
 		m.punish(ev, reason, category, "llm")
 		// 学习闭环：异步写入黑名单语录（不阻塞）
 		m.learnPhraseAsync(ctx, it.rawText, "black", category, ev)
 	case "white":
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("white").Inc()
+		// 检索追踪日志：方式=LLM + 判定结果 + 消息前 20 字
+		log.Info("违禁检测: 方式=LLM", "verdict", "white", "msg", headText(it.rawText, 20), "reason", res.Reason, "user", it.userID)
 		// 学习闭环：异步写入白名单语录
 		m.learnPhraseAsync(ctx, it.rawText, "white", "ok", ev)
 		log.Info("LLM 判定白名单，放行", "user", it.userID, "reason", res.Reason)
 	default: // none
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("none").Inc()
+		log.Info("违禁检测: 方式=LLM", "verdict", "none", "msg", headText(it.rawText, 20), "reason", res.Reason, "user", it.userID)
 		log.Info("LLM 判定放行", "user", it.userID, "reason", res.Reason)
 	}
 }
@@ -397,4 +409,13 @@ func truncateLog(s string, max int) string {
 		return s
 	}
 	return s[:max] + "...(truncated)"
+}
+
+// headText 截取文本前 n 个字符（rune-safe，中文不会切坏）。
+func headText(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }

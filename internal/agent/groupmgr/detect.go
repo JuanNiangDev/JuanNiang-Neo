@@ -102,6 +102,8 @@ func (m *Manager) handleRAGMatch(ctx context.Context, ev adapter.Event, cfg *mod
 		}
 		reason := "RAG黑名单语义匹配"
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "punish").Inc()
+		// 检索追踪日志：方式=RAG + 命中集合/分数 + 命中语录前 20 字
+		log.Info("违禁检测: 方式=RAG", "list", "black", "score", v.black.score, "hit", headText(v.black.text, 20), "user", ev.Message.UserID)
 		m.punish(ev, reason, category, "rag")
 		m.phraseHit(ctx, v.black.tag)
 		log.Info("RAG 黑名单命中，处罚", "score", v.black.score, "phrase", v.black.text, "user", ev.Message.UserID)
@@ -109,6 +111,8 @@ func (m *Manager) handleRAGMatch(ctx context.Context, ev adapter.Event, cfg *mod
 	}
 	// 白名单：命中即放行（须达阈值，防低分噪声误放行）
 	if v.white != nil && v.white.score >= cfg.WhiteMinScore {
+		// 检索追踪日志：方式=RAG + 命中集合/分数 + 命中语录前 20 字
+		log.Info("违禁检测: 方式=RAG", "list", "white", "score", v.white.score, "hit", headText(v.white.text, 20), "user", ev.Message.UserID)
 		m.phraseTouch(ctx, v.white.tag)
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "pass").Inc()
 		log.Info("RAG 白名单命中，放行", "score", v.white.score, "phrase", v.white.text, "user", ev.Message.UserID)
@@ -116,6 +120,20 @@ func (m *Manager) handleRAGMatch(ctx context.Context, ev adapter.Event, cfg *mod
 	}
 
 	// 均未达阈值 → LLM 统一判定（批窗口异步，不阻塞主循环）
+	// 检索追踪日志：方式=RAG 但未命中黑白语录（含知识/记忆向量干扰时的低分命中）→ 送 LLM
+	if v.black == nil && v.white == nil {
+		log.Info("违禁检测: 方式=RAG未命中", "list", "none", "score", 0.0, "hit", "", "user", ev.Message.UserID)
+	} else {
+		var score float64
+		var hit string
+		var list string
+		if v.black != nil {
+			score, hit, list = v.black.score, v.black.text, "black"
+		} else if v.white != nil {
+			score, hit, list = v.white.score, v.white.text, "white"
+		}
+		log.Info("违禁检测: 方式=RAG未达阈值", "list", list, "score", score, "hit", headText(hit, 20), "user", ev.Message.UserID)
+	}
 	rc := reviewCtx{word: word, wordCat: wordCat, card: card}
 	if v.black != nil {
 		rc.ragScore = &v.black.score
@@ -138,6 +156,8 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 	card bool, word, wordCat string) bool {
 	switch {
 	case wordCat == "sensitive" || wordCat == "black" || card:
+		// 检索追踪日志：方式=关键词兜底（高危词命中）
+		log.Info("违禁检测: 方式=关键词", "kind", "high-risk", "word", headText(word, 20), "cat", wordCat, "card", card, "user", ev.Message.UserID)
 		// 高危复核；LLM 不可用 → 直接处罚
 		kind := "high-risk"
 		if card && word == "" {
@@ -153,6 +173,8 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 		m.punish(ev, reasonByWord(word, wordCat, card), categoryByWordOrCard(word, wordCat, card, "ad"), "keyword")
 		return true
 	case wordCat == "gray":
+		// 检索追踪日志：方式=关键词兜底（灰色词命中）
+		log.Info("违禁检测: 方式=关键词", "kind", "gray", "word", headText(word, 20), "cat", wordCat, "card", card, "user", ev.Message.UserID)
 		// 常规审查；LLM 不可用 → 放行（异步追罚语义）
 		if m.submitReview(ctx, ev, reviewCtx{
 			word: word, wordCat: "gray", kind: "gray", highRisk: false, hard: false, card: card,

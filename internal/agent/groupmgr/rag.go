@@ -88,28 +88,28 @@ type ragVerdict struct {
 }
 
 // verifyByRAG RAG 语义匹配（第一核实人）：消息文本在黑/白语录集内各取最优命中。
-// RAG 未配置/超时/无候选 → ok=false（调用方降级关键词路径）。
+// ok 只表示 RAG 服务可用且已完成检索（调用方据此决定是否走 RAG 路径）；
+// black/white 可能均为 nil（服务正常但无语录命中 → 送 LLM 判定，而不是降级关键词）。
 func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 	cli := m.getRAG()
 	if cli == nil {
-		return ragVerdict{}
+		return ragVerdict{} // RAG 未配置 → 不可用
 	}
 	owned := m.buildPhraseSet(ctx)
-	if owned == nil || (len(owned.black) == 0 && len(owned.white) == 0) {
-		return ragVerdict{}
+	if owned == nil {
+		return ragVerdict{} // 候选集构建失败（DB 错误）→ 不可用
 	}
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
 	start := time.Now()
 	hits, err := cli.Search(cctx, query, 10, nil)
 	metrics.RAGSearchLatency.Observe(time.Since(start).Seconds())
-	if err != nil || len(hits) == 0 {
-		if err != nil {
-			metrics.RAGSearchErrorsTotal.Inc()
-		}
-		return ragVerdict{}
+	if err != nil {
+		metrics.RAGSearchErrorsTotal.Inc()
+		log.Warn("RAG 检索失败，降级", "err", err)
+		return ragVerdict{} // 检索出错 → 不可用（降级关键词）
 	}
-	// 命中按黑白集合归类，取各集合最优
+	// RAG 服务可用（即使无命中）：ok=true，black/white 由命中决定
 	v := ragVerdict{ok: true}
 	for _, h := range hits {
 		if info, ok := owned.black[h.Tag]; ok {
@@ -123,9 +123,6 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 				v.white = &phraseMatch{listType: "white", tag: h.Tag, id: info.id, score: h.Score, text: info.text, category: info.category}
 			}
 		}
-	}
-	if v.black == nil && v.white == nil {
-		return ragVerdict{} // 命中的 tag 均不属于本系统语录 → 视为不可用（调用方降级）
 	}
 	return v
 }
