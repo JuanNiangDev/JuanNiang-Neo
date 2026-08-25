@@ -23,7 +23,12 @@ import (
 )
 
 // newTestManager 构造测试 Manager：sqlite 内存库 + 可选 mock RAG server（score 可定制）。
+// 默认 mock 命中黑名单语录（ragtag.Sample）；white=true 时命中白名单语录（ragtag.WhitePhrase）。
 func newTestManager(t *testing.T, ragScore *float64) (*Manager, *dao.GroupMgrDAO) {
+	return newTestManagerEx(t, ragScore, false)
+}
+
+func newTestManagerEx(t *testing.T, ragScore *float64, white bool) (*Manager, *dao.GroupMgrDAO) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -49,9 +54,13 @@ func newTestManager(t *testing.T, ragScore *float64) (*Manager, *dao.GroupMgrDAO
 				http.NotFound(w, r)
 				return
 			}
-			// 返回一个命中：tag = ragtag.Sample("1")（样本表首个自增 ID=1）
+			// 返回一个命中：tag 与下方插入的语录行（首个自增 ID=1）对齐
+			tag := ragtag.Sample("1")
+			if white {
+				tag = ragtag.WhitePhrase("1")
+			}
 			_ = json.NewEncoder(w).Encode(caller.SearchResponse{Results: []caller.SearchHit{
-				{Tag: ragtag.Sample("1"), Score: *ragScore},
+				{Tag: tag, Score: *ragScore},
 			}})
 		}))
 		t.Cleanup(srv.Close)
@@ -62,8 +71,12 @@ func newTestManager(t *testing.T, ragScore *float64) (*Manager, *dao.GroupMgrDAO
 	}
 
 	m := New(gmdao, adapter.New(adapter.Config{}), func() *caller.Client { return ragCli }, provider.NewProviderGroup())
-	// 样本候选集：插入一条样本（ID=1，与 mock 命中 tag 对齐）
-	if _, err := gmdao.SampleAdd(context.Background(), "办卡加群办套餐", "ad", "seed"); err != nil {
+	// 语录候选集：插入一条语录（ID=1，与 mock 命中 tag 对齐）
+	if white {
+		if _, err := gmdao.SampleAddPhrase(context.Background(), "明天一起食堂吃饭吗", "ok", "seed", "white"); err != nil {
+			t.Fatalf("seed white phrase: %v", err)
+		}
+	} else if _, err := gmdao.SampleAdd(context.Background(), "办卡加群办套餐", "ad", "seed"); err != nil {
 		t.Fatalf("seed sample: %v", err)
 	}
 	// Init：默认配置 + 种子词库导入 + 内存缓存加载
@@ -97,7 +110,10 @@ func TestViolationRAGHighScorePunish(t *testing.T) {
 		t.Fatal("RAG 应可用")
 	}
 	if rep.Verdict != "punish" {
-		t.Fatalf("高置信应 punish，got %s (%s)", rep.Verdict, rep.Reason)
+		t.Fatalf("黑名单高置信应 punish，got %s (%s)", rep.Verdict, rep.Reason)
+	}
+	if rep.BlackScore < 0.9 {
+		t.Fatalf("black_score 应上报最高分，got %f", rep.BlackScore)
 	}
 }
 
@@ -105,45 +121,35 @@ func TestViolationRAGMidScoreReview(t *testing.T) {
 	score := 0.6
 	m, _ := newTestManager(t, &score)
 	rep := m.TestViolation(context.Background(), "低价流量卡办理")
-	if rep.Verdict != "review" {
-		t.Fatalf("模棱两可应 review，got %s (%s)", rep.Verdict, rep.Reason)
-	}
-}
-
-func TestViolationRAGLowScoreNoSignalPass(t *testing.T) {
-	score := 0.3
-	m, _ := newTestManager(t, &score)
-	rep := m.TestViolation(context.Background(), "明天要交作业了吗")
-	if rep.Verdict != "pass" {
-		t.Fatalf("低置信无词应 pass，got %s (%s)", rep.Verdict, rep.Reason)
-	}
-}
-
-func TestViolationRAGLowScoreWithWordReview(t *testing.T) {
-	score := 0.3
-	m, _ := newTestManager(t, &score)
-	rep := m.TestViolation(context.Background(), "校园卡办理，找我办卡")
-	if rep.Verdict != "review" {
-		t.Fatalf("低置信有词应 review，got %s (%s)", rep.Verdict, rep.Reason)
-	}
-}
-
-// TestViolationRAGHighScoreNoWordPass 高置信但无关键词命中 → 放行（防知识/记忆语义干扰）。
-// 回归：此前高置信不要求硬信号，RAG-Service 向量库与知识/记忆共用，无词时高置信
-// 命中可能是知识/记忆的语义干扰，会导致正常消息被误判违规。
-func TestViolationRAGHighScoreNoWordPass(t *testing.T) {
-	score := 0.92
-	m, _ := newTestManager(t, &score)
-	// "明天食堂吃什么"不含任何种子词库关键词，但 RAG mock 返回高置信
-	rep := m.TestViolation(context.Background(), "明天食堂吃什么")
 	if !rep.RAGOK {
 		t.Fatal("RAG 应可用")
 	}
-	if rep.Word != "" {
-		t.Fatalf("该文本不应命中关键词，got %q", rep.Word)
+	if rep.Verdict != "review" {
+		t.Fatalf("未达黑白阈值应 review（LLM 判定），got %s (%s)", rep.Verdict, rep.Reason)
+	}
+}
+
+func TestViolationRAGLowScoreReview(t *testing.T) {
+	score := 0.3
+	m, _ := newTestManager(t, &score)
+	rep := m.TestViolation(context.Background(), "明天要交作业了吗")
+	if rep.Verdict != "review" {
+		t.Fatalf("低分未命中黑白 → LLM 判定，got %s (%s)", rep.Verdict, rep.Reason)
+	}
+}
+
+func TestViolationRAGWhitePhrasePass(t *testing.T) {
+	score := 0.92
+	m, _ := newTestManagerEx(t, &score, true) // mock 命中白名单语录
+	rep := m.TestViolation(context.Background(), "明天一起食堂吃饭吗")
+	if !rep.RAGOK {
+		t.Fatal("RAG 应可用")
+	}
+	if rep.WhiteScore < 0.9 {
+		t.Fatalf("white_score 应上报最高分，got %f", rep.WhiteScore)
 	}
 	if rep.Verdict != "pass" {
-		t.Fatalf("高置信但无关键词应放行（防语义干扰），got %s (%s)", rep.Verdict, rep.Reason)
+		t.Fatalf("白名单高置信应放行，got %s (%s)", rep.Verdict, rep.Reason)
 	}
 }
 

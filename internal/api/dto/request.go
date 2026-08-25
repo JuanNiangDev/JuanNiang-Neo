@@ -281,6 +281,8 @@ type UpdateShortTermMemoryReq struct {
 type UpdateLongTermMemoryReq struct {
 	HotAreaSize  int `json:"hot_area_size"`
 	HotMemoryTTL int `json:"hot_memory_ttl"`
+	// GCIntervalDays 记忆 GC 周期（天）：0 表示不修改（保持原值）
+	GCIntervalDays int `json:"gc_interval_days"`
 }
 
 // ---------- T2I ----------
@@ -362,13 +364,13 @@ type UpdateReplyStrategyReq struct {
 
 // ---------- 群管理 ----------
 
-// UpdateGroupMgrConfigReq 更新群管理配置（含三档阈值/排除群/三份提示词/检测参数）。
+// UpdateGroupMgrConfigReq 更新群管理配置（黑/白阈值/批窗口/排除群/统一提示词/检测参数）。
 type UpdateGroupMgrConfigReq struct {
 	Enabled              bool     `json:"enabled"`
 	LLMReview            bool     `json:"llm_review"`
-	HighScore            float64  `json:"high_score"`
-	LowScore             float64  `json:"low_score"`
-	FallbackScore        float64  `json:"fallback_score"`
+	BlackMinScore        float64  `json:"black_min_score"`
+	WhiteMinScore        float64  `json:"white_min_score"`
+	LLMBatchWindow       int      `json:"llm_batch_window"`
 	ImgSpamWindow        int      `json:"img_spam_window"`
 	ImgSpamThreshold     int      `json:"img_spam_threshold"`
 	ImgMuteDuration      int      `json:"img_mute_duration"`
@@ -376,12 +378,23 @@ type UpdateGroupMgrConfigReq struct {
 	CopyThreshold        int      `json:"copy_threshold"`
 	ViolationMuteSeconds int      `json:"violation_mute_seconds"`
 	ExcludeGroups        []string `json:"exclude_groups"`
+	LLMPrompt            string   `json:"llm_prompt"` // 统一检测提示词
 	LLMCriteria          string   `json:"llm_criteria"`
 	LLMGrayPrompt        string   `json:"llm_gray_prompt"`
 	LLMHighRiskPrompt    string   `json:"llm_high_risk_prompt"`
+
+	// WhiteGCIntervalDays 白名单语录 GC 周期（天），默认 7
+	WhiteGCIntervalDays int `json:"white_gc_interval_days"`
 }
 
-// AddGroupMgrWordReq 新增词条。
+// AddGroupMgrPhraseReq 新增违禁语录（黑/白名单）。
+type AddGroupMgrPhraseReq struct {
+	Text     string `json:"text"`
+	Category string `json:"category"`  // black 语录：ad / sensitive；white 语录忽略
+	ListType string `json:"list_type"` // black / white
+}
+
+// AddGroupMgrWordReq 新增词条（已废弃：关键词仅作兜底不可修改，保留兼容）。
 type AddGroupMgrWordReq struct {
 	Word     string `json:"word"`
 	Category string `json:"category"` // black / gray / sensitive

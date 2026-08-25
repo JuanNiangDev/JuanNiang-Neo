@@ -55,6 +55,7 @@
             <v-form v-else>
               <v-text-field v-model.number="longTerm.hot_area_size" label="热区大小" type="number" class="mb-3" />
               <v-text-field v-model.number="longTerm.hot_memory_ttl" label="TTL（秒）" type="number" class="mb-3" />
+              <v-text-field v-model.number="longTerm.gc_interval_days" label="记忆 GC 周期（天，清理未召回条目）" type="number" min="1" class="mb-3" />
               <v-btn color="primary" variant="tonal" block @click="saveLong" :loading="savingLong">保存长期记忆配置</v-btn>
             </v-form>
           </v-card-text>
@@ -75,10 +76,10 @@ const loading = ref(false); const savingShort = ref(false); const savingLong = r
 const chatAreaId = ref('')
 const chatAreaItems = ref<{label: string; value: string}[]>([])
 const shortTerm = ref({ window_size: 20, auto_compact: false })
-const longTerm = ref({ hot_area_size: 10, hot_memory_ttl: 86400 })
+const longTerm = ref({ hot_area_size: 10, hot_memory_ttl: 86400, gc_interval_days: 7 })
 
 async function fetchChatAreas() { try { const list = (await chatAreaApi.list()).data.data || []; chatAreaItems.value = list.map((c: ChatAreaResp) => ({ label: `${c.area_type==='private'?'私聊':'群聊'} ${c.target_id} (${c.id.slice(0,8)})`, value: c.id })) } catch { toastStore.error('获取 ChatArea 列表失败') } }
-async function fetchBoth() { if (!chatAreaId.value) return; loading.value = true; try { const [st, lt] = await Promise.all([memoryApi.getShortTerm(chatAreaId.value), memoryApi.getLongTerm(chatAreaId.value)]); shortTerm.value = { window_size: st.data.data.window_size, auto_compact: st.data.data.auto_compact }; longTerm.value = { hot_area_size: lt.data.data.hot_area_size, hot_memory_ttl: lt.data.data.hot_memory_ttl } } catch (e: any) { toastStore.error('获取失败: ' + (e?.message || '')) } finally { loading.value = false } }
+async function fetchBoth() { if (!chatAreaId.value) return; loading.value = true; try { const [st, lt] = await Promise.all([memoryApi.getShortTerm(chatAreaId.value), memoryApi.getLongTerm(chatAreaId.value)]); shortTerm.value = { window_size: st.data.data.window_size, auto_compact: st.data.data.auto_compact }; longTerm.value = { hot_area_size: lt.data.data.hot_area_size, hot_memory_ttl: lt.data.data.hot_memory_ttl, gc_interval_days: lt.data.data.gc_interval_days ?? 7 } } catch (e: any) { toastStore.error('获取失败: ' + (e?.message || '')) } finally { loading.value = false } }
 async function saveShort() { savingShort.value = true; try { await memoryApi.updateShortTerm(chatAreaId.value, shortTerm.value); toastStore.success('短期记忆配置已保存') } catch { toastStore.error('保存失败') } finally { savingShort.value = false } }
 async function saveLong() { savingLong.value = true; try { await memoryApi.updateLongTerm(chatAreaId.value, longTerm.value); toastStore.success('长期记忆配置已保存') } catch { toastStore.error('保存失败') } finally { savingLong.value = false } }
 const syncingRAG = ref(false)

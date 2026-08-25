@@ -1935,6 +1935,9 @@ func (s *Service) UpdateLongTermMemoryConfig(ctx context.Context, c *app.Request
 	}
 	m.HotAreaSize = data.HotAreaSize
 	m.HotMemoryTTL = data.HotMemoryTTL
+	if data.GCIntervalDays > 0 {
+		m.GCIntervalDays = data.GCIntervalDays
+	}
 	if err := s.DAO.LongTermMemory.Update(ctx, m); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return

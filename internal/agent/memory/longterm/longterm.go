@@ -67,20 +67,37 @@ func (m *LongTermMemory) Add(ctx context.Context, areaID, content string) (*mode
 
 // Search 查询长期记忆。优先从 HotArea 缓存读取，缓存不足时回退到 DB。
 // query 非空时使用关键词搜索（ILIKE），否则按时间倒序返回最近条目。
+// 命中条目异步记录最近召回时间（GC 判定未使用记忆用，失败不影响主链路）。
 func (m *LongTermMemory) Search(ctx context.Context, areaID, query string, limit int) ([]models.LongTermMemoryItem, error) {
+	var items []models.LongTermMemoryItem
+	var err error
 	// 关键词搜索：直接查 DB（HotArea 不支持关键词过滤）
 	if query != "" {
-		return m.dao.SearchByContent(ctx, areaID, query, limit)
+		items, err = m.dao.SearchByContent(ctx, areaID, query, limit)
+	} else {
+		// 无关键词：优先读 HotArea
+		hot := m.GetHot(areaID)
+		if len(hot) >= limit {
+			items = hot[:limit]
+		} else {
+			items, err = m.dao.ListByChatArea(ctx, areaID, limit)
+		}
 	}
-
-	// 无关键词：优先读 HotArea
-	hot := m.GetHot(areaID)
-	if len(hot) >= limit {
-		return hot[:limit], nil
+	if err == nil && len(items) > 0 {
+		m.markRecalled(ctx, items)
 	}
+	return items, err
+}
 
-	// HotArea 不足，回退 DB 查询
-	return m.dao.ListByChatArea(ctx, areaID, limit)
+// markRecalled 批量记录命中条目的最近召回时间（GC 用；失败仅告警不阻塞）。
+func (m *LongTermMemory) markRecalled(ctx context.Context, items []models.LongTermMemoryItem) {
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.ID)
+	}
+	if err := m.dao.TouchMany(ctx, ids); err != nil {
+		log.Warn("长期记忆召回时间记录失败", "err", err)
+	}
 }
 
 // Recall 对话语义召回（主链路）：
@@ -148,4 +165,22 @@ func (m *LongTermMemory) addToHot(areaID string, item *models.LongTermMemoryItem
 		items = items[:m.conf.HotAreaSize]
 	}
 	m.hotArea[areaID] = items
+}
+
+// Remove 从热区移除条目（GC 删除后同步清理缓存，避免热区残留已删记忆）。
+func (m *LongTermMemory) Remove(ids map[string]bool) {
+	if len(ids) == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for areaID, items := range m.hotArea {
+		kept := items[:0]
+		for _, it := range items {
+			if !ids[it.ID] {
+				kept = append(kept, it)
+			}
+		}
+		m.hotArea[areaID] = kept
+	}
 }

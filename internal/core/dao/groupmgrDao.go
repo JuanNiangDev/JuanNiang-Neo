@@ -24,13 +24,13 @@ func u64toa(v uint64) string { return strconv.FormatUint(v, 10) }
 
 // ---------- 配置（单行） ----------
 
-// InitConfig 初始化默认配置（不存在时插入；默认关闭，用户面板启用）。
+// Initialize default config (single row; default disabled, user enables via panel).
 func (d *GroupMgrDAO) InitConfig(ctx context.Context) error {
 	return d.db.WithContext(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&models.GroupMgrConfig{
 		ID:                   1,
-		HighScore:            0.75,
-		LowScore:             0.5,
-		FallbackScore:        0.6,
+		BlackMinScore:        0.7,
+		WhiteMinScore:        0.75,
+		LLMBatchWindow:       3,
 		ImgSpamWindow:        2,
 		ImgSpamThreshold:     3,
 		ImgMuteDuration:      60,
@@ -171,12 +171,23 @@ func (d *GroupMgrDAO) SampleListAll(ctx context.Context) ([]models.GroupMgrSampl
 
 // SampleAdd 新增样本（幂等：text 已存在则刷新分类/来源并返回其 ID）。
 func (d *GroupMgrDAO) SampleAdd(ctx context.Context, text, category, source string) (uint, error) {
-	return d.SampleAddWithWord(ctx, text, category, source, 0)
+	return d.SampleAddPhrase(ctx, text, category, source, "black")
 }
 
 // SampleAddWithWord 新增样本并关联词条 ID（词条派生样本 source=seed 用；WordID=0 表示无关联）。
 // 幂等：text 已存在则刷新分类/来源并回填 WordID（不覆盖已有关联）。
 func (d *GroupMgrDAO) SampleAddWithWord(ctx context.Context, text, category, source string, wordID uint) (uint, error) {
+	return d.SampleAddPhraseWithWord(ctx, text, category, source, "black", wordID)
+}
+
+// SampleAddPhrase 新增语录（黑/白名单），幂等：text 已存在则刷新分类/来源。
+func (d *GroupMgrDAO) SampleAddPhrase(ctx context.Context, text, category, source, listType string) (uint, error) {
+	return d.SampleAddPhraseWithWord(ctx, text, category, source, listType, 0)
+}
+
+// SampleAddPhraseWithWord 新增语录并可选关联词条 ID。幂等：text 已存在则刷新
+// 分类/来源并回填 WordID（不覆盖已有关联）；listType 以首次入库为准（黑白不混用）。
+func (d *GroupMgrDAO) SampleAddPhraseWithWord(ctx context.Context, text, category, source, listType string, wordID uint) (uint, error) {
 	var existing models.GroupMgrSample
 	err := d.db.WithContext(ctx).Where("text = ?", text).First(&existing).Error
 	if err == nil {
@@ -195,11 +206,40 @@ func (d *GroupMgrDAO) SampleAddWithWord(ctx context.Context, text, category, sou
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return 0, err
 	}
-	s := models.GroupMgrSample{WordID: wordID, Text: text, Category: category, Source: source}
+	s := models.GroupMgrSample{WordID: wordID, ListType: listType, Text: text, Category: category, Source: source}
 	if err := d.db.WithContext(ctx).Create(&s).Error; err != nil {
 		return 0, err
 	}
 	return s.ID, nil
+}
+
+// SampleListByList 按语录集合列出（black/white；Web 违禁语录列表用）。
+func (d *GroupMgrDAO) SampleListByList(ctx context.Context, listType string) ([]models.GroupMgrSample, error) {
+	var list []models.GroupMgrSample
+	err := d.db.WithContext(ctx).Where("list_type = ?", listType).Order("id ASC").Find(&list).Error
+	return list, err
+}
+
+// SampleTouch 更新样本最近命中时间（黑=处罚 / 白=放行；GC 判定未使用记录用）。
+func (d *GroupMgrDAO) SampleTouch(ctx context.Context, id uint) error {
+	return d.db.WithContext(ctx).Model(&models.GroupMgrSample{}).Where("id = ?", id).
+		UpdateColumn("last_used_at", time.Now()).Error
+}
+
+// SampleListUnused 列出最近窗口内未被命中的语录（GC 用），按最近命中时间升序取 limit 条。
+func (d *GroupMgrDAO) SampleListUnused(ctx context.Context, listType string, since time.Time, limit int) ([]models.GroupMgrSample, error) {
+	var list []models.GroupMgrSample
+	err := d.db.WithContext(ctx).Where("list_type = ? AND (last_used_at IS NULL OR last_used_at < ?)",
+		listType, since).Order("last_used_at ASC").Limit(limit).Find(&list).Error
+	return list, err
+}
+
+// SampleCountByList 语录集合数量（自学习上限控制用）。
+func (d *GroupMgrDAO) SampleCountByList(ctx context.Context, listType string) (int64, error) {
+	var n int64
+	err := d.db.WithContext(ctx).Model(&models.GroupMgrSample{}).
+		Where("list_type = ?", listType).Count(&n).Error
+	return n, err
 }
 
 // SampleListByText 按文本列出样本（词条删除时对账清理用，通常 1 条）。
@@ -225,6 +265,12 @@ func (d *GroupMgrDAO) SampleDelete(ctx context.Context, id uint) error {
 func (d *GroupMgrDAO) SampleIncrHit(ctx context.Context, id uint) error {
 	return d.db.WithContext(ctx).Model(&models.GroupMgrSample{}).Where("id = ?", id).
 		UpdateColumn("hit_count", gorm.Expr("hit_count + 1")).Error
+}
+
+// SampleMarkRAGSynced 标记样本 RAG 同步状态（同步/删除失败时置 false，面板展示可信）。
+func (d *GroupMgrDAO) SampleMarkRAGSynced(ctx context.Context, id uint, synced bool) error {
+	return d.db.WithContext(ctx).Model(&models.GroupMgrSample{}).Where("id = ?", id).
+		UpdateColumn("rag_synced", synced).Error
 }
 
 // ---------- 违规记录 ----------

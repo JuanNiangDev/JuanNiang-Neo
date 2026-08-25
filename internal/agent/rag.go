@@ -213,5 +213,9 @@ func (h *HagoCenter) tryMemoryRAGRecall(ctx context.Context, query string) ([]st
 	if len(content) == 0 {
 		return nil, false
 	}
+	// 命中条目标记最近召回时间（GC 判定未使用记忆用；失败不影响主链路）
+	if err := h.DAO.LongTermMemItem.TouchMany(ctx, ids); err != nil {
+		log.Warn("记忆 RAG 召回时间记录失败", "err", err)
+	}
 	return content, true
 }

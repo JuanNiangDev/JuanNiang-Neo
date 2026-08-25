@@ -232,11 +232,12 @@ type ShortTermMemoryResp struct {
 }
 
 type LongTermMemoryResp struct {
-	ID           string    `json:"id"`
-	ChatAreaID   string    `json:"chat_area_id"`
-	HotAreaSize  int       `json:"hot_area_size"`
-	HotMemoryTTL int       `json:"hot_memory_ttl"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	ChatAreaID     string    `json:"chat_area_id"`
+	HotAreaSize    int       `json:"hot_area_size"`
+	HotMemoryTTL   int       `json:"hot_memory_ttl"`
+	GCIntervalDays int       `json:"gc_interval_days"` // 记忆 GC 周期（天），默认 7
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 type ChatAreaResp struct {
@@ -495,9 +496,9 @@ type ReplyStrategyResp struct {
 type GroupMgrConfigResp struct {
 	Enabled              bool     `json:"enabled"`
 	LLMReview            bool     `json:"llm_review"`
-	HighScore            float64  `json:"high_score"`
-	LowScore             float64  `json:"low_score"`
-	FallbackScore        float64  `json:"fallback_score"`
+	BlackMinScore        float64  `json:"black_min_score"`  // 黑名单语录命中阈值
+	WhiteMinScore        float64  `json:"white_min_score"`  // 白名单语录命中阈值
+	LLMBatchWindow       int      `json:"llm_batch_window"` // LLM 判定批窗口（秒）
 	ImgSpamWindow        int      `json:"img_spam_window"`
 	ImgSpamThreshold     int      `json:"img_spam_threshold"`
 	ImgMuteDuration      int      `json:"img_mute_duration"`
@@ -505,9 +506,13 @@ type GroupMgrConfigResp struct {
 	CopyThreshold        int      `json:"copy_threshold"`
 	ViolationMuteSeconds int      `json:"violation_mute_seconds"`
 	ExcludeGroups        []string `json:"exclude_groups"`
-	LLMCriteria          string   `json:"llm_criteria"`
+	LLMPrompt            string   `json:"llm_prompt"`   // 统一检测提示词
+	LLMCriteria          string   `json:"llm_criteria"` // 已废弃（兼容）
 	LLMGrayPrompt        string   `json:"llm_gray_prompt"`
 	LLMHighRiskPrompt    string   `json:"llm_high_risk_prompt"`
+
+	// WhiteGCIntervalDays 白名单语录 GC 周期（天），默认 7
+	WhiteGCIntervalDays int `json:"white_gc_interval_days"`
 }
 
 // GroupMgrWordResp 词条。
@@ -520,15 +525,19 @@ type GroupMgrWordResp struct {
 	RAGTag    string `json:"rag_tag"`    // 派生 RAG tag UUID
 }
 
-// GroupMgrSampleResp 样本。
+// GroupMgrSampleResp 语录（样本）。
 type GroupMgrSampleResp struct {
-	ID        uint   `json:"id"`
-	WordID    uint   `json:"word_id"` // 关联词条 ID（0=非词条派生样本）
-	Text      string `json:"text"`
-	Category  string `json:"category"`
-	Source    string `json:"source"`
-	HitCount  int    `json:"hit_count"`
-	CreatedAt string `json:"created_at"`
+	ID         uint    `json:"id"`
+	WordID     uint    `json:"word_id"`   // 关联词条 ID（0=非词条派生样本）
+	ListType   string  `json:"list_type"` // black / white
+	Text       string  `json:"text"`
+	Category   string  `json:"category"`
+	Source     string  `json:"source"`
+	HitCount   int     `json:"hit_count"`
+	RAGSynced  bool    `json:"rag_synced"`   // 已同步到 RAG 向量库
+	RAGTag     string  `json:"rag_tag"`      // 派生 RAG tag UUID（面板展示/对账用）
+	LastUsedAt *string `json:"last_used_at"` // 最近命中时间（可空）
+	CreatedAt  string  `json:"created_at"`
 }
 
 // GroupMgrViolationResp 违规记录。
