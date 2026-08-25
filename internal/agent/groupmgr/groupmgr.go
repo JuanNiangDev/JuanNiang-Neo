@@ -140,6 +140,11 @@ func (m *Manager) Init(ctx context.Context) error {
 	cfg, _ := m.dao.GetConfig(ctx)
 	if cfg != nil {
 		m.restoreImgState(ctx, cfg.ImgSpamWindow)
+		// 提示词迁移：三套提示词合并为一份 LLMPrompt（空则以 LLMGrayPrompt 为默认）
+		if cfg.LLMPrompt == "" && cfg.LLMGrayPrompt != "" {
+			cfg.LLMPrompt = cfg.LLMGrayPrompt
+			_ = m.dao.UpdateConfig(ctx, cfg)
+		}
 	}
 	return m.Reload(ctx)
 }

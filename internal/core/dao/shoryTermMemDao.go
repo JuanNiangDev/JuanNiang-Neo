@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"strings"
+	"time"
 
 	"JuanNiang-Neo/internal/core/models"
 
@@ -109,6 +110,20 @@ func (d *LongTermMemoryItemDAO) SemanticSearch(ctx context.Context, chatAreaID s
 
 func (d *LongTermMemoryItemDAO) Delete(ctx context.Context, id string) error {
 	return d.db.WithContext(ctx).Where("id = ?", id).Delete(&models.LongTermMemoryItem{}).Error
+}
+
+// Touch 更新条目最近召回时间（对话召回命中时调用；GC 判定未使用记忆用）。
+func (d *LongTermMemoryItemDAO) Touch(ctx context.Context, id string) error {
+	return d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).Where("id = ?", id).
+		UpdateColumn("last_recalled_at", time.Now()).Error
+}
+
+// ListUnused 列出最近窗口内未被召回的条目（GC 用），按最近召回时间升序取 limit 条。
+func (d *LongTermMemoryItemDAO) ListUnused(ctx context.Context, since time.Time, limit int) ([]models.LongTermMemoryItem, error) {
+	var list []models.LongTermMemoryItem
+	err := d.db.WithContext(ctx).Where("last_recalled_at IS NULL OR last_recalled_at < ?", since).
+		Order("last_recalled_at ASC").Limit(limit).Find(&list).Error
+	return list, err
 }
 
 func (d *LongTermMemoryItemDAO) CountByChatArea(ctx context.Context, chatAreaID string) (int64, error) {

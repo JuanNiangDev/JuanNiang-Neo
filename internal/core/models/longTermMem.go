@@ -26,12 +26,13 @@ func (LongTermMemory) TableName() string {
 // ---------- 长期记忆条目 ----------
 
 type LongTermMemoryItem struct {
-	ID         string    `gorm:"primaryKey;type:uuid"`
-	ChatAreaID string    `gorm:"not null;index"`
-	Content    string    `gorm:"type:text;not null"`
-	Embedding  []byte    `gorm:"type:bytea"`
-	Metadata   JSONMap   `gorm:"type:jsonb;default:'{}'"`
-	CreatedAt  time.Time `gorm:"index"`
+	ID             string     `gorm:"primaryKey;type:uuid"`
+	ChatAreaID     string     `gorm:"not null;index"`
+	Content        string     `gorm:"type:text;not null"`
+	Embedding      []byte     `gorm:"type:bytea"`
+	Metadata       JSONMap    `gorm:"type:jsonb;default:'{}'"`
+	LastRecalledAt *time.Time `gorm:"index"` // 最近一次被对话召回（GC 清理未使用记忆用；NULL=从未被召回）
+	CreatedAt      time.Time  `gorm:"index"`
 }
 
 func (LongTermMemoryItem) TableName() string {

@@ -9,16 +9,19 @@ import (
 // ---------- 群管理（系统级功能，替代 redrock_group_manager Lua 插件） ----------
 
 // GroupMgrConfig 群管理配置（单行表）。
-// 阈值语义：RAG 语义核实 score ≥ HighScore 直接处罚；
-// LowScore < score < HighScore 模棱两可送 LLM；
-// score ≤ LowScore 时仅"关键词/卡片命中"送 LLM（词是硬信号），否则放行。
+// 阈值语义：RAG 语义匹配双集合——命中黑名单语录 score ≥ BlackMinScore 直接处罚；
+// 命中白名单语录 score ≥ WhiteMinScore 放行；均未命中送 LLM 统一判定；
+// 关键词仅作最后兜底（RAG/LLM 均不可用时）。
 type GroupMgrConfig struct {
 	ID            uint    `gorm:"primarykey"`
 	Enabled       bool    `gorm:"not null;default:false"` // 总开关
-	LLMReview     bool    `gorm:"not null;default:true"`  // LLM 审核开关（关闭后 RAG 高置信直罚、其余放行）
-	HighScore     float64 `gorm:"not null;default:0.75"`  // RAG 高置信阈值（≥ 直接处罚）
-	LowScore      float64 `gorm:"not null;default:0.5"`   // RAG 模棱两可下限（≤ 视为不违规）
-	FallbackScore float64 `gorm:"not null;default:0.6"`   // LLM 异常 + RAG 模棱两可时的分数兜底（≥ 直罚）
+	LLMReview     bool    `gorm:"not null;default:true"`  // LLM 审核开关（关闭后仅 RAG 黑白匹配 + 关键词兜底）
+	BlackMinScore float64 `gorm:"not null;default:0.7"`   // 黑名单语录命中阈值（≥ 处罚）
+	WhiteMinScore float64 `gorm:"not null;default:0.75"`  // 白名单语录命中阈值（≥ 放行）
+	// 已废弃（新语义改用 BlackMinScore/WhiteMinScore；列保留兼容存量数据）
+	HighScore     float64 `gorm:"not null;default:0.75"`
+	LowScore      float64 `gorm:"not null;default:0.5"`
+	FallbackScore float64 `gorm:"not null;default:0.6"`
 
 	// 图片刷屏检测参数（对齐旧插件 config.yaml）
 	ImgSpamWindow    int `gorm:"not null;default:2"`  // 刷屏时间窗口（秒）
@@ -35,10 +38,15 @@ type GroupMgrConfig struct {
 	// ExcludeGroups 排除检测的群 ID 列表（这些群不跑任何检测/惩罚）。
 	ExcludeGroups JSONSlice `gorm:"type:jsonb;default:'[]'"`
 
-	// LLM 审核提示词（默认值平移自 redrock_group_manager，面板可编辑）。
-	LLMCriteria       string `gorm:"type:text"` // 公共判定标准（拼接进两套提示词）
-	LLMGrayPrompt     string `gorm:"type:text"` // 常规审查提示词（灰色词 / 低置信有词）
-	LLMHighRiskPrompt string `gorm:"type:text"` // 高危复核提示词（敏感/黑名单/卡片/RAG 高置信复核）
+	// LLM 判定批窗口：窗口内待审消息凑批统一提交 LLM（逐条独立判定），
+	// 到点（秒）或队列满（LLMBatchMax 条）先到先提交
+	LLMBatchWindow int `gorm:"not null;default:3"`
+
+	// LLM 审核提示词（三套合并为一份，面板只编辑 LLMPrompt；旧三列保留兼容不再使用）。
+	LLMPrompt         string `gorm:"type:text"`
+	LLMCriteria       string `gorm:"type:text"` // 已废弃（保留兼容）
+	LLMGrayPrompt     string `gorm:"type:text"` // 已废弃（保留兼容）
+	LLMHighRiskPrompt string `gorm:"type:text"` // 已废弃（保留兼容）
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -69,18 +77,21 @@ type GroupMgrWord struct {
 func (GroupMgrWord) TableName() string { return "group_mgr_words" }
 
 // GroupMgrSample RAG 违规样本（向量库本体，tag = ragtag.Sample(id)）。
-// 来源：seed（词条/关键词导入种子）、learn（LLM 确认违规自动入库）、import（txt 导入）。
+// 来源：seed（词条/关键词导入种子，WordID 关联）、learn（LLM 确认违规自动入库）、import（txt 导入）。
 // WordID > 0 表示该样本由对应词条派生：删除词条时同步删除样本 + RAG 向量（对账清理）。
+// ListType 区分黑白名单语录：black 命中处罚 / white 命中放行；LastUsedAt 供 GC 清理未使用记录。
 type GroupMgrSample struct {
-	ID        uint   `gorm:"primarykey"`
-	WordID    uint   `gorm:"index;default:0"` // 关联词条 ID（0 = 非词条派生样本）
-	Text      string `gorm:"type:text;not null"`
-	Category  string `gorm:"not null;index"` // ad / sensitive
-	Source    string `gorm:"not null;default:'seed'"`
-	HitCount  int    `gorm:"not null;default:0"` // RAG 高置信命中次数（面板展示）
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index"`
+	ID         uint       `gorm:"primarykey"`
+	WordID     uint       `gorm:"index;default:0"`                // 关联词条 ID（0 = 非词条派生样本）
+	ListType   string     `gorm:"not null;default:'black';index"` // black / white
+	Text       string     `gorm:"type:text;not null"`
+	Category   string     `gorm:"not null;index"` // ad / sensitive（仅 black 语录有意义）
+	Source     string     `gorm:"not null;default:'seed'"`
+	HitCount   int        `gorm:"not null;default:0"` // 命中次数（黑=处罚 / 白=放行）
+	LastUsedAt *time.Time `gorm:"index"`              // 最近命中时间（GC 用；NULL=从未命中）
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	DeletedAt  gorm.DeletedAt `gorm:"index"`
 }
 
 func (GroupMgrSample) TableName() string { return "group_mgr_samples" }
