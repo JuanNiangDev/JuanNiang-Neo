@@ -204,6 +204,7 @@ func (m *Manager) batchSysPrompt() string {
 }
 
 // batchUserPrompt 组装批量送审：每条消息独立 <USER_TEXT> 块 + 序号，逐条判定互不串扰。
+// 末尾固定给出角色 + 输出格式契约（代码解析依赖此契约，不依赖外部提示词是否被修改）。
 func (m *Manager) batchUserPrompt(items []reviewItem) string {
 	var sb strings.Builder
 	sb.WriteString("以下是 " + strconv.Itoa(len(items)) + " 条待判定群消息，请逐条输出判定：\n\n")
@@ -215,6 +216,9 @@ func (m *Manager) batchUserPrompt(items []reviewItem) string {
 	if len(items) > 0 && items[0].rc.ragScore != nil {
 		sb.WriteString("\n（提示：部分消息 RAG 语义相似度见各自的 rag_score 字段，仅作参考）")
 	}
+	sb.WriteString("\n\n你是群聊内容审查员。请严格按以下 JSON 格式逐条输出（每条消息一个结果，index 必须与上方 <USER_TEXT> 的 index 对应）：\n")
+	sb.WriteString("{\"results\":[{\"index\":0,\"verdict\":\"black|white|none\",\"reason\":\"一句话说明理由\"}]}\n")
+	sb.WriteString("verdict 取值：black=违规处罚 / white=正常交流放行 / none=无法明确归属。只输出 JSON，不要输出任何其它文字。")
 	return sb.String()
 }
 
