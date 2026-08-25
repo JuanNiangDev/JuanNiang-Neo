@@ -2817,9 +2817,13 @@ func (s *Service) SyncKnowledgeVectorStream(ctx context.Context, c *app.RequestC
 		return
 	}
 	w := sse.NewWriter(c)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	push := func(event string, data any) bool {
-		b, _ := json.Marshal(data)
+		b, err := json.Marshal(data)
+		if err != nil {
+			log.Warn("SSE 序列化失败", "event", event, "err", err)
+			return false
+		}
 		return w.WriteEvent("", event, b) == nil
 	}
 
@@ -2931,9 +2935,13 @@ func (s *Service) SyncMemoryRAGStream(ctx context.Context, c *app.RequestContext
 		return
 	}
 	w := sse.NewWriter(c)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 	push := func(event string, data any) bool {
-		b, _ := json.Marshal(data)
+		b, err := json.Marshal(data)
+		if err != nil {
+			log.Warn("SSE 序列化失败", "event", event, "err", err)
+			return false
+		}
 		return w.WriteEvent("", event, b) == nil
 	}
 
