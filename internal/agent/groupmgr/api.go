@@ -131,11 +131,12 @@ func (m *Manager) DeleteWord(ctx context.Context, id uint) error {
 	return m.Reload(ctx)
 }
 
-// deleteRAGPhrase 删除语录向量（双删，RAG 不可用静默跳过）。按集合选择 tag 前缀。
-func (m *Manager) deleteRAGPhrase(ctx context.Context, sampleID uint, listType string) {
+// deleteRAGPhrase 删除语录向量（双删）。按集合选择 tag 前缀。
+// RAG 未配置/不可用时返回 nil（无向量可删，视同成功）；删除失败返回 error（调用方决定是否保留 PG 行）。
+func (m *Manager) deleteRAGPhrase(ctx context.Context, sampleID uint, listType string) error {
 	cli := m.getRAG()
 	if cli == nil {
-		return
+		return nil
 	}
 	tag := ragtag.Sample(u32s(sampleID))
 	if listType == "white" {
@@ -143,8 +144,10 @@ func (m *Manager) deleteRAGPhrase(ctx context.Context, sampleID uint, listType s
 	}
 	if err := cli.Delete(ctx, tag); err != nil {
 		log.Warn("语录从 RAG 删除失败", "phrase", sampleID, "list", listType, "err", err)
+		return err
 	}
 	m.invalidateSampleSet()
+	return nil
 }
 
 // DeleteSample 删除语录（双删 RAG 向量，按黑白集合选 tag；不可用静默跳过）。
@@ -165,7 +168,8 @@ func (m *Manager) DeleteSample(ctx context.Context, id uint) error {
 	if listType == "" {
 		listType = "black"
 	}
-	m.deleteRAGPhrase(ctx, id, listType)
+	// 手动删除语义：RAG 删除失败仅告警，不阻塞 PG 删除（用户主动删除，残留向量由对账清理）
+	_ = m.deleteRAGPhrase(ctx, id, listType)
 	return nil
 }
 

@@ -52,7 +52,8 @@ func (m *Manager) whiteGCDays(ctx context.Context) int {
 }
 
 // runWhiteGC 执行一次白名单语录 GC：删除最近 days 天未命中的 5 条
-// （PG 行 + RAG 向量双删，白名单 tag）。RAG 删除失败仅告警，下次执行重试。
+// （PG 行 + RAG 向量双删，白名单 tag）。RAG 删除失败保留 PG 行并标记未同步，
+// 下次执行重试（先删向量成功再删主库，避免孤儿向量）。
 func (m *Manager) runWhiteGC(ctx context.Context, days int) error {
 	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	samples, err := m.dao.SampleListUnused(ctx, "white", since, whiteGCPageSize)
@@ -64,8 +65,13 @@ func (m *Manager) runWhiteGC(ctx context.Context, days int) error {
 	}
 	removed := 0
 	for _, s := range samples {
-		// 先删 RAG 向量再删 PG（向量删不掉也不阻塞主库清理）
-		m.deleteRAGPhrase(ctx, s.ID, "white")
+		// 先删 RAG 向量：失败则保留 PG 行并标记未同步，下次 GC 重试（防孤儿向量）
+		if rerr := m.deleteRAGPhrase(ctx, s.ID, "white"); rerr != nil {
+			if merr := m.dao.SampleMarkRAGSynced(ctx, s.ID, false); merr != nil {
+				log.Warn("白名单 GC：标记未同步失败", "phrase", s.ID, "err", merr)
+			}
+			continue
+		}
 		if derr := m.dao.SampleDelete(ctx, s.ID); derr != nil {
 			log.Warn("白名单 GC：Postgres 删除失败", "phrase", s.ID, "err", derr)
 			continue

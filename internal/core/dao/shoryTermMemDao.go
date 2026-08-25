@@ -127,6 +127,12 @@ func (d *LongTermMemoryItemDAO) TouchMany(ctx context.Context, ids []string) err
 		UpdateColumn("last_recalled_at", time.Now()).Error
 }
 
+// MarkRAGSynced 标记条目 RAG 同步状态（GC 删除向量失败时置 false，下次重试防孤儿向量）。
+func (d *LongTermMemoryItemDAO) MarkRAGSynced(ctx context.Context, id string, synced bool) error {
+	return d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).Where("id = ?", id).
+		UpdateColumn("rag_synced", synced).Error
+}
+
 // ListUnused 列出最近窗口内未被召回的条目（GC 用），按最近召回时间升序取 limit 条。
 func (d *LongTermMemoryItemDAO) ListUnused(ctx context.Context, since time.Time, limit int) ([]models.LongTermMemoryItem, error) {
 	var list []models.LongTermMemoryItem

@@ -56,7 +56,8 @@ func (h *HagoCenter) memoryGCDays(ctx context.Context) int {
 }
 
 // runLongTermMemoryGC 执行一次长期记忆 GC：删除最近 days 天未被召回的 5 条
-// （PG 行 + RAG 向量双删）。RAG 删除失败仅告警，下次执行重试。
+// （PG 行 + RAG 向量双删）。RAG 删除失败保留 PG 行并标记未同步，下次执行重试
+// （先删向量成功再删主库，避免孤儿向量）；RAG 未配置时直接删主库。
 func (h *HagoCenter) runLongTermMemoryGC(ctx context.Context, days int) error {
 	since := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 	items, err := h.DAO.LongTermMemItem.ListUnused(ctx, since, memoryGCPageSize)
@@ -69,10 +70,14 @@ func (h *HagoCenter) runLongTermMemoryGC(ctx context.Context, days int) error {
 	removed := 0
 	ids := make(map[string]bool, len(items))
 	for _, it := range items {
-		// 先删 RAG 向量再删 PG（向量删不掉也不阻塞主库清理）
+		// 先删 RAG 向量：失败则保留 PG 行并标记未同步，下次 GC 重试（防孤儿向量）
 		if cli := h.RAGClient.Load(); cli != nil {
 			if derr := cli.Delete(ctx, ragtag.Memory(it.ID)); derr != nil {
-				log.Warn("记忆 GC：RAG 向量删除失败", "mem_id", it.ID, "err", derr)
+				log.Warn("记忆 GC：RAG 向量删除失败，保留 PG 行待重试", "mem_id", it.ID, "err", derr)
+				if merr := h.DAO.LongTermMemItem.MarkRAGSynced(ctx, it.ID, false); merr != nil {
+					log.Warn("记忆 GC：标记未同步失败", "mem_id", it.ID, "err", merr)
+				}
+				continue
 			}
 		}
 		if derr := h.DAO.LongTermMemItem.Delete(ctx, it.ID); derr != nil {

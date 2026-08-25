@@ -32,7 +32,8 @@ type LongTermMemoryItem struct {
 	Content        string     `gorm:"type:text;not null"`
 	Embedding      []byte     `gorm:"type:bytea"`
 	Metadata       JSONMap    `gorm:"type:jsonb;default:'{}'"`
-	LastRecalledAt *time.Time `gorm:"index"` // 最近一次被对话召回（GC 清理未使用记忆用；NULL=从未被召回）
+	LastRecalledAt *time.Time `gorm:"index"`                  // 最近一次被对话召回（GC 清理未使用记忆用；NULL=从未被召回）
+	RAGSynced      bool       `gorm:"not null;default:false"` // 已同步到 RAG 向量库（GC 删除失败时置 false 供重试，防孤儿向量）
 	CreatedAt      time.Time  `gorm:"index"`
 }
 
