@@ -118,6 +118,9 @@ func (m *LongTermMemory) Recall(ctx context.Context, areaID string, grams []stri
 		// 新话题无字面重叠：回退最近，避免语义召回把记忆"清空"
 		return m.Search(ctx, areaID, "", limit)
 	}
+	// 语义召回命中也要刷新 last_recalled_at（Search 内部会记，此处补记）
+	// 否则 GC 按 last_recalled_at 误判该记忆"长期未召回"并清理
+	m.markRecalled(ctx, items)
 	return items, nil
 }
 
