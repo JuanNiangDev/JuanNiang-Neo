@@ -17,7 +17,7 @@ type TestReport struct {
 	BlackPhrase string  `json:"black_phrase"` // 黑名单最相似语录
 	WhiteScore  float64 `json:"white_score"`  // 白名单语录最高分
 	WhitePhrase string  `json:"white_phrase"` // 白名单最相似语录
-	Verdict     string  `json:"verdict"`      // 最终判定：punish / review / pass / keyword_punish / keyword_review
+	Verdict     string  `json:"verdict"`      // 最终判定：punish / review / pass
 	Reason      string  `json:"reason"`       // 判定说明
 }
 
@@ -31,7 +31,8 @@ func (m *Manager) TestViolation(ctx context.Context, text string) *TestReport {
 	rep.Card = card
 	rep.Word, rep.WordCat = m.wordHit(ctx, stripCQ(text))
 
-	if v := m.verifyByRAG(ctx, stripCQ(text)); v.ok {
+	// observe=false：链路测试不观测生产指标（RAGSearchLatency/GroupMgrRAGScore/RAGSearchErrorsTotal）
+	if v := m.verifyByRAG(ctx, stripCQ(text), false); v.ok {
 		rep.RAGOK = true
 		if v.black != nil {
 			rep.BlackScore = v.black.score

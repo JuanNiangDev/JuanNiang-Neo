@@ -95,7 +95,8 @@ type ragVerdict struct {
 // verifyByRAG RAG 语义匹配（第一核实人）：消息文本在黑/白语录集内各取最优命中。
 // ok 只表示 RAG 服务可用且已完成检索（调用方据此决定是否走 RAG 路径）；
 // black/white 可能均为 nil（服务正常但无语录命中 → 送 LLM 判定，而不是降级关键词）。
-func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
+// observe=false 跳过全部指标上报（链路测试/诊断路径，避免污染生产面板数据）。
+func (m *Manager) verifyByRAG(ctx context.Context, query string, observe bool) ragVerdict {
 	cli := m.getRAG()
 	if cli == nil {
 		return ragVerdict{} // RAG 未配置 → 不可用
@@ -108,9 +109,13 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 	defer cancel()
 	start := time.Now()
 	hits, err := cli.Search(cctx, query, ragSearchPhraseK, nil)
-	metrics.RAGSearchLatency.Observe(time.Since(start).Seconds())
+	if observe {
+		metrics.RAGSearchLatency.Observe(time.Since(start).Seconds())
+	}
 	if err != nil {
-		metrics.RAGSearchErrorsTotal.Inc()
+		if observe {
+			metrics.RAGSearchErrorsTotal.Inc()
+		}
 		log.Warn("RAG 检索失败，降级", "err", err)
 		return ragVerdict{} // 检索出错 → 不可用（降级关键词）
 	}
@@ -130,12 +135,14 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string) ragVerdict {
 		}
 	}
 	// RAG 核实分数分布（调阈值依据）：黑白各报最优分，命中即观测
-	// （重构后曾丢失该上报，导致 Grafana 分数分布面板无数据）
-	if v.black != nil {
-		metrics.GroupMgrRAGScore.Observe(v.black.score)
-	}
-	if v.white != nil {
-		metrics.GroupMgrRAGScore.Observe(v.white.score)
+	// （重构后曾丢失该上报，导致 Grafana 分数分布面板无数据）；链测路径不观测
+	if observe {
+		if v.black != nil {
+			metrics.GroupMgrRAGScore.Observe(v.black.score)
+		}
+		if v.white != nil {
+			metrics.GroupMgrRAGScore.Observe(v.white.score)
+		}
 	}
 	return v
 }

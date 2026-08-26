@@ -365,7 +365,7 @@ func (m *Manager) learnPhraseAsync(ctx context.Context, raw, listType, category 
 	if text == "" || len([]rune(text)) > 200 {
 		return
 	}
-	// 上限检查（快速失败，避免无效异步写入）
+	// 上限检查（快速失败，避免无效异步写入；串行区内仍会锁后复查，防并发越过上限）
 	if n, err := m.dao.SampleCountByList(ctx, listType); err == nil && n >= llmPhraseLimit {
 		log.Warn("语录已达上限，拒绝自学习写入", "list", listType, "limit", llmPhraseLimit)
 		return
@@ -377,6 +377,11 @@ func (m *Manager) learnPhraseAsync(ctx context.Context, raw, listType, category 
 		// 派生自调用方 ctx（继承 trace 值），消息处理返回取消不中断 30s 学习窗口
 		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
+		// 锁后复查上限：预检在锁外快照，并发裁决可能全部通过；串行区内再校验防少量越过
+		if n, err := m.dao.SampleCountByList(lctx, listType); err == nil && n >= llmPhraseLimit {
+			log.Warn("语录已达上限，拒绝自学习写入", "list", listType, "limit", llmPhraseLimit)
+			return
+		}
 		if id, err := m.dao.SampleAddPhrase(lctx, text, category, "learn", listType); err != nil {
 			log.Warn("学习语录入库失败", "err", err)
 			return

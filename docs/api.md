@@ -1009,7 +1009,7 @@ txt 导入词条（仅兜底）。**data** `{imported int, skipped int}`。
 
 ### GET /group-mgr/sync-rag/stream
 
-SSE 流式同步进度（逐批推送 `data: {done, failed}`，结束推 `data: {total, failed}`）。RAG 未配置推送 `data: {message}`。
+SSE 流式同步进度（逐批推送 `data: {done, failed}`，结束推 `data: {total, failed}`；出错推 `error` 事件 `{error}`）。群管理未初始化返回普通 JSON 错误；RAG 未配置时流内推送 `error` 事件（前端按 `data.error` 中断）。
 
 ### GET /group-mgr/samples?list_type=
 

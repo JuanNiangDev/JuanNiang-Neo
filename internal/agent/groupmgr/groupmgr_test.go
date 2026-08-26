@@ -15,9 +15,13 @@ import (
 	"JuanNiang-Neo/internal/core"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/ragtag"
+	"JuanNiang-Neo/internal/metrics"
 
 	caller "JuanNiang-Neo/infrastructure/rag/handler"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -151,6 +155,45 @@ func TestViolationRAGWhitePhrasePass(t *testing.T) {
 	if rep.Verdict != "pass" {
 		t.Fatalf("白名单高置信应放行，got %s (%s)", rep.Verdict, rep.Reason)
 	}
+}
+
+// TestViolationDoesNotObserveMetrics 回归：链路测试（TestViolation）不得观测生产指标
+// （RAGSearchLatency / GroupMgrRAGScore / RAGSearchErrorsTotal），否则面板反复粘贴文本
+// 诊断会把测试流量混入生产分布——分数分布面板（调阈值依据）最易被带偏。
+func TestViolationDoesNotObserveMetrics(t *testing.T) {
+	score := 0.92 // mock RAG 命中：覆盖分数/延迟观测路径
+	m, _ := newTestManager(t, &score)
+
+	scoreBefore := histogramSamples(t, metrics.GroupMgrRAGScore)
+	latencyBefore := histogramSamples(t, metrics.RAGSearchLatency)
+	errBefore := testutil.ToFloat64(metrics.RAGSearchErrorsTotal)
+
+	rep := m.TestViolation(context.Background(), "0元购送福利，加我微信领流量卡")
+	if !rep.RAGOK || rep.Verdict != "punish" {
+		t.Fatalf("预置应走 RAG 命中路径，got ok=%v verdict=%s", rep.RAGOK, rep.Verdict)
+	}
+	if scoreAfter := histogramSamples(t, metrics.GroupMgrRAGScore); scoreAfter != scoreBefore {
+		t.Fatalf("链路测试不应观测 RAG 分数，before=%d after=%d", scoreBefore, scoreAfter)
+	}
+	if latencyAfter := histogramSamples(t, metrics.RAGSearchLatency); latencyAfter != latencyBefore {
+		t.Fatalf("链路测试不应观测 RAG 检索延迟，before=%d after=%d", latencyBefore, latencyAfter)
+	}
+	if errAfter := testutil.ToFloat64(metrics.RAGSearchErrorsTotal); errAfter != errBefore {
+		t.Fatalf("链路测试不应观测 RAG 检索错误，before=%v after=%v", errBefore, errAfter)
+	}
+}
+
+// histogramSamples 读取直方图 sample_count（testutil.ToFloat64 不支持直方图，会 panic）。
+func histogramSamples(t *testing.T, h prometheus.Histogram) uint64 {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 4)
+	h.Collect(ch)
+	m := <-ch // 直方图首个 metric 为 sample_count
+	dtoM := &dto.Metric{}
+	if err := m.Write(dtoM); err != nil {
+		t.Fatal(err)
+	}
+	return dtoM.GetHistogram().GetSampleCount()
 }
 
 // TestViolationIncrConcurrent 违规计数原子自增：并发 N 次自增最终计数 = N。

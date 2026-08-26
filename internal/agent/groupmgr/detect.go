@@ -80,7 +80,7 @@ func (m *Manager) detectViolation(ctx context.Context, ev adapter.Event, cfg *mo
 	word, wordCat := m.wordHit(ctx, text)
 
 	// 第一核实人：RAG 语义匹配（黑白语录双集合）
-	if v := m.verifyByRAG(ctx, text); v.ok {
+	if v := m.verifyByRAG(ctx, text, true); v.ok {
 		return m.handleRAGMatch(ctx, ev, cfg, card, word, wordCat, v)
 	}
 	// RAG 不可用 → 关键词兜底（= 旧插件行为）

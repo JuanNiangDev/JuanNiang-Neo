@@ -81,7 +81,7 @@ func TestViolationRAGAvailableNoPhraseHit(t *testing.T) {
 // TestVerifyRAGForeignHitIsAvailable verifyByRAG 对"外来 tag 命中"应 ok=true 且无命中条目。
 func TestVerifyRAGForeignHitIsAvailable(t *testing.T) {
 	m := newTestManagerForeignHit(t, 0.9)
-	v := m.verifyByRAG(context.Background(), "测试文本")
+	v := m.verifyByRAG(context.Background(), "测试文本", false)
 	if !v.ok {
 		t.Fatal("RAG 服务可用（外来 tag 命中）应 ok=true")
 	}
