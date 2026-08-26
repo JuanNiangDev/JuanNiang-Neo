@@ -71,6 +71,13 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       OB_TOKEN: ${OB_TOKEN:-}
       OB_ADMINS: ${OB_ADMINS:-}
+      # 链路追踪（Grafana Tempo）：OTLP HTTP 直推；留空 = 禁用（no-op 零开销）
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo:4318"
+      OTEL_SERVICE_NAME: juan-niang-neo
+      # 采样率（0~1，默认 1.0 全量；热聊群量大可调低）
+      OTEL_TRACE_SAMPLE_RATIO: "1.0"
+      # 根 span 是否记录消息内容（截断 100 字符；敏感环境可关）
+      OTEL_TRACE_CAPTURE_CONTENT: "true"
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,8 +103,24 @@ services:
     networks:
       - juanniang-net
 
+  # 链路追踪存储（Grafana Tempo）：Grafana 添加 Tempo 数据源 http://tempo:3200
+  # 后，Explore → Tempo 按 service.name=juan-niang-neo 查看单事件全流程瀑布图。
+  tempo:
+    image: grafana/tempo:latest
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "3200:3200" # Tempo HTTP（Grafana 数据源）
+      - "4318:4318" # OTLP HTTP（机器人 span 上报）
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml
+      - tempo-data:/var/tempo
+    networks:
+      - juanniang-net
+
 volumes:
   pgdata:
+  tempo-data:
 
 networks:
   juanniang-net:

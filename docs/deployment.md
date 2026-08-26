@@ -165,6 +165,40 @@ scrape_configs:
 5. **外部服务矩阵**：`juanniang_external_health`（0/1）
 6. **运行时**：`go_goroutines` 趋势（goroutine 泄漏）、`go_memstats_heap_alloc_bytes`
 
+## 链路追踪（Grafana Tempo）
+
+机器人对**每条事件**生成一个 trace（根 span `process_event`），下游各阶段（群管理检测/RAG 核实/处罚、插件派发、相关性判断、Agent ReAct 循环、LLM 调用、工具执行、RAG 调用、审核闸门、回复发送）均为子 span——在 Grafana Tempo 里可查看单条事件处理的**全流程瀑布图**，直接定位最慢/失败的阶段。
+
+### 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 空（禁用） | OTLP 上报地址（如 `http://tempo:4318`）；留空 = no-op 零开销 |
+| `OTEL_SERVICE_NAME` | `juan-niang-neo` | 服务名（Tempo 按 `service.name` 过滤） |
+| `OTEL_TRACE_SAMPLE_RATIO` | `1.0` | 采样率 0~1；热聊群量大可调低（如 `0.1`） |
+| `OTEL_TRACE_CAPTURE_CONTENT` | `true` | 根 span 是否记录消息内容（截断 100 字符）；敏感环境设 `false` |
+
+### 部署（docker compose）
+
+`deployments/docker-compose.yaml` 已内置 Tempo 服务（`grafana/tempo:latest`，本地磁盘存储）：
+
+```bash
+docker compose up -d --build
+# Tempo:  http://localhost:3200（Grafana 数据源）
+# OTLP:   4318（机器人自动上报，无需额外配置）
+```
+
+Grafana（独立部署或复用现有实例）添加数据源：**Tempo → http://tempo:3200**（Docker 网络内）或 `http://localhost:3200`（宿主机）。
+
+### 使用方式（Grafana Explore）
+
+1. 数据源选 **Tempo**，按 `service.name=juan-niang-neo` + 时间范围搜索 trace
+2. 按属性精确定位：`process_event.group_id="123456"` / `process_event.user_id` / `process_event.message_content`（内容为截断 100 字符，**精确匹配**，不支持模糊搜索）
+3. 点击 trace → 瀑布图：`llm.call` 最长通常说明模型慢，`tool.execute` 长说明工具慢，`status=error` 的 span 直接显示失败原因
+4. 排障习惯：找到一条消息 → 看 `agent.handle` 总耗时 → 逐段下钻各阶段耗时
+
+> 提示：Tempo 的属性搜索是精确值匹配；按内容模糊检索请用 Web 面板日志页（Hub）或部署 Loki。
+
 ## 日志排查
 
 - 使用 `internal/logging` 自定义日志包（底层 `github.com/fatih/color`），支持彩色 stdout、JSON 格式化、WARN+ 调用栈
