@@ -53,9 +53,13 @@ type Manager struct {
 	// 异步学习闭环（黑/白语录写入）串行化：并发双插会绕过幂等去重（Text 无唯一索引）
 	learnMu sync.Mutex
 	// 异步 LLM 审查去重/在途 + 批窗口（3s 凑批统一提交，逐条独立判定）
-	llmMu         sync.Mutex
-	llmPending    map[string]bool // "群:QQ" 在途审查
-	llmReviewed   map[int64]int64 // message_id → 审查时间（10min 去重）
+	llmMu       sync.Mutex
+	llmPending  map[string]bool // "群:QQ" 在途审查
+	llmReviewed map[int64]int64 // message_id → 审查时间（10min 去重）
+	// reviewVerdict 审核终态（message_id → black/white/none）：
+	// Agent 回复发送前闸门（ReviewGate）查询用；TTL 与 llmReviewed 对齐（10min），
+	// 重启丢失 → 查不到按放行处理（撤回兜底仍在）。
+	reviewVerdict map[int64]string
 	llmResults    chan reviewOutcome
 	llmBatchMu    sync.Mutex
 	llmBatchItems []reviewItem // 批队列（到点/满批统一提交）
@@ -100,20 +104,21 @@ type nameEntry struct {
 // New 创建群管理 Manager（不启动 goroutine，Run 负责消费回调）。
 func New(d *dao.GroupMgrDAO, adp *adapter.Adapter, getRAG func() *caller.Client, pg *provider.ProviderGroup) *Manager {
 	m := &Manager{
-		dao:         d,
-		adp:         adp,
-		getRAG:      getRAG,
-		providers:   pg,
-		words:       map[string]map[string]bool{},
-		whitelist:   map[int64]bool{},
-		admins:      map[int64]bool{},
-		llmPending:  map[string]bool{},
-		llmReviewed: map[int64]int64{},
-		llmResults:  make(chan reviewOutcome, llmQueueSize),
-		imgState:    map[string][]int64{},
-		imgWarn:     map[string]bool{},
-		cpState:     map[int64]*copyState{},
-		nameCache:   map[int64]nameEntry{},
+		dao:           d,
+		adp:           adp,
+		getRAG:        getRAG,
+		providers:     pg,
+		words:         map[string]map[string]bool{},
+		whitelist:     map[int64]bool{},
+		admins:        map[int64]bool{},
+		llmPending:    map[string]bool{},
+		llmReviewed:   map[int64]int64{},
+		reviewVerdict: map[int64]string{},
+		llmResults:    make(chan reviewOutcome, llmQueueSize),
+		imgState:      map[string][]int64{},
+		imgWarn:       map[string]bool{},
+		cpState:       map[int64]*copyState{},
+		nameCache:     map[int64]nameEntry{},
 	}
 	return m
 }

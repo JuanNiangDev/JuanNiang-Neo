@@ -90,7 +90,7 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 		return false
 	}
 	msg := ev.Message
-	pk := itoa(msg.GroupID) + ":" + itoa(msg.UserID)
+	pk := pkOf(msg.GroupID, msg.UserID)
 
 	// 同用户已有在途 → 跳过（调用方按兜底处理）
 	m.llmMu.Lock()
@@ -106,9 +106,10 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 			return false
 		}
 		m.llmReviewed[msg.MessageID] = now
-		for id, ts := range m.llmReviewed { // 顺带清理过期
+		for id, ts := range m.llmReviewed { // 顺带清理过期（终态记录同步清理）
 			if now-ts >= llmDedupWindow {
 				delete(m.llmReviewed, id)
+				delete(m.reviewVerdict, id)
 			}
 		}
 	}
@@ -284,6 +285,19 @@ func (m *Manager) handleReviewBatch(ctx context.Context, out reviewOutcome) {
 func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewResult, failed bool) {
 	m.llmMu.Lock()
 	delete(m.llmPending, it.pk)
+	// 审核终态落库（发送前闸门 ReviewGate 查询；TTL 随 llmReviewed 清理）：
+	// black=已判违规（Agent 回复应被丢弃）；white/none=放行；
+	// 失败且无硬信号=不记录（按未送审放行）；失败且硬信号直罚=记 black。
+	switch {
+	case failed || (res.Verdict != "black" && res.Verdict != "white" && res.Verdict != "none"):
+		if it.rc.highRisk && it.rc.hard {
+			m.reviewVerdict[it.messageID] = "black"
+		}
+	case res.Verdict == "black":
+		m.reviewVerdict[it.messageID] = "black"
+	default:
+		m.reviewVerdict[it.messageID] = res.Verdict // white / none
+	}
 	m.llmMu.Unlock()
 
 	// 审查耗时期间可能已被加入白名单/成为管理员，复查后再处罚
@@ -452,4 +466,54 @@ func headText(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// pkOf 群消息在途审查去重键（"群:QQ"）。
+func pkOf(groupID, userID int64) string {
+	return itoa(groupID) + ":" + itoa(userID)
+}
+
+// ReviewGateWait Agent 回复发送前等待审核终态的上限：覆盖批窗口（3s）+ LLM
+// 余量；超时按放行处理（撤回兜底仍在）。Agent ReAct 循环通常比审核慢，
+// 多数情况零等待。
+const ReviewGateWait = 5 * time.Second
+
+// ReviewGate 发送前审核闸门（Agent 回复发送前调用）。
+// 返回 blocked：消息已被判定违规（已处罚），Agent 回复不应发送；
+// pending：审核仍在途（批窗口/LLM 判断中），调用方可用 WaitReview 等待。
+// 私聊 / 未送审 / 无记录一律放行（LLMReview 关闭、去重命中、重启丢失等）。
+func (m *Manager) ReviewGate(ctx context.Context, groupID, userID, messageID int64) (blocked, pending bool) {
+	if messageID <= 0 || groupID <= 0 {
+		return false, false
+	}
+	m.llmMu.Lock()
+	defer m.llmMu.Unlock()
+	if v, ok := m.reviewVerdict[messageID]; ok {
+		return v == "black", false
+	}
+	// 在途审查（批窗口/LLM 判断中）
+	if m.llmPending[pkOf(groupID, userID)] {
+		return false, true
+	}
+	return false, false
+}
+
+// WaitReview 等待审核终态（轮询 ReviewGate，短间隔），最多等 timeout。
+// 返回 blocked=true 应丢弃回复；false 表示放行（含超时/ctx 取消/未送审）。
+func (m *Manager) WaitReview(ctx context.Context, groupID, userID, messageID int64, timeout time.Duration) (blocked bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		blocked, pending := m.ReviewGate(ctx, groupID, userID, messageID)
+		if blocked || !pending {
+			return blocked
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }
