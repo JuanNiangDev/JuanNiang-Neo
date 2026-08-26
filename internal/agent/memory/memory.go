@@ -197,7 +197,7 @@ func (m *MemoryGroup) syncMemoryVector(id, content string) {
 		}
 		ragCtx, cancel := context.WithTimeout(context.Background(), ragMemSyncTimeout)
 		defer cancel()
-		if _, err := cli.Upsert(ragCtx, ragtag.Memory(id), content); err != nil {
+		if _, err := cli.Upsert(ragCtx, ragtag.ScoopMemory, ragtag.Memory(id), content); err != nil {
 			log.Warn("记忆向量同步失败", "id", id, "err", err)
 		}
 	}()

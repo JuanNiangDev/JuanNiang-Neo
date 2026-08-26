@@ -40,6 +40,12 @@ type SearchResponse struct {
 
 // ......... 状态 .........
 
+// ScoopStats 单个分库的规模（/health 与 /info 返回 per-scoop 统计）。
+type ScoopStats struct {
+	Tags   int `json:"tags"`
+	Chunks int `json:"chunks"`
+}
+
 type InfoResponse struct {
 	Status string `json:"status"`
 	Model  struct {
@@ -55,6 +61,6 @@ type InfoResponse struct {
 		RSSKB   uint64 `json:"rss_kb"`
 		VSizeKB uint64 `json:"vsize_kb"`
 	} `json:"memory"`
-	Tags   int `json:"tags"`
-	Chunks int `json:"chunks"`
+	// 各分库的 tag/块数量（scoop 名 → 统计）
+	Scoops map[string]ScoopStats `json:"scoops"`
 }

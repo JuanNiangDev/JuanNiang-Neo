@@ -74,7 +74,7 @@ func (h *HagoCenter) runLongTermMemoryGC(ctx context.Context, days int) error {
 	for _, it := range items {
 		// 先删 RAG 向量：失败则保留 PG 行并标记未同步，下次 GC 重试（防孤儿向量）
 		if cli := h.RAGClient.Load(); cli != nil {
-			if derr := cli.Delete(ctx, ragtag.Memory(it.ID)); derr != nil {
+			if derr := cli.Delete(ctx, ragtag.ScoopMemory, ragtag.Memory(it.ID)); derr != nil {
 				log.Warn("记忆 GC：RAG 向量删除失败，保留 PG 行待重试", "mem_id", it.ID, "err", derr)
 				if merr := h.DAO.LongTermMemItem.MarkRAGSynced(ctx, it.ID, false); merr != nil {
 					log.Warn("记忆 GC：标记未同步失败", "mem_id", it.ID, "err", merr)

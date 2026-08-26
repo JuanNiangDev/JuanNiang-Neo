@@ -647,9 +647,9 @@ RAG-Service 配置与健康管理（记忆/知识语义检索）。单行配置�
 **data** `{"healthy": bool}`。
 
 ### GET /rag/info
-查询 RAG-Service 运行状态：`{status, model:{ready, model_name, dim, n_params, n_threads, error}, memory:{rss_kb, vsize_kb}, tags, chunks}`；未启用返回 `{ready:false}`。
+查询 RAG-Service 运行状态：`{status, model:{ready, model_name, dim, n_params, n_threads, error}, memory:{rss_kb, vsize_kb}, scoops:{<分库名>:{tags, chunks}}}`（自 v2 起规模按分库上报：knowledge/memory/groupmgr/plugin）；未启用返回 `{ready:false}`。
 
-> 服务本体 `JuanNiang-RAG-Service`（Rust）需独立部署：`make download && cargo run --release`（默认 `127.0.0.1:3000`）。知识与记忆分集合由 UUID v5 派生 tag 隔离（`internal/core/ragtag`）。
+> 服务本体 `JuanNiang-RAG-Service`（Rust）需独立部署：`make download && cargo run --release`（默认 `127.0.0.1:3000`）。知识与记忆等集合按**分库（scoop）隔离**存储与检索（`internal/core/ragtag` 提供 `Scoop*` 常量 + UUID v5 派生 tag）。
 
 ---
 
@@ -752,7 +752,7 @@ curl -X PUT http://localhost:8090/api/v1/reply-strategy \
 
 ## 23. 知识库
 
-Web 存入知识条目，Agent 异步提取关键词；对话前**首选 RAG 语义检索**（向量命中按分数注入），未启用/未命中降级为关键词 + 内容前 20 字模糊匹配（LRU 50 条缓存加速）。新增/编辑/删除知识时同步双写/双删 RAG-Service 向量（未配置时静默跳过）。
+Web 存入知识条目，Agent 异步提取关键词；对话前**首选 RAG 语义检索**（限定 `knowledge` 分库，向量命中按分数注入），未启用/未命中降级为关键词 + 内容前 20 字模糊匹配（LRU 50 条缓存加速）。新增/编辑/删除知识时同步双写/双删 RAG-Service 向量（未配置时静默跳过）。
 
 > `keyword_status`：`pending`（提取中，暂不参与匹配）→ `ready`（可匹配）→ `failed`（提取失败，可手动重试）。新增/编辑后自动异步提取关键词。
 

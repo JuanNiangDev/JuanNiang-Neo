@@ -15,12 +15,12 @@ import (
 
 // TestSyncRAG 手动全量同步向量库：词条+样本批量 upsert（幂等，逐批 50）。
 func TestSyncRAG(t *testing.T) {
-	// mock RAG-Service：/tags/batch 接收批量 upsert，统计请求次数与条数
+	// mock RAG-Service：/scoops/groupmgr/tags/batch 接收批量 upsert，统计请求次数与条数
 	var mu sync.Mutex
 	batchItems := 0
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/tags/batch") {
+		if !strings.HasPrefix(r.URL.Path, "/scoops/groupmgr/tags/batch") {
 			http.NotFound(w, r)
 			return
 		}

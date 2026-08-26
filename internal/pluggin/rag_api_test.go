@@ -46,7 +46,7 @@ func loadRagTestPlugin(t *testing.T, src string) (*PluginEngine, *lua.LState, *s
 	t.Helper()
 	ragSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/tags/search"):
+		case strings.HasPrefix(r.URL.Path, "/scoops/plugin/tags/search"):
 			// 返回两条命中
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"results": []map[string]any{
@@ -54,7 +54,7 @@ func loadRagTestPlugin(t *testing.T, src string) (*PluginEngine, *lua.LState, *s
 					{"tag": uuid.NewString(), "score": 0.5},
 				},
 			})
-		case strings.HasPrefix(r.URL.Path, "/tags/"):
+		case strings.HasPrefix(r.URL.Path, "/scoops/plugin/tags/"):
 			// PUT upsert / DELETE
 			_ = json.NewEncoder(w).Encode(map[string]any{"tag": uuid.NewString(), "chunk_count": 1, "truncated": false})
 		default:

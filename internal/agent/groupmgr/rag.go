@@ -16,16 +16,15 @@ import (
 // sampleSetTTL 样本候选集缓存有效期（样本变更即失效；TTL 兜底防长期不同步）。
 const sampleSetTTL = 5 * time.Minute
 
-// ragSearchPhraseK 群管理黑白语录检索候选数：命中后仍需过阈值，30 足够。
-// embedding 区分度有限时小 k 会把本集合命中挤出 top-k（日志表现「外来 tag」）；
-// 候选集过滤会丢弃外来 tag，调大只增加本集合命中概率，不引入误判。
-const ragSearchPhraseK = 30
+// ragSearchPhraseK 群管理黑白语录检索候选数：命中后仍需过阈值，15 足够。
+// scoop 化后检索限定在 groupmgr 分库内，无需再为外来集合挤占 top-k 而调大。
+const ragSearchPhraseK = 15
 
 // ragSearchTimeout RAG 语义核实的硬超时：本地部署毫秒级，但 bge 模型首次推理需加载
 // （冷启动可能 3-5s），给 5s 余量不让消息卡死，热路径稳定后毫秒级。
 const ragSearchTimeout = 5 * time.Second
 
-// phraseInfo 语录候选集条目（tag → 集合/ID/文本/类别，检索命中过滤用）。
+// phraseInfo 语录候选集条目（tag → 集合/ID/文本/类别，命中归类与反查用）。
 // listType: black（黑名单，命中处罚）/ white（白名单，命中放行）。
 type phraseInfo struct {
 	listType string
@@ -40,7 +39,8 @@ type phraseSet struct {
 	white map[uuid.UUID]phraseInfo
 }
 
-// buildPhraseSet 构建语录候选集（本地 语录ID → 派生 tag），供检索命中过滤。
+// buildPhraseSet 构建语录候选集（本地 语录ID → 派生 tag），供检索命中归类
+// 黑白集合与反查本地 ID（scoop 内命中也可能是白/黑兼有，需按 tag 归类）。
 // 返回 nil 表示构建失败（调用方降级）。空集合不缓存：首次为空时缓存 5 分钟
 // 会导致同步向量库后仍降级（空 map != nil 绕过 TTL 检查）。
 func (m *Manager) buildPhraseSet(ctx context.Context) *phraseSet {
@@ -108,7 +108,7 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string, observe bool) r
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
 	start := time.Now()
-	hits, err := cli.Search(cctx, query, ragSearchPhraseK, nil)
+	hits, err := cli.Search(cctx, ragtag.ScoopGroupMgr, query, ragSearchPhraseK, nil)
 	if observe {
 		metrics.RAGSearchLatency.Observe(time.Since(start).Seconds())
 	}
@@ -208,7 +208,7 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 		if end > len(seed) {
 			end = len(seed)
 		}
-		resp, err := cli.BatchUpsert(ctx, seed[i:end])
+		resp, err := cli.BatchUpsert(ctx, ragtag.ScoopGroupMgr, seed[i:end])
 		if err != nil {
 			failed += end - i
 			// 整批失败：本批涉及语录/样本全部置未同步
@@ -277,7 +277,7 @@ func (m *Manager) upsertRAGPhrase(ctx context.Context, phraseID uint, text, list
 	if listType == "white" {
 		tag = ragtag.WhitePhrase(u32s(phraseID))
 	}
-	if _, err := cli.Upsert(ctx, tag, text); err != nil {
+	if _, err := cli.Upsert(ctx, ragtag.ScoopGroupMgr, tag, text); err != nil {
 		log.Warn("语录写入 RAG 失败", "phrase", phraseID, "list", listType, "err", err)
 		return false, err
 	}
@@ -298,7 +298,7 @@ func (m *Manager) deleteRAGSample(ctx context.Context, sampleID uint) {
 	if cli == nil {
 		return
 	}
-	if err := cli.Delete(ctx, ragtag.Sample(u32s(sampleID))); err != nil {
+	if err := cli.Delete(ctx, ragtag.ScoopGroupMgr, ragtag.Sample(u32s(sampleID))); err != nil {
 		log.Warn("样本从 RAG 删除失败", "sample", sampleID, "err", err)
 	}
 	m.invalidateSampleSet()

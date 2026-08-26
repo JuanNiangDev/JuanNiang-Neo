@@ -104,9 +104,10 @@ func (c *Client) Info(ctx context.Context) (*InfoResponse, error) {
 
 // ────────────────────── 写入 ──────────────────────
 
-// Upsert 入库（幂等：已存在则覆写）。长文服务端自动分块。
-func (c *Client) Upsert(ctx context.Context, tag uuid.UUID, text string) (*UpsertResponse, error) {
-	resp, err := c.doJSON(ctx, http.MethodPut, "/tags/"+tag.String(), map[string]any{"text": text})
+// Upsert 入库（幂等：已存在则覆写）。长文服务端自动分块。scoop 为分库名
+// （ragtag.ScoopKnowledge 等）；同一 tag 只允许归属一个 scoop（跨库返回 409）。
+func (c *Client) Upsert(ctx context.Context, scoop string, tag uuid.UUID, text string) (*UpsertResponse, error) {
+	resp, err := c.doJSON(ctx, http.MethodPut, "/scoops/"+scoop+"/tags/"+tag.String(), map[string]any{"text": text})
 	if err != nil {
 		return nil, err
 	}
@@ -118,12 +119,12 @@ func (c *Client) Upsert(ctx context.Context, tag uuid.UUID, text string) (*Upser
 }
 
 // BatchUpsert 批量入库：一次嵌入 + 一次发布（RAG-Service 按批摊销 COW 成本）。
-// 返回逐条结果（含单条失败）。
-func (c *Client) BatchUpsert(ctx context.Context, items []BatchItem) (*BatchResponse, error) {
+// 返回逐条结果（含单条失败）。全部条目必须隶属同一 scoop。
+func (c *Client) BatchUpsert(ctx context.Context, scoop string, items []BatchItem) (*BatchResponse, error) {
 	if len(items) == 0 {
 		return &BatchResponse{Results: []BatchItemResponse{}}, nil
 	}
-	resp, err := c.doJSON(ctx, http.MethodPost, "/tags/batch", map[string]any{"items": items})
+	resp, err := c.doJSON(ctx, http.MethodPost, "/scoops/"+scoop+"/tags/batch", map[string]any{"items": items})
 	if err != nil {
 		return nil, err
 	}
@@ -134,9 +135,9 @@ func (c *Client) BatchUpsert(ctx context.Context, items []BatchItem) (*BatchResp
 	return &result, nil
 }
 
-// Delete 删除 tag 及其全部块。
-func (c *Client) Delete(ctx context.Context, tag uuid.UUID) error {
-	resp, err := c.do(ctx, http.MethodDelete, "/tags/"+tag.String(), nil)
+// Delete 删除 tag 及其全部块（只能删除属于该 scoop 的 tag）。
+func (c *Client) Delete(ctx context.Context, scoop string, tag uuid.UUID) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/scoops/"+scoop+"/tags/"+tag.String(), nil)
 	if err != nil {
 		return err
 	}
@@ -150,9 +151,9 @@ func (c *Client) Delete(ctx context.Context, tag uuid.UUID) error {
 
 // ────────────────────── 检索 ──────────────────────
 
-// Search 语义检索：返回命中 tag + 分数（0~1），按分数降序。
+// Search 语义检索（限定在单个 scoop 内）：返回命中 tag + 分数（0~1），按分数降序。
 // k 默认 10（上限 100）；minScore 可选（缺省不过滤）。
-func (c *Client) Search(ctx context.Context, query string, k int, minScore *float64) ([]SearchHit, error) {
+func (c *Client) Search(ctx context.Context, scoop, query string, k int, minScore *float64) ([]SearchHit, error) {
 	if k <= 0 {
 		k = 10
 	}
@@ -165,7 +166,7 @@ func (c *Client) Search(ctx context.Context, query string, k int, minScore *floa
 	if minScore != nil {
 		q.Set("min_score", fmt.Sprintf("%f", *minScore))
 	}
-	resp, err := c.do(ctx, http.MethodGet, "/tags/search?"+q.Encode(), nil)
+	resp, err := c.do(ctx, http.MethodGet, "/scoops/"+scoop+"/tags/search?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}

@@ -36,6 +36,7 @@ import (
 	t2icaller "JuanNiang-Neo/infrastructure/t2i/handler"
 	"JuanNiang-Neo/internal/core/cache"
 	"JuanNiang-Neo/internal/core/dao"
+	"JuanNiang-Neo/internal/core/ragtag"
 )
 
 // ---------- 清单 ----------
@@ -2432,8 +2433,10 @@ func parseRagUUID(s string) (uuid.UUID, error) {
 
 // injectRAG 注入 rag 全局表（需要 rag 权限）：RAG-Service 原始 API。
 //
-// 契约：面向原始 RAG-Service（tag=UUID，全文入库自动分块），
-// **不要**与知识/记忆集合的 v5 派生 tag 混用（避免污染两侧检索）。
+// 契约：面向原始 RAG-Service（tag=UUID，全文入库自动分块）；统一落在独立
+// 分库 ragtag.ScoopPlugin（"plugin"），与知识/记忆/群管理集合物理隔离——
+// 插件数据不会污染业务检索，业务集合也不会干扰插件检索。
+// **不要**与知识/记忆集合的 v5 派生 tag 混用（避免跨 scoop 归属冲突 409）。
 // 客户端始终经 AgentOperator 动态获取（Web 配置热更新即时生效）。
 func (pe *PluginEngine) injectRAG(L *lua.LState, pluginName string) {
 	getCurrentClient := func() *ragcaller.Client {
@@ -2472,7 +2475,7 @@ func (pe *PluginEngine) injectRAG(L *lua.LState, pluginName string) {
 				return 2
 			}
 			text := L.CheckString(2)
-			_, err = client.Upsert(context.Background(), tag, text)
+			_, err = client.Upsert(context.Background(), ragtag.ScoopPlugin, tag, text)
 			return pushResult(L, err)
 		},
 		// add_async(tag, text [, ctx]) → req_id；回调 on_rag_response(req_id, ctx, tag, err)
@@ -2491,7 +2494,7 @@ func (pe *PluginEngine) injectRAG(L *lua.LState, pluginName string) {
 			}
 			text := L.CheckString(2)
 			run := func(ctx context.Context) (any, error) {
-				if _, err := client.Upsert(ctx, tag, text); err != nil {
+				if _, err := client.Upsert(ctx, ragtag.ScoopPlugin, tag, text); err != nil {
 					return nil, err
 				}
 				return tag.String(), nil
@@ -2525,7 +2528,7 @@ func (pe *PluginEngine) injectRAG(L *lua.LState, pluginName string) {
 				ms := float64(L.Get(3).(lua.LNumber))
 				minScore = &ms
 			}
-			hits, err := client.Search(context.Background(), query, k, minScore)
+			hits, err := client.Search(context.Background(), ragtag.ScoopPlugin, query, k, minScore)
 			if err != nil {
 				L.Push(lua.LNil)
 				L.Push(lua.LString(err.Error()))
@@ -2560,7 +2563,7 @@ func (pe *PluginEngine) injectRAG(L *lua.LState, pluginName string) {
 				minScore = &ms
 			}
 			run := func(ctx context.Context) (any, error) {
-				return client.Search(ctx, query, k, minScore)
+				return client.Search(ctx, ragtag.ScoopPlugin, query, k, minScore)
 			}
 			id, err := pe.submitAsync(L, pluginName, "rag", ragAsyncTimeout, run)
 			if err != nil {

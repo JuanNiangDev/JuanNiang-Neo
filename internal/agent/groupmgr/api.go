@@ -142,7 +142,7 @@ func (m *Manager) deleteRAGPhrase(ctx context.Context, sampleID uint, listType s
 	if listType == "white" {
 		tag = ragtag.WhitePhrase(u32s(sampleID))
 	}
-	if err := cli.Delete(ctx, tag); err != nil {
+	if err := cli.Delete(ctx, ragtag.ScoopGroupMgr, tag); err != nil {
 		log.Warn("语录从 RAG 删除失败", "phrase", sampleID, "list", listType, "err", err)
 		return err
 	}

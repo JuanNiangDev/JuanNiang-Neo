@@ -54,7 +54,7 @@ func newTestManagerEx(t *testing.T, ragScore *float64, white bool) (*Manager, *d
 	var ragCli *caller.Client
 	if ragScore != nil {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/tags/search" {
+			if r.URL.Path != "/scoops/groupmgr/tags/search" {
 				http.NotFound(w, r)
 				return
 			}
