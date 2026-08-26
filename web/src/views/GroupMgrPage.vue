@@ -232,6 +232,12 @@
               <template #item.text="{ item }">
                 <span class="text-body-2">{{ item.text }}</span>
               </template>
+              <template #item.category="{ item }">
+                <v-chip v-if="item.list_type !== 'white'" size="x-small" :color="item.category === 'sensitive' ? 'purple' : 'deep-orange'">
+                  {{ item.category === 'sensitive' ? '敏感' : '广告' }}
+                </v-chip>
+                <span v-else class="text-caption text-medium-emphasis">—</span>
+              </template>
               <template #item.source="{ item }">
                 <span class="text-caption">{{ sourceLabel(item.source) }}</span>
               </template>
@@ -272,6 +278,10 @@
                 class="mb-3"
                 placeholder="例如：加我好友送全套资料"
               />
+              <v-radio-group v-if="phraseListType !== 'white'" v-model="phraseForm.category" density="compact" class="mb-1">
+                <v-radio label="广告违规" value="ad" />
+                <v-radio label="敏感词违规" value="sensitive" />
+              </v-radio-group>
               <v-file-input
                 v-else
                 v-model="phraseForm.file"
@@ -571,7 +581,9 @@ const ragHealthy = ref(false)
 const syncProgress = ref({ active: false, done: 0, failed: 0, percent: 0 })
 const phraseDialog = ref(false)
 const addingPhrases = ref(false)
-const phraseForm = ref<{ mode: string; input: string; file: File[] }>({ mode: 'input', input: '', file: [] })
+const phraseForm = ref<{ mode: string; input: string; file: File[]; category: string }>({
+  mode: 'input', input: '', file: [], category: 'ad',
+})
 
 const blackPhrases = computed(() => allPhrases.value.filter(p => p.list_type !== 'white'))
 const whitePhrases = computed(() => allPhrases.value.filter(p => p.list_type === 'white'))
@@ -579,6 +591,7 @@ const phraseList = computed(() => phraseListType.value === 'white' ? whitePhrase
 
 const phraseHeaders = [
   { title: '语录', key: 'text' },
+  { title: '违规类型', key: 'category' },
   { title: '来源', key: 'source' },
   { title: '命中次数', key: 'hit_count' },
   { title: 'UUID', key: 'rag_tag' },
@@ -613,7 +626,7 @@ async function submitPhraseDialog() {
     if (!lines.length) { toastStore.error('请输入语录'); return }
     addingPhrases.value = true
     try {
-      for (const t of lines) await groupMgrApi.addPhrase(t, listType)
+      for (const t of lines) await groupMgrApi.addPhrase(t, listType, phraseForm.value.category)
       toastStore.success(`已添加 ${lines.length} 条语录`)
       phraseDialog.value = false
       phraseForm.value.input = ''
