@@ -34,6 +34,10 @@ type reviewCtx struct {
 	hard      bool     // 有硬信号（词/卡片），LLM 异常时的直罚依据
 	ragScore  *float64 // RAG 最高分（参考展示）
 	ragPhrase string   // RAG 最相似语录（参考展示）
+	// ragCategory RAG 命中样本的违规类型（ad/sensitive）：LLM 追罚分类用。
+	// RAG 语义命中的类别比关键词预查更可靠（无词命中时 wordCat 为空，
+	// 仅靠 wordCat 会把敏感语义内容误判为广告）。
+	ragCategory string
 }
 
 // reviewItem 批窗口内的一条待审消息。
@@ -327,8 +331,9 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 	switch res.Verdict {
 	case "black":
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("black").Inc()
+		// 处罚分类优先级：RAG 命中样本类别（语义，最可靠）> 关键词类别 > 卡片
 		category := "ad"
-		if rc.wordCat == "sensitive" || rc.card {
+		if rc.ragCategory == "sensitive" || rc.wordCat == "sensitive" || rc.card {
 			category = "sensitive"
 		}
 		reason := res.Reason

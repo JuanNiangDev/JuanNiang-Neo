@@ -138,7 +138,10 @@ func (m *Manager) punish(ctx context.Context, ev adapter.Event, reason, category
 	metrics.GroupMgrViolationsTotal.WithLabelValues(category, action).Inc()
 	_, _ = m.dao.StatIncr(ctx, gkey(groupID, "stats:"+category))
 
-	// 回复话术
+	// 回复话术：非法分类兜底归一为 ad（防意外值索引 nil 切片 panic）
+	if _, ok := tierTemplates[category]; !ok {
+		category = "ad"
+	}
 	bucket := tierTemplates[category][min(count-1, 2)]
 	reply := bucket[rand.Intn(len(bucket))]
 	if recallFailed {

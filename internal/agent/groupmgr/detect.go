@@ -138,9 +138,11 @@ func (m *Manager) handleRAGMatch(ctx context.Context, ev adapter.Event, cfg *mod
 	if v.black != nil {
 		rc.ragScore = &v.black.score
 		rc.ragPhrase = v.black.text
+		rc.ragCategory = v.black.category
 	} else if v.white != nil {
 		rc.ragScore = &v.white.score
 		rc.ragPhrase = v.white.text
+		rc.ragCategory = v.white.category
 	}
 	if m.submitReview(ctx, ev, rc) {
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "review").Inc()
