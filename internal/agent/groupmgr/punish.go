@@ -11,6 +11,9 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // 静态图（go:embed，刷屏警告/复读警告配图，原 redrock_group_manager img/ 目录）。
@@ -84,6 +87,23 @@ func (m *Manager) punish(ctx context.Context, ev adapter.Event, reason, category
 	groupID := ev.Message.GroupID
 	userID := ev.Message.UserID
 
+	// 提前声明供 span defer 闭包引用（词法作用域限制）
+	var (
+		count  int
+		action string
+		err    error
+	)
+
+	// 链路追踪：处罚 span（记录分类/等级/动作，失败链路一眼可见）
+	_, span := otelx.Span(ctx, "groupmgr.punish",
+		attribute.String("category", category),
+		attribute.String("path", path),
+	)
+	defer func() {
+		span.SetAttributes(attribute.String("action", action), attribute.Int("count", count))
+		span.End()
+	}()
+
 	meta := dao.ViolationMeta{
 		Username:      violationUsername(ev),
 		DetectionPath: path,
@@ -92,7 +112,7 @@ func (m *Manager) punish(ctx context.Context, ev adapter.Event, reason, category
 
 	// 原子自增违规计数并返回新值：事件循环（关键词直罚）与 Run 循环（LLM 追罚）
 	// 双 goroutine 并发时不会 read-modify-write 丢计数（单条 SQL 保证）。
-	count, err := m.dao.ViolationIncr(ctx, groupID, userID, meta)
+	count, err = m.dao.ViolationIncr(ctx, groupID, userID, meta)
 	if err != nil {
 		log.Warn("违规计数自增失败", "err", err)
 		return
@@ -103,7 +123,7 @@ func (m *Manager) punish(ctx context.Context, ev adapter.Event, reason, category
 		muteSeconds = cfg.ViolationMuteSeconds
 	}
 
-	action := ""
+	action = ""
 	// 撤回违规消息：失败不阻断后续处罚（警告/禁言/踢人独立生效），记日志并在
 	// 回复/管理员通知中注明（QQ 撤回有时限，LLM 异步追罚路径易超时，不可静默）
 	recallFailed := false

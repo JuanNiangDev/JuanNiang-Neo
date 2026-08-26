@@ -7,10 +7,12 @@ import (
 
 	"JuanNiang-Neo/internal/core/ragtag"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
 
 	caller "JuanNiang-Neo/infrastructure/rag/handler"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // sampleSetTTL 样本候选集缓存有效期（样本变更即失效；TTL 兜底防长期不同步）。
@@ -96,14 +98,28 @@ type ragVerdict struct {
 // ok 只表示 RAG 服务可用且已完成检索（调用方据此决定是否走 RAG 路径）；
 // black/white 可能均为 nil（服务正常但无语录命中 → 送 LLM 判定，而不是降级关键词）。
 // observe=false 跳过全部指标上报（链路测试/诊断路径，避免污染生产面板数据）。
-func (m *Manager) verifyByRAG(ctx context.Context, query string, observe bool) ragVerdict {
+func (m *Manager) verifyByRAG(ctx context.Context, query string, observe bool) (v ragVerdict) {
+	// 链路追踪：RAG 语义核实 span（黑白双集合一次检索，记录最高分）
+	_, span := otelx.Span(ctx, "groupmgr.verify_rag",
+		attribute.String("query_head", headText(query, 30)),
+	)
+	defer func() {
+		span.SetAttributes(attribute.Bool("ok", v.ok))
+		if v.black != nil {
+			span.SetAttributes(attribute.Float64("black_score", v.black.score))
+		}
+		if v.white != nil {
+			span.SetAttributes(attribute.Float64("white_score", v.white.score))
+		}
+		span.End()
+	}()
 	cli := m.getRAG()
 	if cli == nil {
-		return ragVerdict{} // RAG 未配置 → 不可用
+		return v // RAG 未配置 → 不可用
 	}
 	owned := m.buildPhraseSet(ctx)
 	if owned == nil {
-		return ragVerdict{} // 候选集构建失败（DB 错误）→ 不可用
+		return v // 候选集构建失败（DB 错误）→ 不可用
 	}
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
@@ -117,10 +133,10 @@ func (m *Manager) verifyByRAG(ctx context.Context, query string, observe bool) r
 			metrics.RAGSearchErrorsTotal.Inc()
 		}
 		log.Warn("RAG 检索失败，降级", "err", err)
-		return ragVerdict{} // 检索出错 → 不可用（降级关键词）
+		return v // 检索出错 → 不可用（降级关键词）
 	}
 	// RAG 服务可用（即使无命中）：ok=true，black/white 由命中决定
-	v := ragVerdict{ok: true}
+	v = ragVerdict{ok: true}
 	for _, h := range hits {
 		if info, ok := owned.black[h.Tag]; ok {
 			if v.black == nil || h.Score > v.black.score {

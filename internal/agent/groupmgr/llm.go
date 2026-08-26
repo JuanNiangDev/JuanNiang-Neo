@@ -11,6 +11,9 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // LLM 审查参数。
@@ -501,6 +504,19 @@ func (m *Manager) ReviewGate(ctx context.Context, groupID, userID, messageID int
 // WaitReview 等待审核终态（轮询 ReviewGate，短间隔），最多等 timeout。
 // 返回 blocked=true 应丢弃回复；false 表示放行（含超时/ctx 取消/未送审）。
 func (m *Manager) WaitReview(ctx context.Context, groupID, userID, messageID int64, timeout time.Duration) (blocked bool) {
+	// 链路追踪：审核闸门 span（发送前等待审核终态，记录等待耗时与结果）
+	start := time.Now()
+	_, span := otelx.Span(ctx, "groupmgr.review_gate",
+		attribute.Int64("group_id", groupID),
+		attribute.Int64("message_id", messageID),
+	)
+	defer func() {
+		span.SetAttributes(
+			attribute.Bool("blocked", blocked),
+			attribute.Int64("wait_ms", time.Since(start).Milliseconds()),
+		)
+		span.End()
+	}()
 	deadline := time.Now().Add(timeout)
 	for {
 		blocked, pending := m.ReviewGate(ctx, groupID, userID, messageID)

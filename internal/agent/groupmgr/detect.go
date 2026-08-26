@@ -7,6 +7,9 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // QQ 群聊推荐卡片：OneBot 11 json 消息段 data 中的 app 标识（计入广告违规）。
@@ -78,6 +81,14 @@ func (m *Manager) detectViolation(ctx context.Context, ev adapter.Event, cfg *mo
 	card := detectGroupCard(raw)
 	// 关键词命中仅作最后兜底（RAG/LLM 均不可用时），不参与 RAG 判据
 	word, wordCat := m.wordHit(ctx, text)
+
+	// 链路追踪：群管理违禁检测 span（关键词预查结果 + 后续路径）
+	_, span := otelx.Span(ctx, "groupmgr.detect",
+		attribute.String("word", word),
+		attribute.String("word_cat", wordCat),
+		attribute.Bool("card", card),
+	)
+	defer span.End()
 
 	// 第一核实人：RAG 语义匹配（黑白语录双集合）
 	if v := m.verifyByRAG(ctx, text, true); v.ok {
