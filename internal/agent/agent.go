@@ -425,10 +425,11 @@ func (h *HagoCenter) RebuildEinoAgent(ctx context.Context) {
 	}
 }
 
-// Start 启动 Agent 系统 (事件循环 + CronJob 调度器)。
+// Start 启动 Agent 系统 (事件循环 + CronJob 调度器 + 长期记忆 GC)。
 func (h *HagoCenter) Start(ctx context.Context) error {
 	go h.runEventLoop(ctx)
 	go h.CronJobManager.Run(ctx)
+	h.StartLongTermMemoryGC(ctx)
 	log.Info("HagoCenter 已启动")
 	return nil
 }

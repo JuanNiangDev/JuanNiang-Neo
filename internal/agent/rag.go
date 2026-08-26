@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	caller "JuanNiang-Neo/infrastructure/rag/handler"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/core/ragtag"
 
@@ -78,9 +79,19 @@ func (h *HagoCenter) memoryRagTagSet(ctx context.Context) (map[uuid.UUID]string,
 
 // ---------- 语义召回（RAG 首选） ----------
 
-// ragSearchTimeout RAG 检索硬超时：与 groupmgr.verifyByRAG 对齐（1s），
-// 热路径（每轮对话知识注入 / 记忆召回）不能被挂起的 RAG 服务拖住。
-const ragSearchTimeout = time.Second
+// ragSearchTimeout RAG 检索硬超时：bge 模型首次推理需加载（冷启动 3-5s），
+// 给 5s 余量不让消息卡死，热路径稳定后毫秒级。
+const ragSearchTimeout = 5 * time.Second
+
+// RAG 检索候选数量（k）：调大让本集合向量更可能进入 top-k。
+// embedding 模型（bge-small 512 维）区分度有限时，小 k 会把本集合命中挤出 top-k
+// （日志表现为「命中的均为外来 tag」）；候选集过滤会丢弃外来 tag，
+// 调大 k 只增加本集合命中概率，不引入误判。
+const (
+	ragSearchKnowledgeK = 15 // 知识库：条目量级小，充分召回
+	ragSearchMemoryK    = 20 // 长期记忆：同上
+	ragSearchPhraseK    = 15 // 群管理黑白语录：命中后仍需过阈值，30 足够
+)
 
 // ragHit 命中条目（tag → 本地 ID，按分数降序）。
 type ragHit struct {
@@ -113,26 +124,37 @@ type ragHitWithTag struct {
 	score float64
 }
 
+// headText 截取文本前 n 个字符（rune-safe，中文不会切坏），超长加省略号。
+func headText(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 // tryKnowledgeRAGRecall 知识库语义召回：命中按 RAG 分数排序注入。
 // 返回 (条目列表, 是否走了 RAG 路径)。RAG 未配置/不可用/无候选 → false（调用方降级 SQL）。
 func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([]models.KnowledgeItem, bool) {
 	cli := h.RAGClient.Load()
 	if cli == nil {
-		return nil, false
+		return nil, false // RAG 未配置：调用方静默走 SQL 降级
 	}
 	owned, ok := h.knowledgeRagTagSet(ctx)
 	if !ok || len(owned) == 0 {
+		log.Info("知识检索: 方式=RAG不可用", "query", headText(query, 20), "reason", "候选集为空（无知识条目）", "degrade", "SQL")
 		return nil, false
 	}
 	// 1s 硬超时：热路径不能被挂起的 RAG 服务拖住（与 groupmgr 对齐）
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
-	searchHits, err := cli.Search(cctx, query, 10, nil)
+	searchHits, err := cli.Search(cctx, query, ragSearchKnowledgeK, nil)
 	if err != nil {
-		log.Warn("知识 RAG 检索失败，降级 SQL 匹配", "err", err)
+		log.Warn("知识检索: 方式=RAG失败", "query", headText(query, 20), "err", err, "degrade", "SQL")
 		return nil, false
 	}
 	if len(searchHits) == 0 {
+		log.Info("知识检索: 方式=RAG无命中", "query", headText(query, 20), "degrade", "SQL")
 		return nil, false
 	}
 	hits := make([]ragHitWithTag, 0, len(searchHits))
@@ -141,6 +163,7 @@ func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([
 	}
 	ids := filterRagHits(hits, owned)
 	if len(ids) == 0 {
+		log.Info("知识检索: 方式=RAG无命中", "query", headText(query, 20), "reason", "命中的均为外来 tag", "degrade", "SQL")
 		return nil, false
 	}
 	items, err := h.DAO.Knowledge.GetByIDs(ctx, ids)
@@ -162,7 +185,26 @@ func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([
 	if len(ordered) == 0 {
 		return nil, false
 	}
+	// 检索追踪日志：方式=RAG + 最高分 + 首条内容前 20 字
+	if top, ok := topRAGHitScore(searchHits, owned); ok {
+		log.Info("知识检索: 方式=RAG", "query", headText(query, 20), "score", top, "hits", len(ordered), "top", headText(ordered[0].Content, 20))
+	} else {
+		log.Info("知识检索: 方式=RAG", "query", headText(query, 20), "hits", len(ordered), "top", headText(ordered[0].Content, 20))
+	}
 	return ordered, true
+}
+
+// topRAGHitScore 返回候选集内命中最高分（追踪日志用）。
+func topRAGHitScore(hits []caller.SearchHit, owner map[uuid.UUID]string) (float64, bool) {
+	best := 0.0
+	found := false
+	for _, hit := range hits {
+		if _, ok := owner[hit.Tag]; ok && (!found || hit.Score > best) {
+			best = hit.Score
+			found = true
+		}
+	}
+	return best, found
 }
 
 // tryMemoryRAGRecall 长期记忆语义召回：命中按 RAG 分数排序返回内容。
@@ -170,21 +212,23 @@ func (h *HagoCenter) tryKnowledgeRAGRecall(ctx context.Context, query string) ([
 func (h *HagoCenter) tryMemoryRAGRecall(ctx context.Context, query string) ([]string, bool) {
 	cli := h.RAGClient.Load()
 	if cli == nil {
-		return nil, false
+		return nil, false // RAG 未配置：调用方静默走 pg_trgm 降级
 	}
 	owned, ok := h.memoryRagTagSet(ctx)
 	if !ok || len(owned) == 0 {
+		log.Info("记忆检索: 方式=RAG不可用", "query", headText(query, 20), "reason", "候选集为空（无记忆条目）", "degrade", "pg_trgm")
 		return nil, false
 	}
 	// 1s 硬超时：记忆召回在 agent goroutine 内，不能被挂起的 RAG 服务拖住
 	cctx, cancel := context.WithTimeout(ctx, ragSearchTimeout)
 	defer cancel()
-	searchHits, err := cli.Search(cctx, query, 20, nil)
+	searchHits, err := cli.Search(cctx, query, ragSearchMemoryK, nil)
 	if err != nil {
-		log.Warn("记忆 RAG 检索失败，降级", "err", err)
+		log.Warn("记忆检索: 方式=RAG失败", "query", headText(query, 20), "err", err, "degrade", "pg_trgm")
 		return nil, false
 	}
 	if len(searchHits) == 0 {
+		log.Info("记忆检索: 方式=RAG无命中", "query", headText(query, 20), "degrade", "pg_trgm")
 		return nil, false
 	}
 	hits := make([]ragHitWithTag, 0, len(searchHits))
@@ -193,6 +237,7 @@ func (h *HagoCenter) tryMemoryRAGRecall(ctx context.Context, query string) ([]st
 	}
 	ids := filterRagHits(hits, owned)
 	if len(ids) == 0 {
+		log.Info("记忆检索: 方式=RAG无命中", "query", headText(query, 20), "reason", "命中的均为外来 tag", "degrade", "pg_trgm")
 		return nil, false
 	}
 	items, err := h.DAO.LongTermMemItem.GetByIDs(ctx, ids)
@@ -213,5 +258,12 @@ func (h *HagoCenter) tryMemoryRAGRecall(ctx context.Context, query string) ([]st
 	if len(content) == 0 {
 		return nil, false
 	}
+	// 命中条目标记最近召回时间（GC 判定未使用记忆用；失败不影响主链路）
+	if err := h.DAO.LongTermMemItem.TouchMany(ctx, ids); err != nil {
+		log.Warn("记忆 RAG 召回时间记录失败", "err", err)
+	}
+	// 检索追踪日志：方式=RAG + 最高分 + 首条内容前 20 字
+	top, _ := topRAGHitScore(searchHits, owned)
+	log.Info("记忆检索: 方式=RAG", "query", headText(query, 20), "score", top, "hits", len(content), "top", headText(content[0], 20))
 	return content, true
 }

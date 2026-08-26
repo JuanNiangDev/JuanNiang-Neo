@@ -53,10 +53,11 @@ func (d *LongTermMemoryDAO) GetOrCreate(ctx context.Context, chatAreaID string) 
 	}
 
 	m = models.LongTermMemory{
-		ID:           newUUID(),
-		ChatAreaID:   chatAreaID,
-		HotAreaSize:  10,
-		HotMemoryTTL: 86400,
+		ID:             newUUID(),
+		ChatAreaID:     chatAreaID,
+		HotAreaSize:    10,
+		HotMemoryTTL:   86400,
+		GCIntervalDays: 7,
 	}
 	if err := d.db.WithContext(ctx).Create(&m).Error; err != nil {
 		return nil, err
@@ -66,4 +67,17 @@ func (d *LongTermMemoryDAO) GetOrCreate(ctx context.Context, chatAreaID string) 
 
 func (d *LongTermMemoryDAO) Update(ctx context.Context, m *models.LongTermMemory) error {
 	return d.db.WithContext(ctx).Save(m).Error
+}
+
+// First 返回第一条长期记忆配置（GC 周期等全局设置读取用；无行返回 nil, nil）。
+func (d *LongTermMemoryDAO) First(ctx context.Context) (*models.LongTermMemory, error) {
+	var m models.LongTermMemory
+	err := d.db.WithContext(ctx).Order("created_at ASC").First(&m).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }

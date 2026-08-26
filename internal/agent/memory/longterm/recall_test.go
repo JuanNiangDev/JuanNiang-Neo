@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"JuanNiang-Neo/internal/core"
 	"JuanNiang-Neo/internal/core/dao"
@@ -106,5 +107,36 @@ func TestRecallGramHitUsesSemanticPath(t *testing.T) {
 	}
 	if items[0].Content != "用户喜欢摸鱼" {
 		t.Fatalf("应命中语义相关条目，实际: %q", items[0].Content)
+	}
+}
+
+// TestRecallSemanticHitMarksRecalled 回归：语义召回命中路径也必须刷新 last_recalled_at，
+// 否则 GC 按最近召回时间误判"长期未召回"并清理刚被召回的条目。
+func TestRecallSemanticHitMarksRecalled(t *testing.T) {
+	lt, db := newTestLongTerm(t, RecallModeSemantic)
+	ctx := context.Background()
+
+	item, err := lt.Add(ctx, "area1", "用户喜欢摸鱼")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 初始 last_recalled_at 为空（从未召回）
+	var raw struct{ LastRecalledAt *time.Time }
+	if err := db.Raw("SELECT last_recalled_at FROM long_term_memory_items WHERE id = ?", item.ID).Scan(&raw).Error; err != nil {
+		t.Fatal(err)
+	}
+	if raw.LastRecalledAt != nil {
+		t.Fatalf("新条目 last_recalled_at 应为 NULL，got %v", raw.LastRecalledAt)
+	}
+
+	// 语义路径命中（SQLite 回退整段 ILIKE，短查询可命中）
+	if _, err := lt.Recall(ctx, "area1", []string{"摸鱼"}, "摸鱼", 5); err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if err := db.Raw("SELECT last_recalled_at FROM long_term_memory_items WHERE id = ?", item.ID).Scan(&raw).Error; err != nil {
+		t.Fatal(err)
+	}
+	if raw.LastRecalledAt == nil {
+		t.Fatal("语义召回命中后 last_recalled_at 应被更新（防 GC 误清理）")
 	}
 }

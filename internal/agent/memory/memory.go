@@ -164,6 +164,13 @@ func (m *MemoryGroup) UpdateShortTermConfig(areaID string, conf ShortTermMemoryC
 	m.shortTermConfMu.Unlock()
 }
 
+// RemoveHotItems 从长期记忆热区缓存移除条目（GC 删除 PG/RAG 后调用，避免热区残留）。
+func (m *MemoryGroup) RemoveHotItems(ids map[string]bool) {
+	if m.LongTerm != nil {
+		m.LongTerm.Remove(ids)
+	}
+}
+
 // ragMemSyncTimeout 记忆向量双写超时：RAG 属于可降级能力，短超时快速失败不拖主链路。
 const ragMemSyncTimeout = 5 * time.Second
 

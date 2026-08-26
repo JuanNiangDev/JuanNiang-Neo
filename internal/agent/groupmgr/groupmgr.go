@@ -23,8 +23,6 @@ import (
 	"JuanNiang-Neo/internal/core/models"
 
 	caller "JuanNiang-Neo/infrastructure/rag/handler"
-
-	"github.com/google/uuid"
 )
 
 // 配置内存缓存 TTL：Web 面板保存后调用 Reload 立即失效，TTL 仅兜底。
@@ -47,16 +45,20 @@ type Manager struct {
 	admins    map[int64]bool
 	listAt    time.Time
 
-	// RAG 样本候选集（本地 id → tag 映射，供检索命中过滤；变更即重建）
+	// RAG 语录候选集（本地 语录ID → 派生 tag，黑白双集合；变更即重建）
 	sampleMu    sync.Mutex
-	sampleSet   map[uuid.UUID]sampleInfo // tag → 样本信息
+	sampleSet   *phraseSet
 	sampleSetAt time.Time
 
-	// 异步 LLM 审查去重/在途
-	llmMu       sync.Mutex
-	llmPending  map[string]bool // "群:QQ" 在途审查
-	llmReviewed map[int64]int64 // message_id → 审查时间（10min 去重）
-	llmResults  chan reviewOutcome
+	// 异步学习闭环（黑/白语录写入）串行化：并发双插会绕过幂等去重（Text 无唯一索引）
+	learnMu sync.Mutex
+	// 异步 LLM 审查去重/在途 + 批窗口（3s 凑批统一提交，逐条独立判定）
+	llmMu         sync.Mutex
+	llmPending    map[string]bool // "群:QQ" 在途审查
+	llmReviewed   map[int64]int64 // message_id → 审查时间（10min 去重）
+	llmResults    chan reviewOutcome
+	llmBatchMu    sync.Mutex
+	llmBatchItems []reviewItem // 批队列（到点/满批统一提交）
 
 	// 图片刷屏状态（内存态 + kv 持久化兜底）
 	imgMu    sync.Mutex
@@ -140,6 +142,11 @@ func (m *Manager) Init(ctx context.Context) error {
 	cfg, _ := m.dao.GetConfig(ctx)
 	if cfg != nil {
 		m.restoreImgState(ctx, cfg.ImgSpamWindow)
+		// 提示词迁移：三套提示词合并为一份 LLMPrompt（空则以 LLMGrayPrompt 为默认）
+		if cfg.LLMPrompt == "" && cfg.LLMGrayPrompt != "" {
+			cfg.LLMPrompt = cfg.LLMGrayPrompt
+			_ = m.dao.UpdateConfig(ctx, cfg)
+		}
 	}
 	return m.Reload(ctx)
 }
@@ -197,6 +204,7 @@ func (m *Manager) Reload(ctx context.Context) error {
 // InvalidateSampleSet 样本候选集失效（样本增删改后调用，供 Web API 触发）。
 func (m *Manager) InvalidateSampleSet() { m.invalidateSampleSet() }
 
+// invalidateSampleSet 置空语录候选集缓存（下次 buildPhraseSet 重建）。
 func (m *Manager) invalidateSampleSet() {
 	m.sampleMu.Lock()
 	m.sampleSet = nil
@@ -205,6 +213,7 @@ func (m *Manager) invalidateSampleSet() {
 
 // ---------- 内存缓存读取 ----------
 
+// getCfg 读取配置缓存（TTL 内直接返回；过期重载，失败回退缓存/默认）。
 func (m *Manager) getCfg(ctx context.Context) *models.GroupMgrConfig {
 	m.mu.RLock()
 	cfg, at := m.cfg, m.cfgAt
@@ -322,7 +331,8 @@ func (m *Manager) excludedGroup(ctx context.Context, groupID int64) bool {
 // ---------- 事件入口（Phase 0.5） ----------
 
 // Process 处理 OneBot11 事件，返回 consumed（true = 消息被本模块消费，不进 Agent）。
-// message 事件：白名单/管理员/排除群豁免 → 违规检测（违禁言论不消费、刷屏/复读消费）
+// message 事件：排除群/白名单完全豁免；管理员豁免违禁言论，但**图片刷屏 / +1 复读仍检测**
+// （与旧插件一致，管理员刷屏同样警告/禁言）；其余成员跑完整检测。
 // notice 事件：入群统计。
 func (m *Manager) Process(ctx context.Context, ev adapter.Event) bool {
 	cfg := m.getCfg(ctx)
@@ -338,7 +348,17 @@ func (m *Manager) Process(ctx context.Context, ev adapter.Event) bool {
 		if m.excludedGroup(ctx, msg.GroupID) {
 			return false
 		}
-		if m.isWhitelisted(ctx, msg.UserID) || m.isGroupAdmin(msg.UserID, ev.Admins, msg.GroupID) {
+		if m.isWhitelisted(ctx, msg.UserID) {
+			return false // 白名单完全豁免（含刷屏/复读）
+		}
+		if m.isGroupAdmin(msg.UserID, ev.Admins, msg.GroupID) {
+			// 管理员豁免违禁言论检测，但刷屏/复读不豁免
+			if m.checkImageSpam(ctx, ev, cfg) {
+				return true
+			}
+			if m.checkCopySpam(ctx, ev, cfg) {
+				return true
+			}
 			return false
 		}
 		return m.detectMessage(ctx, ev, cfg)
@@ -348,6 +368,7 @@ func (m *Manager) Process(ctx context.Context, ev adapter.Event) bool {
 	return false
 }
 
+// itoa int64 → 十进制字符串。
 func itoa(v int64) string {
 	return strconv.FormatInt(v, 10)
 }

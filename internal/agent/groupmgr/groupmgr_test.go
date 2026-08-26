@@ -15,15 +15,24 @@ import (
 	"JuanNiang-Neo/internal/core"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/ragtag"
+	"JuanNiang-Neo/internal/metrics"
 
 	caller "JuanNiang-Neo/infrastructure/rag/handler"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+	dto "github.com/prometheus/client_model/go"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 // newTestManager 构造测试 Manager：sqlite 内存库 + 可选 mock RAG server（score 可定制）。
+// 默认 mock 命中黑名单语录（ragtag.Sample）；white=true 时命中白名单语录（ragtag.WhitePhrase）。
 func newTestManager(t *testing.T, ragScore *float64) (*Manager, *dao.GroupMgrDAO) {
+	return newTestManagerEx(t, ragScore, false)
+}
+
+func newTestManagerEx(t *testing.T, ragScore *float64, white bool) (*Manager, *dao.GroupMgrDAO) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {
@@ -49,9 +58,13 @@ func newTestManager(t *testing.T, ragScore *float64) (*Manager, *dao.GroupMgrDAO
 				http.NotFound(w, r)
 				return
 			}
-			// 返回一个命中：tag = ragtag.Sample("1")（样本表首个自增 ID=1）
+			// 返回一个命中：tag 与下方插入的语录行（首个自增 ID=1）对齐
+			tag := ragtag.Sample("1")
+			if white {
+				tag = ragtag.WhitePhrase("1")
+			}
 			_ = json.NewEncoder(w).Encode(caller.SearchResponse{Results: []caller.SearchHit{
-				{Tag: ragtag.Sample("1"), Score: *ragScore},
+				{Tag: tag, Score: *ragScore},
 			}})
 		}))
 		t.Cleanup(srv.Close)
@@ -62,8 +75,12 @@ func newTestManager(t *testing.T, ragScore *float64) (*Manager, *dao.GroupMgrDAO
 	}
 
 	m := New(gmdao, adapter.New(adapter.Config{}), func() *caller.Client { return ragCli }, provider.NewProviderGroup())
-	// 样本候选集：插入一条样本（ID=1，与 mock 命中 tag 对齐）
-	if _, err := gmdao.SampleAdd(context.Background(), "办卡加群办套餐", "ad", "seed"); err != nil {
+	// 语录候选集：插入一条语录（ID=1，与 mock 命中 tag 对齐）
+	if white {
+		if _, err := gmdao.SampleAddPhrase(context.Background(), "明天一起食堂吃饭吗", "ok", "seed", "white"); err != nil {
+			t.Fatalf("seed white phrase: %v", err)
+		}
+	} else if _, err := gmdao.SampleAdd(context.Background(), "办卡加群办套餐", "ad", "seed"); err != nil {
 		t.Fatalf("seed sample: %v", err)
 	}
 	// Init：默认配置 + 种子词库导入 + 内存缓存加载
@@ -97,7 +114,10 @@ func TestViolationRAGHighScorePunish(t *testing.T) {
 		t.Fatal("RAG 应可用")
 	}
 	if rep.Verdict != "punish" {
-		t.Fatalf("高置信应 punish，got %s (%s)", rep.Verdict, rep.Reason)
+		t.Fatalf("黑名单高置信应 punish，got %s (%s)", rep.Verdict, rep.Reason)
+	}
+	if rep.BlackScore < 0.9 {
+		t.Fatalf("black_score 应上报最高分，got %f", rep.BlackScore)
 	}
 }
 
@@ -105,27 +125,75 @@ func TestViolationRAGMidScoreReview(t *testing.T) {
 	score := 0.6
 	m, _ := newTestManager(t, &score)
 	rep := m.TestViolation(context.Background(), "低价流量卡办理")
+	if !rep.RAGOK {
+		t.Fatal("RAG 应可用")
+	}
 	if rep.Verdict != "review" {
-		t.Fatalf("模棱两可应 review，got %s (%s)", rep.Verdict, rep.Reason)
+		t.Fatalf("未达黑白阈值应 review（LLM 判定），got %s (%s)", rep.Verdict, rep.Reason)
 	}
 }
 
-func TestViolationRAGLowScoreNoSignalPass(t *testing.T) {
+func TestViolationRAGLowScoreReview(t *testing.T) {
 	score := 0.3
 	m, _ := newTestManager(t, &score)
 	rep := m.TestViolation(context.Background(), "明天要交作业了吗")
-	if rep.Verdict != "pass" {
-		t.Fatalf("低置信无词应 pass，got %s (%s)", rep.Verdict, rep.Reason)
+	if rep.Verdict != "review" {
+		t.Fatalf("低分未命中黑白 → LLM 判定，got %s (%s)", rep.Verdict, rep.Reason)
 	}
 }
 
-func TestViolationRAGLowScoreWithWordReview(t *testing.T) {
-	score := 0.3
-	m, _ := newTestManager(t, &score)
-	rep := m.TestViolation(context.Background(), "校园卡办理，找我办卡")
-	if rep.Verdict != "review" {
-		t.Fatalf("低置信有词应 review，got %s (%s)", rep.Verdict, rep.Reason)
+func TestViolationRAGWhitePhrasePass(t *testing.T) {
+	score := 0.92
+	m, _ := newTestManagerEx(t, &score, true) // mock 命中白名单语录
+	rep := m.TestViolation(context.Background(), "明天一起食堂吃饭吗")
+	if !rep.RAGOK {
+		t.Fatal("RAG 应可用")
 	}
+	if rep.WhiteScore < 0.9 {
+		t.Fatalf("white_score 应上报最高分，got %f", rep.WhiteScore)
+	}
+	if rep.Verdict != "pass" {
+		t.Fatalf("白名单高置信应放行，got %s (%s)", rep.Verdict, rep.Reason)
+	}
+}
+
+// TestViolationDoesNotObserveMetrics 回归：链路测试（TestViolation）不得观测生产指标
+// （RAGSearchLatency / GroupMgrRAGScore / RAGSearchErrorsTotal），否则面板反复粘贴文本
+// 诊断会把测试流量混入生产分布——分数分布面板（调阈值依据）最易被带偏。
+func TestViolationDoesNotObserveMetrics(t *testing.T) {
+	score := 0.92 // mock RAG 命中：覆盖分数/延迟观测路径
+	m, _ := newTestManager(t, &score)
+
+	scoreBefore := histogramSamples(t, metrics.GroupMgrRAGScore)
+	latencyBefore := histogramSamples(t, metrics.RAGSearchLatency)
+	errBefore := testutil.ToFloat64(metrics.RAGSearchErrorsTotal)
+
+	rep := m.TestViolation(context.Background(), "0元购送福利，加我微信领流量卡")
+	if !rep.RAGOK || rep.Verdict != "punish" {
+		t.Fatalf("预置应走 RAG 命中路径，got ok=%v verdict=%s", rep.RAGOK, rep.Verdict)
+	}
+	if scoreAfter := histogramSamples(t, metrics.GroupMgrRAGScore); scoreAfter != scoreBefore {
+		t.Fatalf("链路测试不应观测 RAG 分数，before=%d after=%d", scoreBefore, scoreAfter)
+	}
+	if latencyAfter := histogramSamples(t, metrics.RAGSearchLatency); latencyAfter != latencyBefore {
+		t.Fatalf("链路测试不应观测 RAG 检索延迟，before=%d after=%d", latencyBefore, latencyAfter)
+	}
+	if errAfter := testutil.ToFloat64(metrics.RAGSearchErrorsTotal); errAfter != errBefore {
+		t.Fatalf("链路测试不应观测 RAG 检索错误，before=%v after=%v", errBefore, errAfter)
+	}
+}
+
+// histogramSamples 读取直方图 sample_count（testutil.ToFloat64 不支持直方图，会 panic）。
+func histogramSamples(t *testing.T, h prometheus.Histogram) uint64 {
+	t.Helper()
+	ch := make(chan prometheus.Metric, 4)
+	h.Collect(ch)
+	m := <-ch // 直方图首个 metric 为 sample_count
+	dtoM := &dto.Metric{}
+	if err := m.Write(dtoM); err != nil {
+		t.Fatal(err)
+	}
+	return dtoM.GetHistogram().GetSampleCount()
 }
 
 // TestViolationIncrConcurrent 违规计数原子自增：并发 N 次自增最终计数 = N。
@@ -174,11 +242,11 @@ func TestPunishTiersConcurrent(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		m.punish(ev, "广告违规：并发路径1", "ad", "keyword")
+		m.punish(ctx, ev, "广告违规：并发路径1", "ad", "keyword")
 	}()
 	go func() {
 		defer wg.Done()
-		m.punish(ev, "广告违规：并发路径2", "ad", "llm")
+		m.punish(ctx, ev, "广告违规：并发路径2", "ad", "llm")
 	}()
 	wg.Wait()
 

@@ -46,6 +46,36 @@ func TestKnowledgeLRU(t *testing.T) {
 	}
 }
 
+// TestKnowledgeLRUEmptyNotCached 回归：Match 返回空切片时 Put 不应缓存空结果，
+// Get 也不应返回 ok=true + 空切片（此前 buildKnowledgeContext 直接取 items[0] 越界 panic）。
+func TestKnowledgeLRUEmptyNotCached(t *testing.T) {
+	lru := newKnowledgeLRU(2)
+	item := func(s string) models.KnowledgeItem { return models.KnowledgeItem{ID: s, Content: s} }
+
+	// 空结果不入缓存：Put 后 Get 不应命中
+	lru.Put("empty", nil)
+	if _, ok := lru.Get("empty"); ok {
+		t.Fatal("空结果不应被缓存")
+	}
+	lru.Put("empty2", []models.KnowledgeItem{})
+	if _, ok := lru.Get("empty2"); ok {
+		t.Fatal("空切片不应被缓存")
+	}
+	if lru.Len() != 0 {
+		t.Fatalf("空结果不入缓存, Len 应为 0, got %d", lru.Len())
+	}
+
+	// 非空结果正常缓存；Get 防御 len(items) > 0 前提下不越界
+	lru.Put("ok", []models.KnowledgeItem{item("内容")})
+	items, ok := lru.Get("ok")
+	if !ok || len(items) == 0 {
+		t.Fatal("非空结果应可缓存并命中")
+	}
+	if items[0].Content != "内容" {
+		t.Fatalf("缓存内容 = %q", items[0].Content)
+	}
+}
+
 func TestParseKeywordsFromLLM(t *testing.T) {
 	cases := []struct {
 		name string

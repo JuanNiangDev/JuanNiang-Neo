@@ -150,7 +150,7 @@ func Init(ctx context.Context, db *gorm.DB, redisClient *redis.Client) (*Core, e
 		}
 
 		// 长期记忆语义召回索引：pg_trgm 三元组倒排（GIN），加速 content ILIKE 子串匹配
-		// 与 gram OR 候选召回。仅 PostgreSQL 方言生效（SQLite 测试环境无此扩展，跳过）。
+		// 仅 PostgreSQL 方言生效（SQLite 测试环境无此扩展，跳过）。
 		// 托管 PG（RDS/Cloud SQL 等）常禁止 CREATE EXTENSION 权限：失败降级 Warn，
 		// 语义召回自动回退 recent/SQL 匹配——与 RAG/群管理「降级不报错」设计一致，不阻断启动。
 		if db.Dialector.Name() == "postgres" {
@@ -160,6 +160,13 @@ func Init(ctx context.Context, db *gorm.DB, redisClient *redis.Client) (*Core, e
 				"ON long_term_memory_items USING GIN (content gin_trgm_ops)").Error; err != nil {
 				log.Warn("长期记忆 trgm 索引创建失败，语义召回降级", "err", err)
 			}
+		}
+
+		// 群管理语录集合：存量样本回填 list_type=black（AutoMigrate 加列默认值已覆盖新行，
+		// 此处幂等兜底历史行），存量样本即黑名单语录。
+		if err := db.Exec("UPDATE group_mgr_samples SET list_type = 'black' WHERE list_type IS NULL OR list_type = ''").Error; err != nil {
+			initErr = err
+			return
 		}
 
 		cacheInst := cache.NewCache(redisClient, os.Getenv("REDIS_PREFIX"))

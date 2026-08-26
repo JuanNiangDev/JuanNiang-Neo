@@ -3,6 +3,7 @@ package dao
 import (
 	"context"
 	"strings"
+	"time"
 
 	"JuanNiang-Neo/internal/core/models"
 
@@ -11,10 +12,12 @@ import (
 
 type LongTermMemoryItemDAO struct{ db *gorm.DB }
 
+// NewLongTermMemoryItemDAO 构造长期记忆条目 DAO。
 func NewLongTermMemoryItemDAO(db *gorm.DB) *LongTermMemoryItemDAO {
 	return &LongTermMemoryItemDAO{db: db}
 }
 
+// Create 写入一条长期记忆条目（ID 为空时自动生成 UUID）。
 func (d *LongTermMemoryItemDAO) Create(ctx context.Context, item *models.LongTermMemoryItem) error {
 	if item.ID == "" {
 		item.ID = newUUID()
@@ -22,6 +25,7 @@ func (d *LongTermMemoryItemDAO) Create(ctx context.Context, item *models.LongTer
 	return d.db.WithContext(ctx).Create(item).Error
 }
 
+// ListByChatArea 按 ChatArea 列出条目（创建时间倒序，取 limit 条）。
 func (d *LongTermMemoryItemDAO) ListByChatArea(ctx context.Context, chatAreaID string, limit int) ([]models.LongTermMemoryItem, error) {
 	var list []models.LongTermMemoryItem
 	err := d.db.WithContext(ctx).
@@ -59,6 +63,7 @@ func (d *LongTermMemoryItemDAO) likePred() string {
 	return "LIKE"
 }
 
+// SearchByContent 关键词子串搜索（PG 用 ILIKE，其余方言 LIKE）。
 func (d *LongTermMemoryItemDAO) SearchByContent(ctx context.Context, chatAreaID string, keyword string, limit int) ([]models.LongTermMemoryItem, error) {
 	var list []models.LongTermMemoryItem
 	err := d.db.WithContext(ctx).
@@ -107,10 +112,41 @@ func (d *LongTermMemoryItemDAO) SemanticSearch(ctx context.Context, chatAreaID s
 	return list, err
 }
 
+// Delete 删除条目（GC 清理用）。
 func (d *LongTermMemoryItemDAO) Delete(ctx context.Context, id string) error {
 	return d.db.WithContext(ctx).Where("id = ?", id).Delete(&models.LongTermMemoryItem{}).Error
 }
 
+// Touch 更新条目最近召回时间（对话召回命中时调用；GC 判定未使用记忆用）。
+func (d *LongTermMemoryItemDAO) Touch(ctx context.Context, id string) error {
+	return d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).Where("id = ?", id).
+		UpdateColumn("last_recalled_at", time.Now()).Error
+}
+
+// TouchMany 批量更新最近召回时间（召回命中多条时一次 SQL）。
+func (d *LongTermMemoryItemDAO) TouchMany(ctx context.Context, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	return d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).Where("id IN ?", ids).
+		UpdateColumn("last_recalled_at", time.Now()).Error
+}
+
+// MarkRAGSynced 标记条目 RAG 同步状态（GC 删除向量失败时置 false，下次重试防孤儿向量）。
+func (d *LongTermMemoryItemDAO) MarkRAGSynced(ctx context.Context, id string, synced bool) error {
+	return d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).Where("id = ?", id).
+		UpdateColumn("rag_synced", synced).Error
+}
+
+// ListUnused 列出最近窗口内未被召回的条目（GC 用），按最近召回时间升序取 limit 条。
+func (d *LongTermMemoryItemDAO) ListUnused(ctx context.Context, since time.Time, limit int) ([]models.LongTermMemoryItem, error) {
+	var list []models.LongTermMemoryItem
+	err := d.db.WithContext(ctx).Where("last_recalled_at IS NULL OR last_recalled_at < ?", since).
+		Order("last_recalled_at ASC").Limit(limit).Find(&list).Error
+	return list, err
+}
+
+// CountByChatArea 统计某 ChatArea 的条目数。
 func (d *LongTermMemoryItemDAO) CountByChatArea(ctx context.Context, chatAreaID string) (int64, error) {
 	var count int64
 	err := d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).
@@ -118,6 +154,7 @@ func (d *LongTermMemoryItemDAO) CountByChatArea(ctx context.Context, chatAreaID 
 	return count, err
 }
 
+// DeleteOldest 删除某 ChatArea 最旧的条目，保留最近 keep 条（容量控制用）。
 func (d *LongTermMemoryItemDAO) DeleteOldest(ctx context.Context, chatAreaID string, keep int) error {
 	sub := d.db.WithContext(ctx).Model(&models.LongTermMemoryItem{}).
 		Select("id").

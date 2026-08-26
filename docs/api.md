@@ -977,37 +977,59 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 
 ## 28. 群管理
 
-系统级群违规检测（Phase 0.5 检测闸门，先于所有 Lua 插件）。判定链路：卡片文本化 → RAG 语义核实（首选，三档阈值）→ 模棱两可/低置信有词送 LLM 审核；RAG 不可用降级关键词路径。含图片刷屏、+1 复读、三级惩罚、白名单/管理员豁免、入群统计与学习闭环（LLM 确认违规自动入库样本）。
+系统级群违规检测（Phase 0.5 检测闸门，先于所有 Lua 插件）。判定链路：卡片文本化 → RAG 黑白名单语义匹配（首选：黑名单命中处罚 / 白名单命中放行）→ LLM 批量判定兜底（3s 批窗口逐条独立，learn 学习闭环异步写回语录）；RAG/LLM 均不可用时降级关键词路径（关键词不可修改，仅作兜底）。含图片刷屏、+1 复读（跳过命令消息）、三级惩罚、白名单/管理员豁免、入群统计。
 
 ### GET /group-mgr/config
-群管理配置。**data** `GroupMgrConfigResp`: `enabled`、`llm_review`、`high_score`（RAG 高置信直罚阈值，默认 0.75）、`low_score`（模棱两可下限，默认 0.5）、`fallback_score`（LLM 异常分数兜底，默认 0.6）、`exclude_groups`（排除检测的群 ID 列表）、`llm_criteria`、`llm_gray_prompt`、`llm_high_risk_prompt`（三份 LLM 审核提示词，空值回落内嵌默认）。
+
+群管理配置。**data** `GroupMgrConfigResp`: `enabled`、`llm_review`、`black_min_score`（黑名单语录命中阈值，默认 0.7）、`white_min_score`（白名单语录命中阈值，默认 0.75）、`llm_batch_window`（LLM 判定批窗口秒数，默认 3）、`exclude_groups`（排除检测的群 ID 列表）、`llm_prompt`（统一检测提示词）、`white_gc_interval_days`（白名单语录 GC 周期天，默认 7）。旧字段 `high_score`/`low_score`/`fallback_score`/`llm_criteria`/`llm_gray_prompt`/`llm_high_risk_prompt` 已废弃（保留兼容）。
 
 ### PUT /group-mgr/config
+
 更新配置并热重载。**Body** 同 `GroupMgrConfigResp`。**data** `GroupMgrConfigResp`。
 
 ### GET /group-mgr/words?category=
-词条列表（`category` 可选：black/gray/sensitive）。**data** `GroupMgrWordResp[]`: `id`、`word`、`category`、`source`（system=种子 / import=导入）、`rag_synced`（是否已同步到 RAG 向量库）、`rag_tag`（派生的 RAG tag UUID，`ragtag.Word(id)` v5）。
+
+词条列表（仅兜底用，面板不再展示）。**data** `GroupMgrWordResp[]`。
 
 ### POST /group-mgr/words
-新增词条。**Body** `{word string, category string}`。RAG 可用时同步写入样本表+向量库并标记 `rag_synced=true`，不可用仅存词库（面板展示未同步，可手动同步）。**data** `null`。
+
+新增词条（仅兜底，应用层保留写入接口）。**data** `null`。
 
 ### DELETE /group-mgr/words/:id
-删除词条（热重载词库）。**data** `null`。
+
+删除词条（同步清理派生样本与 RAG 向量）。**data** `null`。
 
 ### POST /group-mgr/words/import?category=
-txt 导入词条（multipart `file`，一行一个，去注释/空白/小写/去重）。**data** `{imported int, skipped int}`。导入词条在 RAG 可用时同步写入向量库（种子样本）并标记 `rag_synced=true`。
+
+txt 导入词条（仅兜底）。**data** `{imported int, skipped int}`。
 
 ### POST /group-mgr/sync-rag
-手动全量同步向量库（词条 + 样本，50 条/批幂等 upsert），成功后全部词条标记 `rag_synced=true`。RAG 未配置返回错误。**data** `GroupMgrSyncResp`: `total`、`failed`。
 
-### GET /group-mgr/samples
-RAG 违规样本列表。**data** `GroupMgrSampleResp[]`: `id`、`text`、`category`、`source`（seed/learn/import）、`hit_count`（RAG 高置信直罚命中次数）、`created_at`。
+手动全量同步向量库（词条派生样本 + 语录，50 条/批幂等 upsert），成功条目标记 `rag_synced=true`。RAG 未配置返回错误。**data** `GroupMgrSyncResp`: `total`、`failed`。
+
+### GET /group-mgr/sync-rag/stream
+
+SSE 流式同步进度（逐批推送 `data: {done, failed}`，结束推 `data: {total, failed}`；出错推 `error` 事件 `{error}`）。群管理未初始化返回普通 JSON 错误；RAG 未配置时流内推送 `error` 事件（前端按 `data.error` 中断）。
+
+### GET /group-mgr/samples?list_type=
+
+违禁语录列表（`list_type` 可选 black/white，缺省全部）。**data** `GroupMgrSampleResp[]`: `id`、`word_id`、`list_type`（black/white）、`text`、`category`、`source`（seed/learn/import）、`hit_count`、`rag_synced`（已同步到 RAG 向量库）、`rag_tag`（派生 RAG tag UUID，black=`ragtag.Sample(id)` / white=`ragtag.WhitePhrase(id)`）、`last_used_at`（最近命中时间，GC 用）、`created_at`。
+
+### POST /group-mgr/phrases
+
+新增违禁语录。**Body** `{text string, list_type string(black/white), category string(可选 ad/sensitive)}`。RAG 可用时同步写向量库并标记 `rag_synced=true`，不可用仅存库（可手动同步）。**data** `null`。
+
+### POST /group-mgr/phrases/import?list_type=
+
+txt 导入违禁语录（multipart `file`，一行一个，≤1MB/≤20000 行）。**data** `{imported int, skipped int}`。
 
 ### DELETE /group-mgr/samples/:id
-删除样本（RAG 双删，未配置静默跳过）。**data** `null`。
+
+删除语录（Postgres + RAG 双删，未配置静默跳过）。**data** `null`。
 
 ### GET /group-mgr/violations
-违规记录。**data** `GroupMgrViolationResp[]`: `id`、`group_id`、`user_id`、`username`（处罚时群名片/昵称）、`count`（当前违规等级）、`detection_path`（判定来源：rag / keyword / llm）、`llm_reason`（LLM 审核返回的 reason，`detection_path=llm` 时有值）。
+
+违规记录。**data** `GroupMgrViolationResp[]`: `id`、`group_id`、`user_id`、`username`（处罚时群名片/昵称）、`count`（当前违规等级）、`detection_path`（判定来源：rag / llm / keyword）、`llm_reason`（LLM 审核返回的 reason，`detection_path=llm` 时有值）。
 
 ### DELETE /group-mgr/violations/:id
 删除某条违规记录（重置该用户违规）。**data** `null`。
@@ -1031,10 +1053,16 @@ RAG 违规样本列表。**data** `GroupMgrSampleResp[]`: `id`、`text`、`categ
 统计（与 /groupstats 命令同源）。**data** `GroupMgrStatsResp`: `group_id`、`date`、`join_today`、`warns`、`mutes`、`copy_warns`、`ad`、`sensitive`、`kicks`。
 
 ### POST /group-mgr/test
-链路测试（不处罚、不写库）。**Body** `{text string}`。**data** `GroupMgrTestResp`: `text`、`card`、`word`、`word_cat`、`rag_ok`、`rag_score`、`rag_sample`、`rag_category`、`verdict`（punish/review/pass）、`reason`。
+链路测试（不处罚、不写库）。**Body** `{text string}`。**data** `GroupMgrTestResp`: `text`、`card`、`word`、`word_cat`、`rag_ok`、`black_score`、`black_phrase`、`white_score`、`white_phrase`、`verdict`（punish/review/pass）、`reason`。
 
 ### POST /memory/sync-rag
+
 长期记忆手动全量同步向量库（`LongTermMemItem` 按 50 条/批幂等 upsert，补齐 Compact 双写前的历史记忆）。RAG 未启用返回 `ready:false` + 提示。**data** `{ready bool, synced int, failed int, total int}`。
+
+### 记忆 / 白名单 GC
+
+- 长期记忆 GC（`HagoCenter.StartLongTermMemoryGC`）：默认 7 天执行一次，清理最近周期内未召回（`last_recalled_at` 为空或超期）的 5 条（Postgres + RAG 双删）。周期 `LongTermMemory.GCIntervalDays`，记忆页可配置。
+- 白名单语录 GC（`Manager.StartWhiteGC`）：默认 7 天执行一次，清理最近周期内未命中（`last_used_at` 为空或超期）的 5 条白名单语录（Postgres + RAG 双删）。周期 `GroupMgrConfig.WhiteGCIntervalDays`，群管理参数面板可配置。
 
 ---
 

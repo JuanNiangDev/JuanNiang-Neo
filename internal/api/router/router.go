@@ -49,6 +49,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.GET("/memory/:chatAreaID/long-term", auth, svc.GetLongTermMemoryConfig)
 	api.PUT("/memory/:chatAreaID/long-term", auth, svc.UpdateLongTermMemoryConfig)
 	api.POST("/memory/sync-rag", auth, svc.SyncMemoryRAG)
+	api.GET("/memory/sync-rag/stream", auth, svc.SyncMemoryRAGStream)
 
 	// Prompts
 	api.GET("/prompts", auth, svc.ListPrompts)
@@ -167,6 +168,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.DELETE("/knowledge/:id", auth, svc.DeleteKnowledge)
 	api.POST("/knowledge/:id/re-extract", auth, svc.ReExtractKnowledge)
 	api.POST("/knowledge/vector-sync", auth, svc.SyncKnowledgeVector)
+	api.GET("/knowledge/vector-sync/stream", auth, svc.SyncKnowledgeVectorStream)
 
 	// 图床
 	api.GET("/images", auth, svc.ListImages)
@@ -213,8 +215,11 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	api.DELETE("/group-mgr/words/:id", auth, svc.DeleteGroupMgrWord)
 	api.POST("/group-mgr/words/import", auth, svc.ImportGroupMgrWords)
 	api.POST("/group-mgr/sync-rag", auth, svc.SyncGroupMgrRAG)
+	api.GET("/group-mgr/sync-rag/stream", auth, svc.SyncGroupMgrRAGStream)
 	api.GET("/group-mgr/samples", auth, svc.ListGroupMgrSamples)
 	api.DELETE("/group-mgr/samples/:id", auth, svc.DeleteGroupMgrSample)
+	api.POST("/group-mgr/phrases", auth, svc.AddGroupMgrPhrase)
+	api.POST("/group-mgr/phrases/import", auth, svc.ImportGroupMgrPhrases)
 	api.GET("/group-mgr/violations", auth, svc.ListGroupMgrViolations)
 	api.DELETE("/group-mgr/violations/:id", auth, svc.DeleteGroupMgrViolation)
 	api.GET("/group-mgr/whitelist", auth, svc.GetGroupMgrWhitelist)

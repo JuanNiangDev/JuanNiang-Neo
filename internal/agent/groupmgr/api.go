@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"JuanNiang-Neo/internal/core/models"
+	"JuanNiang-Neo/internal/core/ragtag"
 )
 
 // API 层公开方法（Web REST 调用）。
@@ -14,6 +15,12 @@ func (m *Manager) SyncRAG(ctx context.Context) (total, failed int, err error) {
 	return m.syncRAG(ctx)
 }
 
+// SyncRAGProgress 带进度回调的全量同步（SSE 流式同步进度展示用）：
+// 每批处理后回调 onProgress(done, failed)，回调返回错误（如客户端断开）即中止。
+func (m *Manager) SyncRAGProgress(ctx context.Context, onProgress func(done, failed int) error) (total, failed int, err error) {
+	return m.syncRAGProgress(ctx, onProgress)
+}
+
 // sampleCategoryByWord 词条分类 → 样本类别（样本契约：ad / sensitive；
 // 灰色/黑色词统一归 ad，敏感词映射 sensitive）。
 func sampleCategoryByWord(category string) string {
@@ -21,6 +28,26 @@ func sampleCategoryByWord(category string) string {
 		return "sensitive"
 	}
 	return "ad"
+}
+
+// AddPhrase 新增违禁语录（黑/白名单）：写语录表 + RAG 双向同步（可用时）。
+// 返回语录 ID；RAG 未配置/失败不影响入库（面板可手动同步）。
+func (m *Manager) AddPhrase(ctx context.Context, text, category, listType string) (uint, error) {
+	if listType != "white" {
+		listType = "black"
+	}
+	id, err := m.dao.SampleAddPhrase(ctx, text, category, "import", listType)
+	if err != nil {
+		return 0, err
+	}
+	// 仅真实写入 RAG 成功才标记已同步（区分「客户端存在」与「upsert 成功」）
+	synced, _ := m.upsertRAGPhrase(ctx, id, text, listType)
+	_ = m.dao.SampleMarkRAGSynced(ctx, id, synced)
+	if !synced {
+		log.Warn("语录写入 RAG 失败（可手动同步）", "phrase", id, "list", listType)
+	}
+	m.invalidateSampleSet()
+	return id, nil
 }
 
 // AddWord 新增词条（Web/导入共用）：
@@ -39,6 +66,7 @@ func (m *Manager) AddWord(ctx context.Context, word, category string) (uint, err
 		if sid, err := m.dao.SampleAddWithWord(ctx, word, sampleCategoryByWord(category), "seed", id); err == nil {
 			sampleID = sid
 			synced, _ = m.upsertRAGSample(ctx, sid, word)
+			_ = m.dao.SampleMarkRAGSynced(ctx, sid, synced)
 		}
 	}
 	// 仅当样本真实写入 RAG 成功才标记已同步（区分「客户端存在」与「upsert 成功」）
@@ -67,6 +95,7 @@ func (m *Manager) ImportWords(ctx context.Context, lines []string, category stri
 		if m.getRAG() != nil {
 			if sid, err := m.dao.SampleAddWithWord(ctx, w, sampleCategoryByWord(category), "seed", id); err == nil {
 				synced, _ = m.upsertRAGSample(ctx, sid, w)
+				_ = m.dao.SampleMarkRAGSynced(ctx, sid, synced)
 			}
 		}
 		_ = m.dao.WordMarkRAGSynced(ctx, id, synced)
@@ -102,12 +131,45 @@ func (m *Manager) DeleteWord(ctx context.Context, id uint) error {
 	return m.Reload(ctx)
 }
 
-// DeleteSample 删除样本（双删 RAG，不可用静默跳过）。
+// deleteRAGPhrase 删除语录向量（双删）。按集合选择 tag 前缀。
+// RAG 未配置/不可用时返回 nil（无向量可删，视同成功）；删除失败返回 error（调用方决定是否保留 PG 行）。
+func (m *Manager) deleteRAGPhrase(ctx context.Context, sampleID uint, listType string) error {
+	cli := m.getRAG()
+	if cli == nil {
+		return nil
+	}
+	tag := ragtag.Sample(u32s(sampleID))
+	if listType == "white" {
+		tag = ragtag.WhitePhrase(u32s(sampleID))
+	}
+	if err := cli.Delete(ctx, tag); err != nil {
+		log.Warn("语录从 RAG 删除失败", "phrase", sampleID, "list", listType, "err", err)
+		return err
+	}
+	m.invalidateSampleSet()
+	return nil
+}
+
+// DeleteSample 删除语录（双删 RAG 向量，按黑白集合选 tag；不可用静默跳过）。
 func (m *Manager) DeleteSample(ctx context.Context, id uint) error {
+	// 先查集合类型（决定 RAG tag 前缀），再删除
+	var listType string
+	if list, err := m.dao.SampleListAll(ctx); err == nil {
+		for _, s := range list {
+			if s.ID == id {
+				listType = s.ListType
+				break
+			}
+		}
+	}
 	if err := m.dao.SampleDelete(ctx, id); err != nil {
 		return err
 	}
-	m.deleteRAGSample(ctx, id)
+	if listType == "" {
+		listType = "black"
+	}
+	// 手动删除语义：RAG 删除失败仅告警，不阻塞 PG 删除（用户主动删除，残留向量由对账清理）
+	_ = m.deleteRAGPhrase(ctx, id, listType)
 	return nil
 }
 

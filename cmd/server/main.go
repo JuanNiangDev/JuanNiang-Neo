@@ -268,6 +268,8 @@ func main() {
 		log.Error("群管理初始化失败", "err", err)
 	} else {
 		go gm.Run(ctx)
+		// 白名单语录 GC：周期性清理未命中语录（在 Run 初始化成功后启动，避免并发 Init）
+		go gm.StartWhiteGC(ctx)
 	}
 	hago.GroupMgr = gm
 	// 系统命令：后注册覆盖插件同名命令（命令树覆盖语义），旧插件停用前不冲突
@@ -371,13 +373,21 @@ func main() {
 					m["redis"] = 0
 				}
 			}
-			probes := []struct {
+			type probe struct {
 				name   string
 				client interface{ HealthCheck() error }
-			}{
-				{"rag", hago.RAGClient.Load()},
-				{"t2i", hago.T2IClient},
-				{"sandbox", hago.SandboxClient},
+			}
+			// 逐字段判 nil 后再入列：nil 指针塞进 interface 后 interface 非 nil（有类型无值），
+			// 会绕过 p.client == nil 检查并在 goroutine 里 HealthCheck() 空指针 panic。
+			var probes []probe
+			if c := hago.RAGClient.Load(); c != nil {
+				probes = append(probes, probe{name: "rag", client: c})
+			}
+			if c := hago.T2IClient; c != nil {
+				probes = append(probes, probe{name: "t2i", client: c})
+			}
+			if c := hago.SandboxClient; c != nil {
+				probes = append(probes, probe{name: "sandbox", client: c})
 			}
 			type result struct {
 				name string
@@ -385,20 +395,12 @@ func main() {
 			}
 			// 只 drain 实际启动的探测数：全部未配置时立即返回，避免空转 3×3s
 			// 拖慢 scrape（CachedMap 持锁执行，期间所有并发 /metrics 互相阻塞）。
-			started := 0
-			for _, p := range probes {
-				if p.client != nil {
-					started++
-				}
-			}
+			started := len(probes)
 			if started == 0 {
 				return m
 			}
 			ch := make(chan result, started)
 			for _, p := range probes {
-				if p.client == nil {
-					continue // 未配置不输出
-				}
 				go func(name string, c interface{ HealthCheck() error }) {
 					v := float64(0)
 					if err := c.HealthCheck(); err == nil {
