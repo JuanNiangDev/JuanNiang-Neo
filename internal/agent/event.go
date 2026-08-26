@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/tool"
@@ -1061,6 +1062,19 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// 并行分组模式下（存在 orderedReplier）整体按消息顺序执行，避免多人回复乱序；
 	// 非分组模式直接执行。全局 sendMu 保证跨批次的发送也串行（回复不被插入打断）。
 	finish := func() {
+		// 群管理审核闸门（发送前，锁外执行避免持锁等待）：触发本轮 Agent 的群消息
+		// 已被 LLM 判定违规（black）时，丢弃投递到当前群会话的交付消息与最终回复——
+		// 避免"机器人回复了违规消息又被撤回"的观感。审核在途时有限等待终态
+		// （Agent ReAct 通常已覆盖审核时间，多数零等待）；超时/未送审按放行（撤回兜底）。
+		if msg.MessageType == "group" && h.GroupMgr != nil {
+			if blocked := h.GroupMgr.WaitReview(ctx, msg.GroupID, msg.UserID, msg.MessageID, groupmgr.ReviewGateWait); blocked {
+				log.Info("群管理审核违规，丢弃 Agent 回复", "message_id", msg.MessageID, "user_id", msg.UserID, "group_id", msg.GroupID)
+				metrics.DroppedTotal.WithLabelValues("gm_verdict_black").Inc()
+				// 移除投递到当前群会话的交付消息（私聊/其他群工具消息保留）
+				deferredSends.DropDelivery(msg.MessageType, currentTargetID)
+				assistantContent = ""
+			}
+		}
 		h.sendMu.Lock()
 		defer h.sendMu.Unlock()
 
