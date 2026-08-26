@@ -9,6 +9,7 @@ import (
 	"JuanNiang-Neo/internal/metrics"
 
 	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 	lua "github.com/yuin/gopher-lua"
 )
 
@@ -25,10 +26,18 @@ import (
 
 var (
 	pluginMetricMu sync.Mutex
-	// pluginMetrics 进程级注册表：全量指标名（含前缀）→ collector。
+	// pluginMetrics 进程级注册表：全量指标名（含前缀）→ 声明类型 + collector。
 	// 跨插件 LState 共享：同名指标幂等返回同一实例，计数延续。
-	pluginMetrics = map[string]prometheus.Collector{}
+	// kind 记录声明类型（counter/gauge/histogram）：类型判定用字符串精确比较而非
+	// prometheus 接口断言——Gauge 接口方法集是 Counter 的超集，断言会把 gauge 误判为 counter。
+	pluginMetrics = map[string]*pluginMetric{}
 )
+
+// pluginMetric 插件指标注册条目：collector + 声明类型。
+type pluginMetric struct {
+	collector prometheus.Collector
+	kind      string // counter / gauge / histogram
+}
 
 // metricNameRe 插件侧指标名（短名）校验：Prometheus 命名规范。
 var metricNameRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
@@ -51,32 +60,16 @@ func pluginMetricName(pluginName, name string) string {
 	return "juanniang_plugin_" + sanitizeMetricSegment(pluginName) + "_" + name
 }
 
-// metricKindMatches 校验已注册 collector 的类型与请求一致。
-func metricKindMatches(c prometheus.Collector, kind string) bool {
-	switch kind {
-	case "counter":
-		_, ok := c.(prometheus.Counter)
-		return ok
-	case "gauge":
-		_, ok := c.(prometheus.Gauge)
-		return ok
-	case "histogram":
-		_, ok := c.(prometheus.Histogram)
-		return ok
-	}
-	return false
-}
-
 // getOrCreate 幂等注册：已存在同类型返回已有；类型冲突/注册失败返回错误。
 func getOrCreate(fullName, help, kind string) (prometheus.Collector, error) {
 	pluginMetricMu.Lock()
 	defer pluginMetricMu.Unlock()
 
-	if c, ok := pluginMetrics[fullName]; ok {
-		if !metricKindMatches(c, kind) {
+	if pm, ok := pluginMetrics[fullName]; ok {
+		if pm.kind != kind {
 			return nil, fmt.Errorf("指标 %q 已以其他类型注册", fullName)
 		}
-		return c, nil
+		return pm.collector, nil
 	}
 
 	var c prometheus.Collector
@@ -92,13 +85,44 @@ func getOrCreate(fullName, help, kind string) (prometheus.Collector, error) {
 		// 并发竞态下另一 goroutine 刚注册：收编已有实例（幂等语义）
 		if already, ok := err.(prometheus.AlreadyRegisteredError); ok {
 			existing := already.ExistingCollector
-			pluginMetrics[fullName] = existing
+			// 收编前以 dto 探测实际类型：接口断言会把 gauge 误判为 counter，
+			// 类型不符直接拒绝（防句柄类型混淆 / handle 类型断言 panic）
+			ek, detOK := detectCollectorKind(existing)
+			if !detOK || ek != kind {
+				return nil, fmt.Errorf("指标 %q 已以其他类型注册", fullName)
+			}
+			pluginMetrics[fullName] = &pluginMetric{collector: existing, kind: ek}
 			return existing, nil
 		}
 		return nil, err
 	}
-	pluginMetrics[fullName] = c
+	pluginMetrics[fullName] = &pluginMetric{collector: c, kind: kind}
 	return c, nil
+}
+
+// detectCollectorKind 以 dto.Metric 探测 collector 的实际指标类型（counter/gauge/histogram）。
+// 不用 prometheus 接口断言：Gauge 接口方法集是 Counter 的超集，c.(prometheus.Counter)
+// 对 gauge 也成立，接口断言无法区分；探测失败返回 false。
+func detectCollectorKind(c prometheus.Collector) (string, bool) {
+	ch := make(chan prometheus.Metric, 4)
+	c.Collect(ch)
+	m, ok := <-ch
+	if !ok {
+		return "", false
+	}
+	dtoM := &dto.Metric{}
+	if err := m.Write(dtoM); err != nil {
+		return "", false
+	}
+	switch {
+	case dtoM.Counter != nil:
+		return "counter", true
+	case dtoM.Gauge != nil:
+		return "gauge", true
+	case dtoM.Histogram != nil:
+		return "histogram", true
+	}
+	return "", false
 }
 
 // injectMetrics 注入 jn.metrics 全局表（无需权限，默认所有插件可用）。

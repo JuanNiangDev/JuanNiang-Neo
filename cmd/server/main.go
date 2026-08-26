@@ -97,7 +97,10 @@ func main() {
 		envBool(otelx.EnvCaptureContent, true),
 	)
 	defer func() {
-		if err := shutdownTrace(ctx); err != nil {
+		// 主 ctx 收到退出信号后已被取消：独立超时上下文供 tracer shutdown 冲刷缓冲 span，用后释放
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTrace(sctx); err != nil {
 			log.Warn("链路追踪关闭失败", "err", err)
 		}
 	}()

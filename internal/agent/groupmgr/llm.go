@@ -286,12 +286,19 @@ func (m *Manager) handleReviewBatch(ctx context.Context, out reviewOutcome) {
 
 // applyVerdict 批内单条裁决应用：处罚 / 放行 / 学习闭环（异步，不阻塞）。
 func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewResult, failed bool) {
+	// 审查耗时期间可能已被加入白名单/成为管理员：先复查豁免再写终态。
+	// 已豁免用户必须落放行终态（white），否则 ReviewGate 会因 black 丢弃 Agent 回复。
+	exempted := m.isWhitelisted(ctx, it.userID) || m.isGroupAdmin(it.userID, it.admins, it.groupID)
+
 	m.llmMu.Lock()
 	delete(m.llmPending, it.pk)
 	// 审核终态落库（发送前闸门 ReviewGate 查询；TTL 随 llmReviewed 清理）：
 	// black=已判违规（Agent 回复应被丢弃）；white/none=放行；
 	// 失败且无硬信号=不记录（按未送审放行）；失败且硬信号直罚=记 black。
 	switch {
+	case exempted:
+		// 已豁免：写放行终态，不落 black（处罚下方同样跳过）
+		m.reviewVerdict[it.messageID] = "white"
 	case failed || (res.Verdict != "black" && res.Verdict != "white" && res.Verdict != "none"):
 		if it.rc.highRisk && it.rc.hard {
 			m.reviewVerdict[it.messageID] = "black"
@@ -303,8 +310,7 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 	}
 	m.llmMu.Unlock()
 
-	// 审查耗时期间可能已被加入白名单/成为管理员，复查后再处罚
-	if m.isWhitelisted(ctx, it.userID) || m.isGroupAdmin(it.userID, it.admins, it.groupID) {
+	if exempted {
 		return
 	}
 

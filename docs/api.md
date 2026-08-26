@@ -1021,7 +1021,7 @@ SSE 流式同步进度（逐批推送 `data: {done, failed}`，结束推 `data: 
 
 ### POST /group-mgr/phrases/import?list_type=
 
-txt 导入违禁语录（multipart `file`，一行一个，≤1MB/≤20000 行）。**data** `{imported int, skipped int}`。
+txt 导入违禁语录（multipart `file`，一行一个，≤1MB/≤20000 行；`?list_type=` 指定集合，`?category=` 可选 ad/sensitive，默认 ad）。**data** `{imported int, skipped int}`。
 
 ### DELETE /group-mgr/samples/:id
 

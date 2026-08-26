@@ -322,13 +322,17 @@ func (s *Service) AddGroupMgrPhrase(ctx context.Context, c *app.RequestContext) 
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
-// ImportGroupMgrPhrases txt 导入违禁语录（一行一个；?list_type= 指定集合）。
+// ImportGroupMgrPhrases txt 导入违禁语录（一行一个；?list_type= 指定集合，?category= 违规类别）。
 // 限制：单文件 ≤ 1MB、行数 ≤ 20000。
 func (s *Service) ImportGroupMgrPhrases(ctx context.Context, c *app.RequestContext) {
 	listType := strings.TrimSpace(c.Query("list_type"))
 	if listType != "black" && listType != "white" {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "list_type 非法（black/white）"}))
 		return
+	}
+	category := strings.TrimSpace(c.Query("category"))
+	if category != "sensitive" {
+		category = "ad"
 	}
 	fh, err := c.FormFile("file")
 	if err != nil {
@@ -369,7 +373,7 @@ func (s *Service) ImportGroupMgrPhrases(ctx context.Context, c *app.RequestConte
 		}
 		seen[t] = true
 		if s.GroupMgr != nil {
-			if _, err := s.GroupMgr.AddPhrase(ctx, t, "ad", listType); err != nil {
+			if _, err := s.GroupMgr.AddPhrase(ctx, t, category, listType); err != nil {
 				skipped++
 				continue
 			}

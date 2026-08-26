@@ -7,6 +7,7 @@ import (
 
 	"JuanNiang-Neo/internal/metrics"
 
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
 
@@ -81,6 +82,38 @@ assert(bad == nil and bad_err ~= nil, "非法名应返回错误")
 	}
 	if v := values["juanniang_plugin_metricstest_latency"]; v != 1 {
 		t.Fatalf("histogram sample 应为 1，got %v", v)
+	}
+}
+
+// TestGetOrCreateAdoptTypeCheck 回归：收编已注册 collector 时须校验实际类型。
+// 旧实现用 prometheus 接口断言（Gauge 接口方法集是 Counter 的超集，gauge 会被
+// 误判为 counter），收编后句柄类型混淆；现在以 dto 探测类型，不符直接拒绝。
+func TestGetOrCreateAdoptTypeCheck(t *testing.T) {
+	// 1. 其他路径先注册 gauge，同名前缀被要求当 counter → 拒绝
+	full := "juanniang_plugin_adopttest_gauge_as_counter"
+	g := prometheus.NewGauge(prometheus.GaugeOpts{Name: full, Help: "h"})
+	if err := metrics.Register(g); err != nil {
+		t.Fatalf("预注册 gauge 失败: %v", err)
+	}
+	if c, err := getOrCreate(full, "h", "counter"); err == nil {
+		t.Fatalf("gauge 被要求当 counter 应拒绝，got %v", c)
+	}
+	// 2. 同类型收编 → 成功且返回已有实例
+	c, err := getOrCreate(full, "h", "gauge")
+	if err != nil {
+		t.Fatalf("同类型收编应成功: %v", err)
+	}
+	if c != prometheus.Collector(g) {
+		t.Fatal("应返回已注册的同一实例")
+	}
+	// 3. 先注册 counter，再要求 histogram → 拒绝（防 handle 类型断言 panic）
+	full2 := "juanniang_plugin_adopttest_counter_as_histogram"
+	ctr := prometheus.NewCounter(prometheus.CounterOpts{Name: full2, Help: "h"})
+	if err := metrics.Register(ctr); err != nil {
+		t.Fatalf("预注册 counter 失败: %v", err)
+	}
+	if c, err := getOrCreate(full2, "h", "histogram"); err == nil {
+		t.Fatalf("counter 被要求当 histogram 应拒绝，got %v", c)
 	}
 }
 

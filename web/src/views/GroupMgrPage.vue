@@ -283,7 +283,7 @@
                 <v-radio label="敏感词违规" value="sensitive" />
               </v-radio-group>
               <v-file-input
-                v-else
+                v-if="phraseForm.mode === 'file'"
                 v-model="phraseForm.file"
                 label="选择 txt 文件"
                 accept=".txt"
@@ -638,7 +638,7 @@ async function submitPhraseDialog() {
     if (!phraseForm.value.file?.length) { toastStore.error('请选择 txt 文件'); return }
     addingPhrases.value = true
     try {
-      const res = (await groupMgrApi.importPhrases(phraseForm.value.file[0], listType)).data.data
+      const res = (await groupMgrApi.importPhrases(phraseForm.value.file[0], listType, phraseForm.value.category)).data.data
       toastStore.success(`导入完成：成功 ${res?.imported ?? 0} 条，跳过 ${res?.skipped ?? 0} 条`)
       phraseDialog.value = false
       phraseForm.value.file = []

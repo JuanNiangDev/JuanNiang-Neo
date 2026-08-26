@@ -579,10 +579,10 @@ export const groupMgrApi = {
   deleteSample: (id: number) => client.delete(`/group-mgr/samples/${id}`),
   addPhrase: (text: string, listType: string, category?: string) =>
     client.post('/group-mgr/phrases', { text, list_type: listType, category }),
-  importPhrases: (file: File, listType: string) => {
+  importPhrases: (file: File, listType: string, category?: string) => {
     const form = new FormData()
     form.append('file', file)
-    return client.post(`/group-mgr/phrases/import?list_type=${listType}`, form, {
+    return client.post(`/group-mgr/phrases/import?list_type=${listType}&category=${category ?? 'ad'}`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },

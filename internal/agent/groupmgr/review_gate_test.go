@@ -70,3 +70,32 @@ func TestReviewGate(t *testing.T) {
 		t.Fatalf("非法 messageID 应放行，got blocked=%v pending=%v", b, p)
 	}
 }
+
+// TestApplyVerdictExemptedWritesWhite 回归：审查窗口内用户被加入白名单（豁免）时，
+// 终态必须写 white（不写 black），否则 ReviewGate 会以 black 丢弃豁免用户的 Agent 回复。
+func TestApplyVerdictExemptedWritesWhite(t *testing.T) {
+	m, gmdao := newTestManager(t, nil)
+	ctx := context.Background()
+	// 用户在审查耗时期间被加入白名单（豁免）
+	if err := gmdao.WlAdd(ctx, 200); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	it := reviewItem{pk: "100:200", groupID: 100, userID: 200, messageID: 777,
+		rawText: "违禁文本", rc: reviewCtx{highRisk: true, hard: true}}
+	m.applyVerdict(ctx, it, reviewResult{Index: 0, Verdict: "black", Reason: "违规"}, false)
+
+	m.llmMu.Lock()
+	v, ok := m.reviewVerdict[777]
+	m.llmMu.Unlock()
+	if !ok || v != "white" {
+		t.Fatalf("豁免用户终态应为 white，got ok=%v verdict=%q", ok, v)
+	}
+	// 终态落库后 ReviewGate 应放行（blocked=false）
+	if b, p := m.ReviewGate(ctx, 100, 200, 777); b || p {
+		t.Fatalf("豁免用户不应被拦截，got blocked=%v pending=%v", b, p)
+	}
+}
