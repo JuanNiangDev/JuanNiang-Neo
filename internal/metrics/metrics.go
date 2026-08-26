@@ -28,6 +28,13 @@ func init() {
 // MustRegister 注册自定义 collector（panic 视为程序错误）。
 func MustRegister(c prometheus.Collector) { registry.MustRegister(c) }
 
+// Register 注册 collector，已存在/冲突返回错误（插件指标等动态注册场景用，
+// 避免 MustRegister panic 导致插件加载失败）。
+func Register(c prometheus.Collector) error { return registry.Register(c) }
+
+// Gatherer 返回注册表（/metrics handler 与测试读取）。
+func Gatherer() prometheus.Gatherer { return registry }
+
 // ---------- 消息事件流 ----------
 
 var (

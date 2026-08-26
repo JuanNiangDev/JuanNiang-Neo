@@ -450,6 +450,34 @@ function on_sandbox_response(req_id, ctx, result, err)
 end
 ```
 
+## 全局表: `metrics`
+
+权限：无需权限，默认注入。插件自定义 **Prometheus 指标**（暴露在主程序 `/metrics`，Grafana 可查）。
+指标名自动加前缀 `juanniang_plugin_<插件名>_`（插件名非法字符转 `_`，插件内只写短名）；
+同名幂等注册（返回已有句柄，计数跨插件重载延续）；短名仅允许字母/数字/下划线。
+
+| 函数 | 返回 | 说明 |
+|------|------|------|
+| `metrics.counter(name, help?) → handle, err` | 计数器 | `handle:inc()` +1；`handle:add(n)` +n（不能为负） |
+| `metrics.gauge(name, help?) → handle, err` | 仪表 | `handle:set(n)` 设置值；`handle:inc()` / `handle:add(n)` 增减 |
+| `metrics.histogram(name, help?) → handle, err` | 直方图 | `handle:observe(n)` 观测一个值（耗时/大小分布） |
+
+```lua
+-- 统计本插件消息处理量与耗时（Grafana 面板：juanniang_plugin_xxx_*）
+local msg_count = jn.metrics.counter("msg_count", "消息处理数")
+local latency = jn.metrics.histogram("handle_latency", "处理耗时秒")
+
+function on_message(event)
+    local start = os.clock()
+    -- ... 处理逻辑 ...
+    msg_count:inc()
+    latency:observe(os.clock() - start)
+end
+```
+
+> 提示：指标为纯观测性、无副作用，默认所有插件可用（无需 manifest 权限声明）；
+> 注册后常驻（卸载插件指标仍保留计数，避免重复注册 panic 与指标空洞）。
+
 ## 全局表: `rag`
 
 权限：`rag`。面向原始 JuanNiang-RAG-Service API（tag 必须是 **UUID** 字符串，全文入库自动分块）；所有读写统一落在独立**分库 `plugin`**（`ragtag.ScoopPlugin`），与知识/记忆/群管理集合物理隔离——插件数据不污染业务检索，业务集合也不会干扰插件检索。**未启用时** 函数返回 `(nil, "RAG 服务未启用")`。不要与主程序知识/记忆集合的派生 tag 混用（跨分库归属冲突会返回 409）。

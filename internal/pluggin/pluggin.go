@@ -1444,6 +1444,9 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 
 	// Config：动态配置（无需权限，默认注入）
 	pe.injectConfigAPI(L, pluginName)
+
+	// Metrics：自定义 Prometheus 指标（无需权限，默认注入；/metrics 暴露）
+	pe.injectMetrics(L, pluginName)
 }
 
 // injectSDK 将 jn.lua 内容写入 package.preload["jn"]，
