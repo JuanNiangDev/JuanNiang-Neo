@@ -38,6 +38,7 @@ import (
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
 	"JuanNiang-Neo/internal/pluggin"
 	"JuanNiang-Neo/internal/web"
 
@@ -86,6 +87,20 @@ func main() {
 	slog.SetDefault(slog.New(logging.NewHandler(os.Stdout, logging.DefaultHub, &slog.HandlerOptions{
 		Level: logLevel,
 	})))
+
+	// ---------- 链路追踪（Grafana Tempo / OTLP） ----------
+	// 未配置 endpoint 时自动 no-op（零开销）；消息内容截断记录可关。
+	shutdownTrace := otelx.Init(
+		env(otelx.EnvServiceName, otelx.DefaultServiceName),
+		env(otelx.EnvEndpoint, ""),
+		envFloat(otelx.EnvSampleRatio, 1.0),
+		envBool(otelx.EnvCaptureContent, true),
+	)
+	defer func() {
+		if err := shutdownTrace(ctx); err != nil {
+			log.Warn("链路追踪关闭失败", "err", err)
+		}
+	}()
 
 	log.Info("JuanNiang-Neo 启动中...")
 
@@ -507,6 +522,27 @@ func shutdown(adapterProv *adapter.Adapter, webhookAdapter *adapter.WebhookAdapt
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// envFloat 读环境变量并解析为浮点数（非法值回退默认）。
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
+		}
+	}
+	return def
+}
+
+// envBool 读环境变量并解析为布尔（1/true 为真，其余回退默认）。
+func envBool(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+		return v == "1"
 	}
 	return def
 }
