@@ -1,6 +1,7 @@
 package caller
 
 import (
+	"JuanNiang-Neo/internal/otelx"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 // Config RAG 客户端配置
@@ -106,13 +109,25 @@ func (c *Client) Info(ctx context.Context) (*InfoResponse, error) {
 
 // Upsert 入库（幂等：已存在则覆写）。长文服务端自动分块。scoop 为分库名
 // （ragtag.ScoopKnowledge 等）；同一 tag 只允许归属一个 scoop（跨库返回 409）。
-func (c *Client) Upsert(ctx context.Context, scoop string, tag uuid.UUID, text string) (*UpsertResponse, error) {
-	resp, err := c.doJSON(ctx, http.MethodPut, "/scoops/"+scoop+"/tags/"+tag.String(), map[string]any{"text": text})
+func (c *Client) Upsert(ctx context.Context, scoop string, tag uuid.UUID, text string) (resp *UpsertResponse, err error) {
+	// 链路追踪：RAG 写入 span（scoop 分库维度）
+	_, span := otelx.Span(ctx, "rag.upsert",
+		attribute.String("scoop", scoop),
+		attribute.String("tag", tag.String()),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+	httpResp, err := c.doJSON(ctx, http.MethodPut, "/scoops/"+scoop+"/tags/"+tag.String(), map[string]any{"text": text})
 	if err != nil {
 		return nil, err
 	}
 	var result UpsertResponse
-	if err := c.decodeJSON(resp, &result); err != nil {
+	if err := c.decodeJSON(httpResp, &result); err != nil {
 		return nil, err
 	}
 	return &result, nil
@@ -120,7 +135,19 @@ func (c *Client) Upsert(ctx context.Context, scoop string, tag uuid.UUID, text s
 
 // BatchUpsert 批量入库：一次嵌入 + 一次发布（RAG-Service 按批摊销 COW 成本）。
 // 返回逐条结果（含单条失败）。全部条目必须隶属同一 scoop。
-func (c *Client) BatchUpsert(ctx context.Context, scoop string, items []BatchItem) (*BatchResponse, error) {
+func (c *Client) BatchUpsert(ctx context.Context, scoop string, items []BatchItem) (result *BatchResponse, err error) {
+	// 链路追踪：RAG 批量写入 span
+	_, span := otelx.Span(ctx, "rag.batch",
+		attribute.String("scoop", scoop),
+		attribute.Int("items", len(items)),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	if len(items) == 0 {
 		return &BatchResponse{Results: []BatchItemResponse{}}, nil
 	}
@@ -128,15 +155,26 @@ func (c *Client) BatchUpsert(ctx context.Context, scoop string, items []BatchIte
 	if err != nil {
 		return nil, err
 	}
-	var result BatchResponse
 	if err := c.decodeJSON(resp, &result); err != nil {
 		return nil, err
 	}
-	return &result, nil
+	return result, nil
 }
 
 // Delete 删除 tag 及其全部块（只能删除属于该 scoop 的 tag）。
-func (c *Client) Delete(ctx context.Context, scoop string, tag uuid.UUID) error {
+func (c *Client) Delete(ctx context.Context, scoop string, tag uuid.UUID) (err error) {
+	// 链路追踪：RAG 删除 span
+	_, span := otelx.Span(ctx, "rag.delete",
+		attribute.String("scoop", scoop),
+		attribute.String("tag", tag.String()),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 	resp, err := c.do(ctx, http.MethodDelete, "/scoops/"+scoop+"/tags/"+tag.String(), nil)
 	if err != nil {
 		return err
@@ -153,7 +191,22 @@ func (c *Client) Delete(ctx context.Context, scoop string, tag uuid.UUID) error 
 
 // Search 语义检索（限定在单个 scoop 内）：返回命中 tag + 分数（0~1），按分数降序。
 // k 默认 10（上限 100）；minScore 可选（缺省不过滤）。
-func (c *Client) Search(ctx context.Context, scoop, query string, k int, minScore *float64) ([]SearchHit, error) {
+func (c *Client) Search(ctx context.Context, scoop, query string, k int, minScore *float64) (hits []SearchHit, err error) {
+	// 链路追踪：RAG 检索 span（scoop 分库维度；query 截断防敏感/超长）
+	_, span := otelx.Span(ctx, "rag.search",
+		attribute.String("scoop", scoop),
+		attribute.Int("k", k),
+		attribute.String("query_head", headText(query, 30)),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		} else {
+			span.SetAttributes(attribute.Int("hits", len(hits)))
+		}
+		span.End()
+	}()
 	if k <= 0 {
 		k = 10
 	}
@@ -174,5 +227,15 @@ func (c *Client) Search(ctx context.Context, scoop, query string, k int, minScor
 	if err := c.decodeJSON(resp, &result); err != nil {
 		return nil, err
 	}
-	return result.Results, nil
+	hits = result.Results
+	return hits, nil
+}
+
+// headText 截取前 n 个 rune（中文不切坏），超长加省略号。span 属性用，防敏感/超长。
+func headText(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
