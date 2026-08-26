@@ -17,9 +17,11 @@ import (
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
 
 	"github.com/cloudwego/eino/adk"
 	einoschema "github.com/cloudwego/eino/schema"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // SilenceToken 是 LLM 在不回复时输出的固定标记。
@@ -118,6 +120,25 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	if ev.PostType == "message" && ev.Message != nil {
 		metrics.MessagesTotal.WithLabelValues(ev.Message.MessageType).Inc()
 	}
+	// 链路追踪：每条事件 = 一个 trace（根 span），下游各阶段均为其子 span。
+	// 必须在事件入口新建（事件循环单 goroutine 串行，不能复用共享 ctx）。
+	attrs := []attribute.KeyValue{attribute.String("post_type", ev.PostType)}
+	if ev.Message != nil {
+		attrs = append(attrs,
+			attribute.String("message_type", ev.Message.MessageType),
+			attribute.Int64("group_id", ev.Message.GroupID),
+			attribute.Int64("user_id", ev.Message.UserID),
+			attribute.Int64("message_id", ev.Message.MessageID),
+		)
+		// 消息内容（截断 100 字符，可关）：排障时直接看出"哪条消息处理出问题"
+		if otelx.CaptureContent() {
+			if t := strings.TrimSpace(cqCodeRegexp.ReplaceAllString(ev.Message.RawMessage, "")); t != "" {
+				attrs = append(attrs, otelx.MessageContentAttr(t, 100))
+			}
+		}
+	}
+	ctx, span := otelx.Span(ctx, "process_event", attrs...)
+	defer span.End()
 	// Phase 0: 消息幂等去重。WS 断线重连/多连接时 OneBot 端可能重复推送同一条
 	// 消息（相同 message_id），重复消费会导致 Agent 重复执行任务与重复回复。
 	// 群/私聊的 message_id 各自独立递增，key 需带上 message_type。
@@ -139,7 +160,10 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	}
 	// Phase 1: Plugin 统一拦截
 	if h.PluginEngine != nil {
+		_, pspan := otelx.Span(ctx, "plugin.dispatch")
 		result := h.PluginEngine.Dispatch(ev)
+		pspan.SetAttributes(attribute.Bool("consumed", result.Consumed), attribute.Bool("skip_reply", result.SkipReply))
+		pspan.End()
 		if result.Consumed {
 			return
 		}
@@ -739,7 +763,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 	start := time.Now()
 	outcome := "ok"
+	// 链路追踪：Agent ReAct 循环 span（含多轮 LLM/工具，全流程中最长的一段）
+	_, hspan := otelx.Span(ctx, "agent.handle",
+		attribute.String("chat_area_id", chatArea.ID),
+		attribute.Int("events", len(events)),
+	)
 	defer func() {
+		hspan.SetAttributes(attribute.String("result", outcome))
+		hspan.End()
 		metrics.AgentLoopsTotal.WithLabelValues(outcome).Inc()
 		metrics.AgentLoopDuration.Observe(time.Since(start).Seconds())
 	}()
@@ -1111,7 +1142,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 				log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
 				metrics.DroppedTotal.WithLabelValues("silenced").Inc()
 			} else {
-				h.sendReply(msg, assistantContent, rs)
+				h.sendReply(ctx, msg, assistantContent, rs)
 				h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), callsJSON)
 				if h.Memory != nil {
 					h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
@@ -1147,7 +1178,13 @@ const replySegmentInterval = 200 * time.Millisecond
 
 // sendReply 解析 CQ 码并组装消息段发送。
 // rs 从调用链传入，避免读取 HagoCenter 共享字段导致数据竞争。
-func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs ReplySettings) {
+func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, content string, rs ReplySettings) {
+	// 链路追踪：回复发送 span（段间延迟风控包含在耗时内）
+	_, span := otelx.Span(ctx, "send.reply",
+		attribute.String("message_type", msg.MessageType),
+		attribute.Int("chars", len([]rune(content))),
+	)
+	defer span.End()
 	// AgentLite 与正常模式一致，同样支持分段回复
 	parts := splitMessages(content)
 	log.Debug("sendReply 入口",
