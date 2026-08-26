@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -529,10 +530,10 @@ func env(key, def string) string {
 	return def
 }
 
-// envFloat 读环境变量并解析为浮点数（非法值回退默认）。
+// envFloat 读取浮点环境变量；解析失败或非有限值（NaN、±Inf）回退默认值。
 func envFloat(key string, def float64) float64 {
 	if v := os.Getenv(key); v != "" {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
 			return f
 		}
 	}
