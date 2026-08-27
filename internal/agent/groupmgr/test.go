@@ -60,14 +60,14 @@ func (m *Manager) TestViolation(ctx context.Context, text string) *TestReport {
 		return rep
 	}
 
-	// RAG 不可用：关键词兜底路径
+	// RAG 不可用 → 先 LLM 判定；LLM 也不可用 → 关键词兜底（仅两者均失败）
 	switch {
 	case rep.WordCat == "sensitive" || rep.WordCat == "black" || card:
 		rep.Verdict = "review"
-		rep.Reason = "RAG 不可用 → 关键词兜底（高危复核，LLM 挂则直罚）"
+		rep.Reason = "RAG 不可用 → LLM 统一判定；LLM 也不可用时关键词兜底（高危复核，LLM 挂则直罚）"
 	case rep.WordCat == "gray":
 		rep.Verdict = "review"
-		rep.Reason = "RAG 不可用 → 关键词兜底（灰色词常规 LLM 审查）"
+		rep.Reason = "RAG 不可用 → LLM 统一判定；LLM 也不可用时灰色词放行"
 	default:
 		rep.Verdict = "pass"
 		rep.Reason = "RAG 不可用且无关键词命中 → 放行"

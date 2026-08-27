@@ -231,8 +231,8 @@ export interface RAGInfoResp {
     error?: string
   }
   memory?: { rss_kb: number; vsize_kb: number }
-  tags?: number
-  chunks?: number
+  // 各分库规模（scoop 名 → tag/块数量）；Tag/Chunk 总数由前端汇总
+  scoops?: Record<string, { tags: number; chunks: number }>
   error?: string
 }
 

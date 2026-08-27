@@ -5,8 +5,8 @@ import (
 	"strings"
 )
 
-// 词库文件（go:embed 内置，仅作首次启动种子导入 group_mgr_words；
-// 之后词条管理全部走 Web/数据库，本文件不再参与热更新）。
+// 词库文件（go:embed 内置，仅加载到内存作兜底关键词，不入 DB/RAG/samples，不可 Web 修改）。
+// 兜底语义：仅当 RAG 语义核实 + LLM 审核均不可用时才参与判定。
 // 来源：black.txt（campus-ad-detection-words/样本.md 抽取）+ cn_advertisement.txt（CN 广告词库）
 //
 //	all.txt（campus-ad-detection-words 灰色词）、cn_pornographic/cn_politics/cn_general（CN 敏感词库）
@@ -85,4 +85,19 @@ func loadSeedWords() map[string][]string {
 	result["gray"] = gray
 	log.Info("种子词库加载完成", "black", len(result["black"]), "gray", len(result["gray"]), "sensitive", len(result["sensitive"]))
 	return result
+}
+
+// loadSeedWordsMap 将种子词库转为 category → wordSet 内存映射（Manager.words 字段用）。
+// 词库仅从 go:embed txt 加载到内存，不入 DB/RAG/samples，仅作 RAG+LLM 均失败时的兜底。
+func loadSeedWordsMap() map[string]map[string]bool {
+	list := loadSeedWords()
+	out := map[string]map[string]bool{}
+	for cat, ws := range list {
+		set := make(map[string]bool, len(ws))
+		for _, w := range ws {
+			set[w] = true
+		}
+		out[cat] = set
+	}
+	return out
 }

@@ -107,108 +107,28 @@ func (s *Service) UpdateGroupMgrConfig(ctx context.Context, c *app.RequestContex
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, groupMgrConfigResp(cfg)))
 }
 
-// ListGroupMgrWords 词条列表（?category= 过滤）。
+// ListGroupMgrWords 词条列表（已废弃：关键词词库改为只读内存兜底，从 txt 加载，不入 DB）。
+// 返回空列表，兼容旧客户端调用。
 func (s *Service) ListGroupMgrWords(ctx context.Context, c *app.RequestContext) {
-	category := strings.TrimSpace(c.Query("category"))
-	list, err := s.DAO.GroupMgr.WordListAll(ctx)
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	resp := make([]dto.GroupMgrWordResp, 0, len(list))
-	for _, w := range list {
-		if category != "" && w.Category != category {
-			continue
-		}
-		resp = append(resp, dto.GroupMgrWordResp{ID: w.ID, Word: w.Word, Category: w.Category, Source: w.Source, RAGSynced: w.RAGSynced, RAGTag: w.RAGTag})
-	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, []dto.GroupMgrWordResp{}))
 }
 
-// AddGroupMgrWord 新增词条（RAG 可用时同步写入样本+向量库）。
+// AddGroupMgrWord 新增词条（已废弃：关键词词库改为只读内存兜底，从 txt 加载，不入 DB/RAG）。
 func (s *Service) AddGroupMgrWord(ctx context.Context, c *app.RequestContext) {
-	var data dto.AddGroupMgrWordReq
-	if err := c.BindJSON(&data); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	data.Word = strings.ToLower(strings.TrimSpace(data.Word))
-	if data.Word == "" || !validWordCategory(data.Category) {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "word 为空或 category 非法"}))
-		return
-	}
-	if s.GroupMgr != nil {
-		if _, err := s.GroupMgr.AddWord(ctx, data.Word, data.Category); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
-	} else if _, err := s.DAO.GroupMgr.WordUpsert(ctx, data.Word, data.Category, "import"); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "关键词词库已改为只读内存兜底（从 txt 加载），不再支持新增"}))
 }
 
-// DeleteGroupMgrWord 删除词条（双删派生样本 + RAG 向量）。
+// DeleteGroupMgrWord 删除词条（已废弃：关键词词库改为只读内存兜底，从 txt 加载，不入 DB/RAG）。
 func (s *Service) DeleteGroupMgrWord(ctx context.Context, c *app.RequestContext) {
-	id := parseUintParam(c, "id")
-	if s.GroupMgr != nil {
-		if err := s.GroupMgr.DeleteWord(ctx, id); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
-	} else if err := s.DAO.GroupMgr.WordDelete(ctx, id); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "关键词词库已改为只读内存兜底（从 txt 加载），不再支持删除"}))
 }
 
-// ImportGroupMgrWords txt 导入（multipart file，一行一个；?category= 指定分类）。
-// 限制：单文件 ≤ 1MB、行数 ≤ 20000（防超大上传触发大额内存分配/GC 压力）。
+// ImportGroupMgrWords txt 导入（已废弃：关键词词库改为只读内存兜底，从 txt 加载，不入 DB/RAG）。
 func (s *Service) ImportGroupMgrWords(ctx context.Context, c *app.RequestContext) {
-	category := strings.TrimSpace(c.Query("category"))
-	if !validWordCategory(category) {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "category 非法（black/gray/sensitive）"}))
-		return
-	}
-	fh, err := c.FormFile("file")
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: "缺少 file 字段: " + err.Error()}))
-		return
-	}
-	if fh.Size > maxWordImportSize {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WordImportTooLarge, nil))
-		return
-	}
-	f, err := fh.Open()
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
-	}
-	defer f.Close()
-	data := make([]byte, 0, fh.Size)
-	buf := make([]byte, 4096)
-	for {
-		n, rerr := f.Read(buf)
-		data = append(data, buf[:n]...)
-		if rerr != nil {
-			break
-		}
-	}
-	lines := strings.Split(string(data), "\n")
-	if len(lines) > maxWordImportLines {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.WordImportTooLarge, nil))
-		return
-	}
-	imported, skipped := 0, 0
-	if s.GroupMgr != nil {
-		imported, skipped = s.GroupMgr.ImportWords(ctx, lines, category)
-	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, map[string]int{"imported": imported, "skipped": skipped}))
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "关键词词库已改为只读内存兜底（从 txt 加载），不再支持导入"}))
 }
 
-// SyncGroupMgrRAG 手动全量同步向量库（词条 + 样本）。
+// SyncGroupMgrRAG 手动全量同步向量库（仅违禁语录；关键词词库不入 RAG）。
 func (s *Service) SyncGroupMgrRAG(ctx context.Context, c *app.RequestContext) {
 	if s.GroupMgr == nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: "群管理未初始化"}))
@@ -555,11 +475,6 @@ func groupMgrConfigResp(cfg *models.GroupMgrConfig) dto.GroupMgrConfigResp {
 		LLMPrompt:            cfg.LLMPrompt, LLMCriteria: cfg.LLMCriteria, LLMGrayPrompt: cfg.LLMGrayPrompt, LLMHighRiskPrompt: cfg.LLMHighRiskPrompt,
 		WhiteGCIntervalDays: cfg.WhiteGCIntervalDays,
 	}
-}
-
-// validWordCategory 词条分类是否合法（black/gray/sensitive）。
-func validWordCategory(c string) bool {
-	return c == "black" || c == "gray" || c == "sensitive"
 }
 
 // parseUintParam 解析路径参数为 uint（非法返回 0）。

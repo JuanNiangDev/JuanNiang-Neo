@@ -977,7 +977,7 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 
 ## 28. 群管理
 
-系统级群违规检测（Phase 0.5 检测闸门，先于所有 Lua 插件）。判定链路：卡片文本化 → RAG 黑白名单语义匹配（首选：黑名单命中处罚 / 白名单命中放行）→ LLM 批量判定兜底（3s 批窗口逐条独立，learn 学习闭环异步写回语录）；RAG/LLM 均不可用时降级关键词路径（关键词不可修改，仅作兜底）。含图片刷屏、+1 复读（跳过命令消息）、三级惩罚、白名单/管理员豁免、入群统计。
+系统级群违规检测（Phase 0.5 检测闸门，先于所有 Lua 插件）。判定链路：卡片文本化 → RAG 黑白名单语义匹配（首选：黑名单命中处罚 / 白名单命中放行）→ LLM 批量判定兜底（3s 批窗口逐条独立，learn 学习闭环异步写回语录）；RAG/LLM 均不可用时降级关键词路径（关键词词库仅从内置 txt 加载到内存作兜底，不入 DB/RAG/samples，不可 Web 修改）。含图片刷屏、+1 复读（跳过命令消息）、三级惩罚、白名单/管理员豁免、入群统计。
 
 ### GET /group-mgr/config
 
@@ -989,23 +989,23 @@ Plugin 与 Agent 发送消息时，用 `[CQ:image,file=imgs://<id>]` 引用图�
 
 ### GET /group-mgr/words?category=
 
-词条列表（仅兜底用，面板不再展示）。**data** `GroupMgrWordResp[]`。
+已废弃：关键词词库改为只读内存兜底（从内置 txt 加载，不入 DB/RAG/samples），接口返回空列表兼容旧调用。**data** `GroupMgrWordResp[]`（恒空）。
 
 ### POST /group-mgr/words
 
-新增词条（仅兜底，应用层保留写入接口）。**data** `null`。
+已废弃（同 GET 说明）。关键词词库不可 Web 修改，接口返回错误。**data** `null`。
 
 ### DELETE /group-mgr/words/:id
 
-删除词条（同步清理派生样本与 RAG 向量）。**data** `null`。
+已废弃（同 GET 说明）。关键词词库不可 Web 修改，接口返回错误。**data** `null`。
 
 ### POST /group-mgr/words/import?category=
 
-txt 导入词条（仅兜底）。**data** `{imported int, skipped int}`。
+已废弃（同 GET 说明）。关键词词库不可 Web 修改，接口返回错误。**data** `null`。
 
 ### POST /group-mgr/sync-rag
 
-手动全量同步向量库（词条派生样本 + 语录，50 条/批幂等 upsert），成功条目标记 `rag_synced=true`。RAG 未配置返回错误。**data** `GroupMgrSyncResp`: `total`、`failed`。
+手动全量同步违禁语录到向量库（50 条/批幂等 upsert），成功条目标记 `rag_synced=true`。关键词词库不入 RAG，不参与同步。RAG 未配置返回错误。**data** `GroupMgrSyncResp`: `total`、`failed`。
 
 ### GET /group-mgr/sync-rag/stream
 

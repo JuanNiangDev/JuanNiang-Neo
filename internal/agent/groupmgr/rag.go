@@ -99,8 +99,9 @@ type ragVerdict struct {
 // black/white 可能均为 nil（服务正常但无语录命中 → 送 LLM 判定，而不是降级关键词）。
 // observe=false 跳过全部指标上报（链路测试/诊断路径，避免污染生产面板数据）。
 func (m *Manager) verifyByRAG(ctx context.Context, query string, observe bool) (v ragVerdict) {
-	// 链路追踪：RAG 语义核实 span（黑白双集合一次检索，记录最高分）
-	_, span := otelx.Span(ctx, "groupmgr.verify_rag",
+	// 链路追踪：RAG 语义核实 span（黑白双集合一次检索，记录最高分）。
+	// 用新 ctx 调 Search：rag.search span 需嵌套在 verify_rag 下（而非平级）。
+	ctx, span := otelx.Span(ctx, "groupmgr.verify_rag",
 		attribute.String("query_head", headText(query, 30)),
 	)
 	defer func() {
@@ -173,44 +174,24 @@ func (m *Manager) syncRAG(ctx context.Context) (int, int, error) {
 
 // syncRAGProgress 带进度回调的全量同步：每批处理后回调 onProgress(done, failed)，
 // 回调返回非 nil 错误则中止（如 SSE 客户端断开）。供 Web 流式同步进度展示。
+//
+// 仅同步违禁语录（GroupMgrSample）到 RAG 向量库；
+// 关键词词库不入 DB/RAG/samples（仅内存兜底，从 go:embed txt 加载），不在此同步。
 func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, failed int) error) (int, int, error) {
 	cli := m.getRAG()
 	if cli == nil {
 		return 0, 0, fmt.Errorf("RAG-Service 未配置或未启用")
-	}
-	words, err := m.dao.WordListAll(ctx)
-	if err != nil {
-		return 0, 0, err
 	}
 	samples, err := m.dao.SampleListAll(ctx)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	// 词条并入样本路径：先确保 seed 样本行存在（幂等，text 唯一），向量以 Sample tag 写入。
-	// 这样样本表/候选集与词库恒对齐，RAG 核实（候选集=样本表）能命中全部词条向量——
-	// 此前词条用 Word tag 写入但检索侧只过滤 Sample tag，词条向量是死数据，
-	// 样本表为空时链路测试报「RAG 不可用」且词条不参与语义核实。
+	// 仅同步样本表（违禁语录）：词条不再派生样本，不写词条向量。
 	total, failed := 0, 0
-	seed := make([]caller.BatchItem, 0, len(words)+len(samples))
-	wordTagOf := make(map[uuid.UUID]uint, len(words))     // tag → 词条 ID（样本 tag 不在其中）
-	sampleTagOf := make(map[uuid.UUID]uint, len(samples)) // tag → 语录 ID（词条派生样本也记录）
-	for _, w := range words {
-		sid, err := m.dao.SampleAddWithWord(ctx, w.Word, sampleCategoryByWord(w.Category), "seed", w.ID)
-		if err != nil {
-			failed++
-			log.Warn("词条样本行创建失败，跳过同步", "word", w.Word, "err", err)
-			continue
-		}
-		tag := ragtag.Sample(u32s(sid))
-		seed = append(seed, caller.BatchItem{Tag: tag, Text: w.Word})
-		wordTagOf[tag] = w.ID
-		sampleTagOf[tag] = sid
-	}
+	seed := make([]caller.BatchItem, 0, len(samples))
+	sampleTagOf := make(map[uuid.UUID]uint, len(samples)) // tag → 语录 ID
 	for _, s := range samples {
-		if s.WordID > 0 {
-			continue // 词条派生样本已由词条循环处理（避免同 tag 重复 upsert）
-		}
 		// 语录 tag 按集合选择：白名单语录用 WhitePhrase 前缀（检索侧按前缀归类）
 		tag := ragtag.Sample(u32s(s.ID))
 		if s.ListType == "white" {
@@ -227,7 +208,7 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 		resp, err := cli.BatchUpsert(ctx, ragtag.ScoopGroupMgr, seed[i:end])
 		if err != nil {
 			failed += end - i
-			// 整批失败：本批涉及语录/样本全部置未同步
+			// 整批失败：本批涉及语录全部置未同步
 			for _, item := range seed[i:end] {
 				if err := m.dao.SampleMarkRAGSynced(ctx, sampleTagOf[item.Tag], false); err != nil {
 					log.Warn("样本同步状态标记失败", "tag", item.Tag, "err", err)
@@ -249,18 +230,11 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 				continue
 			}
 			total++
-			// 样本级：成功写回向量 → 标记已同步（语录面板状态可信）
+			// 成功写回向量 → 标记已同步（语录面板状态可信）
 			if sid, ok := sampleTagOf[seed[i+idx].Tag]; ok {
 				if err := m.dao.SampleMarkRAGSynced(ctx, sid, true); err != nil {
 					log.Warn("样本同步状态标记失败", "sample", sid, "err", err)
 				}
-			}
-			// 词条写入成功 → 从待标记集合移除（剩余词条保持/置为未同步）
-			if id, ok := wordTagOf[seed[i+idx].Tag]; ok {
-				if err := m.dao.WordMarkRAGSynced(ctx, id, true); err != nil {
-					log.Warn("词条同步状态标记失败", "word_id", id, "err", err)
-				}
-				delete(wordTagOf, seed[i+idx].Tag)
 			}
 		}
 		// 每批后推送进度（客户端断开即中止）
@@ -268,12 +242,6 @@ func (m *Manager) syncRAGProgress(ctx context.Context, onProgress func(done, fai
 			if err := onProgress(total, failed); err != nil {
 				return total, failed, err
 			}
-		}
-	}
-	// 未成功写入的词条/语录（失败批次/失败条目）标记为未同步，面板状态与实际对齐
-	for _, id := range wordTagOf {
-		if err := m.dao.WordMarkRAGSynced(ctx, id, false); err != nil {
-			log.Warn("词条同步状态标记失败", "word_id", id, "err", err)
 		}
 	}
 	// 样本候选集失效重建（同步后立即可检索）

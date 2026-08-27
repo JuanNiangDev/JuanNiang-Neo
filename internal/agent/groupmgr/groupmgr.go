@@ -123,26 +123,13 @@ func New(d *dao.GroupMgrDAO, adp *adapter.Adapter, getRAG func() *caller.Client,
 	return m
 }
 
-// Init 初始化：建默认配置 + 空词库时种子导入 + 载入内存缓存。
+// Init 初始化：建默认配置 + 载入内存缓存（词库仅从 go:embed txt 加载到内存，不入 DB）。
 func (m *Manager) Init(ctx context.Context) error {
 	if err := m.dao.InitConfig(ctx); err != nil {
 		return err
 	}
-	// 种子导入：词条表为空时从 go:embed 词库导入（source=system）
-	if n, err := m.dao.WordCount(ctx); err == nil && n == 0 {
-		seeds := loadSeedWords()
-		imported := 0
-		for category, ws := range seeds {
-			for _, w := range ws {
-				if _, err := m.dao.WordUpsert(ctx, w, category, "system"); err != nil {
-					log.Warn("种子词条导入失败", "word", w, "err", err)
-					continue
-				}
-				imported++
-			}
-		}
-		log.Info("群管理词库种子导入完成", "imported", imported)
-	}
+	// 关键词词库仅从 go:embed txt 加载到内存（兜底用，不入 DB/RAG/samples）。
+	// 旧 GroupMgrWord 表残留数据视为废弃，不再读取。
 	// 图片刷屏窗口恢复（重启不丢窗口；顺带清理过期 ims: kv 行）
 	cfg, _ := m.dao.GetConfig(ctx)
 	if cfg != nil {
@@ -157,22 +144,14 @@ func (m *Manager) Init(ctx context.Context) error {
 }
 
 // Reload 重载配置/词库/白名单/管理员（Web 面板保存后调用；TTL 兜底）。
+// 词库仅从 go:embed txt 加载到内存（不入 DB，不可 Web 修改）；配置/白名单/管理员仍走 DB。
 func (m *Manager) Reload(ctx context.Context) error {
 	cfg, err := m.dao.GetConfig(ctx)
 	if err != nil {
 		return err
 	}
-	wordList, err := m.dao.WordListAll(ctx)
-	if err != nil {
-		return err
-	}
-	words := map[string]map[string]bool{}
-	for _, w := range wordList {
-		if words[w.Category] == nil {
-			words[w.Category] = map[string]bool{}
-		}
-		words[w.Category][w.Word] = true
-	}
+	// 关键词词库：从 go:embed txt 加载到内存（兜底专用，不入 DB/RAG/samples）
+	words := loadSeedWordsMap()
 	wl, err := m.dao.WlList(ctx)
 	if err != nil {
 		return err
@@ -202,7 +181,7 @@ func (m *Manager) Reload(ctx context.Context) error {
 
 	// 样本候选集失效重建
 	m.invalidateSampleSet()
-	log.Info("群管理配置已重载", "enabled", cfg.Enabled, "words", len(wordList))
+	log.Info("群管理配置已重载", "enabled", cfg.Enabled, "words", len(words["black"])+len(words["gray"])+len(words["sensitive"]))
 	return nil
 }
 

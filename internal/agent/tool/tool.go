@@ -102,8 +102,9 @@ func (tr *ToolRegistry) Execute(ctx context.Context, name string, args json.RawM
 		return "", fmt.Errorf("tool %q not found", name)
 	}
 
-	// 链路追踪：工具执行 span（Agent 循环的子 span）
-	_, span := otelx.Span(ctx, "tool.execute", attribute.String("tool", name))
+	// 链路追踪：工具执行 span（Agent 循环的子 span）。
+	// 用新 ctx 执行工具：部分工具内部有 LLM/外部服务子 span，需嵌套在 execute 下。
+	ctx, span := otelx.Span(ctx, "tool.execute", attribute.String("tool", name))
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
@@ -112,12 +113,10 @@ func (tr *ToolRegistry) Execute(ctx context.Context, name string, args json.RawM
 		span.End()
 	}()
 
-	execCtx := ctx
-
 	start := time.Now()
 	log.Info("Tool 执行开始", "tool", name, "args", string(args))
 
-	result, err = t.Execute(execCtx, args)
+	result, err = t.Execute(ctx, args)
 	elapsed := time.Since(start)
 	if err != nil {
 		log.Error("Tool 执行失败", "tool", name, "elapsed", elapsed, "err", err)

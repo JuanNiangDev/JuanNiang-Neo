@@ -354,9 +354,9 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 	switch res.Verdict {
 	case "black":
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("black").Inc()
-		// 处罚分类优先级：RAG 命中样本类别（语义，最可靠）> 关键词类别 > 卡片
+		// 处罚分类优先级：RAG 命中样本类别（语义，最可靠）> 关键词类别 > 卡片（卡片归 ad）
 		category := "ad"
-		if rc.ragCategory == "sensitive" || rc.wordCat == "sensitive" || rc.card {
+		if rc.ragCategory == "sensitive" || rc.wordCat == "sensitive" {
 			category = "sensitive"
 		}
 		reason := res.Reason
@@ -512,7 +512,7 @@ func (m *Manager) ReviewGate(ctx context.Context, groupID, userID, messageID int
 func (m *Manager) WaitReview(ctx context.Context, groupID, userID, messageID int64, timeout time.Duration) (blocked bool) {
 	// 链路追踪：审核闸门 span（发送前等待审核终态，记录等待耗时与结果）
 	start := time.Now()
-	_, span := otelx.Span(ctx, "groupmgr.review_gate",
+	ctx, span := otelx.Span(ctx, "groupmgr.review_gate",
 		attribute.Int64("group_id", groupID),
 		attribute.Int64("message_id", messageID),
 	)

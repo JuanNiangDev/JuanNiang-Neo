@@ -763,8 +763,10 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 	start := time.Now()
 	outcome := "ok"
-	// 链路追踪：Agent ReAct 循环 span（含多轮 LLM/工具，全流程中最长的一段）
-	_, hspan := otelx.Span(ctx, "agent.handle",
+	// 链路追踪：Agent ReAct 循环 span（含多轮 LLM/工具，全流程中最长的一段）。
+	// 用新 ctx 继续后续调用：Agent.Run 内的 llm.call / tool.execute 及记忆召回的
+	// rag.search 需嵌套在 handle 下（而非与 handle 平级挂在 process_event 下）。
+	ctx, hspan := otelx.Span(ctx, "agent.handle",
 		attribute.String("chat_area_id", chatArea.ID),
 		attribute.Int("events", len(events)),
 	)

@@ -67,8 +67,18 @@
           </v-col>
           <v-col cols="12" md="4" class="service-info-col">
             <div class="text-subtitle-2 font-weight-bold mb-1">向量库规模</div>
-            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">Tag 数</span><span>{{ info?.tags ?? '-' }}</span></div>
-            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">Chunk 数</span><span>{{ info?.chunks ?? '-' }}</span></div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">Tag 总数</span><span>{{ totalTags }}</span></div>
+            <div class="d-flex justify-space-between py-1 text-body-2"><span class="text-medium-emphasis">Chunk 总数</span><span>{{ totalChunks }}</span></div>
+            <v-divider class="my-2" />
+            <template v-if="scoopEntries.length">
+              <div v-for="[name, st] in scoopEntries" :key="name" class="py-1 text-body-2">
+                <div class="d-flex justify-space-between">
+                  <span class="text-medium-emphasis">{{ scoopLabel(name) }}</span>
+                  <span class="text-caption">{{ st.tags }} tag / {{ st.chunks }} chunk</span>
+                </div>
+              </div>
+            </template>
+            <div v-else class="text-caption text-medium-emphasis">（无分库数据）</div>
           </v-col>
         </v-row>
       </v-card-text>
@@ -80,7 +90,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ragApi, type RAGConfigResp, type UpdateRAGConfigReq, type RAGInfoResp } from '@/api'
 import { useToastStore } from '@/stores/toast'
 
@@ -105,6 +115,22 @@ function formatParams(n?: number) {
   if (n >= 1e9) return (n / 1e9).toFixed(2) + ' B'
   if (n >= 1e6) return (n / 1e6).toFixed(1) + ' M'
   return String(n)
+}
+
+// ---------- 向量库规模（各 scoop 汇总） ----------
+// 后端 /info 返回 scoops: { scoop名: { tags, chunks } }，总数由前端汇总
+const scoopEntries = computed(() => Object.entries(info.value?.scoops ?? {}))
+const totalTags = computed(() => scoopEntries.value.reduce((s, [, st]) => s + (st.tags || 0), 0) || '-')
+const totalChunks = computed(() => scoopEntries.value.reduce((s, [, st]) => s + (st.chunks || 0), 0) || '-')
+
+// scoopLabel 分库名 → 中文展示名（未知分库原样显示）
+function scoopLabel(name: string) {
+  const labels: Record<string, string> = {
+    knowledge: '知识库',
+    groupmgr: '群管理语录',
+    memory: '长期记忆',
+  }
+  return labels[name] || name
 }
 
 async function fetchConfig() {

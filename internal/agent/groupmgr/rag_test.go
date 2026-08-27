@@ -13,7 +13,8 @@ import (
 	caller "JuanNiang-Neo/infrastructure/rag/handler"
 )
 
-// TestSyncRAG 手动全量同步向量库：词条+样本批量 upsert（幂等，逐批 50）。
+// TestSyncRAG 手动全量同步向量库：仅样本（违禁语录）批量 upsert（幂等，逐批 50）。
+// 关键词词库不入 RAG（仅内存兜底，从 go:embed txt 加载），不参与同步。
 func TestSyncRAG(t *testing.T) {
 	// mock RAG-Service：/scoops/groupmgr/tags/batch 接收批量 upsert，统计请求次数与条数
 	var mu sync.Mutex
@@ -51,15 +52,14 @@ func TestSyncRAG(t *testing.T) {
 	}
 	m.getRAG = func() *caller.Client { return ragCli }
 
-	// 词条 + 样本各一条
-	_, _ = gmdao.WordUpsert(ctx, "同步测试词", "gray", "import")
+	// 仅样本一条（newTestManager 已预置 ID=1 的样本；词条不再参与同步）
 	_, _ = gmdao.SampleAdd(ctx, "同步测试样本", "ad", "learn")
 
 	total, failed, err := m.SyncRAG(ctx)
 	if err != nil {
 		t.Fatalf("SyncRAG 失败: %v", err)
 	}
-	// 同步范围 = 全部词条（含 2268 种子）+ 样本，失败必须为 0
+	// 同步范围 = 全部样本（预置 + 新增），失败必须为 0；词条不参与同步
 	if total < 2 || failed != 0 {
 		t.Fatalf("同步失败数应为 0，got total=%d failed=%d", total, failed)
 	}
