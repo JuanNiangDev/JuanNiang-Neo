@@ -1,4 +1,5 @@
-# Grafana Dashboard provisioning：自动加载 deployments/grafana/dashboards/*.json
+# Grafana Dashboard provisioning：自动加载挂载到 /var/lib/grafana/dashboards 的面板
+# （chat-stats/dashboards、juanniang-dashboard.json、juan-niang-traces.json）
 apiVersion: 1
 
 providers:

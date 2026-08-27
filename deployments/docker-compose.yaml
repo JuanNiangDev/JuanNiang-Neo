@@ -151,7 +151,7 @@ services:
     networks:
       - juanniang-net
 
-  # 可视化（Grafana）：provisioning 自动注册 Loki/Tempo 数据源 + 聊天统计面板；
+  # 可视化（Grafana）：provisioning 自动注册 Loki/Tempo 数据源 + 自动加载面板；
   # 访问 http://localhost:3000（默认 admin/admin，首次登录建议改密）。
   grafana:
     image: grafana/grafana:11.1.0
@@ -163,8 +163,12 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro # 数据源 + dashboard provider
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro   # 面板 JSON（chat-stats.json）
+      # 数据源 + dashboard provider（provisioning）
+      - ./grafana/chat-stats/provisioning:/etc/grafana/provisioning:ro
+      # 面板 JSON：聊天统计（chat-stats/dashboards）+ 综合监控（juanniang-dashboard）+ 链路追踪（juan-niang-traces）
+      - ./grafana/chat-stats/dashboards:/var/lib/grafana/dashboards/chat-stats:ro
+      - ./grafana/juanniang-dashboard.json:/var/lib/grafana/dashboards/juanniang-dashboard.json:ro
+      - ./grafana/juan-niang-traces.json:/var/lib/grafana/dashboards/juan-niang-traces.json:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - loki

@@ -51,7 +51,11 @@ docker compose -f deployments/docker-compose.yaml up -d --build
 
 - 机器人 `/metrics` 与 OTLP 上报**无需额外配置**（OTLP 默认指向 `http://tempo:4318`，见 compose 环境变量）。
 - 统计通道默认开启（`STATS_ENABLED=true`）；关闭则不写盘，机器人主流程不受影响。
-- Grafana 已内置 **provisioning**（`deployments/grafana/`）：自动注册 Loki/Tempo 数据源，并加载「**群聊天消息统计**」面板（`deployments/grafana/dashboards/chat-stats.json`）——登录后左侧 Dashboards → JuanNiang-Neo 即可查看；顶部可选群过滤。
+- Grafana 已内置 **provisioning**（`deployments/grafana/chat-stats/provisioning/`）：自动注册 Loki/Tempo 数据源，并自动加载 3 个面板到「JuanNiang-Neo」文件夹：
+  - `群聊天消息统计`（`deployments/grafana/chat-stats/dashboards/chat-stats.json`）——Loki 聊天明细与统计，顶部可选群过滤
+  - `卷娘 JuanNiang 监控`（`deployments/grafana/juanniang-dashboard.json`）——Prometheus 综合监控（45 面板）
+  - `JuanNiang-Neo 链路追踪`（`deployments/grafana/juan-niang-traces.json`）——Tempo TraceQL 面板
+  - 登录后左侧 Dashboards → JuanNiang-Neo 即可查看；聊天面板顶部可选群过滤。
 - 各组件数据保留：Prometheus 由自建实例决定；Loki 7 天（`retention_period: 168h`）；Tempo 本地磁盘（无期限，按需清理）。
 
 ---
