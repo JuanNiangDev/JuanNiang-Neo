@@ -122,6 +122,8 @@ make lint
 
 ## Prometheus 监控
 
+> 可观测性体系总览（指标/日志/Loki 统计/追踪 + 联合排障 + 告警）见 [observability.md](observability.md)。
+
 ### 指标端点
 
 `GET /metrics`（与 `/health` 同级，**无需 JWT**），输出 Prometheus 文本格式指标（前缀 `juanniang_`）：
@@ -130,6 +132,7 @@ make lint
 |--------|------|
 | `juanniang_events_total` / `juanniang_messages_total` | 事件与消息吞吐（按 post_type/message_type） |
 | `juanniang_message_dedup_dropped_total` / `juanniang_message_blocked_total` / `juanniang_message_dropped_total` | 去重丢弃 / 黑名单拦截 / 相关性-静默-刷屏丢弃 |
+| `juanniang_chat_replies_total` / `juanniang_chat_stats_dropped_total` | Agent 回复发送量（全局趋势）/ 统计事件丢弃（Loki 通道积压，恒为 0 为正常） |
 | `juanniang_agent_loops_total` / `_active` / `_duration_seconds` | Agent 循环完成结果（ok/error/timeout）、活跃数、耗时直方图 |
 | `juanniang_agent_concurrency_in_use` / `_waits_total` / `_wait_seconds` | 全局并发槽占用与令牌等待 |
 | `juanniang_llm_requests_total` / `_tokens_total` / `_latency_seconds` | LLM 调用、Token 消耗（按 agent/review/relevance 用途）、延迟 |
@@ -224,6 +227,19 @@ stats:
   queue_size: 1024
 ```
 
+### 部署（docker compose）
+
+`deployments/docker-compose.yaml` 已内置 Loki + Promtail（与 Tempo 并存）：
+
+```bash
+docker compose up -d --build
+# Loki:     http://localhost:3100（Grafana 数据源）
+# Promtail: 自动采集 /app/data/stats/chat-events*.log（只读挂载 ../data）
+# 机器人:   STATS_ENABLED=true 已默认开启，写入 /app/data/stats/chat-events.log
+```
+
+Grafana（独立部署或复用现有实例）添加数据源：**Loki → http://loki:3100**（Docker 网络内）或 `http://localhost:3100`（宿主机）。
+
 ### 采集与查询
 
 Promtail 配置样例见 `deployments/promtail-chat-stats.yaml`（独立 job，与主日志采集共存）：
@@ -232,9 +248,17 @@ Promtail 配置样例见 `deployments/promtail-chat-stats.yaml`（独立 job，�
 # 每群消息/回复数（按方向拆分）
 sum by (group_id, direction) (count_over_time({job="juanniang"}[1h]))
 
+# 每群按来源统计机器人输出（agent 回复 / groupmgr 处罚警告）
+sum by (group_id, source) (count_over_time({job="juanniang", direction="reply"}[1h]))
+
 # 某群最近消息与对应回复
-{job="juanniang", group_id="123456"} |~ "方向|reply" | json | line_format "{{.ts}} {{.direction}} {{.text}}"
+{job="juanniang", group_id="123456"} | json | line_format "{{.ts}} {{.direction}} {{.source}} {{.text}}"
+
+# 按群查询 Agent 回复原文（含触发消息 reply_to）
+{job="juanniang", group_id="123456", direction="reply"} | json | line_format "{{.text}}  <-  {{.reply_to}}"
 ```
+
+> 集群大时建议为群消息/回复统计单独建 Grafana 面板（LogQL 聚合 + `rate` 时序），并给 `{job="juanniang"}` 加告警（如某群回复率异常低 → 机器人可能被禁言）。
 
 注意事项：
 
