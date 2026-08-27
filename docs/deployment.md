@@ -199,6 +199,49 @@ Grafana（独立部署或复用现有实例）添加数据源：**Tempo → http
 
 > 提示：Tempo 的属性搜索是精确值匹配；按内容模糊检索请用 Web 面板日志页（Hub）或部署 Loki。
 
+## 群消息/回复统计（Loki + Promtail）
+
+用于统计**每个群的消息与对应回复**，与主日志 pipeline 完全隔离：
+
+- 事件由 `internal/agent/stats` 以 **NDJSON 逐行**追加到独立文件（默认 `data/stats/chat-events.log`），**不走 slog / 主日志**（避免 ANSI 颜色、Web Hub 污染）
+- 文件轮转由 lumberjack 负责（按大小 + 保留份数 + gzip 压缩）；Promtail 用 `__path__` 通配 + inode 跟随无缝衔接
+- 埋点：
+  - 群消息在事件循环 Phase 0（去重后）记录 `direction=msg`
+  - Agent 回复在 `sendReply` 记录 `direction=reply, source=agent`（`reply_to` 携带触发消息原文）
+  - 群管理处罚/刷屏/复读回复在 `replyGroup`/`replyGroupImage`/`checkCopySpam` 记录 `direction=reply, source=groupmgr`
+
+### 启用
+
+`dev.yaml` 的 `stats` 块或环境变量（`STATS_ENABLED` / `STATS_PATH` / `STATS_MAX_SIZE_MB` / `STATS_MAX_BACKUPS` / `STATS_MAX_AGE_DAYS` / `STATS_QUEUE_SIZE`）：
+
+```yaml
+stats:
+  enabled: true
+  path: data/stats/chat-events.log
+  max_size_mb: 100
+  max_backups: 10
+  max_age_days: 7
+  queue_size: 1024
+```
+
+### 采集与查询
+
+Promtail 配置样例见 `deployments/promtail-chat-stats.yaml`（独立 job，与主日志采集共存）：
+
+```logql
+# 每群消息/回复数（按方向拆分）
+sum by (group_id, direction) (count_over_time({job="juanniang"}[1h]))
+
+# 某群最近消息与对应回复
+{job="juanniang", group_id="123456"} |~ "方向|reply" | json | line_format "{{.ts}} {{.direction}} {{.text}}"
+```
+
+注意事项：
+
+- `group_id` / `direction` 做 label（群数量有限，基数可控）；`user_id` 与文本内容**不做 label**（高基数撑爆 Loki 索引），留在 JSON 字段按需过滤
+- Loki 侧设 `retention_period`（如 168h）控制保留期；每群长期趋势建议用 Prometheus（`juanniang_chat_replies_total`，`message_type` 维度）
+- 统计事件丢弃数（队列满/写失败）可查 `juanniang_chat_stats_dropped_total`；主流程不受影响
+
 ## 日志排查
 
 - 使用 `internal/logging` 自定义日志包（底层 `github.com/fatih/color`），支持彩色 stdout、JSON 格式化、WARN+ 调用栈

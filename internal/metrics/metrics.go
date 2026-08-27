@@ -67,6 +67,19 @@ var (
 		Name: "juanniang_message_dropped_total",
 		Help: "消息被丢弃总数",
 	}, []string{"reason"})
+
+	// ChatRepliesTotal Agent 回复发送数（message_type 维度；每群细分统计走 Loki，
+	// 遵守「禁止 group_id/user_id 高基数标签」约束）。
+	ChatRepliesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "juanniang_chat_replies_total",
+		Help: "Agent 回复发送总数",
+	}, []string{"message_type"})
+
+	// ChatStatsDroppedTotal 群统计事件被丢弃数（Loki 通道队列满/写失败；主流程不受影响）。
+	ChatStatsDroppedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "juanniang_chat_stats_dropped_total",
+		Help: "群消息/回复统计事件丢弃总数",
+	}, []string{"direction"})
 )
 
 // ---------- Agent 循环与并发 ----------
@@ -219,6 +232,7 @@ func init() {
 		RAGSearchLatency, RAGSearchErrorsTotal,
 		PluginHookErrorsTotal, PluginHookDuration,
 		HTTPRequestsTotal, HTTPRequestDuration,
+		ChatRepliesTotal, ChatStatsDroppedTotal,
 		&runtimeCollector{},
 	} {
 		MustRegister(c)

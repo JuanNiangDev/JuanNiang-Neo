@@ -1,0 +1,37 @@
+# Promtail 采集样例：群消息/回复统计事件（Loki+Promtail 通道，独立于主日志 pipeline）
+#
+# 事件文件由 JuanNiang-Neo 写入（internal/agent/stats，NDJSON 逐行追加），
+# 文件轮转由 lumberjack 负责（rename + gzip 归档，__path__ 通配 + inode 跟随无缝衔接）。
+#
+# 用法：promtail -config.file=promtail-chat-stats.yaml
+# 仅展示本 job 所需片段；可与主日志采集 job 共存（互不干扰）。
+#
+# 注意：
+#   - group_id / direction 做 label（群数量有限，基数可控）；
+#   - user_id 与文本内容只留在 JSON 字段，不做 label（高基数会撑爆 Loki 索引）。
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/promtail-chat-stats-positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: juanniang-chat-stats
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: juanniang
+          __path__: /app/data/stats/chat-events*.log   # 通配覆盖 lumberjack 归档名
+    pipeline_stages:
+      # 解析 NDJSON → 提取低基数字段做 label，其余留在 line 内可 LogQL 过滤
+      - json:
+          expressions:
+            group_id: group_id
+            direction: direction
+      - labels:
+          group_id:
+          direction:

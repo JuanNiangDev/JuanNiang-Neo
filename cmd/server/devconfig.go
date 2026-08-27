@@ -42,6 +42,15 @@ type DevConfig struct {
 		Enabled   bool   `yaml:"enabled"`
 		PprofAddr string `yaml:"pprof_addr"`
 	} `yaml:"debug"`
+	// Stats 群消息/回复统计（Loki+Promtail 采集通道，独立于主日志 pipeline）。
+	Stats struct {
+		Enabled    bool   `yaml:"enabled"`
+		Path       string `yaml:"path"`
+		MaxSizeMB  int    `yaml:"max_size_mb"`
+		MaxBackups int    `yaml:"max_backups"`
+		MaxAgeDays int    `yaml:"max_age_days"`
+		QueueSize  int    `yaml:"queue_size"`
+	} `yaml:"stats"`
 }
 
 // loadDevConfig 读取 dev.yaml 配置文件。

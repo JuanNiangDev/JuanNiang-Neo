@@ -42,3 +42,15 @@ jwt:
 debug:
   enabled: true                   # make run-debug 会强制开启
   pprof_addr: ":6060"
+
+# ---------- 群消息/回复统计（Loki+Promtail 采集通道） ----------
+# 独立于主日志 pipeline：事件以 NDJSON 追加到 stats.path，Promtail 单独 scrape job 采集。
+# 文件轮转（大小/份数/压缩）由 lumberjack 负责；Promtail 用 __path__ 通配 + inode 跟随。
+# 环境变量覆盖: STATS_ENABLED / STATS_PATH / STATS_MAX_SIZE_MB / STATS_MAX_BACKUPS / STATS_MAX_AGE_DAYS / STATS_QUEUE_SIZE
+stats:
+  enabled: false                   # 默认关闭；置 true 开启（写盘 + 埋点生效）
+  path: data/stats/chat-events.log # NDJSON 统计文件
+  max_size_mb: 100                 # 单文件轮转大小（MB）
+  max_backups: 10                  # 保留归档份数（gzip 压缩）
+  max_age_days: 7                  # 归档保留天数
+  queue_size: 1024                 # 异步队列容量（满则丢弃并计数，不影响主流程）

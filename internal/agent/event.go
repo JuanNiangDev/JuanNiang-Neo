@@ -14,6 +14,7 @@ import (
 	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/metrics"
@@ -153,6 +154,20 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	// Phase 0.5: 系统级群管理检测（先于所有 Lua 插件，Go 原生）。
 	// consumed=true（图片刷屏/+1复读）直接拦截不进 Agent；
 	// 违禁类已内部处罚（不消费，消息继续流向插件与 Agent）。
+	// 群消息统计事件（Loki+Promtail 通道，独立于主日志）：重复消息已在 Phase 0 丢弃，此处仅记真实消息。
+	if h.Stats != nil && ev.PostType == "message" && ev.Message != nil && ev.Message.MessageType == "group" {
+		msg := ev.Message
+		if !h.Stats.Emit(stats.Event{
+			Timestamp: time.Now(),
+			GroupID:   msg.GroupID,
+			UserID:    msg.UserID,
+			MessageID: msg.MessageID,
+			Direction: stats.DirectionMsg,
+			Text:      truncateStatsText(cqCodeRegexp.ReplaceAllString(msg.RawMessage, "")),
+		}) {
+			metrics.ChatStatsDroppedTotal.WithLabelValues("msg").Inc()
+		}
+	}
 	if h.GroupMgr != nil {
 		if h.GroupMgr.Process(ctx, ev) {
 			return
@@ -1166,6 +1181,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 // cqCodeRegexp 匹配 CQ 码: [CQ:type,key=value,...]
 var cqCodeRegexp = regexp.MustCompile(`\[CQ:[a-zA-Z_]+(?:,[^\]]+)?\]`)
 
+// statsTextMax 统计事件文本截断长度（rune；防超长消息撑爆 Loki 单行）。
+const statsTextMax = 200
+
+// truncateStatsText 统计事件文本规范化（复用 stats.Truncate：折叠空白 + 截断 + 省略号）。
+func truncateStatsText(s string) string {
+	return stats.Truncate(s, statsTextMax)
+}
+
 // urlRegexp 匹配 URL，提取为包级变量避免每次调用 splitMessages 时重新编译。
 var urlRegexp = regexp.MustCompile(`https?://\S+`)
 
@@ -1189,6 +1212,26 @@ func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, c
 	defer span.End()
 	// AgentLite 与正常模式一致，同样支持分段回复
 	parts := splitMessages(content)
+	// 群回复统计事件（Loki+Promtail 通道）：reply_to 携带触发消息原文，便于按群对应「消息→回复」
+	if msg.MessageType == "group" {
+		metrics.ChatRepliesTotal.WithLabelValues("group").Inc()
+		if h.Stats != nil {
+			if !h.Stats.Emit(stats.Event{
+				Timestamp: time.Now(),
+				GroupID:   msg.GroupID,
+				UserID:    msg.UserID,
+				MessageID: msg.MessageID,
+				Direction: stats.DirectionReply,
+				Source:    stats.SourceAgent,
+				Text:      truncateStatsText(content),
+				ReplyTo:   truncateStatsText(cqCodeRegexp.ReplaceAllString(msg.RawMessage, "")),
+			}) {
+				metrics.ChatStatsDroppedTotal.WithLabelValues("reply").Inc()
+			}
+		}
+	} else {
+		metrics.ChatRepliesTotal.WithLabelValues("private").Inc()
+	}
 	log.Debug("sendReply 入口",
 		"parts", len(parts),
 		"content_len", len([]rune(content)),

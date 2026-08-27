@@ -30,6 +30,7 @@ import (
 	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/scheduledmsg"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/api/engine"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/api/service"
@@ -228,6 +229,22 @@ func main() {
 
 	// ---------- 5. Agent ----------
 
+	// 统计事件写入器（Loki+Promtail 通道，独立于主日志 pipeline）：
+	// 默认关闭；dev.yaml stats.enabled 或环境变量 STATS_ENABLED=true 开启。
+	var statsWriter *stats.Writer
+	if envBool("STATS_ENABLED", devCfg.Stats.Enabled) {
+		statsWriter = stats.New(stats.Config{
+			Enabled:    true,
+			Path:       env("STATS_PATH", devCfg.Stats.Path),
+			MaxSizeMB:  envInt("STATS_MAX_SIZE_MB", devCfg.Stats.MaxSizeMB),
+			MaxBackups: envInt("STATS_MAX_BACKUPS", devCfg.Stats.MaxBackups),
+			MaxAgeDays: envInt("STATS_MAX_AGE_DAYS", devCfg.Stats.MaxAgeDays),
+			QueueSize:  envInt("STATS_QUEUE_SIZE", devCfg.Stats.QueueSize),
+		})
+		statsWriter.Start()
+		log.Info("群消息/回复统计已启用（Loki+Promtail）", "path", env("STATS_PATH", devCfg.Stats.Path))
+	}
+
 	hago := agent.NewHagoCenter()
 	if err := hago.Init(ctx, agent.Config{
 		Adapter:        adapterProv,
@@ -240,6 +257,7 @@ func main() {
 		DAO:            coreInst.DAO,
 		ACL:            coreInst.ACL,
 		Cache:          coreInst.Cache,
+		Stats:          statsWriter,
 	}); err != nil {
 		log.Error("Agent 初始化失败", "err", err)
 		os.Exit(1)
@@ -283,6 +301,8 @@ func main() {
 		adapterProv,
 		func() *ragcaller.Client { return hago.RAGClient.Load() },
 		hago.Providers)
+	// 群管理处罚/刷屏/复读回复也写统计事件（source=groupmgr；未启用统计时为 nil 跳过）
+	gm.SetStats(statsWriter)
 	if err := gm.Init(ctx); err != nil {
 		log.Error("群管理初始化失败", "err", err)
 	} else {
@@ -547,6 +567,16 @@ func envBool(key string, def bool) bool {
 			return b
 		}
 		return v == "1"
+	}
+	return def
+}
+
+// envInt 读取环境变量为 int，非法/空返回默认值。
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }

@@ -19,6 +19,7 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
 
@@ -34,6 +35,10 @@ type Manager struct {
 	adp       *adapter.Adapter
 	getRAG    func() *caller.Client // RAG 客户端（热更新，nil = 未配置 → 降级）
 	providers *provider.ProviderGroup
+
+	// stats 群消息/回复统计写入器（Loki+Promtail 通道；nil = 未启用）。
+	// 处罚/刷屏/复读回复的埋点出口，由 main 注入（SetStats）。
+	stats *stats.Writer
 
 	// 配置/词库/白名单/管理员 内存缓存（Reload 立即失效，TTL 兜底）
 	mu        sync.RWMutex
@@ -122,6 +127,10 @@ func New(d *dao.GroupMgrDAO, adp *adapter.Adapter, getRAG func() *caller.Client,
 	}
 	return m
 }
+
+// SetStats 注入群消息/回复统计写入器（Loki+Promtail 通道；nil = 不埋点）。
+// 处罚/刷屏/复读回复发送时写入 direction=reply 事件，来源标记为 groupmgr。
+func (m *Manager) SetStats(w *stats.Writer) { m.stats = w }
 
 // Init 初始化：建默认配置 + 载入内存缓存（词库仅从 go:embed txt 加载到内存，不入 DB）。
 func (m *Manager) Init(ctx context.Context) error {

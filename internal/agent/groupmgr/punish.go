@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/metrics"
 	"JuanNiang-Neo/internal/otelx"
@@ -196,6 +197,7 @@ func (m *Manager) replyGroup(ev adapter.Event, text string) {
 		{Type: "at", Data: map[string]any{"qq": itoa(ev.Message.UserID)}},
 		{Type: "text", Data: map[string]any{"text": " " + text}},
 	})
+	m.emitStatsReply(ev, text)
 }
 
 // replyGroupImage 群聊 @ 发信人回复 + 图片。
@@ -208,6 +210,32 @@ func (m *Manager) replyGroupImage(ev adapter.Event, text, b64 string) {
 		segments = append(segments, adapter.Segment{Type: "image", Data: map[string]any{"file": b64}})
 	}
 	_, _ = m.adp.SendGroupMsg(ev.Message.GroupID, segments)
+	m.emitStatsReply(ev, text)
+}
+
+// statsReplyTextMax 群管理回复统计文本截断长度（rune）。
+const statsReplyTextMax = 200
+
+// emitStatsReply 群管理回复统计事件（Loki+Promtail 通道；未注入 stats 时跳过）。
+// 处罚/刷屏/复读警告均属机器人对群消息的回复，direction=reply + source=groupmgr，
+// reply_to 携带触发消息原文（剥离 CQ 码），便于按群对应「消息→回复」。
+func (m *Manager) emitStatsReply(ev adapter.Event, text string) {
+	if m.stats == nil || ev.Message == nil {
+		return
+	}
+	msg := ev.Message
+	if !m.stats.Emit(stats.Event{
+		Timestamp: time.Now(),
+		GroupID:   msg.GroupID,
+		UserID:    msg.UserID,
+		MessageID: msg.MessageID,
+		Direction: stats.DirectionReply,
+		Source:    stats.SourceGroupMgr,
+		Text:      stats.Truncate(text, statsReplyTextMax),
+		ReplyTo:   stats.Truncate(stripCQ(msg.RawMessage), statsReplyTextMax),
+	}) {
+		metrics.ChatStatsDroppedTotal.WithLabelValues("reply").Inc()
+	}
 }
 
 // ---------- 管理员通知队列（异步 pump，随机延迟 5~30s 防风控） ----------
