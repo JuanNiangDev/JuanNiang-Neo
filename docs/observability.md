@@ -43,6 +43,7 @@ docker compose -f deployments/docker-compose.yaml up -d --build
 
 | 组件 | 服务名 | 端口 | Grafana 数据源地址（容器网络内） |
 |---|---|---|---|
+| 可视化 | `grafana` | 3000 | —（默认 admin/admin，首次登录建议改密） |
 | 指标 | Prometheus（需自建或复用现有） | 9090 | `http://prometheus:9090` |
 | 日志统计 | `loki` | 3100 | `http://loki:3100` |
 | 日志采集 | `promtail` | — | 自动采集 `data/stats/chat-events*.log` |
@@ -50,6 +51,7 @@ docker compose -f deployments/docker-compose.yaml up -d --build
 
 - 机器人 `/metrics` 与 OTLP 上报**无需额外配置**（OTLP 默认指向 `http://tempo:4318`，见 compose 环境变量）。
 - 统计通道默认开启（`STATS_ENABLED=true`）；关闭则不写盘，机器人主流程不受影响。
+- Grafana 已内置 **provisioning**（`deployments/grafana/`）：自动注册 Loki/Tempo 数据源，并加载「**群聊天消息统计**」面板（`deployments/grafana/dashboards/chat-stats.json`）——登录后左侧 Dashboards → JuanNiang-Neo 即可查看；顶部可选群过滤。
 - 各组件数据保留：Prometheus 由自建实例决定；Loki 7 天（`retention_period: 168h`）；Tempo 本地磁盘（无期限，按需清理）。
 
 ---

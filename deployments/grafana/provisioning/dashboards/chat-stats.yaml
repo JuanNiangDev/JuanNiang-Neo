@@ -1,0 +1,13 @@
+# Grafana Dashboard provisioning：自动加载 deployments/grafana/dashboards/*.json
+apiVersion: 1
+
+providers:
+  - name: juanniang
+    orgId: 1
+    folder: JuanNiang-Neo
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

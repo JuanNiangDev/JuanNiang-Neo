@@ -151,11 +151,33 @@ services:
     networks:
       - juanniang-net
 
+  # 可视化（Grafana）：provisioning 自动注册 Loki/Tempo 数据源 + 聊天统计面板；
+  # 访问 http://localhost:3000（默认 admin/admin，首次登录建议改密）。
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000" # Grafana Web UI
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro # 数据源 + dashboard provider
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro   # 面板 JSON（chat-stats.json）
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+      - tempo
+    networks:
+      - juanniang-net
+
 volumes:
   pgdata:
   tempo-data:
   loki-data:
   promtail-positions:
+  grafana-data:
 
 networks:
   juanniang-net:
