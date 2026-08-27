@@ -37,3 +37,5 @@ limits_config:
 compactor:
   working_directory: /loki/compactor
   retention_enabled: true
+  # Loki 3.x 要求：启用 retention 时必须指定删除请求存储（filesystem 与 common.storage 一致）
+  delete_request_store: filesystem
