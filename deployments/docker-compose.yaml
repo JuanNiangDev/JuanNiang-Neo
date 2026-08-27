@@ -78,6 +78,10 @@ services:
       OTEL_TRACE_SAMPLE_RATIO: "1.0"
       # 根 span 是否记录消息内容（截断 100 字符；敏感环境可关）
       OTEL_TRACE_CAPTURE_CONTENT: "true"
+      # 群消息/回复统计（Loki+Promtail 通道，独立于主日志）：NDJSON 追加到 data/stats/chat-events.log，
+      # promtail 采集后推送 loki。置 false 可关闭（不写盘）。
+      STATS_ENABLED: "true"
+      STATS_PATH: /app/data/stats/chat-events.log
     depends_on:
       postgres:
         condition: service_healthy
@@ -118,9 +122,40 @@ services:
     networks:
       - juanniang-net
 
+  # 日志存储（Loki）：群消息/回复统计明细，保留 7 天（deployments/loki.yaml）。
+  # Grafana 添加数据源 http://loki:3100 → Explore 按 {job="juanniang"} 查询。
+  loki:
+    image: grafana/loki:3.3.2
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    ports:
+      - "3100:3100" # Loki HTTP（Grafana 数据源 / promtail 推送）
+    volumes:
+      - ./loki.yaml:/etc/loki/loki.yaml
+      - loki-data:/loki
+    networks:
+      - juanniang-net
+
+  # 日志采集（Promtail）：采集 juan-niang-neo 写入的统计 NDJSON（/app/data/stats ↔ /data 同源），
+  # 解析 group_id/direction/source 为 label 后推送 loki。
+  promtail:
+    image: grafana/promtail:3.3.2
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/config.yaml"]
+    volumes:
+      - ./promtail-chat-stats.yaml:/etc/promtail/config.yaml:ro
+      - ../data:/data:ro            # 只读采集统计文件（与 juan-niang-neo 的 /app/data 同源）
+      - promtail-positions:/tmp     # 采集偏移持久化（重启不重推）
+    depends_on:
+      - loki
+    networks:
+      - juanniang-net
+
 volumes:
   pgdata:
   tempo-data:
+  loki-data:
+  promtail-positions:
 
 networks:
   juanniang-net:
