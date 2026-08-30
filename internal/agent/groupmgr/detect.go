@@ -7,6 +7,9 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // QQ 群聊推荐卡片：OneBot 11 json 消息段 data 中的 app 标识（计入广告违规）。
@@ -65,7 +68,8 @@ func (m *Manager) detectMessage(ctx context.Context, ev adapter.Event, cfg *mode
 //  1. RAG 检索黑/白语录双集合：
 //     黑名单命中（score ≥ BlackMinScore）→ 处罚；白名单命中（score ≥ WhiteMinScore）→ 放行；
 //  2. 均未命中 → LLM 批量判定（3s 窗口凑批，逐条独立黑白判定）；
-//  3. RAG/LLM 均不可用 → 关键词兜底（敏感/黑词直罚、灰词 LLM/放行）。
+//  3. RAG 不可用 → LLM 批量判定（同 2）；
+//  4. RAG 与 LLM 均不可用 → 关键词兜底（敏感/黑词直罚、灰词放行）。
 //
 // 返回 true 仅表示"已发起同步处罚"，不影响消费语义（违禁类一律不消费消息）。
 func (m *Manager) detectViolation(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig) bool {
@@ -76,14 +80,38 @@ func (m *Manager) detectViolation(ctx context.Context, ev adapter.Event, cfg *mo
 		return false
 	}
 	card := detectGroupCard(raw)
-	// 关键词命中仅作最后兜底（RAG/LLM 均不可用时），不参与 RAG 判据
+	// 关键词命中仅作最后兜底（RAG+LLM 均不可用时），不参与 RAG 判据
 	word, wordCat := m.wordHit(ctx, text)
+
+	// 链路追踪：群管理违禁检测 span（关键词预查结果 + 后续路径）。
+	// 必须用新 ctx 继续后续调用：否则 verify_rag/punish/llm.call 等子 span
+	// 会与 detect 平级而非嵌套（父 span 提前闭包后子 span 挂到更外层）。
+	ctx, span := otelx.Span(ctx, "groupmgr.detect",
+		attribute.String("word", word),
+		attribute.String("word_cat", wordCat),
+		attribute.Bool("card", card),
+	)
+	defer span.End()
 
 	// 第一核实人：RAG 语义匹配（黑白语录双集合）
 	if v := m.verifyByRAG(ctx, text, true); v.ok {
 		return m.handleRAGMatch(ctx, ev, cfg, card, word, wordCat, v)
 	}
-	// RAG 不可用 → 关键词兜底（= 旧插件行为）
+	// RAG 不可用 → 转入 LLM 判定路径（handleRAGMatch 的 RAG 未命中分支同此路径）
+	return m.handleRAGUnavailablePath(ctx, ev, cfg, card, word, wordCat)
+}
+
+// handleRAGUnavailablePath RAG 不可用时的判定路径：先 LLM，LLM 也不可用才走关键词兜底。
+// 与 handleRAGMatch 中 RAG 未达阈值的分支共享语义：均送 LLM 判定，LLM 不可用才降级关键词。
+func (m *Manager) handleRAGUnavailablePath(ctx context.Context, ev adapter.Event, cfg *models.GroupMgrConfig,
+	card bool, word, wordCat string) bool {
+	// 无 RAG 命中信息：rc 仅含关键词预查与卡片硬信号
+	rc := reviewCtx{word: word, wordCat: wordCat, card: card}
+	if m.submitReview(ctx, ev, rc) {
+		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "review").Inc()
+		return true
+	}
+	// LLM 也不可用 → 关键词兜底（RAG + LLM 均失败）
 	return m.handleKeywordPath(ctx, ev, cfg, card, word, wordCat)
 }
 
@@ -138,9 +166,11 @@ func (m *Manager) handleRAGMatch(ctx context.Context, ev adapter.Event, cfg *mod
 	if v.black != nil {
 		rc.ragScore = &v.black.score
 		rc.ragPhrase = v.black.text
+		rc.ragCategory = v.black.category
 	} else if v.white != nil {
 		rc.ragScore = &v.white.score
 		rc.ragPhrase = v.white.text
+		rc.ragCategory = v.white.category
 	}
 	if m.submitReview(ctx, ev, rc) {
 		metrics.GroupMgrDetectionsTotal.WithLabelValues("rag", "review").Inc()
@@ -190,15 +220,16 @@ func (m *Manager) handleKeywordPath(ctx context.Context, ev adapter.Event, cfg *
 	}
 }
 
-// categoryByWordOrCard 处罚分类：推荐卡片优先 ad；敏感词 → sensitive；黑/灰词 → ad；
-// 否则取样本分类（sensitive → sensitive，其余 ad）。
+// categoryByWordOrCard 处罚分类：敏感词红线最高优先（即使同时命中卡片/黑词也不得降级为广告）；
+// 卡片其次 → ad；黑/灰词 → ad；否则取样本分类（sensitive → sensitive，其余 ad）。
 func categoryByWordOrCard(word, wordCat string, card bool, sampleCat string) string {
+	if wordCat == "sensitive" {
+		return "sensitive"
+	}
 	if card {
 		return "ad"
 	}
 	switch wordCat {
-	case "sensitive":
-		return "sensitive"
 	case "black", "gray":
 		return "ad"
 	}

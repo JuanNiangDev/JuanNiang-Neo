@@ -24,6 +24,7 @@ import (
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/session"
 	"JuanNiang-Neo/internal/agent/skill"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/acl"
 	"JuanNiang-Neo/internal/core/cache"
@@ -64,6 +65,10 @@ type HagoCenter struct {
 	PluginEngine   *pluggin.PluginEngine
 	GroupMgr       *groupmgr.Manager // 群管理系统功能（Phase 0.5 检测闸门）
 	Loops          *LoopTracker      // 当前活跃的 Agent ReAct 循环（监控展示）
+
+	// Stats 群消息 / Agent 回复统计事件写入器（Loki+Promtail 专用通道，独立于主日志 pipeline）。
+	// nil = 未启用（配置关闭时）；Emit 调用方需判 nil。
+	Stats *stats.Writer
 
 	// SelfID 和 SelfNickname 从 Adapter 获取后缓存
 	SelfQQ       int64
@@ -129,6 +134,7 @@ type Config struct {
 	DAO            *dao.Bundle
 	ACL            *acl.ACL
 	Cache          *cache.Cache
+	Stats          *stats.Writer // 群消息/回复统计写入器（nil = 不启用）
 }
 
 // NewHagoCenter 创建并初始化 HagoCenter。
@@ -163,6 +169,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 	h.Providers = cfg.Providers
 	h.MCP = cfg.MCPGroup
 	h.Cache = cfg.Cache
+	h.Stats = cfg.Stats
 
 	// 去重器升级：Cache 可用时切换为 Redis 实现（持久化 + 多实例共享 + 原子无锁），
 	// 不可用时保留 NewHagoCenter 里默认的 memoryDedup（降级）。
@@ -494,5 +501,9 @@ func (h *HagoCenter) isToolAdminOnly(name string) bool {
 
 // Stop 停止 Agent 系统。
 func (h *HagoCenter) Stop() {
+	// 冲刷统计事件缓冲（Loki+Promtail 通道，独立于主日志）
+	if h.Stats != nil {
+		h.Stats.Close()
+	}
 	log.Info("HagoCenter 已停止")
 }

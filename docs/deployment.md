@@ -122,6 +122,8 @@ make lint
 
 ## Prometheus 监控
 
+> 可观测性体系总览（指标/日志/Loki 统计/追踪 + 联合排障 + 告警）见 [observability.md](observability.md)。
+
 ### 指标端点
 
 `GET /metrics`（与 `/health` 同级，**无需 JWT**），输出 Prometheus 文本格式指标（前缀 `juanniang_`）：
@@ -130,6 +132,7 @@ make lint
 |--------|------|
 | `juanniang_events_total` / `juanniang_messages_total` | 事件与消息吞吐（按 post_type/message_type） |
 | `juanniang_message_dedup_dropped_total` / `juanniang_message_blocked_total` / `juanniang_message_dropped_total` | 去重丢弃 / 黑名单拦截 / 相关性-静默-刷屏丢弃 |
+| `juanniang_chat_replies_total` / `juanniang_chat_stats_dropped_total` | Agent 回复发送量（全局趋势）/ 统计事件丢弃（Loki 通道积压，恒为 0 为正常） |
 | `juanniang_agent_loops_total` / `_active` / `_duration_seconds` | Agent 循环完成结果（ok/error/timeout）、活跃数、耗时直方图 |
 | `juanniang_agent_concurrency_in_use` / `_waits_total` / `_wait_seconds` | 全局并发槽占用与令牌等待 |
 | `juanniang_llm_requests_total` / `_tokens_total` / `_latency_seconds` | LLM 调用、Token 消耗（按 agent/review/relevance 用途）、延迟 |
@@ -164,6 +167,104 @@ scrape_configs:
 4. **群管理**：处罚速率、RAG 直罚比例（`detections_total{verdict="punish",path="rag"}` / 总量）、`juanniang_groupmgr_rag_score` 分布（调阈值依据）
 5. **外部服务矩阵**：`juanniang_external_health`（0/1）
 6. **运行时**：`go_goroutines` 趋势（goroutine 泄漏）、`go_memstats_heap_alloc_bytes`
+
+## 链路追踪（Grafana Tempo）
+
+机器人对**每条事件**生成一个 trace（根 span `process_event`），下游各阶段（群管理检测/RAG 核实/处罚、插件派发、相关性判断、Agent ReAct 循环、LLM 调用、工具执行、RAG 调用、审核闸门、回复发送）均为子 span——在 Grafana Tempo 里可查看单条事件处理的**全流程瀑布图**，直接定位最慢/失败的阶段。
+
+### 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 空（禁用） | OTLP 上报地址（如 `http://tempo:4318`）；留空 = no-op 零开销 |
+| `OTEL_SERVICE_NAME` | `juan-niang-neo` | 服务名（Tempo 按 `service.name` 过滤） |
+| `OTEL_TRACE_SAMPLE_RATIO` | `1.0` | 采样率 0~1；热聊群量大可调低（如 `0.1`） |
+| `OTEL_TRACE_CAPTURE_CONTENT` | `true` | 根 span 是否记录消息内容（截断 100 字符）；敏感环境设 `false` |
+
+### 部署（docker compose）
+
+`deployments/docker-compose.yaml` 已内置 Tempo 服务（`grafana/tempo:latest`，本地磁盘存储）：
+
+```bash
+docker compose up -d --build
+# Tempo:  http://localhost:3200（Grafana 数据源）
+# OTLP:   4318（机器人自动上报，无需额外配置）
+```
+
+Grafana（独立部署或复用现有实例）添加数据源：**Tempo → http://tempo:3200**（Docker 网络内）或 `http://localhost:3200`（宿主机）。
+
+### 使用方式（Grafana Explore）
+
+1. 数据源选 **Tempo**，按 `service.name=juan-niang-neo` + 时间范围搜索 trace
+2. 按属性精确定位：`process_event.group_id="123456"` / `process_event.user_id` / `process_event.message_content`（内容为截断 100 字符，**精确匹配**，不支持模糊搜索）
+3. 点击 trace → 瀑布图：`llm.call` 最长通常说明模型慢，`tool.execute` 长说明工具慢，`status=error` 的 span 直接显示失败原因
+4. 排障习惯：找到一条消息 → 看 `agent.handle` 总耗时 → 逐段下钻各阶段耗时
+
+> 提示：Tempo 的属性搜索是精确值匹配；按内容模糊检索请用 Web 面板日志页（Hub）或部署 Loki。
+
+## 群消息/回复统计（Loki + Promtail）
+
+用于统计**每个群的消息与对应回复**，与主日志 pipeline 完全隔离：
+
+- 事件由 `internal/agent/stats` 以 **NDJSON 逐行**追加到独立文件（默认 `data/stats/chat-events.log`），**不走 slog / 主日志**（避免 ANSI 颜色、Web Hub 污染）
+- 文件轮转由 lumberjack 负责（按大小 + 保留份数 + gzip 压缩）；Promtail 用 `__path__` 通配 + inode 跟随无缝衔接
+- 埋点：
+  - 群消息在事件循环 Phase 0（去重后）记录 `direction=msg`
+  - Agent 回复在 `sendReply` 记录 `direction=reply, source=agent`（`reply_to` 携带触发消息原文）
+  - 群管理处罚/刷屏/复读回复在 `replyGroup`/`replyGroupImage`/`checkCopySpam` 记录 `direction=reply, source=groupmgr`
+
+### 启用
+
+`dev.yaml` 的 `stats` 块或环境变量（`STATS_ENABLED` / `STATS_PATH` / `STATS_MAX_SIZE_MB` / `STATS_MAX_BACKUPS` / `STATS_MAX_AGE_DAYS` / `STATS_QUEUE_SIZE`）：
+
+```yaml
+stats:
+  enabled: true
+  path: data/stats/chat-events.log
+  max_size_mb: 100
+  max_backups: 10
+  max_age_days: 7
+  queue_size: 1024
+```
+
+### 部署（docker compose）
+
+`deployments/docker-compose.yaml` 已内置 Loki + Promtail（与 Tempo 并存）：
+
+```bash
+docker compose up -d --build
+# Loki:     http://localhost:3100（Grafana 数据源）
+# Promtail: 自动采集 /app/data/stats/chat-events*.log（只读挂载 ../data）
+# 机器人:   STATS_ENABLED=true 已默认开启，写入 /app/data/stats/chat-events.log
+```
+
+Grafana（独立部署或复用现有实例）添加数据源：**Loki → http://loki:3100**（Docker 网络内）或 `http://localhost:3100`（宿主机）。
+
+### 采集与查询
+
+Promtail 配置样例见 `deployments/promtail-chat-stats.yaml`（独立 job，与主日志采集共存）：
+
+```logql
+# 每群消息/回复数（按方向拆分）
+sum by (group_id, direction) (count_over_time({job="juanniang"}[1h]))
+
+# 每群按来源统计机器人输出（agent 回复 / groupmgr 处罚警告）
+sum by (group_id, source) (count_over_time({job="juanniang", direction="reply"}[1h]))
+
+# 某群最近消息与对应回复
+{job="juanniang", group_id="123456"} | json | line_format "{{.ts}} {{.direction}} {{.source}} {{.text}}"
+
+# 按群查询 Agent 回复原文（含触发消息 reply_to）
+{job="juanniang", group_id="123456", direction="reply"} | json | line_format "{{.text}}  <-  {{.reply_to}}"
+```
+
+> 集群大时建议为群消息/回复统计单独建 Grafana 面板（LogQL 聚合 + `rate` 时序），并给 `{job="juanniang"}` 加告警（如某群回复率异常低 → 机器人可能被禁言）。
+
+注意事项：
+
+- `group_id` / `direction` 做 label（群数量有限，基数可控）；`user_id` 与文本内容**不做 label**（高基数撑爆 Loki 索引），留在 JSON 字段按需过滤
+- Loki 侧设 `retention_period`（如 168h）控制保留期；每群长期趋势建议用 Prometheus（`juanniang_chat_replies_total`，`message_type` 维度）
+- 统计事件丢弃数（队列满/写失败）可查 `juanniang_chat_stats_dropped_total`；主流程不受影响
 
 ## 日志排查
 

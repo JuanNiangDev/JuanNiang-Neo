@@ -84,11 +84,12 @@ func TestParseTargetQQ(t *testing.T) {
 	}
 }
 
-// TestWordSoftDeleteRebuild 词条软删后重建同名：不得报唯一索引冲突。
+// TestWordSoftDeleteRebuild 词条软删后重建同名：不得报唯一索引冲突（DAO 层回归）。
 // 回归：GroupMgrWord.Word 曾为普通 uniqueIndex，WordDelete 软删后再次
 // WordUpsert 同名报 UNIQUE constraint failed（词库面板删词后再加同词直接失败）。
+// 注：词条表已废弃（关键词改内存兜底），本测试仅验证 DAO 兼容旧行为。
 func TestWordSoftDeleteRebuild(t *testing.T) {
-	m, gmdao := newTestManager(t, nil)
+	_, gmdao := newTestManager(t, nil)
 	ctx := context.Background()
 
 	id, err := gmdao.WordUpsert(ctx, "测试重建词条", "gray", "import")
@@ -106,18 +107,27 @@ func TestWordSoftDeleteRebuild(t *testing.T) {
 	if id2 != id {
 		t.Fatalf("复活应复用原记录 ID=%d，got %d", id, id2)
 	}
-	// 重建后应参与命中（内存缓存 Reload 后生效）
+}
+
+// TestWordHitFromSeedTxt 关键词词库从 go:embed txt 加载到内存：
+// Reload 后 wordHit 能命中种子词（不入 DB，仅内存兜底）。
+func TestWordHitFromSeedTxt(t *testing.T) {
+	m, _ := newTestManager(t, nil)
+	ctx := context.Background()
+
+	// 种子词库含校园卡等黑词（black.txt），Reload 后应命中
 	_ = m.Reload(ctx)
-	hit, cat := m.wordHit(ctx, "这是一个测试重建词条")
-	if hit != "测试重建词条" || cat != "black" {
-		t.Fatalf("重建词条应命中 black，got %q/%s", hit, cat)
+	hit, cat := m.wordHit(ctx, "帮我办校园卡")
+	if hit == "" || cat == "" {
+		t.Fatalf("种子词命中 = %q/%s", hit, cat)
 	}
 }
 
-// TestDeleteWordRemovesSamples 删除词条时同步清理派生样本与 RAG 向量。
+// TestDeleteWordRemovesSamples 词条删除对账（DAO 层回归，词条表已废弃）。
 // 回归：此前只软删 group_mgr_words，seed 样本与 RAG 向量仍活跃，删词后 RAG 照常命中。
+// 注：Manager.DeleteWord 已弃用（关键词改内存兜底），本测试仅验证 DAO 双删路径的旧契约。
 func TestDeleteWordRemovesSamples(t *testing.T) {
-	m, gmdao := newTestManager(t, nil)
+	_, gmdao := newTestManager(t, nil)
 	ctx := context.Background()
 
 	id, err := gmdao.WordUpsert(ctx, "测试删词清理", "black", "import")
@@ -129,10 +139,19 @@ func TestDeleteWordRemovesSamples(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := m.DeleteWord(ctx, id); err != nil {
+	// 直接走 DAO 软删 + 派生样本清理（Manager.DeleteWord 已弃用，此处复现其内部逻辑）
+	if err := gmdao.WordDelete(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	// 词条软删 + 派生样本已清理
+	samples, err := gmdao.SampleListByWord(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range samples {
+		if err := gmdao.SampleDelete(ctx, s.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	w, err := gmdao.WordGet(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -147,16 +166,15 @@ func TestDeleteWordRemovesSamples(t *testing.T) {
 	if len(list) != 0 {
 		t.Fatalf("词条派生样本应被删除，剩余 %d 条", len(list))
 	}
-	// 删除后命中不再成立
-	_ = m.Reload(ctx)
-	if hit, _ := m.wordHit(ctx, "测试删词清理内容"); hit != "" {
-		t.Fatalf("删词后不应命中，got %q", hit)
-	}
 }
 
 func TestReasonAndCategory(t *testing.T) {
 	if got := categoryByWordOrCard("x", "sensitive", false, "ad"); got != "sensitive" {
 		t.Errorf("敏感词类别 = %s", got)
+	}
+	// 回归：敏感词 + 推荐卡片同时命中时，敏感红线优先（card 分支曾提前返回 ad）
+	if got := categoryByWordOrCard("台独", "sensitive", true, "ad"); got != "sensitive" {
+		t.Errorf("敏感词+卡片类别 = %s, want sensitive", got)
 	}
 	if got := categoryByWordOrCard("x", "black", false, "sensitive"); got != "ad" {
 		t.Errorf("黑词类别 = %s", got)

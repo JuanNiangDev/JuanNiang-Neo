@@ -9,8 +9,12 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // 静态图（go:embed，刷屏警告/复读警告配图，原 redrock_group_manager img/ 目录）。
@@ -35,40 +39,41 @@ func loadImageB64(name string) string {
 // 三级惩罚第 2 次违规禁言时长默认值（面板可配，cfg.ViolationMuteSeconds）。
 const defaultViolationMuteSeconds = 1800
 
-// 三级惩罚话术（每级多套随机，卷娘语气；广告固定开头「打广告先交广告费」，敏感固定「小鬼不能碰」）。
+// 三级惩罚话术（每级多套随机，第一人称卖萌语气；广告固定开头「打广告先交广告费」，敏感固定「小鬼不能碰」）。
+// 递进感：警告轻描淡写给机会 → 禁言点明后果 → 踢出最后通牒，每级明确提及当前次数/下次代价。
 var tierTemplates = map[string][3][]string{
 	"ad": {
 		{
-			"打广告先交广告费！卷娘记住本本上了，本次违规予以警告。再犯的话可就要禁言 30 分钟啦～",
-			"打广告先交广告费！卷娘记住本本上了，本次违规予以警告。下次再发广告就是禁言 30 分钟起步哦",
-			"打广告先交广告费！卷娘记住本本上了，本次违规予以警告。广告费什么时候交呀～",
+			"打广告先交广告费！第一次先给你记个警告，下不为例，可别让我说第二遍～",
+			"打广告先交广告费！这次就警告一下，给个机会，再犯可就要禁言了哦",
+			"打广告先交广告费！先记一笔警告，好话不说第二遍，下次直接上禁言～",
 		},
 		{
-			"打广告先交广告费！卷娘记住本本上了，本次违规予以禁言 30 分钟。再犯的话就只能请你出去啦～",
-			"打广告先交广告费！卷娘记住本本上了，本次违规予以禁言 30 分钟。事不过三，第三次就走人了哦",
-			"打广告先交广告费！卷娘记住本本上了，本次违规予以禁言 30 分钟。歇会儿冷静一下吧～",
+			"打广告先交广告费！我说过一次了吧？禁言 30 分钟好好想想，事不过三，第三次直接请你出去",
+			"打广告先交广告费！第二次了，禁言 30 分钟。再不收手，下次我就直接送你出去啦",
+			"打广告先交广告费！警告过还不改，禁言 30 分钟。第三次就是踢出群聊，别怪我没提醒你～",
 		},
 		{
-			"打广告先交广告费！卷娘记住本本上了，本次违规予以踢出群聊。广告费没交，江湖再见啦～",
-			"打广告先交广告费！卷娘记住本本上了，本次违规予以踢出群聊。想回来记得先把广告费交了哦～",
-			"打广告先交广告费！卷娘记住本本上了，本次违规予以踢出群聊。三次广告，本本都写满了～",
+			"打广告先交广告费！三次了，广告费没交，江湖再见啦～",
+			"打广告先交广告费！事不过三，这次我直接送你出去，想回来先把广告费补上哦～",
+			"打广告先交广告费！小本本上你的名字都写满了，这次请出去吧，后会无期～",
 		},
 	},
 	"sensitive": {
 		{
-			"小鬼不能碰这个话题哦。卷娘记住本本上了，本次违规予以警告。再犯的话可就要禁言 30 分钟啦～",
-			"小鬼不能碰这个话题哦。卷娘记住本本上了，本次违规予以警告。下次再聊就是禁言 30 分钟起步",
-			"小鬼不能碰这个话题哦。卷娘记住本本上了，本次违规予以警告。这个话题就当没看见吧～",
+			"小鬼不能碰这个话题哦。第一次先警告一下，下不为例，可别让我说第二遍～",
+			"小鬼不能碰这个话题哦。这次就警告一下，给个机会，下次再聊就要禁言啦",
+			"小鬼不能碰这个话题哦。先记一笔警告，不说重话，但别再有下次哦～",
 		},
 		{
-			"小鬼不能碰这个话题哦。卷娘记住本本上了，本次违规予以禁言 30 分钟。再犯的话就只能请你出去啦～",
-			"小鬼不能碰这个话题哦。卷娘记住本本上了，本次违规予以禁言 30 分钟。事不过三哦",
-			"小鬼不能碰这个话题哦。卷娘记住本本上了，本次违规予以禁言 30 分钟。冷静一下哦～",
+			"小鬼不能碰这个话题哦。我说过一次了吧？禁言 30 分钟冷静一下，事不过三，第三次直接请你出去",
+			"小鬼不能碰这个话题哦。第二次了，禁言 30 分钟。再不收住，下次我就直接送你出去啦",
+			"小鬼不能碰这个话题哦。警告过还不改，禁言 30 分钟。第三次就是踢出群聊，别怪我没提醒你～",
 		},
 		{
-			"小鬼不能碰这个话题哦。卷娘记住本本上了，本次违规予以踢出群聊。江湖再见啦～",
-			"小鬼不能碰这个话题哦。卷娘记住本本上了，本次违规予以踢出群聊。换个群好好说话哦～",
-			"小鬼不能碰这个话题哦。卷娘记住本本上了，本次违规予以踢出群聊。三次了还聊，本本都写满了～",
+			"小鬼不能碰这个话题哦。三次了还聊，这次我请你出去，江湖再见～",
+			"小鬼不能碰这个话题哦。事不过三，我直接送你出去，换个群好好说话哦～",
+			"小鬼不能碰这个话题哦。小本本上都写满了，这次请出去吧，后会无期～",
 		},
 	},
 }
@@ -84,6 +89,23 @@ func (m *Manager) punish(ctx context.Context, ev adapter.Event, reason, category
 	groupID := ev.Message.GroupID
 	userID := ev.Message.UserID
 
+	// 提前声明供 span defer 闭包引用（词法作用域限制）
+	var (
+		count  int
+		action string
+		err    error
+	)
+
+	// 链路追踪：处罚 span（记录分类/等级/动作，失败链路一眼可见）。
+	ctx, span := otelx.Span(ctx, "groupmgr.punish",
+		attribute.String("category", category),
+		attribute.String("path", path),
+	)
+	defer func() {
+		span.SetAttributes(attribute.String("action", action), attribute.Int("count", count))
+		span.End()
+	}()
+
 	meta := dao.ViolationMeta{
 		Username:      violationUsername(ev),
 		DetectionPath: path,
@@ -92,7 +114,7 @@ func (m *Manager) punish(ctx context.Context, ev adapter.Event, reason, category
 
 	// 原子自增违规计数并返回新值：事件循环（关键词直罚）与 Run 循环（LLM 追罚）
 	// 双 goroutine 并发时不会 read-modify-write 丢计数（单条 SQL 保证）。
-	count, err := m.dao.ViolationIncr(ctx, groupID, userID, meta)
+	count, err = m.dao.ViolationIncr(ctx, groupID, userID, meta)
 	if err != nil {
 		log.Warn("违规计数自增失败", "err", err)
 		return
@@ -103,7 +125,7 @@ func (m *Manager) punish(ctx context.Context, ev adapter.Event, reason, category
 		muteSeconds = cfg.ViolationMuteSeconds
 	}
 
-	action := ""
+	action = ""
 	// 撤回违规消息：失败不阻断后续处罚（警告/禁言/踢人独立生效），记日志并在
 	// 回复/管理员通知中注明（QQ 撤回有时限，LLM 异步追罚路径易超时，不可静默）
 	recallFailed := false
@@ -138,7 +160,10 @@ func (m *Manager) punish(ctx context.Context, ev adapter.Event, reason, category
 	metrics.GroupMgrViolationsTotal.WithLabelValues(category, action).Inc()
 	_, _ = m.dao.StatIncr(ctx, gkey(groupID, "stats:"+category))
 
-	// 回复话术
+	// 回复话术：非法分类兜底归一为 ad（防意外值索引 nil 切片 panic）
+	if _, ok := tierTemplates[category]; !ok {
+		category = "ad"
+	}
 	bucket := tierTemplates[category][min(count-1, 2)]
 	reply := bucket[rand.Intn(len(bucket))]
 	if recallFailed {
@@ -172,6 +197,7 @@ func (m *Manager) replyGroup(ev adapter.Event, text string) {
 		{Type: "at", Data: map[string]any{"qq": itoa(ev.Message.UserID)}},
 		{Type: "text", Data: map[string]any{"text": " " + text}},
 	})
+	m.emitStatsReply(ev, text)
 }
 
 // replyGroupImage 群聊 @ 发信人回复 + 图片。
@@ -184,6 +210,32 @@ func (m *Manager) replyGroupImage(ev adapter.Event, text, b64 string) {
 		segments = append(segments, adapter.Segment{Type: "image", Data: map[string]any{"file": b64}})
 	}
 	_, _ = m.adp.SendGroupMsg(ev.Message.GroupID, segments)
+	m.emitStatsReply(ev, text)
+}
+
+// statsReplyTextMax 群管理回复统计文本截断长度（rune）。
+const statsReplyTextMax = 200
+
+// emitStatsReply 群管理回复统计事件（Loki+Promtail 通道；未注入 stats 时跳过）。
+// 处罚/刷屏/复读警告均属机器人对群消息的回复，direction=reply + source=groupmgr，
+// reply_to 携带触发消息原文（剥离 CQ 码），便于按群对应「消息→回复」。
+func (m *Manager) emitStatsReply(ev adapter.Event, text string) {
+	if m.stats == nil || ev.Message == nil {
+		return
+	}
+	msg := ev.Message
+	if !m.stats.Emit(stats.Event{
+		Timestamp: time.Now(),
+		GroupID:   msg.GroupID,
+		UserID:    msg.UserID,
+		MessageID: msg.MessageID,
+		Direction: stats.DirectionReply,
+		Source:    stats.SourceGroupMgr,
+		Text:      stats.Truncate(text, statsReplyTextMax),
+		ReplyTo:   stats.Truncate(stripCQ(msg.RawMessage), statsReplyTextMax),
+	}) {
+		metrics.ChatStatsDroppedTotal.WithLabelValues("reply").Inc()
+	}
 }
 
 // ---------- 管理员通知队列（异步 pump，随机延迟 5~30s 防风控） ----------

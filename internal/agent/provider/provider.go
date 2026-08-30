@@ -3,6 +3,7 @@ package provider
 import (
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
 	"bufio"
 	"bytes"
 	"context"
@@ -15,6 +16,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 var log = logging.NewModule("provider")
@@ -43,8 +47,23 @@ func (p *openAIProvider) APIMode() APIMode { return p.cfg.apiMode() }
 
 // ---------- Chat ----------
 
-func (p *openAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+func (p *openAIProvider) Chat(ctx context.Context, req ChatRequest) (resp *ChatResponse, err error) {
 	start := time.Now()
+	// 链路追踪：LLM 调用 span（Agent 循环/群管理审核/相关性判断共用统一入口）
+	_, span := otelx.Span(ctx, "llm.call",
+		attribute.String("provider", p.ID()),
+		attribute.String("model", p.Model()),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		} else if resp != nil && resp.TokenUsage > 0 {
+			span.SetAttributes(attribute.Int("tokens", resp.TokenUsage))
+		}
+		span.End()
+	}()
+
 	body, err := p.buildRequest(req, false)
 	if err != nil {
 		metrics.LLMRequestsTotal.WithLabelValues(p.ID(), "error").Inc()
@@ -57,7 +76,7 @@ func (p *openAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		metrics.LLMLatency.Observe(time.Since(start).Seconds())
 		return nil, err
 	}
-	resp, err := p.parseResponse(respBody)
+	resp, err = p.parseResponse(respBody)
 	if err != nil {
 		metrics.LLMRequestsTotal.WithLabelValues(p.ID(), "error").Inc()
 	} else {

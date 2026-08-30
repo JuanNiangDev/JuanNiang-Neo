@@ -132,6 +132,24 @@ func (q *DeferredSendQueue) Flush(ctx context.Context, a AdapterProvider) []Defe
 	return delivered
 }
 
+// DropDelivery 移除投递到指定会话的交付消息（群管理审核闸门判定违规时丢弃
+// Agent 回复用）：只过滤 Delivery=true 且目标匹配的项，私聊/其他群消息保留。
+func (q *DeferredSendQueue) DropDelivery(messageType string, targetID int64) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	kept := q.sends[:0]
+	for _, s := range q.sends {
+		if s.Delivery && s.MessageType == messageType && s.TargetID == targetID {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	q.sends = kept
+}
+
 // ---------- context 传递 ----------
 
 type deferredQueueKey struct{}

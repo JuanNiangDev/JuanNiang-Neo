@@ -71,6 +71,17 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       OB_TOKEN: ${OB_TOKEN:-}
       OB_ADMINS: ${OB_ADMINS:-}
+      # 链路追踪（Grafana Tempo）：OTLP HTTP 直推；留空 = 禁用（no-op 零开销）
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo:4318"
+      OTEL_SERVICE_NAME: juan-niang-neo
+      # 采样率（0~1，默认 1.0 全量；热聊群量大可调低）
+      OTEL_TRACE_SAMPLE_RATIO: "1.0"
+      # 根 span 是否记录消息内容（截断 100 字符；敏感环境可关）
+      OTEL_TRACE_CAPTURE_CONTENT: "true"
+      # 群消息/回复统计（Loki+Promtail 通道，独立于主日志）：NDJSON 追加到 data/stats/chat-events.log，
+      # promtail 采集后推送 loki。置 false 可关闭（不写盘）。
+      STATS_ENABLED: "true"
+      STATS_PATH: /app/data/stats/chat-events.log
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,8 +107,81 @@ services:
     networks:
       - juanniang-net
 
+  # 链路追踪存储（Grafana Tempo）：Grafana 添加 Tempo 数据源 http://tempo:3200
+  # 后，Explore → Tempo 按 service.name=juan-niang-neo 查看单事件全流程瀑布图。
+  tempo:
+    image: grafana/tempo:latest
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yaml"]
+    ports:
+      - "3200:3200" # Tempo HTTP（Grafana 数据源）
+      - "4318:4318" # OTLP HTTP（机器人 span 上报）
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml
+      - tempo-data:/var/tempo
+    networks:
+      - juanniang-net
+
+  # 日志存储（Loki）：群消息/回复统计明细，保留 7 天（deployments/loki.yaml）。
+  # Grafana 添加数据源 http://loki:3100 → Explore 按 {job="juanniang"} 查询。
+  loki:
+    image: grafana/loki:3.3.2
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    ports:
+      - "3100:3100" # Loki HTTP（Grafana 数据源 / promtail 推送）
+    volumes:
+      - ./loki.yaml:/etc/loki/loki.yaml
+      - loki-data:/loki
+    networks:
+      - juanniang-net
+
+  # 日志采集（Promtail）：采集 juan-niang-neo 写入的统计 NDJSON（/app/data/stats ↔ /data 同源），
+  # 解析 group_id/direction/source 为 label 后推送 loki。
+  promtail:
+    image: grafana/promtail:3.3.2
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/config.yaml"]
+    volumes:
+      - ./promtail-chat-stats.yaml:/etc/promtail/config.yaml:ro
+      - ../data:/data:ro            # 只读采集统计文件（与 juan-niang-neo 的 /app/data 同源）
+      - promtail-positions:/tmp     # 采集偏移持久化（重启不重推）
+    depends_on:
+      - loki
+    networks:
+      - juanniang-net
+
+  # 可视化（Grafana）：provisioning 自动注册 Loki/Tempo 数据源 + 自动加载面板；
+  # 访问 http://localhost:3000（默认 admin/admin，首次登录建议改密）。
+  grafana:
+    image: grafana/grafana:11.1.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000" # Grafana Web UI
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      # 数据源 + dashboard provider（provisioning）
+      - ./grafana/chat-stats/provisioning:/etc/grafana/provisioning:ro
+      # 面板 JSON：聊天统计（chat-stats/dashboards）+ 综合监控（juanniang-dashboard）+ 链路追踪（juan-niang-traces）
+      - ./grafana/chat-stats/dashboards:/var/lib/grafana/dashboards/chat-stats:ro
+      - ./grafana/juanniang-dashboard.json:/var/lib/grafana/dashboards/juanniang-dashboard.json:ro
+      - ./grafana/juan-niang-traces.json:/var/lib/grafana/dashboards/juan-niang-traces.json:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+      - tempo
+    networks:
+      - juanniang-net
+
 volumes:
   pgdata:
+  tempo-data:
+  loki-data:
+  promtail-positions:
+  grafana-data:
 
 networks:
   juanniang-net:

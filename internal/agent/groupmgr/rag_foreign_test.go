@@ -22,9 +22,11 @@ import (
 )
 
 // newTestManagerForeignHit 构造 Manager：RAG 服务可用，但检索命中的 tag 不属于
-// 本系统语录（模拟知识/记忆向量干扰：k:/m: 前缀命中）。
+// 本系统语录（模拟脏数据/残留向量：DB 已删但向量未双删的孤儿命中）。
 // 回归：RAG 服务正常但无语录命中时，应视为"可用但无命中"（送 LLM 判定），
 // 而不是降级为"RAG 不可用"（关键词兜底放行）。
+// （scoop 化后外来集合 tag 不再可能出现在 groupmgr 检索结果中；
+// 该用例保留 mock 知识 tag 仅作"DB 外孤儿 tag"的代理。）
 func newTestManagerForeignHit(t *testing.T, score float64) *Manager {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
@@ -41,7 +43,7 @@ func newTestManagerForeignHit(t *testing.T, score float64) *Manager {
 
 	// mock RAG：返回知识库 tag（k: 前缀），不属于语录候选集
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/tags/search" {
+		if r.URL.Path != "/scoops/groupmgr/tags/search" {
 			http.NotFound(w, r)
 			return
 		}

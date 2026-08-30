@@ -54,7 +54,7 @@ func newTestManagerEx(t *testing.T, ragScore *float64, white bool) (*Manager, *d
 	var ragCli *caller.Client
 	if ragScore != nil {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/tags/search" {
+			if r.URL.Path != "/scoops/groupmgr/tags/search" {
 				http.NotFound(w, r)
 				return
 			}
@@ -154,6 +154,31 @@ func TestViolationRAGWhitePhrasePass(t *testing.T) {
 	}
 	if rep.Verdict != "pass" {
 		t.Fatalf("白名单高置信应放行，got %s (%s)", rep.Verdict, rep.Reason)
+	}
+}
+
+// TestPhraseTouchIncrHit 回归：白名单语录命中放行后 hit_count 必须递增（此前只更新 last_used_at，
+// 命中次数不涨导致面板「命中次数」对白名单恒为 0）。
+func TestPhraseTouchIncrHit(t *testing.T) {
+	m, gmdao := newTestManagerEx(t, nil, true) // 预置白名单语录 ID=1
+	ctx := context.Background()
+	if set := m.buildPhraseSet(ctx); set == nil || len(set.white) == 0 {
+		t.Fatal("候选集应含白名单语录")
+	}
+	// 触发一次白名单命中（放行路径的 touch 逻辑）
+	m.phraseTouch(ctx, ragtag.WhitePhrase("1"))
+	samples, err := gmdao.SampleListAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("样本应 1 条，got %d", len(samples))
+	}
+	if samples[0].HitCount != 1 {
+		t.Fatalf("白名单命中后 hit_count 应为 1，got %d", samples[0].HitCount)
+	}
+	if samples[0].LastUsedAt == nil {
+		t.Fatal("白名单命中后 last_used_at 应更新")
 	}
 }
 
@@ -263,7 +288,7 @@ func TestDAOFixtures(t *testing.T) {
 	m, gmdao := newTestManager(t, nil)
 	ctx := context.Background()
 
-	// 词条幂等：重复 upsert 不增加计数（种子已导入 2268 条）
+	// 词条幂等：重复 upsert 不增加计数（词条表已废弃，仅验证 DAO 旧行为）
 	before, _ := gmdao.WordCount(ctx)
 	if _, err := gmdao.WordUpsert(ctx, "校园卡", "gray", "import"); err != nil {
 		t.Fatal(err)
@@ -296,7 +321,7 @@ func TestDAOFixtures(t *testing.T) {
 	if v, _ := gmdao.StatGet(ctx, "100:stats:warn"); v != "1" {
 		t.Fatalf("统计值 = %q", v)
 	}
-	// 词库热更新后命中（种子词库含办校园卡等黑词，任意类别命中即可）
+	// 词库热更新后命中（词库从 go:embed txt 加载到内存，不入 DB；含办校园卡等黑词）
 	_ = m.Reload(ctx)
 	hit, cat := m.wordHit(ctx, "帮我办校园卡")
 	if hit == "" || cat == "" {

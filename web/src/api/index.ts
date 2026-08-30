@@ -231,8 +231,8 @@ export interface RAGInfoResp {
     error?: string
   }
   memory?: { rss_kb: number; vsize_kb: number }
-  tags?: number
-  chunks?: number
+  // 各分库规模（scoop 名 → tag/块数量）；Tag/Chunk 总数由前端汇总
+  scoops?: Record<string, { tags: number; chunks: number }>
   error?: string
 }
 
@@ -579,10 +579,10 @@ export const groupMgrApi = {
   deleteSample: (id: number) => client.delete(`/group-mgr/samples/${id}`),
   addPhrase: (text: string, listType: string, category?: string) =>
     client.post('/group-mgr/phrases', { text, list_type: listType, category }),
-  importPhrases: (file: File, listType: string) => {
+  importPhrases: (file: File, listType: string, category?: string) => {
     const form = new FormData()
     form.append('file', file)
-    return client.post(`/group-mgr/phrases/import?list_type=${listType}`, form, {
+    return client.post(`/group-mgr/phrases/import?list_type=${listType}&category=${category ?? 'ad'}`, form, {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },

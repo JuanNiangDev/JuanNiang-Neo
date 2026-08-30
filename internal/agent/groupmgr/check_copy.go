@@ -3,8 +3,10 @@ package groupmgr
 import (
 	"context"
 	"strings"
+	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/metrics"
 )
@@ -55,10 +57,24 @@ func (m *Manager) checkCopySpam(ctx context.Context, ev adapter.Event, cfg *mode
 		return true // 已触发过警告，冷却中
 	}
 	st.trig = true
+	const copyWarnText = "你们这群人机能不能别刷屏了"
 	_, _ = m.adp.SendGroupMsg(groupID, []adapter.Segment{
-		{Type: "text", Data: map[string]any{"text": "你们这群人机能不能别刷屏了"}},
+		{Type: "text", Data: map[string]any{"text": copyWarnText}},
 		{Type: "image", Data: map[string]any{"file": imgShuaping2B64}},
 	})
+	// 复读警告统计事件（Loki+Promtail 通道；无触发者单一身份，user_id 记 0）
+	if m.stats != nil {
+		if !m.stats.Emit(stats.Event{
+			Timestamp: time.Now(),
+			GroupID:   groupID,
+			Direction: stats.DirectionReply,
+			Source:    stats.SourceGroupMgr,
+			Text:      stats.Truncate(copyWarnText, statsReplyTextMax),
+			ReplyTo:   stats.Truncate(stripCQ(raw), statsReplyTextMax),
+		}) {
+			metrics.ChatStatsDroppedTotal.WithLabelValues("reply").Inc()
+		}
+	}
 	_, _ = m.dao.StatIncr(ctx, gkey(groupID, "stats:copy_warn"))
 	metrics.GroupMgrSpamTotal.WithLabelValues("copy").Inc()
 	log.Info("复读触发", "group", groupID, "count", st.count)

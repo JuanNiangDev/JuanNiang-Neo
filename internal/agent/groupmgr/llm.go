@@ -11,6 +11,9 @@ import (
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // LLM 审查参数。
@@ -34,6 +37,10 @@ type reviewCtx struct {
 	hard      bool     // 有硬信号（词/卡片），LLM 异常时的直罚依据
 	ragScore  *float64 // RAG 最高分（参考展示）
 	ragPhrase string   // RAG 最相似语录（参考展示）
+	// ragCategory RAG 命中样本的违规类型（ad/sensitive）：LLM 追罚分类用。
+	// RAG 语义命中的类别比关键词预查更可靠（无词命中时 wordCat 为空，
+	// 仅靠 wordCat 会把敏感语义内容误判为广告）。
+	ragCategory string
 }
 
 // reviewItem 批窗口内的一条待审消息。
@@ -86,7 +93,7 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 		return false
 	}
 	msg := ev.Message
-	pk := itoa(msg.GroupID) + ":" + itoa(msg.UserID)
+	pk := pkOf(msg.GroupID, msg.UserID)
 
 	// 同用户已有在途 → 跳过（调用方按兜底处理）
 	m.llmMu.Lock()
@@ -102,9 +109,10 @@ func (m *Manager) submitReview(ctx context.Context, ev adapter.Event, rc reviewC
 			return false
 		}
 		m.llmReviewed[msg.MessageID] = now
-		for id, ts := range m.llmReviewed { // 顺带清理过期
+		for id, ts := range m.llmReviewed { // 顺带清理过期（终态记录同步清理）
 			if now-ts >= llmDedupWindow {
 				delete(m.llmReviewed, id)
+				delete(m.reviewVerdict, id)
 			}
 		}
 	}
@@ -278,12 +286,31 @@ func (m *Manager) handleReviewBatch(ctx context.Context, out reviewOutcome) {
 
 // applyVerdict 批内单条裁决应用：处罚 / 放行 / 学习闭环（异步，不阻塞）。
 func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewResult, failed bool) {
+	// 审查耗时期间可能已被加入白名单/成为管理员：先复查豁免再写终态。
+	// 已豁免用户必须落放行终态（white），否则 ReviewGate 会因 black 丢弃 Agent 回复。
+	exempted := m.isWhitelisted(ctx, it.userID) || m.isGroupAdmin(it.userID, it.admins, it.groupID)
+
 	m.llmMu.Lock()
 	delete(m.llmPending, it.pk)
+	// 审核终态落库（发送前闸门 ReviewGate 查询；TTL 随 llmReviewed 清理）：
+	// black=已判违规（Agent 回复应被丢弃）；white/none=放行；
+	// 失败且无硬信号=不记录（按未送审放行）；失败且硬信号直罚=记 black。
+	switch {
+	case exempted:
+		// 已豁免：写放行终态，不落 black（处罚下方同样跳过）
+		m.reviewVerdict[it.messageID] = "white"
+	case failed || (res.Verdict != "black" && res.Verdict != "white" && res.Verdict != "none"):
+		if it.rc.highRisk && it.rc.hard {
+			m.reviewVerdict[it.messageID] = "black"
+		}
+	case res.Verdict == "black":
+		m.reviewVerdict[it.messageID] = "black"
+	default:
+		m.reviewVerdict[it.messageID] = res.Verdict // white / none
+	}
 	m.llmMu.Unlock()
 
-	// 审查耗时期间可能已被加入白名单/成为管理员，复查后再处罚
-	if m.isWhitelisted(ctx, it.userID) || m.isGroupAdmin(it.userID, it.admins, it.groupID) {
+	if exempted {
 		return
 	}
 
@@ -327,8 +354,9 @@ func (m *Manager) applyVerdict(ctx context.Context, it reviewItem, res reviewRes
 	switch res.Verdict {
 	case "black":
 		metrics.GroupMgrLLMReviewsTotal.WithLabelValues("black").Inc()
+		// 处罚分类优先级：RAG 命中样本类别（语义，最可靠）> 关键词类别 > 卡片（卡片归 ad）
 		category := "ad"
-		if rc.wordCat == "sensitive" || rc.card {
+		if rc.ragCategory == "sensitive" || rc.wordCat == "sensitive" {
 			category = "sensitive"
 		}
 		reason := res.Reason
@@ -447,4 +475,67 @@ func headText(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// pkOf 群消息在途审查去重键（"群:QQ"）。
+func pkOf(groupID, userID int64) string {
+	return itoa(groupID) + ":" + itoa(userID)
+}
+
+// ReviewGateWait Agent 回复发送前等待审核终态的上限：覆盖批窗口（3s）+ LLM
+// 余量；超时按放行处理（撤回兜底仍在）。Agent ReAct 循环通常比审核慢，
+// 多数情况零等待。
+const ReviewGateWait = 5 * time.Second
+
+// ReviewGate 发送前审核闸门（Agent 回复发送前调用）。
+// 返回 blocked：消息已被判定违规（已处罚），Agent 回复不应发送；
+// pending：审核仍在途（批窗口/LLM 判断中），调用方可用 WaitReview 等待。
+// 私聊 / 未送审 / 无记录一律放行（LLMReview 关闭、去重命中、重启丢失等）。
+func (m *Manager) ReviewGate(ctx context.Context, groupID, userID, messageID int64) (blocked, pending bool) {
+	if messageID <= 0 || groupID <= 0 {
+		return false, false
+	}
+	m.llmMu.Lock()
+	defer m.llmMu.Unlock()
+	if v, ok := m.reviewVerdict[messageID]; ok {
+		return v == "black", false
+	}
+	// 在途审查（批窗口/LLM 判断中）
+	if m.llmPending[pkOf(groupID, userID)] {
+		return false, true
+	}
+	return false, false
+}
+
+// WaitReview 等待审核终态（轮询 ReviewGate，短间隔），最多等 timeout。
+// 返回 blocked=true 应丢弃回复；false 表示放行（含超时/ctx 取消/未送审）。
+func (m *Manager) WaitReview(ctx context.Context, groupID, userID, messageID int64, timeout time.Duration) (blocked bool) {
+	// 链路追踪：审核闸门 span（发送前等待审核终态，记录等待耗时与结果）
+	start := time.Now()
+	ctx, span := otelx.Span(ctx, "groupmgr.review_gate",
+		attribute.Int64("group_id", groupID),
+		attribute.Int64("message_id", messageID),
+	)
+	defer func() {
+		span.SetAttributes(
+			attribute.Bool("blocked", blocked),
+			attribute.Int64("wait_ms", time.Since(start).Milliseconds()),
+		)
+		span.End()
+	}()
+	deadline := time.Now().Add(timeout)
+	for {
+		blocked, pending := m.ReviewGate(ctx, groupID, userID, messageID)
+		if blocked || !pending {
+			return blocked
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 }

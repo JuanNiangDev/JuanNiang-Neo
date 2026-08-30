@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -29,6 +30,7 @@ import (
 	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/prompt"
 	"JuanNiang-Neo/internal/agent/scheduledmsg"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/api/engine"
 	"JuanNiang-Neo/internal/api/middleware"
 	"JuanNiang-Neo/internal/api/service"
@@ -38,6 +40,7 @@ import (
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/logging"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
 	"JuanNiang-Neo/internal/pluggin"
 	"JuanNiang-Neo/internal/web"
 
@@ -86,6 +89,23 @@ func main() {
 	slog.SetDefault(slog.New(logging.NewHandler(os.Stdout, logging.DefaultHub, &slog.HandlerOptions{
 		Level: logLevel,
 	})))
+
+	// ---------- 链路追踪（Grafana Tempo / OTLP） ----------
+	// 未配置 endpoint 时自动 no-op（零开销）；消息内容截断记录可关。
+	shutdownTrace := otelx.Init(
+		env(otelx.EnvServiceName, otelx.DefaultServiceName),
+		env(otelx.EnvEndpoint, ""),
+		envFloat(otelx.EnvSampleRatio, 1.0),
+		envBool(otelx.EnvCaptureContent, true),
+	)
+	defer func() {
+		// 主 ctx 收到退出信号后已被取消：独立超时上下文供 tracer shutdown 冲刷缓冲 span，用后释放
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTrace(sctx); err != nil {
+			log.Warn("链路追踪关闭失败", "err", err)
+		}
+	}()
 
 	log.Info("JuanNiang-Neo 启动中...")
 
@@ -209,6 +229,22 @@ func main() {
 
 	// ---------- 5. Agent ----------
 
+	// 统计事件写入器（Loki+Promtail 通道，独立于主日志 pipeline）：
+	// 默认关闭；dev.yaml stats.enabled 或环境变量 STATS_ENABLED=true 开启。
+	var statsWriter *stats.Writer
+	if envBool("STATS_ENABLED", devCfg.Stats.Enabled) {
+		statsWriter = stats.New(stats.Config{
+			Enabled:    true,
+			Path:       env("STATS_PATH", devCfg.Stats.Path),
+			MaxSizeMB:  envInt("STATS_MAX_SIZE_MB", devCfg.Stats.MaxSizeMB),
+			MaxBackups: envInt("STATS_MAX_BACKUPS", devCfg.Stats.MaxBackups),
+			MaxAgeDays: envInt("STATS_MAX_AGE_DAYS", devCfg.Stats.MaxAgeDays),
+			QueueSize:  envInt("STATS_QUEUE_SIZE", devCfg.Stats.QueueSize),
+		})
+		statsWriter.Start()
+		log.Info("群消息/回复统计已启用（Loki+Promtail）", "path", env("STATS_PATH", devCfg.Stats.Path))
+	}
+
 	hago := agent.NewHagoCenter()
 	if err := hago.Init(ctx, agent.Config{
 		Adapter:        adapterProv,
@@ -221,6 +257,7 @@ func main() {
 		DAO:            coreInst.DAO,
 		ACL:            coreInst.ACL,
 		Cache:          coreInst.Cache,
+		Stats:          statsWriter,
 	}); err != nil {
 		log.Error("Agent 初始化失败", "err", err)
 		os.Exit(1)
@@ -264,6 +301,8 @@ func main() {
 		adapterProv,
 		func() *ragcaller.Client { return hago.RAGClient.Load() },
 		hago.Providers)
+	// 群管理处罚/刷屏/复读回复也写统计事件（source=groupmgr；未启用统计时为 nil 跳过）
+	gm.SetStats(statsWriter)
 	if err := gm.Init(ctx); err != nil {
 		log.Error("群管理初始化失败", "err", err)
 	} else {
@@ -507,6 +546,37 @@ func shutdown(adapterProv *adapter.Adapter, webhookAdapter *adapter.WebhookAdapt
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+// envFloat 读取浮点环境变量；解析失败或非有限值（NaN、±Inf）回退默认值。
+func envFloat(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(f) && !math.IsInf(f, 0) {
+			return f
+		}
+	}
+	return def
+}
+
+// envBool 读环境变量并解析为布尔（1/true 为真，其余回退默认）。
+func envBool(key string, def bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
+		}
+		return v == "1"
+	}
+	return def
+}
+
+// envInt 读取环境变量为 int，非法/空返回默认值。
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return def
 }

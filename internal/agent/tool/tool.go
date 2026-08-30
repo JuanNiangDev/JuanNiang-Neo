@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/otelx"
 
 	"JuanNiang-Neo/internal/logging"
 
 	"github.com/openai/openai-go/v3"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 var log = logging.NewModule("tool")
@@ -93,18 +96,27 @@ func (tr *ToolRegistry) GetOpenAITools() []provider.ToolDef {
 }
 
 // Execute 同步执行工具调用。
-func (tr *ToolRegistry) Execute(ctx context.Context, name string, args json.RawMessage) (string, error) {
+func (tr *ToolRegistry) Execute(ctx context.Context, name string, args json.RawMessage) (result string, err error) {
 	t, ok := tr.Get(name)
 	if !ok {
 		return "", fmt.Errorf("tool %q not found", name)
 	}
 
-	execCtx := ctx
+	// 链路追踪：工具执行 span（Agent 循环的子 span）。
+	// 用新 ctx 执行工具：部分工具内部有 LLM/外部服务子 span，需嵌套在 execute 下。
+	ctx, span := otelx.Span(ctx, "tool.execute", attribute.String("tool", name))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 
 	start := time.Now()
 	log.Info("Tool 执行开始", "tool", name, "args", string(args))
 
-	result, err := t.Execute(execCtx, args)
+	result, err = t.Execute(ctx, args)
 	elapsed := time.Since(start)
 	if err != nil {
 		log.Error("Tool 执行失败", "tool", name, "elapsed", elapsed, "err", err)

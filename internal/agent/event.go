@@ -11,14 +11,18 @@ import (
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
 
 	"github.com/cloudwego/eino/adk"
 	einoschema "github.com/cloudwego/eino/schema"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // SilenceToken 是 LLM 在不回复时输出的固定标记。
@@ -117,6 +121,25 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	if ev.PostType == "message" && ev.Message != nil {
 		metrics.MessagesTotal.WithLabelValues(ev.Message.MessageType).Inc()
 	}
+	// 链路追踪：每条事件 = 一个 trace（根 span），下游各阶段均为其子 span。
+	// 必须在事件入口新建（事件循环单 goroutine 串行，不能复用共享 ctx）。
+	attrs := []attribute.KeyValue{attribute.String("post_type", ev.PostType)}
+	if ev.Message != nil {
+		attrs = append(attrs,
+			attribute.String("message_type", ev.Message.MessageType),
+			attribute.Int64("group_id", ev.Message.GroupID),
+			attribute.Int64("user_id", ev.Message.UserID),
+			attribute.Int64("message_id", ev.Message.MessageID),
+		)
+		// 消息内容（截断 100 字符，可关）：排障时直接看出"哪条消息处理出问题"
+		if otelx.CaptureContent() {
+			if t := strings.TrimSpace(cqCodeRegexp.ReplaceAllString(ev.Message.RawMessage, "")); t != "" {
+				attrs = append(attrs, otelx.MessageContentAttr(t, 100))
+			}
+		}
+	}
+	ctx, span := otelx.Span(ctx, "process_event", attrs...)
+	defer span.End()
 	// Phase 0: 消息幂等去重。WS 断线重连/多连接时 OneBot 端可能重复推送同一条
 	// 消息（相同 message_id），重复消费会导致 Agent 重复执行任务与重复回复。
 	// 群/私聊的 message_id 各自独立递增，key 需带上 message_type。
@@ -131,6 +154,20 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	// Phase 0.5: 系统级群管理检测（先于所有 Lua 插件，Go 原生）。
 	// consumed=true（图片刷屏/+1复读）直接拦截不进 Agent；
 	// 违禁类已内部处罚（不消费，消息继续流向插件与 Agent）。
+	// 群消息统计事件（Loki+Promtail 通道，独立于主日志）：重复消息已在 Phase 0 丢弃，此处仅记真实消息。
+	if h.Stats != nil && ev.PostType == "message" && ev.Message != nil && ev.Message.MessageType == "group" {
+		msg := ev.Message
+		if !h.Stats.Emit(stats.Event{
+			Timestamp: time.Now(),
+			GroupID:   msg.GroupID,
+			UserID:    msg.UserID,
+			MessageID: msg.MessageID,
+			Direction: stats.DirectionMsg,
+			Text:      truncateStatsText(cqCodeRegexp.ReplaceAllString(msg.RawMessage, "")),
+		}) {
+			metrics.ChatStatsDroppedTotal.WithLabelValues("msg").Inc()
+		}
+	}
 	if h.GroupMgr != nil {
 		if h.GroupMgr.Process(ctx, ev) {
 			return
@@ -138,7 +175,10 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 	}
 	// Phase 1: Plugin 统一拦截
 	if h.PluginEngine != nil {
+		_, pspan := otelx.Span(ctx, "plugin.dispatch")
 		result := h.PluginEngine.Dispatch(ev)
+		pspan.SetAttributes(attribute.Bool("consumed", result.Consumed), attribute.Bool("skip_reply", result.SkipReply))
+		pspan.End()
 		if result.Consumed {
 			return
 		}
@@ -738,7 +778,16 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 	start := time.Now()
 	outcome := "ok"
+	// 链路追踪：Agent ReAct 循环 span（含多轮 LLM/工具，全流程中最长的一段）。
+	// 用新 ctx 继续后续调用：Agent.Run 内的 llm.call / tool.execute 及记忆召回的
+	// rag.search 需嵌套在 handle 下（而非与 handle 平级挂在 process_event 下）。
+	ctx, hspan := otelx.Span(ctx, "agent.handle",
+		attribute.String("chat_area_id", chatArea.ID),
+		attribute.Int("events", len(events)),
+	)
 	defer func() {
+		hspan.SetAttributes(attribute.String("result", outcome))
+		hspan.End()
 		metrics.AgentLoopsTotal.WithLabelValues(outcome).Inc()
 		metrics.AgentLoopDuration.Observe(time.Since(start).Seconds())
 	}()
@@ -1061,6 +1110,19 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	// 并行分组模式下（存在 orderedReplier）整体按消息顺序执行，避免多人回复乱序；
 	// 非分组模式直接执行。全局 sendMu 保证跨批次的发送也串行（回复不被插入打断）。
 	finish := func() {
+		// 群管理审核闸门（发送前，锁外执行避免持锁等待）：触发本轮 Agent 的群消息
+		// 已被 LLM 判定违规（black）时，丢弃投递到当前群会话的交付消息与最终回复——
+		// 避免"机器人回复了违规消息又被撤回"的观感。审核在途时有限等待终态
+		// （Agent ReAct 通常已覆盖审核时间，多数零等待）；超时/未送审按放行（撤回兜底）。
+		if msg.MessageType == "group" && h.GroupMgr != nil {
+			if blocked := h.GroupMgr.WaitReview(ctx, msg.GroupID, msg.UserID, msg.MessageID, groupmgr.ReviewGateWait); blocked {
+				log.Info("群管理审核违规，丢弃 Agent 回复", "message_id", msg.MessageID, "user_id", msg.UserID, "group_id", msg.GroupID)
+				metrics.DroppedTotal.WithLabelValues("gm_verdict_black").Inc()
+				// 移除投递到当前群会话的交付消息（私聊/其他群工具消息保留）
+				deferredSends.DropDelivery(msg.MessageType, currentTargetID)
+				assistantContent = ""
+			}
+		}
 		h.sendMu.Lock()
 		defer h.sendMu.Unlock()
 
@@ -1097,7 +1159,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 				log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
 				metrics.DroppedTotal.WithLabelValues("silenced").Inc()
 			} else {
-				h.sendReply(msg, assistantContent, rs)
+				h.sendReply(ctx, msg, assistantContent, rs)
 				h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), callsJSON)
 				if h.Memory != nil {
 					h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
@@ -1119,6 +1181,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 // cqCodeRegexp 匹配 CQ 码: [CQ:type,key=value,...]
 var cqCodeRegexp = regexp.MustCompile(`\[CQ:[a-zA-Z_]+(?:,[^\]]+)?\]`)
 
+// statsTextMax 统计事件文本截断长度（rune；防超长消息撑爆 Loki 单行）。
+const statsTextMax = 200
+
+// truncateStatsText 统计事件文本规范化（复用 stats.Truncate：折叠空白 + 截断 + 省略号）。
+func truncateStatsText(s string) string {
+	return stats.Truncate(s, statsTextMax)
+}
+
 // urlRegexp 匹配 URL，提取为包级变量避免每次调用 splitMessages 时重新编译。
 var urlRegexp = regexp.MustCompile(`https?://\S+`)
 
@@ -1133,9 +1203,35 @@ const replySegmentInterval = 200 * time.Millisecond
 
 // sendReply 解析 CQ 码并组装消息段发送。
 // rs 从调用链传入，避免读取 HagoCenter 共享字段导致数据竞争。
-func (h *HagoCenter) sendReply(msg *adapter.MessageEvent, content string, rs ReplySettings) {
+func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, content string, rs ReplySettings) {
+	// 链路追踪：回复发送 span（段间延迟风控包含在耗时内）
+	_, span := otelx.Span(ctx, "send.reply",
+		attribute.String("message_type", msg.MessageType),
+		attribute.Int("chars", len([]rune(content))),
+	)
+	defer span.End()
 	// AgentLite 与正常模式一致，同样支持分段回复
 	parts := splitMessages(content)
+	// 群回复统计事件（Loki+Promtail 通道）：reply_to 携带触发消息原文，便于按群对应「消息→回复」
+	if msg.MessageType == "group" {
+		metrics.ChatRepliesTotal.WithLabelValues("group").Inc()
+		if h.Stats != nil {
+			if !h.Stats.Emit(stats.Event{
+				Timestamp: time.Now(),
+				GroupID:   msg.GroupID,
+				UserID:    msg.UserID,
+				MessageID: msg.MessageID,
+				Direction: stats.DirectionReply,
+				Source:    stats.SourceAgent,
+				Text:      truncateStatsText(content),
+				ReplyTo:   truncateStatsText(cqCodeRegexp.ReplaceAllString(msg.RawMessage, "")),
+			}) {
+				metrics.ChatStatsDroppedTotal.WithLabelValues("reply").Inc()
+			}
+		}
+	} else {
+		metrics.ChatRepliesTotal.WithLabelValues("private").Inc()
+	}
 	log.Debug("sendReply 入口",
 		"parts", len(parts),
 		"content_len", len([]rune(content)),

@@ -1,0 +1,24 @@
+# Grafana Tempo 单机配置（链路追踪存储）
+#
+# JuanNiang-Neo 通过 OTLP HTTP（4318）直推 span，Grafana 以 Tempo 数据源
+# （http://tempo:3200）查看单条事件处理全流程瀑布图。
+# 数据落本地磁盘（/var/tempo），默认保留 24h（block_duration 相关），
+# 需要更长保留期请改 tempo-data volume 对应配置或换对象存储后端。
+
+server:
+  http_listen_port: 3200
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: "0.0.0.0:4318"
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    wal:
+      path: /var/tempo/wal

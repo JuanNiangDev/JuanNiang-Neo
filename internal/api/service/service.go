@@ -2736,7 +2736,7 @@ func (s *Service) syncKnowledgeVector(itemID, content string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := s.RAGClient.Upsert(ctx, ragtag.Knowledge(itemID), content); err != nil {
+	if _, err := s.RAGClient.Upsert(ctx, ragtag.ScoopKnowledge, ragtag.Knowledge(itemID), content); err != nil {
 		log.Warn("知识向量同步失败（可在知识库页手动同步）", "id", itemID, "err", err)
 	}
 }
@@ -2749,7 +2749,7 @@ func (s *Service) deleteKnowledgeVector(itemID string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := s.RAGClient.Delete(ctx, ragtag.Knowledge(itemID)); err != nil {
+	if err := s.RAGClient.Delete(ctx, ragtag.ScoopKnowledge, ragtag.Knowledge(itemID)); err != nil {
 		log.Warn("知识向量删除失败", "id", itemID, "err", err)
 	}
 }
@@ -2782,7 +2782,7 @@ func (s *Service) SyncKnowledgeVector(ctx context.Context, c *app.RequestContext
 		for _, it := range items[i:end] {
 			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Knowledge(it.ID), Text: it.Content})
 		}
-		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		resp, err := s.RAGClient.BatchUpsert(ctx, ragtag.ScoopKnowledge, batch)
 		if err != nil {
 			log.Warn("知识向量同步批次失败", "batch", i/batchSize+1, "err", err)
 			failed += len(batch)
@@ -2840,7 +2840,7 @@ func (s *Service) SyncKnowledgeVectorStream(ctx context.Context, c *app.RequestC
 		for _, it := range items[i:end] {
 			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Knowledge(it.ID), Text: it.Content})
 		}
-		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		resp, err := s.RAGClient.BatchUpsert(ctx, ragtag.ScoopKnowledge, batch)
 		if err != nil {
 			log.Warn("知识向量同步批次失败", "batch", i/batchSize+1, "err", err)
 			failed += len(batch)
@@ -2895,7 +2895,7 @@ func (s *Service) SyncMemoryRAG(ctx context.Context, c *app.RequestContext) {
 		for _, it := range items[i:end] {
 			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Memory(it.ID), Text: it.Content})
 		}
-		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		resp, err := s.RAGClient.BatchUpsert(ctx, ragtag.ScoopMemory, batch)
 		if err != nil {
 			log.Warn("记忆向量同步批次失败", "batch", i/batchSize+1, "err", err)
 			failed += len(batch)
@@ -2958,7 +2958,7 @@ func (s *Service) SyncMemoryRAGStream(ctx context.Context, c *app.RequestContext
 		for _, it := range items[i:end] {
 			batch = append(batch, ragcaller.BatchItem{Tag: ragtag.Memory(it.ID), Text: it.Content})
 		}
-		resp, err := s.RAGClient.BatchUpsert(ctx, batch)
+		resp, err := s.RAGClient.BatchUpsert(ctx, ragtag.ScoopMemory, batch)
 		if err != nil {
 			log.Warn("记忆向量同步批次失败", "batch", i/batchSize+1, "err", err)
 			failed += len(batch)

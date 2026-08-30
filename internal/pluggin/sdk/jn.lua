@@ -347,6 +347,32 @@ M.rag = rag
 M.config = config
 
 -- ====================================================================
+-- metrics 自定义 Prometheus 指标 (无需权限，默认注入)
+-- ====================================================================
+-- 指标自动加前缀 juanniang_plugin_<插件名>_（插件内只写短名），随 /metrics 暴露，
+-- 可在 Grafana 查看。同名幂等注册（返回已有句柄，计数跨插件重载延续）。
+-- 指标名仅允许字母/数字/下划线（如 msg_count、hit_count）。
+-- 句柄方法必须用冒号调用（self 即句柄自身）：c:inc()、c:add(2)、g:set(5)、h:observe(0.4)
+
+---@class jn.CounterHandle
+---@field inc fun(self: jn.CounterHandle) 计数器 +1（冒号调用 :inc()）
+---@field add fun(self: jn.CounterHandle, n: number) 计数器 +n，不能为负（冒号调用 :add(n)）
+
+---@class jn.GaugeHandle
+---@field set fun(self: jn.GaugeHandle, n: number) 设置值（冒号调用 :set(n)）
+---@field inc fun(self: jn.GaugeHandle) 值 +1（冒号调用 :inc()）
+---@field add fun(self: jn.GaugeHandle, n: number) 值 +n（冒号调用 :add(n)）
+
+---@class jn.HistogramHandle
+---@field observe fun(self: jn.HistogramHandle, n: number) 观测一个值（耗时/大小分布，冒号调用 :observe(n)）
+
+---@class jn.Metrics
+---@field counter fun(name: string, help?: string): jn.CounterHandle, string? 创建/获取计数器（幂等）
+---@field gauge fun(name: string, help?: string): jn.GaugeHandle, string? 创建/获取仪表（幂等）
+---@field histogram fun(name: string, help?: string): jn.HistogramHandle, string? 创建/获取直方图（幂等）
+M.metrics = metrics
+
+-- ====================================================================
 -- file 插件目录内文本文件读写 (需要 file 权限)
 -- ====================================================================
 -- 所有路径均相对于插件自身目录 (data/pluggins/<插件名>/)，禁止绝对路径

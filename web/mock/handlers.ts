@@ -58,13 +58,15 @@ const tools = [
 // --- RAG 向量检索 ---
 let ragConfig = { base_url: 'http://localhost:3000', timeout: 30, is_active: true }
 let ragHealthy = true
-// GET /info 参考 JuanNiang-RAG-Service API 文档示例
+// GET /info 参考 JuanNiang-RAG-Service API 文档示例（scoops: 分库名 → tag/块数量）
 let ragInfo = {
   status: 'ok',
   model: { ready: true, model_name: 'bge-small-zh-v1.5', dim: 512, n_params: 23691264, n_threads: 4, n_ctx: 4096, error: null },
   memory: { rss_kb: 81244, vsize_kb: 1915772 },
-  tags: 128,
-  chunks: 340,
+  scoops: {
+    knowledge: { tags: 96, chunks: 260 },
+    groupmgr: { tags: 32, chunks: 80 },
+  },
 }
 
 // --- 群管理 ---

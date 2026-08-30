@@ -1,0 +1,41 @@
+# Loki 单机模式配置（群消息/回复统计专用；可与 Tempo/Grafana 共存）
+#
+# 数据保留 7 天（与 lumberjack 归档保留一致）；长期趋势建议走 Prometheus。
+# 仅展示本部署所需最小配置；production 建议按官方文档加多租户/对象存储。
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # 保留期：明细统计保留 7 天，趋势交给 Prometheus
+  retention_period: 168h
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  # Loki 3.x 要求：启用 retention 时必须指定删除请求存储（filesystem 与 common.storage 一致）
+  delete_request_store: filesystem

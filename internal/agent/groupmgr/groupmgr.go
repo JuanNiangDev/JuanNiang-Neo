@@ -19,6 +19,7 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/provider"
+	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
 
@@ -34,6 +35,10 @@ type Manager struct {
 	adp       *adapter.Adapter
 	getRAG    func() *caller.Client // RAG 客户端（热更新，nil = 未配置 → 降级）
 	providers *provider.ProviderGroup
+
+	// stats 群消息/回复统计写入器（Loki+Promtail 通道；nil = 未启用）。
+	// 处罚/刷屏/复读回复的埋点出口，由 main 注入（SetStats）。
+	stats *stats.Writer
 
 	// 配置/词库/白名单/管理员 内存缓存（Reload 立即失效，TTL 兜底）
 	mu        sync.RWMutex
@@ -53,9 +58,13 @@ type Manager struct {
 	// 异步学习闭环（黑/白语录写入）串行化：并发双插会绕过幂等去重（Text 无唯一索引）
 	learnMu sync.Mutex
 	// 异步 LLM 审查去重/在途 + 批窗口（3s 凑批统一提交，逐条独立判定）
-	llmMu         sync.Mutex
-	llmPending    map[string]bool // "群:QQ" 在途审查
-	llmReviewed   map[int64]int64 // message_id → 审查时间（10min 去重）
+	llmMu       sync.Mutex
+	llmPending  map[string]bool // "群:QQ" 在途审查
+	llmReviewed map[int64]int64 // message_id → 审查时间（10min 去重）
+	// reviewVerdict 审核终态（message_id → black/white/none）：
+	// Agent 回复发送前闸门（ReviewGate）查询用；TTL 与 llmReviewed 对齐（10min），
+	// 重启丢失 → 查不到按放行处理（撤回兜底仍在）。
+	reviewVerdict map[int64]string
 	llmResults    chan reviewOutcome
 	llmBatchMu    sync.Mutex
 	llmBatchItems []reviewItem // 批队列（到点/满批统一提交）
@@ -100,44 +109,36 @@ type nameEntry struct {
 // New 创建群管理 Manager（不启动 goroutine，Run 负责消费回调）。
 func New(d *dao.GroupMgrDAO, adp *adapter.Adapter, getRAG func() *caller.Client, pg *provider.ProviderGroup) *Manager {
 	m := &Manager{
-		dao:         d,
-		adp:         adp,
-		getRAG:      getRAG,
-		providers:   pg,
-		words:       map[string]map[string]bool{},
-		whitelist:   map[int64]bool{},
-		admins:      map[int64]bool{},
-		llmPending:  map[string]bool{},
-		llmReviewed: map[int64]int64{},
-		llmResults:  make(chan reviewOutcome, llmQueueSize),
-		imgState:    map[string][]int64{},
-		imgWarn:     map[string]bool{},
-		cpState:     map[int64]*copyState{},
-		nameCache:   map[int64]nameEntry{},
+		dao:           d,
+		adp:           adp,
+		getRAG:        getRAG,
+		providers:     pg,
+		words:         map[string]map[string]bool{},
+		whitelist:     map[int64]bool{},
+		admins:        map[int64]bool{},
+		llmPending:    map[string]bool{},
+		llmReviewed:   map[int64]int64{},
+		reviewVerdict: map[int64]string{},
+		llmResults:    make(chan reviewOutcome, llmQueueSize),
+		imgState:      map[string][]int64{},
+		imgWarn:       map[string]bool{},
+		cpState:       map[int64]*copyState{},
+		nameCache:     map[int64]nameEntry{},
 	}
 	return m
 }
 
-// Init 初始化：建默认配置 + 空词库时种子导入 + 载入内存缓存。
+// SetStats 注入群消息/回复统计写入器（Loki+Promtail 通道；nil = 不埋点）。
+// 处罚/刷屏/复读回复发送时写入 direction=reply 事件，来源标记为 groupmgr。
+func (m *Manager) SetStats(w *stats.Writer) { m.stats = w }
+
+// Init 初始化：建默认配置 + 载入内存缓存（词库仅从 go:embed txt 加载到内存，不入 DB）。
 func (m *Manager) Init(ctx context.Context) error {
 	if err := m.dao.InitConfig(ctx); err != nil {
 		return err
 	}
-	// 种子导入：词条表为空时从 go:embed 词库导入（source=system）
-	if n, err := m.dao.WordCount(ctx); err == nil && n == 0 {
-		seeds := loadSeedWords()
-		imported := 0
-		for category, ws := range seeds {
-			for _, w := range ws {
-				if _, err := m.dao.WordUpsert(ctx, w, category, "system"); err != nil {
-					log.Warn("种子词条导入失败", "word", w, "err", err)
-					continue
-				}
-				imported++
-			}
-		}
-		log.Info("群管理词库种子导入完成", "imported", imported)
-	}
+	// 关键词词库仅从 go:embed txt 加载到内存（兜底用，不入 DB/RAG/samples）。
+	// 旧 GroupMgrWord 表残留数据视为废弃，不再读取。
 	// 图片刷屏窗口恢复（重启不丢窗口；顺带清理过期 ims: kv 行）
 	cfg, _ := m.dao.GetConfig(ctx)
 	if cfg != nil {
@@ -152,22 +153,14 @@ func (m *Manager) Init(ctx context.Context) error {
 }
 
 // Reload 重载配置/词库/白名单/管理员（Web 面板保存后调用；TTL 兜底）。
+// 词库仅从 go:embed txt 加载到内存（不入 DB，不可 Web 修改）；配置/白名单/管理员仍走 DB。
 func (m *Manager) Reload(ctx context.Context) error {
 	cfg, err := m.dao.GetConfig(ctx)
 	if err != nil {
 		return err
 	}
-	wordList, err := m.dao.WordListAll(ctx)
-	if err != nil {
-		return err
-	}
-	words := map[string]map[string]bool{}
-	for _, w := range wordList {
-		if words[w.Category] == nil {
-			words[w.Category] = map[string]bool{}
-		}
-		words[w.Category][w.Word] = true
-	}
+	// 关键词词库：从 go:embed txt 加载到内存（兜底专用，不入 DB/RAG/samples）
+	words := loadSeedWordsMap()
 	wl, err := m.dao.WlList(ctx)
 	if err != nil {
 		return err
@@ -197,7 +190,7 @@ func (m *Manager) Reload(ctx context.Context) error {
 
 	// 样本候选集失效重建
 	m.invalidateSampleSet()
-	log.Info("群管理配置已重载", "enabled", cfg.Enabled, "words", len(wordList))
+	log.Info("群管理配置已重载", "enabled", cfg.Enabled, "words", len(words["black"])+len(words["gray"])+len(words["sensitive"]))
 	return nil
 }
 

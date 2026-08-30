@@ -14,6 +14,9 @@ import (
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
 	"JuanNiang-Neo/internal/metrics"
+	"JuanNiang-Neo/internal/otelx"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // RelevanceCheckResult 相关性检查结果。
@@ -118,7 +121,16 @@ func containsMeaningfulChars(s string) bool {
 // relevanceBatchEvaluate 对一批候选消息做相关性判断（L2.1 批量合并判断）。
 // 候选消息已通过规则快路径（@/命令/提及名字/噪音过滤）。
 // 返回 true=批内存在值得回复的内容，false=整批丢弃。
-func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapter.Event, rs ReplySettings, areaID string) bool {
+func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapter.Event, rs ReplySettings, areaID string) (result bool) {
+	// 链路追踪：相关性批量判断 span（记录候选数/判定结果）
+	ctx, span := otelx.Span(ctx, "relevance.check",
+		attribute.Int("candidates", len(events)),
+		attribute.String("area_id", areaID),
+	)
+	defer func() {
+		span.SetAttributes(attribute.Bool("relevant", result))
+		span.End()
+	}()
 	// 单条候选 → 复用单条判断（带分数阈值比较，更精准）
 	if len(events) == 1 {
 		msg := events[0].Message
@@ -129,7 +141,8 @@ func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapte
 		score, reason := h.relevanceAgentEvaluate(ctx, msg, recentMsgs, rs)
 		related := score >= rs.RelevanceThreshold
 		log.Debug("相关性: 单条候选判断", "score", score, "threshold", rs.RelevanceThreshold, "reason", reason, "related", related)
-		return related
+		result = related
+		return
 	}
 
 	// 多条候选 → 一次 LLM 调用判断整批
@@ -139,7 +152,8 @@ func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapte
 	if err := h.acquireRelevanceSem(judgeCtx); err != nil {
 		log.Warn("相关性批量判断: 并发限制等待超时", "err", err)
 		score, _ := judgeFailVerdict(rs, "相关性判断并发限制等待超时")
-		return score >= 0.5
+		result = score >= 0.5
+		return
 	}
 	defer h.releaseRelevanceSem()
 
@@ -226,32 +240,35 @@ func (h *HagoCenter) relevanceBatchEvaluate(ctx context.Context, events []adapte
 	}
 	if llm == nil {
 		log.Warn("相关性批量判断: 无可用 Text 模型，按不相关处理")
-		return false
+		result = false
+		return
 	}
 
 	resp, err := llm.Chat(judgeCtx, req)
 	if err != nil {
 		log.Warn("相关性批量判断 LLM 调用失败", "err", err)
 		score, _ := judgeFailVerdict(rs, "批量相关性判断 LLM 调用失败")
-		return score >= 0.5
+		result = score >= 0.5
+		return
 	}
 	if resp.TokenUsage > 0 {
 		metrics.LLMTokensTotal.WithLabelValues("relevance").Add(float64(resp.TokenUsage))
 	}
 
 	content := strings.TrimSpace(resp.Message.Content)
-	var result struct {
+	var parsed struct {
 		Relevant bool   `json:"relevant"`
 		Reason   string `json:"reason"`
 	}
-	if err := json.Unmarshal([]byte(content), &result); err != nil {
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
 		// 容错：正则提取 relevant 字段
-		result.Relevant = strings.Contains(content, `"relevant": true`) || strings.Contains(content, `"relevant":true`)
-		result.Reason = "解析失败，按容错提取"
+		parsed.Relevant = strings.Contains(content, `"relevant": true`) || strings.Contains(content, `"relevant":true`)
+		parsed.Reason = "解析失败，按容错提取"
 	}
 
-	log.Info("相关性批量判断结果", "count", len(events), "relevant", result.Relevant, "reason", result.Reason)
-	return result.Relevant
+	log.Info("相关性批量判断结果", "count", len(events), "relevant", parsed.Relevant, "reason", parsed.Reason)
+	result = parsed.Relevant
+	return
 }
 
 // relevanceAgentEvaluate 调用 LLM 评估消息相关性。
