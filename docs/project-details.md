@@ -308,7 +308,7 @@ processEvent 三阶段                                  event.go:81
 │   PostType!="message" || Message==nil → return
 ├─ Phase 3: 参与窗口派发                              event.go
 │   dispatchToAgent：@/命令/提及名字/私聊 → mustKeep 立即回（丢弃当前窗口）
-│   噪音消息（剥离 CQ 码/URL 后无任何文字）→ 规则丢弃
+│   噪音消息（剥离 CQ 码/URL 后无任何文字，如纯图/纯 sticker）→ 规则丢弃
 │   其余候选 → enqueueParticipation 攒窗（trailing 安静定时器 + 计数/最迟强发）
 └─ releaseWindow → runAgent(ctx, events, chatArea, rs)
     goroutine + ConcurrencyManager.Acquire(chatAreaID)
@@ -505,7 +505,7 @@ flowchart TD
 ```
 
 > `isAtSelf`（`reply_strategy.go`）做的是精确 `[CQ:at,qq=<self>]` 匹配；优先用当前 `Adapter.SelfID()` 而非缓存 `SelfQQ`，支持机器人换号后立即生效。
-> 参与窗口（`dispatchToAgent` → `enqueueParticipation` → `releaseWindow`）：@/命令/提及名字/私聊 → mustKeep 立即回（0 次 LLM）；噪音消息（剥离 CQ 码/URL 后无任何文字，如纯图/纯 sticker）→ 规则丢弃；其余候选（含 ≤2 字、纯 emoji/符号）攒进每群一个窗口——trailing 安静定时器（来消息即重置，间隔带 `jitter_seconds` 随机抖动）→ 安静释放；或攒够 `force_count`（±`force_count_jitter`）条 / 到达 `max_age_seconds` 最迟必发 → 强制释放（不参与概率，保证"攒的话必说"）。释放时整窗一次喂给 Agent，由 LLM 自门控（`__NO_REPLY__`）决定参与/静默；安静释放受 `participate_probability` 约束（1-p 静默放弃本窗）；参与路径发送前可加 `typing_delay_max_ms` 随机"打字延迟"。窗口消息数超 `window_max_msgs` 丢最旧保最新。
+> 参与窗口（`dispatchToAgent` → `enqueueParticipation` → `releaseWindow`）：@/命令/提及名字/私聊 → mustKeep 立即回（0 次 LLM）；噪音消息（剥离 CQ 码/URL 后无任何文字，如纯图/纯 sticker/表情）→ 规则丢弃；其余候选（含 @、≤2 字、纯 emoji/符号）攒进每群一个窗口——trailing 安静定时器（来消息即重置，间隔带 `jitter_seconds` 随机抖动）→ 安静释放；或攒够 `force_count`（±`force_count_jitter`）条 / 到达 `max_age_seconds` 最迟必发 → 强制释放（不参与概率，保证"攒的话必说"）。释放时整窗一次喂给 Agent，由 LLM 自门控（`__NO_REPLY__`）决定参与/静默；安静释放受 `participate_probability` 约束（1-p 静默放弃本窗）；参与路径发送前可加 `typing_delay_max_ms` 随机"打字延迟"。窗口消息数超 `window_max_msgs` 丢最旧保最新。
 
 ## 一条消息的全程（OneBot11 → 回执）
 

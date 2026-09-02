@@ -27,17 +27,25 @@ func isDefinitelyRelevant(msg *adapter.MessageEvent, rs ReplySettings) bool {
 	return false
 }
 
-// isDefinitelyIrrelevant 规则快路径（L1）：明显无关的噪音消息，直接丢弃不进参与窗口。
-// 仅覆盖剥离 CQ 码/URL 后无任何文字的消息（纯表情包/纯图片/纯 sticker，无配套文本）。
-// 注意：≤2 字短消息与纯 emoji/符号不算噪音（"哈哈"、"666"、"😂😂😂" 也是群聊参与候选），
-// 进参与窗口由 LLM 自门控（__NO_REPLY__）决定是否参与，避免规则过严导致 bot 不接茬。
+// isDefinitelyIrrelevant 规则快路径（L1）：仅把无参与价值的消息视为噪音，直接丢弃不进参与窗口。
+// 噪音覆盖：完全空消息；以及剥离 CQ 码/URL 后无任何文字的消息（纯图/纯 sticker/表情，无配套文本）。
+// 不算噪音（进窗口由 LLM 自门控决定是否参与）：≤2 字短消息、纯 emoji/符号（"哈哈"/"666"/"😂😂😂"）、
+// 以及含 @（CQ:at，即使只 @ 别人无文字）的消息——@ 是明确的互动信号，必须参与。
+// @ 机器人本身走 isAtSelf mustKeep 立即回，不经此判定。
 func isDefinitelyIrrelevant(msg *adapter.MessageEvent) bool {
 	text := strings.TrimSpace(msg.RawMessage)
+	if text == "" {
+		return true // 完全空消息
+	}
+	// 含 @（CQ:at）→ 参与候选，不算噪音（@ 是互动信号）
+	if strings.Contains(text, "[CQ:at,") {
+		return false
+	}
 	// 剥离 CQ 码与 URL 后取纯文本
 	plain := cqCodeRegexp.ReplaceAllString(text, "")
 	plain = urlRegexp.ReplaceAllString(plain, "")
 	plain = strings.TrimSpace(plain)
-	// 无任何有效文字 → 噪音（纯表情包/纯图片/纯 sticker 无配套文本）
+	// 无任何有效文字 → 噪音（纯图/纯 sticker/表情，无配套文本）
 	return plain == ""
 }
 

@@ -350,7 +350,7 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 		h.runAgent(ctx, []adapter.Event{ev}, chatArea, rs)
 		return
 	}
-	// 明显噪音：纯表情/过短/无有效文字 → 直接丢弃
+	// 明显噪音：完全空消息 / 纯图·纯 sticker·表情（剥离 CQ 码/URL 后无文字）→ 直接丢弃
 	if isDefinitelyIrrelevant(msg) {
 		log.Debug("参与: 规则判定噪音丢弃", "user_id", msg.UserID, "group_id", msg.GroupID)
 		metrics.DroppedTotal.WithLabelValues("irrelevant").Inc()

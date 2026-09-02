@@ -207,3 +207,42 @@ func TestParticipationNoTextNoise(t *testing.T) {
 		t.Fatalf("无文字纯图应作为噪音丢弃，实际消费 %d", got)
 	}
 }
+
+// TestParticipationAtOnlyEntersWindow 只有 @（CQ:at，@ 别人无文字）不算噪音：
+// @ 是互动信号，进参与窗口等待安静释放（而非被规则丢弃）。
+func TestParticipationAtOnlyEntersWindow(t *testing.T) {
+	h, db := newDedupTestHago(t)
+	ctx := context.Background()
+	rs := partRS()
+	rs.QuietGapSeconds = 1
+
+	atMsg := partMsg(1, 111)
+	atMsg.Message.RawMessage = "[CQ:at,qq=999]"
+	atMsg.Message.Message = []adapter.Segment{{Type: "at", Data: map[string]any{"qq": "999"}}}
+
+	h.dispatchToAgent(ctx, atMsg, rs)
+
+	time.Sleep(1600 * time.Millisecond) // 覆盖安静间隔，窗口整窗释放
+	if got := countUserRecords(t, db); got != 1 {
+		t.Fatalf("只 @ 的消息应进窗口并在安静释放时消费，实际消费 %d", got)
+	}
+}
+
+// TestParticipationEmptyMessageNoise 完全空消息仍算噪音，不进入参与窗口。
+func TestParticipationEmptyMessageNoise(t *testing.T) {
+	h, db := newDedupTestHago(t)
+	ctx := context.Background()
+	rs := partRS()
+	rs.QuietGapSeconds = 1
+
+	emptyMsg := partMsg(1, 111)
+	emptyMsg.Message.RawMessage = ""
+	emptyMsg.Message.Message = nil
+
+	h.dispatchToAgent(ctx, emptyMsg, rs)
+
+	time.Sleep(1600 * time.Millisecond)
+	if got := countUserRecords(t, db); got != 0 {
+		t.Fatalf("完全空消息应作为噪音丢弃，实际消费 %d", got)
+	}
+}
