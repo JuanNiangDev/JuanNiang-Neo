@@ -980,6 +980,18 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 				assistantContent = ""
 			}
 		}
+		// 参与路径可配置发送前随机"打字延迟"（模拟真人输入节奏，顺带降低风控风险）。
+		// 提前到 sendMu 之前 sleep：持锁阻塞会拖住所有群组的发送，延迟应在锁外完成。
+		// 仅当本轮确实会发最终回复（未静默、且未通过工具投递）时才等待；
+		// 必回路径（未标记参与模式）不受影响，保证直接提问即时响应。
+		if IsParticipation(ctx) && rs.TypingDelayMaxMs > 0 && assistantContent != "" && !deliveredToCurrent &&
+			(msg.MessageType != "group" || !isSilenceResponse(assistantContent)) {
+			d := time.Duration(rand.Intn(rs.TypingDelayMaxMs+1)) * time.Millisecond
+			if d > 0 {
+				log.Debug("参与打字延迟（sendMu 外）", "delay_ms", d.Milliseconds())
+				time.Sleep(d)
+			}
+		}
 		h.sendMu.Lock()
 		defer h.sendMu.Unlock()
 
@@ -1062,15 +1074,6 @@ func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, c
 		attribute.Int("chars", len([]rune(content))),
 	)
 	defer span.End()
-	// 参与路径可配置发送前随机"打字延迟"（模拟真人输入节奏，顺带降低风控风险）。
-	// 必回路径（@/命令/名字/私聊）不受影响，保证直接提问即时响应。
-	if IsParticipation(ctx) && rs.TypingDelayMaxMs > 0 {
-		d := time.Duration(rand.Intn(rs.TypingDelayMaxMs+1)) * time.Millisecond
-		if d > 0 {
-			log.Debug("sendReply 参与打字延迟", "delay_ms", d.Milliseconds())
-			time.Sleep(d)
-		}
-	}
 	// AgentLite 与正常模式一致，同样支持分段回复
 	parts := splitMessages(content)
 	// 群回复统计事件（Loki+Promtail 通道）：reply_to 携带触发消息原文，便于按群对应「消息→回复」
