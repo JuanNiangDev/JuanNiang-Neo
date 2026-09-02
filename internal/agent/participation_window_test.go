@@ -163,3 +163,47 @@ func TestJitterSecDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// TestParticipationShortSymbolNotNoise ≤2 字与纯 emoji/符号不算噪音：进参与窗口
+// 等待安静释放（而非被 isDefinitelyIrrelevant 规则丢弃）。
+func TestParticipationShortSymbolNotNoise(t *testing.T) {
+	h, db := newDedupTestHago(t)
+	ctx := context.Background()
+	rs := partRS()
+	rs.QuietGapSeconds = 1
+
+	shortMsg := partMsg(1, 111)
+	shortMsg.Message.RawMessage = "哈哈"
+	shortMsg.Message.Message = []adapter.Segment{{Type: "text", Data: map[string]any{"text": "哈哈"}}}
+	symMsg := partMsg(2, 222)
+	symMsg.Message.RawMessage = "😂😂😂"
+	symMsg.Message.Message = []adapter.Segment{{Type: "text", Data: map[string]any{"text": "😂😂😂"}}}
+
+	h.dispatchToAgent(ctx, shortMsg, rs)
+	h.dispatchToAgent(ctx, symMsg, rs)
+
+	time.Sleep(1600 * time.Millisecond) // 覆盖安静间隔，窗口整窗释放
+	if got := countUserRecords(t, db); got != 2 {
+		t.Fatalf("≤2 字/纯符号应进窗口并在安静释放时消费，实际消费 %d", got)
+	}
+}
+
+// TestParticipationNoTextNoise 剥离 CQ 码/URL 后无任何文字（纯图片/纯 sticker）仍算噪音，
+// 不进入参与窗口。
+func TestParticipationNoTextNoise(t *testing.T) {
+	h, db := newDedupTestHago(t)
+	ctx := context.Background()
+	rs := partRS()
+	rs.QuietGapSeconds = 1
+
+	imgMsg := partMsg(1, 111)
+	imgMsg.Message.RawMessage = "[CQ:image,file=abc.jpg]"
+	imgMsg.Message.Message = []adapter.Segment{{Type: "image", Data: map[string]any{"file": "abc.jpg"}}}
+
+	h.dispatchToAgent(ctx, imgMsg, rs)
+
+	time.Sleep(1600 * time.Millisecond)
+	if got := countUserRecords(t, db); got != 0 {
+		t.Fatalf("无文字纯图应作为噪音丢弃，实际消费 %d", got)
+	}
+}

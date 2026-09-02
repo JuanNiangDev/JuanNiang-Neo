@@ -28,38 +28,17 @@ func isDefinitelyRelevant(msg *adapter.MessageEvent, rs ReplySettings) bool {
 }
 
 // isDefinitelyIrrelevant 规则快路径（L1）：明显无关的噪音消息，直接丢弃不进参与窗口。
-// 覆盖：剥离 CQ 码/URL 后无有效文字（纯表情包/纯图片）、过短消息（≤2 字）、
-// 纯 emoji/符号（无 CJK/字母数字）且较短。
+// 仅覆盖剥离 CQ 码/URL 后无任何文字的消息（纯表情包/纯图片/纯 sticker，无配套文本）。
+// 注意：≤2 字短消息与纯 emoji/符号不算噪音（"哈哈"、"666"、"😂😂😂" 也是群聊参与候选），
+// 进参与窗口由 LLM 自门控（__NO_REPLY__）决定是否参与，避免规则过严导致 bot 不接茬。
 func isDefinitelyIrrelevant(msg *adapter.MessageEvent) bool {
 	text := strings.TrimSpace(msg.RawMessage)
 	// 剥离 CQ 码与 URL 后取纯文本
 	plain := cqCodeRegexp.ReplaceAllString(text, "")
 	plain = urlRegexp.ReplaceAllString(plain, "")
 	plain = strings.TrimSpace(plain)
-
-	runes := []rune(plain)
-	// 过短（≤2 个有效字符）→ 噪音（"哈哈"、"666"、"1"、纯图片无文字等）
-	if len(runes) <= 2 {
-		return true
-	}
-	// 纯 emoji/符号（无 CJK/字母数字）且较短 → 噪音（"😂😂😂"）
-	if len(runes) <= 6 && !containsMeaningfulChars(plain) {
-		return true
-	}
-	return false
-}
-
-// containsMeaningfulChars 判断文本是否包含有意义字符（ASCII 字母数字或 CJK）。
-func containsMeaningfulChars(s string) bool {
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			return true
-		}
-		if r >= 0x4E00 && r <= 0x9FFF { // CJK 统一表意文字
-			return true
-		}
-	}
-	return false
+	// 无任何有效文字 → 噪音（纯表情包/纯图片/纯 sticker 无配套文本）
+	return plain == ""
 }
 
 // getRecentMessages 获取 ChatArea 中最近 N 条消息（不含当前消息）。
