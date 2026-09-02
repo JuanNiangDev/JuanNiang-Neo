@@ -1239,7 +1239,7 @@ func ImageURLCandidates(rawURL string) []string {
 	return candidates
 }
 
-// DownloadImageBytes 下载图片字节（vision 工具与群聊相关性识图共用）。
+// DownloadImageBytes 下载图片字节（vision 等识图工具共用）。
 // 依次尝试 URL 解码变体，任一成功即返回；带响应体大小上限。
 func DownloadImageBytes(ctx context.Context, rawURL string) ([]byte, error) {
 	candidates := ImageURLCandidates(rawURL)

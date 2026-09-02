@@ -86,7 +86,7 @@ scrape_configs:
 | `juanniang_messages_total` | `message_type` | 群/私聊消息数 |
 | `juanniang_message_dedup_dropped_total` | — | 幂等去重丢弃（WS 重连重复推送） |
 | `juanniang_message_blocked_total` | `reason` | 黑名单拦截 |
-| `juanniang_message_dropped_total` | `reason` | 相关性/静默/刷屏丢弃 |
+| `juanniang_message_dropped_total` | `reason` | 噪音(irrelevant)/静默(silenced)丢弃 |
 | `juanniang_chat_replies_total` | `message_type` | Agent 回复发送数（全局趋势；**每群细分走 Loki**） |
 | `juanniang_chat_stats_dropped_total` | `direction` | 统计事件丢弃（Loki 通道队列满/写失败） |
 | `juanniang_agent_loops_total` | `outcome` | ReAct 循环结果（ok/error/timeout） |
@@ -94,7 +94,7 @@ scrape_configs:
 | `juanniang_agent_concurrency_waits_total` | `result` | 全局并发令牌等待（acquired/timeout） |
 | `juanniang_agent_concurrency_wait_seconds` | — | 令牌等待耗时 |
 | `juanniang_llm_requests_total` | `provider,result` | LLM 调用与错误 |
-| `juanniang_llm_tokens_total` | `phase` | Token 消耗（agent/review/relevance） |
+| `juanniang_llm_tokens_total` | `phase` | Token 消耗（agent/review） |
 | `juanniang_llm_latency_seconds` | — | LLM 延迟直方图 |
 | `juanniang_groupmgr_violations_total` | `category,action` | 群管理三级惩罚（warn/mute/kick） |
 | `juanniang_groupmgr_detections_total` | `path,verdict` | 违禁判定流水（rag/keyword × punish/review/pass） |
@@ -201,8 +201,7 @@ graph TD
     VR --> RS[rag.search]
     GM --> PR[groupmgr.punish]
     P --> PD[plugin.dispatch]
-    P --> RC[relevance.check]
-    RC --> LC[llm.call]
+    P --> PW[participation.window]
     P --> AH[agent.handle]
     AH --> LC2[llm.call]
     AH --> TE[tool.execute]

@@ -14,7 +14,7 @@ import (
 )
 
 // TestImageURLCandidates 候选链覆盖：原始 → HTML 实体解码 → 百分号解码变体。
-// 群聊相关性识图与 vision 工具共用该候选逻辑，任一成功即下载成功。
+// 群聊识图（vision）等工具共用该候选逻辑，任一成功即下载成功。
 func TestImageURLCandidates(t *testing.T) {
 	raw := "https://multimedia.nt.qq.com.cn/download?appid=1407&amp;rkey=CAESM"
 	got := ImageURLCandidates(raw)

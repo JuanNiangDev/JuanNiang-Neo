@@ -62,7 +62,7 @@ var (
 		Help: "消息被拦截总数",
 	}, []string{"reason"})
 
-	// DroppedTotal 消息被丢弃数（reason: irrelevant 相关性丢弃 / silenced 群聊静默 / flood 刷屏降级）。
+	// DroppedTotal 消息被丢弃数（reason: irrelevant 噪音丢弃 / silenced 群聊静默）。
 	DroppedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "juanniang_message_dropped_total",
 		Help: "消息被丢弃总数",
@@ -121,7 +121,7 @@ var (
 		Help: "LLM 调用总数",
 	}, []string{"provider", "result"})
 
-	// LLMTokensTotal Token 消耗按用途（phase: agent 对话循环 / review 群管理审核 / relevance 相关性判断）。
+	// LLMTokensTotal Token 消耗按用途（phase: agent 对话循环 / review 群管理审核）。
 	LLMTokensTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "juanniang_llm_tokens_total",
 		Help: "LLM Token 消耗总数",

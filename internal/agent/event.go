@@ -3,11 +3,11 @@ package agent
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
@@ -59,16 +59,67 @@ func decodeQQImageEntities(s string) string {
 
 // ReplySettings 包含从回复策略配置中提取的 per-message 设置。
 // 通过函数参数传递（而非 HagoCenter 共享字段），避免数据竞争。
+// 参与窗口参数含义：
+//   - QuietGapSeconds      安静间隔：消息停止后多久释放（有消息则重置）
+//   - ForceCount           插话计数：攒够 N 条即使有消息也强制释放（必说）
+//   - MaxAgeSeconds        最迟必发硬上界（不参与随机，必说）
+//   - WindowMaxMsgs        窗口消息数上限（超限丢最旧，防上下文爆炸）
+//   - JitterSeconds        安静间隔随机抖动幅度（0=关闭，确定性）
+//   - ForceCountJitter     计数随机抖动幅度（0=关闭，确定性）
+//   - ParticipateProbability 安静释放参与概率（1-p 静默放弃本窗；计数/最迟必发不受影响）
+//   - TypingDelayMaxMs     发送前随机"打字延迟"上限（仅参与路径，0=关闭）
 type ReplySettings struct {
-	Strategy           models.ReplyStrategy
-	StripMarkdown      bool
-	AgentLite          bool
-	BotName            string
-	RelevanceThreshold float64
-	RelevancePrompt    string        // 相关性检测自定义提示词（空则用默认）
-	RelevanceModel     string        // 相关性检测使用的 Text Provider ID（空则用默认）
-	RelevanceTimeout   time.Duration // 相关性检测超时（含信号量等待与 LLM 调用总预算）
-	JudgeFailPolicy    string        // 判断失败策略: drop=不回复（默认）, reply=照常回复
+	StripMarkdown          bool
+	AgentLite              bool
+	BotName                string
+	QuietGapSeconds        int
+	ForceCount             int
+	MaxAgeSeconds          int
+	WindowMaxMsgs          int
+	JitterSeconds          int
+	ForceCountJitter       int
+	ParticipateProbability float64
+	TypingDelayMaxMs       int
+}
+
+// quietGap 返回安静间隔（非法值回退默认 5s）。
+func (rs ReplySettings) quietGap() time.Duration {
+	if rs.QuietGapSeconds <= 0 {
+		return 5 * time.Second
+	}
+	return time.Duration(rs.QuietGapSeconds) * time.Second
+}
+
+// forceCount 返回插话计数强发阈值（非法值回退默认 5）。
+func (rs ReplySettings) forceCount() int {
+	if rs.ForceCount <= 0 {
+		return 5
+	}
+	return rs.ForceCount
+}
+
+// maxAge 返回最迟必发时长（非法值回退默认 20s）。
+func (rs ReplySettings) maxAge() time.Duration {
+	if rs.MaxAgeSeconds <= 0 {
+		return 20 * time.Second
+	}
+	return time.Duration(rs.MaxAgeSeconds) * time.Second
+}
+
+// windowMaxMsgs 返回窗口消息数上限（非法值回退默认 20）。
+func (rs ReplySettings) windowMaxMsgs() int {
+	if rs.WindowMaxMsgs <= 0 {
+		return 20
+	}
+	return rs.WindowMaxMsgs
+}
+
+// jitterSec 返回 [0, maxSec] 秒的随机抖动；maxSec<=0 时返回 0（确定性模式）。
+func jitterSec(maxSec int) int {
+	if maxSec <= 0 {
+		return 0
+	}
+	return rand.Intn(maxSec + 1)
 }
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
@@ -191,13 +242,8 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		if result.SkipReply {
 			ev.SkipReplyCheck = true
 		}
-		// Phase 3: 回复策略快速检查（never / at_only / always）。
-		// relevance 策略的 LLM 判断耗时较长，延迟到 dispatchToAgent 的 goroutine 内执行，
-		// 避免阻塞事件循环（否则一条消息的相关性判断会拖慢后续所有消息）。
+		// Phase 3: 参与窗口派发（mustKeep 快路径/噪音过滤/攒窗均在 dispatchToAgent 内完成）
 		rs := h.getReplySettings(ctx)
-		if !ev.SkipReplyCheck && !h.checkReplyStrategyFast(ctx, ev, rs) {
-			return
-		}
 		h.dispatchToAgent(ctx, ev, rs)
 		return
 	}
@@ -207,20 +253,7 @@ func (h *HagoCenter) processEvent(ctx context.Context, ev adapter.Event) {
 		return
 	}
 	rs := h.getReplySettings(ctx)
-	if !h.checkReplyStrategyFast(ctx, ev, rs) {
-		return
-	}
 	h.dispatchToAgent(ctx, ev, rs)
-}
-
-// checkReplyStrategyFast 廉价策略检查（不调用 LLM）：never / at_only / always。
-// 返回 true 表示继续处理；relevance 策略一律返回 true，其 LLM 判断
-// 由 dispatchToAgent 在 goroutine 内调用完整的 checkReplyStrategy 完成。
-func (h *HagoCenter) checkReplyStrategyFast(ctx context.Context, ev adapter.Event, rs ReplySettings) bool {
-	// 回复策略已收敛为仅 relevance：@/命令/提及名字必回由规则快路径保证（零 LLM 调用），
-	// 其余候选消息的 LLM 相关性判断延迟到派发 goroutine 内执行（filterRelevant），
-	// 避免阻塞事件循环。这里恒放行，策略判断全部由 filterRelevant 接管。
-	return true
 }
 
 // replySettingsTTL 回复策略内存缓存有效期：策略是单例配置且极少变更，
@@ -240,23 +273,20 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
 		log.Warn("获取回复策略失败，使用默认值", "err", err)
-		return ReplySettings{Strategy: models.StrategyRelevance}
-	}
-	// 相关性判断超时（秒）；0/非法值回退到默认 10s
-	timeout := time.Duration(cfg.RelevanceTimeout) * time.Second
-	if cfg.RelevanceTimeout <= 0 || timeout > 120*time.Second {
-		timeout = relevanceJudgeTimeout
+		return ReplySettings{}
 	}
 	rs := ReplySettings{
-		Strategy:           cfg.Strategy,
-		StripMarkdown:      cfg.StripMarkdown,
-		AgentLite:          cfg.AgentLite,
-		BotName:            cfg.BotName,
-		RelevanceThreshold: cfg.RelevanceThreshold,
-		RelevancePrompt:    cfg.RelevancePrompt,
-		RelevanceModel:     cfg.RelevanceModel,
-		RelevanceTimeout:   timeout,
-		JudgeFailPolicy:    cfg.JudgeFailPolicy,
+		StripMarkdown:          cfg.StripMarkdown,
+		AgentLite:              cfg.AgentLite,
+		BotName:                cfg.BotName,
+		QuietGapSeconds:        cfg.QuietGapSeconds,
+		ForceCount:             cfg.ForceCount,
+		MaxAgeSeconds:          cfg.MaxAgeSeconds,
+		WindowMaxMsgs:          cfg.WindowMaxMsgs,
+		JitterSeconds:          cfg.JitterSeconds,
+		ForceCountJitter:       cfg.ForceCountJitter,
+		ParticipateProbability: cfg.ParticipateProbability,
+		TypingDelayMaxMs:       cfg.TypingDelayMaxMs,
 	}
 	h.replySettings = rs
 	h.replySettingsExp = time.Now().Add(replySettingsTTL)
@@ -270,13 +300,8 @@ func (h *HagoCenter) InvalidateReplySettings() {
 	h.replySettingsMu.Unlock()
 }
 
-// checkReplyStrategy 已废弃：相关性判断统一在 filterRelevant 中按批次执行
-// （规则快路径 + relevanceBatchEvaluate），逐条模式不再使用。
-// 原实现见 git history（L1/L2 优化前）。
-
-// batchWindow 同一 ChatArea 消息的批处理窗口：窗口内的消息合并为一次 Agent 处理，
-// 避免多条消息同时到达时各自触发完整 ReAct 循环（重复执行任务 + 回复串味）。
-const batchWindow = time.Second
+// 参与窗口：非必回群聊消息攒进每群一个的窗口，等待安静/插话计数/最迟必发后
+// 整窗一次喂给 Agent（由 LLM 自门控决定参与或静默），替代旧 relevance 相关性判断管线。
 
 // acquireTimeout 并发令牌等待超时：同群上一子批次 ReAct 循环执行时间较长时，
 // 后续子批次不再无限排队，超时后直接派发处理（跳过令牌等待，让消息尽快得到响应）。
@@ -291,142 +316,186 @@ const globalAgentConcurrency = 64
 // 永久阻塞，占用并发令牌导致该群后续消息无法处理。
 const agentRunTimeout = 5 * time.Minute
 
-// 热聊检测（L2.2/L4.1）：1s 滑动窗口内消息数 ≥ floodThreshold 视为刷屏。
-// 刷屏时：批窗口拉长到 hotBatchWindow（合并更多消息），且相关性判断直接降级
-// 为只回 @/命令/提及名字（不调 LLM）。
-const (
-	hotWindow      = time.Second
-	floodThreshold = 5
-	hotBatchWindow = 3 * time.Second
-)
-
-// 相关性判断结果缓存（L2.3/L4.2，Redis）：
-//   - related   → 对话轮次内放宽判断（机器人刚参与过，短时间不再重复判断）
-//   - unrelated → 冷却期（热聊无关消息不反复触发 LLM 判断）
-const (
-	relevanceVerdictKey = "relevance:verdict:" // + areaID
-	verdictRelated      = "related"
-	verdictUnrelated    = "unrelated"
-	relatedVerdictTTL   = 15 * time.Second
-	unrelatedVerdictTTL = 30 * time.Second
-)
-
-// hotStat 单个 ChatArea 的 1s 滑动窗口消息计数（热聊检测用）。
-type hotStat struct {
-	count       int
-	windowStart time.Time
+// participationWindow 单个 ChatArea 的参与窗口：累积候选消息，等待安静或强制释放。
+// 同时只存在一个窗口；timer 为 trailing 安静定时器（有消息就重置），
+// deadlineTimer 为最迟必发定时器（窗口创建时挂载，不参与概率，必说）。
+type participationWindow struct {
+	events        []adapter.Event
+	rs            ReplySettings
+	timer         *time.Timer
+	deadlineTimer *time.Timer
+	msgCount      int
+	deadline      time.Time
 }
 
-// pendingBatch 同一 ChatArea 在批处理窗口内收集的消息。
-type pendingBatch struct {
-	events []adapter.Event
-	rs     ReplySettings
-	timer  *time.Timer
-}
+type participationKey struct{}
 
-// dispatchToAgent 根据消息类型获取 ChatArea，通过批处理窗口合并后派发给 Agent。
+// dispatchToAgent 参与模式消息分派：mustKeep 立即回（并丢弃当前窗口）、噪音丢弃、其余入参与窗口。
 func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs ReplySettings) {
 	msg := ev.Message
+	if msg == nil {
+		return
+	}
 	chatArea := h.getChatArea(ctx, msg)
 	if chatArea == nil {
-		// 无法获取 ChatArea 时直接处理（不限制并发、不批处理）
-		h.handleMessage(ctx, []adapter.Event{ev}, nil, rs)
+		// 无法获取 ChatArea 时直接处理（不限制并发、不攒窗）
+		h.runAgent(ctx, []adapter.Event{ev}, nil, rs)
 		return
 	}
-	h.enqueueBatch(ctx, ev, chatArea, rs)
-}
-
-// enqueueBatch 将消息加入对应 ChatArea 的待处理批次；窗口结束后统一派发。
-// 若窗口内又来新消息，直接追加到同一批次，保证同一时间每个 ChatArea 只有一个待处理批次。
-func (h *HagoCenter) enqueueBatch(ctx context.Context, ev adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
-	// L2.2 热聊统计：每条消息到达都计数（决定批窗口与刷屏降级）
-	count := h.recordMessage(chatArea.ID, time.Now())
-
-	h.batchMu.Lock()
-	if b, ok := h.batches[chatArea.ID]; ok {
-		b.events = append(b.events, ev)
-		h.batchMu.Unlock()
+	// 必回快路径：@ 自己 / 插件命令 / 提及名字 / 私聊 / 插件标记跳过检查
+	// → 立即回复，并丢弃当前参与窗口（避免刚回复过又被窗口补刀串味）
+	if ev.SkipReplyCheck || msg.MessageType != "group" ||
+		h.isAtSelf(msg.RawMessage, ev.SelfID) || h.isPluginCommand(msg.RawMessage) || isDefinitelyRelevant(msg, rs) {
+		h.discardWindow(chatArea.ID)
+		h.runAgent(ctx, []adapter.Event{ev}, chatArea, rs)
 		return
 	}
-	b := &pendingBatch{events: []adapter.Event{ev}, rs: rs}
-	h.batches[chatArea.ID] = b
-	h.batchMu.Unlock()
-
-	// L2.2 动态批窗口：刷屏时拉长窗口，合并更多消息为一次判断/处理
-	window := batchWindow
-	if count >= floodThreshold {
-		window = hotBatchWindow
+	// 明显噪音：纯表情/过短/无有效文字 → 直接丢弃
+	if isDefinitelyIrrelevant(msg) {
+		log.Debug("参与: 规则判定噪音丢弃", "user_id", msg.UserID, "group_id", msg.GroupID)
+		metrics.DroppedTotal.WithLabelValues("irrelevant").Inc()
+		return
 	}
+	// 其余候选消息 → 参与窗口（攒窗，等待安静/插话计数/最迟必发释放）
+	h.enqueueParticipation(ctx, ev, chatArea, rs)
+}
 
-	// 窗口结束后派发整个批次（复制事件，避免与后续追加竞争）
-	b.timer = time.AfterFunc(window, func() {
-		h.batchMu.Lock()
-		delete(h.batches, chatArea.ID)
-		events := append([]adapter.Event(nil), b.events...)
-		h.batchMu.Unlock()
-		if len(events) == 0 {
-			return
+// enqueueParticipation 把消息加入对应 ChatArea 的参与窗口；同时只存在一个窗口。
+// 来消息即重置 trailing 安静定时器；插话计数攒够 force_count（±jitter）条或超过
+// max_age 最迟必发时，忽略定时器强制释放。消息数超过 window_max_msgs 时丢最旧保最新。
+func (h *HagoCenter) enqueueParticipation(ctx context.Context, ev adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+	areaID := chatArea.ID
+	h.windowMu.Lock()
+	w, ok := h.windows[areaID]
+	if !ok {
+		w = &participationWindow{rs: rs, deadline: time.Now().Add(rs.maxAge())}
+		h.windows[areaID] = w
+		// 最迟必发硬上界：窗口创建即挂必发定时器（不参与概率，必说）
+		w.deadlineTimer = time.AfterFunc(rs.maxAge(), func() { h.releaseWindow(ctx, areaID, false) })
+	}
+	w.events = append(w.events, ev)
+	w.msgCount++
+	if max := rs.windowMaxMsgs(); max > 0 && len(w.events) > max {
+		w.events = append([]adapter.Event(nil), w.events[len(w.events)-max:]...)
+	}
+	// trailing 安静定时器：有消息就重置（间隔带随机抖动）
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	quiet := rs.quietGap() + time.Duration(jitterSec(rs.JitterSeconds))*time.Second
+	w.timer = time.AfterFunc(quiet, func() { h.releaseWindow(ctx, areaID, true) })
+
+	overCount := w.msgCount >= rs.forceCount()+jitterSec(rs.ForceCountJitter)
+	overDeadline := time.Now().After(w.deadline)
+	h.windowMu.Unlock()
+
+	// 计数强发 / 最迟必发：忽略定时器，直接释放（不参与概率，保证"攒的话必说"）
+	if overCount || overDeadline {
+		h.releaseWindow(ctx, areaID, false)
+	}
+}
+
+// releaseWindow 释放 ChatArea 的参与窗口：整窗消息一次性交给 Agent 参与（一条 ReAct 循环）。
+// quiet=true 表示安静释放（受 participate_probability 约束）；false 表示计数/最迟强发（必说）。
+func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, quiet bool) {
+	h.windowMu.Lock()
+	w, ok := h.windows[areaID]
+	if !ok {
+		h.windowMu.Unlock()
+		return
+	}
+	delete(h.windows, areaID)
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	if w.deadlineTimer != nil {
+		w.deadlineTimer.Stop()
+	}
+	events := append([]adapter.Event(nil), w.events...)
+	rs := w.rs
+	h.windowMu.Unlock()
+
+	if len(events) == 0 {
+		return
+	}
+	// 参与概率只作用于安静释放：1-p 静默放弃本窗（计数强发/最迟必发不受影响）
+	if quiet && rs.ParticipateProbability < 1.0 && rand.Float64() > rs.ParticipateProbability {
+		log.Debug("参与: 概率静默放弃本窗", "area", areaID, "events", len(events), "prob", rs.ParticipateProbability)
+		metrics.DroppedTotal.WithLabelValues("silenced").Inc()
+		return
+	}
+	log.Info("参与窗口释放", "area", areaID, "events", len(events), "quiet", quiet, "force", !quiet)
+
+	lastMsg := events[len(events)-1].Message
+	if lastMsg == nil {
+		return
+	}
+	chatArea := h.getChatArea(ctx, lastMsg)
+	if chatArea == nil {
+		return
+	}
+	// 黑名单过滤 + 批次级记忆屏障，标记参与模式后整窗一次处理
+	events = h.filterBlockedEvents(ctx, events, chatArea)
+	if len(events) == 0 {
+		return
+	}
+	batchMsgs := h.writeBatchToMemory(ctx, events, chatArea)
+	ctx = WithBatchUserMsgs(ctx, batchMsgs)
+	ctx = WithParticipation(ctx, true)
+	h.runAgent(ctx, events, chatArea, rs)
+}
+
+// discardWindow 取消并丢弃 ChatArea 的当前参与窗口（mustKeep 立即回复时调用，防串味）。
+func (h *HagoCenter) discardWindow(areaID string) {
+	h.windowMu.Lock()
+	w, ok := h.windows[areaID]
+	if ok {
+		if w.timer != nil {
+			w.timer.Stop()
 		}
-		h.spawnBatch(ctx, events, b.rs, chatArea)
-	})
-}
-
-// recordMessage 记录 ChatArea 的消息到达，返回当前 1s 窗口内的消息数。
-func (h *HagoCenter) recordMessage(areaID string, now time.Time) int {
-	h.hotMu.Lock()
-	defer h.hotMu.Unlock()
-	st, ok := h.hotStats[areaID]
-	if !ok || now.Sub(st.windowStart) >= hotWindow {
-		// 新窗口或窗口已过期：重建（防无界增长，超上限整体清空）
-		if !ok && len(h.hotStats) >= 2048 {
-			h.hotStats = make(map[string]*hotStat)
+		if w.deadlineTimer != nil {
+			w.deadlineTimer.Stop()
 		}
-		h.hotStats[areaID] = &hotStat{count: 1, windowStart: now}
-		return 1
+		delete(h.windows, areaID)
 	}
-	st.count++
-	return st.count
+	h.windowMu.Unlock()
 }
 
-// isChatFlooding 判断 ChatArea 是否处于刷屏状态（1s 窗口内消息数 ≥ floodThreshold）。
-func (h *HagoCenter) isChatFlooding(areaID string) bool {
-	if areaID == "" {
-		return false
-	}
-	h.hotMu.Lock()
-	defer h.hotMu.Unlock()
-	st, ok := h.hotStats[areaID]
-	if !ok || time.Since(st.windowStart) >= hotWindow {
-		return false
-	}
-	return st.count >= floodThreshold
+// runAgent 在 goroutine 内执行一次 Agent 处理（带并发令牌与 panic 兜底），不阻塞事件循环。
+// 供 mustKeep 立即回复与参与窗口释放两条路径共用。
+func (h *HagoCenter) runAgent(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+	go func() {
+		// Agent 处理 goroutine 兜底：任一环节 panic（LLM 客户端 bug、工具实现缺陷、
+		// 数据异常）都不能让整个进程崩溃，只丢弃本条消息并记录堆栈。
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("Agent 处理 goroutine panic", "panic", r, "stack", string(debug.Stack()), "area", chatArea.ID, "events", len(events))
+			}
+		}()
+		if h.Concurrency != nil {
+			acquireCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
+			defer cancel()
+			if err := h.Concurrency.Acquire(acquireCtx, chatArea.ID); err != nil {
+				// 等待超时直接放行处理（跳过排队），但此时未持有令牌，不能 Release，
+				// 否则会误释放其他 goroutine 占用的槽位（over-release）。
+				log.Warn("Agent 并发令牌等待超时，直接派发处理（跳过排队）", "err", err, "area", chatArea.ID, "events", len(events))
+			} else {
+				defer h.Concurrency.Release(chatArea.ID)
+			}
+		}
+		h.handleMessage(ctx, events, chatArea, rs)
+	}()
 }
 
-// getRelevanceVerdict 读取 ChatArea 的相关性判断缓存（Redis）。
-// 返回 "" 表示无缓存；verdictRelated / verdictUnrelated 表示命中。
-func (h *HagoCenter) getRelevanceVerdict(ctx context.Context, areaID string) string {
-	if h.Cache == nil || areaID == "" {
-		return ""
-	}
-	var v string
-	if err := h.Cache.Get(ctx, relevanceVerdictKey+areaID, &v); err != nil {
-		return ""
-	}
+// WithParticipation 标记本批次为参与模式（handleMessage 据此注入参与框架指令、应用打字延迟）。
+func WithParticipation(ctx context.Context, v bool) context.Context {
+	return context.WithValue(ctx, participationKey{}, v)
+}
+
+// IsParticipation 返回本批次是否为参与模式。
+func IsParticipation(ctx context.Context) bool {
+	v, _ := ctx.Value(participationKey{}).(bool)
 	return v
-}
-
-// setRelevanceVerdict 写入 ChatArea 的相关性判断缓存（Redis，带 TTL）。
-func (h *HagoCenter) setRelevanceVerdict(ctx context.Context, areaID string, verdict string) {
-	if h.Cache == nil || areaID == "" {
-		return
-	}
-	ttl := relatedVerdictTTL
-	if verdict == verdictUnrelated {
-		ttl = unrelatedVerdictTTL
-	}
-	if err := h.Cache.Set(ctx, relevanceVerdictKey+areaID, verdict, ttl); err != nil {
-		log.Warn("相关性判断缓存写入失败", "area", areaID, "err", err)
-	}
 }
 
 // memoryMsg 生成写入短期记忆 / 注入上下文的用户消息文本（带发言人标识）。
@@ -442,9 +511,8 @@ func memoryMsg(m *adapter.MessageEvent) string {
 	return uMsg
 }
 
-// filterBlockedEvents 聊天黑名单过滤（管理员豁免），返回新 slice（不改原 events）。
-// 与 handleMessage 内过滤逻辑一致，供 spawnBatch 批次级记忆屏障使用。
-// filterBlockedEvents 黑名单过滤：命中聊天黑名单的用户消息直接丢弃。
+// filterBlockedEvents 黑名单过滤：命中聊天黑名单的用户消息直接丢弃（管理员不豁免），
+// 返回新 slice（不改原 events）。与 handleMessage 内过滤逻辑一致。
 // 黑名单对所有用户生效（含 Admins 列表，管理员不豁免），保证被 ban 的 QQ 号
 // 无法使用 Agent 循环；插件拦截阶段（Phase 1）不受影响。
 func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea) []adapter.Event {
@@ -520,128 +588,7 @@ func (h *HagoCenter) writeBatchToMemory(ctx context.Context, events []adapter.Ev
 	return batchMsgs
 }
 
-// spawnBatch 启动一个批次的 Agent 处理（relevance 检查与并发控制都在 goroutine 内，不阻塞事件循环）。
-// 批次内不同用户的消息按 UserID 拆分为多个子批次，每个用户的消息独立占一个 ReAct 循环
-// （同一用户窗口内的消息仍合并为一次处理）。子批次**并行**执行 ReAct 循环，
-// 但发送动作交给 orderedReplier 按消息顺序投递，避免并行导致的回复乱序。
-// 批次级记忆屏障：派发前先把整批用户消息一次性写入短期记忆并注入上下文，
-// 保证所有并发组读到的记忆一致，且每条消息只在一个组的"主消息"位置出现一次。
-func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs ReplySettings, chatArea *models.ChatArea) {
-	// 黑名单过滤提前到派发阶段（handleMessage 内仍保留双保险）
-	events = h.filterBlockedEvents(ctx, events, chatArea)
-	if len(events) == 0 {
-		return
-	}
-	// 批次级记忆屏障 + 整批消息注入 context
-	batchMsgs := h.writeBatchToMemory(ctx, events, chatArea)
-	ctx = WithBatchUserMsgs(ctx, batchMsgs)
-
-	groups := groupEventsByUser(events)
-
-	if h.Concurrency == nil {
-		// 无并发管理：同步串行处理，组间天然有序
-		for _, g := range groups {
-			if filtered := h.filterRelevant(ctx, g, rs); len(filtered) > 0 {
-				h.handleMessage(ctx, filtered, chatArea, rs)
-			}
-		}
-		return
-	}
-
-	// 并行处理 + 按序发送：每组一个 ReAct 循环并发执行，完成后发送动作按 index 顺序投递
-	replier := newOrderedReplier()
-	for i, g := range groups {
-		group := g
-		index := i
-		go func() {
-			// Agent 处理 goroutine 兜底：任一环节 panic（LLM 客户端 bug、工具实现缺陷、
-			// 数据异常）都不能让整个进程崩溃，只丢弃本条消息并记录堆栈。
-			defer func() {
-				if r := recover(); r != nil {
-					log.Error("Agent 处理 goroutine panic", "panic", r, "stack", string(debug.Stack()), "area", chatArea.ID, "events", len(group))
-				}
-			}()
-			filtered := h.filterRelevant(ctx, group, rs)
-			if len(filtered) == 0 {
-				return
-			}
-			acquireCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
-			defer cancel()
-			if err := h.Concurrency.Acquire(acquireCtx, chatArea.ID); err != nil {
-				// 等待超时直接放行处理（跳过排队），但此时未持有令牌，不能 Release，
-				// 否则会误释放其他 goroutine 占用的槽位（over-release）。
-				log.Warn("Agent 并发令牌等待超时，直接派发处理（跳过排队）", "err", err, "area", chatArea.ID, "events", len(group))
-			} else {
-				defer h.Concurrency.Release(chatArea.ID)
-			}
-			h.handleMessage(WithOrderedReplier(ctx, replier, index), filtered, chatArea, rs)
-		}()
-	}
-}
-
-// orderedReplier 按 index 顺序执行发送动作：不同用户子批次并行处理完成后，
-// 回复按消息到达顺序投递，避免并行导致的回复乱序（如后发先回）。
-type orderedReplier struct {
-	mu      sync.Mutex
-	next    int
-	pending map[int]func()
-}
-
-func newOrderedReplier() *orderedReplier {
-	return &orderedReplier{pending: make(map[int]func())}
-}
-
-// Enqueue 注册 index 对应的发送动作。index == next 时立即执行并推进，
-// 否则暂存，等前面的 index 完成后再按序执行。
-func (r *orderedReplier) Enqueue(index int, fn func()) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if index == r.next {
-		r.next++
-		r.runAvailableLocked(fn)
-		return
-	}
-	r.pending[index] = fn
-}
-
-// runAvailableLocked 执行当前动作并连续执行后续已就绪的 pending 动作（调用方持锁）。
-func (r *orderedReplier) runAvailableLocked(first func()) {
-	first()
-	for {
-		fn, ok := r.pending[r.next]
-		if !ok {
-			return
-		}
-		delete(r.pending, r.next)
-		r.next++
-		fn()
-	}
-}
-
-type (
-	orderedReplierKey      struct{}
-	orderedReplierIndexKey struct{}
-	batchUserMsgsKey       struct{}
-)
-
-// WithOrderedReplier 把按序发送器及其 index 注入 context（供 handleMessage 后处理使用）。
-func WithOrderedReplier(ctx context.Context, r *orderedReplier, index int) context.Context {
-	ctx = context.WithValue(ctx, orderedReplierKey{}, r)
-	ctx = context.WithValue(ctx, orderedReplierIndexKey{}, index)
-	return ctx
-}
-
-// GetOrderedReplier 返回 context 中的按序发送器（nil 表示非分组模式，直接发送）。
-func GetOrderedReplier(ctx context.Context) *orderedReplier {
-	r, _ := ctx.Value(orderedReplierKey{}).(*orderedReplier)
-	return r
-}
-
-// GetOrderedReplierIndex 返回 context 中的发送顺序 index。
-func GetOrderedReplierIndex(ctx context.Context) int {
-	i, _ := ctx.Value(orderedReplierIndexKey{}).(int)
-	return i
-}
+type batchUserMsgsKey struct{}
 
 // WithBatchUserMsgs 把批次级消息列表（带发言人标识，已写入短期记忆）注入 context。
 func WithBatchUserMsgs(ctx context.Context, msgs []string) context.Context {
@@ -652,99 +599,6 @@ func WithBatchUserMsgs(ctx context.Context, msgs []string) context.Context {
 func GetBatchUserMsgs(ctx context.Context) []string {
 	v, _ := ctx.Value(batchUserMsgsKey{}).([]string)
 	return v
-}
-
-// groupEventsByUser 按 UserID 把事件分组为多个子批次（每组保持组内原始顺序）。
-// 无 Message 的事件被丢弃。
-func groupEventsByUser(events []adapter.Event) [][]adapter.Event {
-	var groups [][]adapter.Event
-	index := map[int64]int{}
-	for _, ev := range events {
-		if ev.Message == nil {
-			continue
-		}
-		uid := ev.Message.UserID
-		if i, ok := index[uid]; ok {
-			groups[i] = append(groups[i], ev)
-		} else {
-			index[uid] = len(groups)
-			groups = append(groups, []adapter.Event{ev})
-		}
-	}
-	return groups
-}
-
-// filterRelevant 对批次内消息做相关性策略过滤（relevance 策略需要 LLM 判断，在此统一执行）。
-// 流程（L1/L2.1）：规则快路径（@/命令/提及名字 → 必回；噪音 → 丢弃）→
-// 剩余候选消息合并为一次批量判断（含图消息标注 [图片]）。
-func (h *HagoCenter) filterRelevant(ctx context.Context, events []adapter.Event, rs ReplySettings) []adapter.Event {
-	// 回复策略仅 relevance：全程执行下面的快路径 + 批量判断管线，无需策略分支。
-	var mustKeep, candidates []adapter.Event
-	for _, ev := range events {
-		if ev.SkipReplyCheck {
-			mustKeep = append(mustKeep, ev)
-			continue
-		}
-		msg := ev.Message
-		if msg == nil {
-			continue
-		}
-		// 非群聊（私聊）不参与相关性判断，直接保留
-		if msg.MessageType != "group" {
-			mustKeep = append(mustKeep, ev)
-			continue
-		}
-		// L1 规则快路径：@ 自己 / 插件命令 / 提及名字 → 必回，无需 LLM
-		if h.isAtSelf(msg.RawMessage, ev.SelfID) || h.isPluginCommand(msg.RawMessage) || isDefinitelyRelevant(msg, rs) {
-			mustKeep = append(mustKeep, ev)
-			continue
-		}
-		// L1 规则快路径：明显噪音 → 直接丢弃
-		if isDefinitelyIrrelevant(msg) {
-			log.Debug("相关性: 规则判定无关，丢弃", "user_id", msg.UserID, "group_id", msg.GroupID)
-			metrics.DroppedTotal.WithLabelValues("irrelevant").Inc()
-			continue
-		}
-		candidates = append(candidates, ev)
-	}
-	if len(candidates) == 0 {
-		return mustKeep
-	}
-
-	// 取 ChatArea ID（批量判断的上下文/后续缓存用）
-	areaID := ""
-	if area := h.getChatArea(ctx, candidates[0].Message); area != nil {
-		areaID = area.ID
-	}
-
-	// L4.1 热度降级：刷屏时跳过 LLM 判断，只回必回消息（@/命令/提及名字）
-	if h.isChatFlooding(areaID) {
-		log.Debug("相关性: 群聊刷屏，降级为仅回@/命令/提及名字", "area", areaID)
-		metrics.DroppedTotal.WithLabelValues("flood").Add(float64(len(candidates)))
-		return mustKeep
-	}
-
-	// L2.3/L4.2 判断结果缓存：related=对话轮次内放宽；unrelated=冷却期内不再判断
-	if v := h.getRelevanceVerdict(ctx, areaID); v != "" {
-		if v == verdictRelated {
-			log.Debug("相关性: 命中 related 缓存，保留候选", "area", areaID)
-			return append(mustKeep, candidates...)
-		}
-		log.Debug("相关性: 命中 unrelated 冷却缓存，丢弃候选", "area", areaID)
-		metrics.DroppedTotal.WithLabelValues("irrelevant").Add(float64(len(candidates)))
-		return mustKeep
-	}
-
-	// L2.1 批量合并判断：一次 LLM 调用决定整批候选去留
-	if h.relevanceBatchEvaluate(ctx, candidates, rs, areaID) {
-		h.setRelevanceVerdict(ctx, areaID, verdictRelated)
-		log.Debug("相关性: 批量判断通过，保留候选", "count", len(candidates))
-		return append(mustKeep, candidates...)
-	}
-	h.setRelevanceVerdict(ctx, areaID, verdictUnrelated)
-	log.Debug("相关性: 批量判断不相关，丢弃候选", "count", len(candidates))
-	metrics.DroppedTotal.WithLabelValues("irrelevant").Add(float64(len(candidates)))
-	return mustKeep
 }
 
 // getChatArea 根据消息类型获取或创建 ChatArea，失败返回 nil。
@@ -803,7 +657,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 
 	// 聊天黑名单检查：命中黑名单的消息直接丢弃（不进入 Agent 循环）
-	// （spawnBatch 派发时已过滤一次，此处为 fallback 路径双保险）
+	// （派发路径已过滤一次，此处为 fallback 路径双保险）
 	events = h.filterBlockedEvents(ctx, events, chatArea)
 	if len(events) == 0 {
 		return
@@ -960,15 +814,15 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 			}
 		}
 	}
-	// 批量消息区分：批内非主消息是背景（多人独立发言，不要求逐一回复），
-	// 主消息（本组最后一条）是当前需要回复的消息。避免模型把多人的问题
-	// 拼在一起一次回复（回复串味），也避免并行组重复消费同一消息。
+	// 消息标签：参与模式整窗消息都作为群聊讨论语境；必回路径沿用主消息/背景消息区分。
 	for i, mu := range userMsgs {
 		// QQ 图片 URL 在 CQ 码里带 HTML 实体（&amp;），LLM 原样复刻易得到无法下载的 URL；
 		// 仅解码 CQ 图片码/QQ 图床 URL 中的实体，普通用户文本（如字面 &amp;）原样保留
 		mu = decodeQQImageEntities(mu)
 		content := mu
-		if i != mainIdx {
+		if IsParticipation(ctx) {
+			content = "【窗口消息·群聊讨论】" + mu
+		} else if i != mainIdx {
 			content = "【背景消息·来自其他用户，无需逐一回复】" + mu
 		} else {
 			content = "【需要你回复的消息】" + mu
@@ -980,7 +834,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 
 	// ---------- 回复策略 & AgentLite ----------
-	// 注：回复策略已收敛为仅 relevance，skipSilenceCheck（旧 always 策略独占）已移除，
+	// 注：回复策略已收敛为参与窗口（规则快路径必回/必不 + 攒窗整窗参与），
 	// 群聊静默响应（__NO_REPLY__ / 静默短语）始终检测丢弃。
 	agentLite := rs.AgentLite
 
@@ -997,8 +851,11 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	if sc := h.buildStickerContext(ctx); sc != "" {
 		instruction += "\n\n" + sc
 	}
-	// 批量消息规则：一条会话内可能包含多人的独立发言，只回复主消息
-	if len(userMsgs) > 1 {
+	// 参与模式指令：窗口消息已聚合为一段群聊讨论，可选择附和/接话/接梗或静默
+	if IsParticipation(ctx) {
+		instruction += "\n\n【参与模式】本窗口消息已聚合为一段群聊讨论（均标注「窗口消息」），不要求逐一回复。你可以选择合适的时机附和、接话、接梗、点评或分享看法；如果觉得没有值得补充的，直接输出 __NO_REPLY__ 保持静默，不要为说话而说话。"
+	} else if len(userMsgs) > 1 {
+		// 批量消息规则：一条会话内可能包含多人的独立发言，只回复主消息
 		instruction += "\n\n【批量消息处理】本轮包含多人的独立发言：标注「需要你回复的消息」的是当前应回复的内容，其余标注「背景消息」的仅供理解语境，不必逐一回答；若背景消息中有与你相关的提问，可简短带过。"
 	}
 	if agentLite {
@@ -1107,8 +964,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	deliveredToCurrent := deferredSends.DeliveredTo(msg.MessageType, currentTargetID)
 
 	// 后处理闭包：统一发送任务期间排队的内容 + 写回记忆 + 最终回复。
-	// 并行分组模式下（存在 orderedReplier）整体按消息顺序执行，避免多人回复乱序；
-	// 非分组模式直接执行。全局 sendMu 保证跨批次的发送也串行（回复不被插入打断）。
+	// 同一窗口的发送在 finish 内串行完成；全局 sendMu 保证跨窗口/跨群的发送也串行
+	// （回复不被插入打断）。
 	finish := func() {
 		// 群管理审核闸门（发送前，锁外执行避免持锁等待）：触发本轮 Agent 的群消息
 		// 已被 LLM 判定违规（black）时，丢弃投递到当前群会话的交付消息与最终回复——
@@ -1170,11 +1027,6 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		}
 	}
 
-	// 并行分组模式：发送动作按消息顺序投递
-	if replier := GetOrderedReplier(ctx); replier != nil {
-		replier.Enqueue(GetOrderedReplierIndex(ctx), finish)
-		return
-	}
 	finish()
 }
 
@@ -1210,6 +1062,15 @@ func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, c
 		attribute.Int("chars", len([]rune(content))),
 	)
 	defer span.End()
+	// 参与路径可配置发送前随机"打字延迟"（模拟真人输入节奏，顺带降低风控风险）。
+	// 必回路径（@/命令/名字/私聊）不受影响，保证直接提问即时响应。
+	if IsParticipation(ctx) && rs.TypingDelayMaxMs > 0 {
+		d := time.Duration(rand.Intn(rs.TypingDelayMaxMs+1)) * time.Millisecond
+		if d > 0 {
+			log.Debug("sendReply 参与打字延迟", "delay_ms", d.Milliseconds())
+			time.Sleep(d)
+		}
+	}
 	// AgentLite 与正常模式一致，同样支持分段回复
 	parts := splitMessages(content)
 	// 群回复统计事件（Loki+Promtail 通道）：reply_to 携带触发消息原文，便于按群对应「消息→回复」

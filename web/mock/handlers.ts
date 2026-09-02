@@ -702,13 +702,17 @@ export const mockHandlers: MockHandler[] = [
     method: 'GET', path: '/reply-strategy',
     handler() {
       return ok({
-        strategy: 'always',
-        relevance_threshold: 0.5,
         bot_name: '小卷',
         strip_markdown: false,
         agent_lite: false,
-        relevance_prompt: '',
-        relevance_model: '',
+        quiet_gap_seconds: 5,
+        force_count: 5,
+        max_age_seconds: 20,
+        window_max_msgs: 20,
+        jitter_seconds: 2,
+        force_count_jitter: 1,
+        participate_probability: 0.8,
+        typing_delay_max_ms: 1500,
       })
     }
   },

@@ -741,7 +741,7 @@
           "refId": "A"
         }
       ],
-      "title": "Token 消耗速率（agent / review / relevance）",
+      "title": "Token 消耗速率（agent / review）",
       "type": "timeseries"
     },
     {
