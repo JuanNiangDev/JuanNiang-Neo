@@ -108,7 +108,7 @@
               </div>
 
               <div class="d-flex align-center" style="gap: 12px">
-                <v-btn type="submit" color="primary" variant="tonal" :loading="saving">
+                <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!loaded">
                   <v-icon class="me-1">mdi-content-save</v-icon> 保存
                 </v-btn>
               </div>
@@ -176,7 +176,7 @@
                 />
               </div>
               <div class="text-caption text-medium-emphasis mt-1">
-                安静释放时以该概率真的参与，1-p 静默放弃本窗；插话计数强发与最迟必发不受影响。当前: {{ form.participate_probability.toFixed(2) }}
+                安静释放时以该概率真的参与，1-p 静默放弃本窗；插话计数强发与最迟必发不受影响。当前: {{ (Number(form.participate_probability) || 0).toFixed(2) }}
               </div>
 
               <v-divider class="my-3" />
@@ -198,7 +198,7 @@
                 参与路径发送前随机等待 0~上限，模拟真人输入；0=关闭（必回路径不受影响）。
               </div>
 
-              <v-btn type="submit" color="primary" variant="tonal" :loading="saving">
+              <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!loaded">
                 <v-icon class="me-1">mdi-content-save</v-icon> 保存
               </v-btn>
             </v-form>
@@ -235,7 +235,7 @@
                 <v-switch v-model="form.strip_markdown" color="primary" hide-details density="compact" />
               </div>
 
-              <v-btn type="submit" color="primary" variant="tonal" :loading="saving">
+              <v-btn type="submit" color="primary" variant="tonal" :loading="saving" :disabled="!loaded">
                 <v-icon class="me-1">mdi-content-save</v-icon> 保存
               </v-btn>
             </v-form>
@@ -253,6 +253,8 @@ import { replyStrategyApi } from '@/api'
 
 const toastStore = useToastStore()
 const saving = ref(false)
+// loaded：回复设置是否已成功加载。加载失败时禁用保存，避免把默认表单值当成真实配置写回。
+const loaded = ref(false)
 
 const form = ref({
   bot_name: '',
@@ -285,7 +287,11 @@ async function load() {
       form.value.participate_probability = d.participate_probability ?? 0.8
       form.value.typing_delay_max_ms = d.typing_delay_max_ms ?? 1500
     }
-  } catch (_e: any) {}
+    loaded.value = true
+  } catch (e: any) {
+    loaded.value = false
+    toastStore.error(e?.response?.data?.info || e?.message || '加载回复设置失败')
+  }
 }
 
 async function handleSave() {
@@ -299,10 +305,10 @@ async function handleSave() {
       force_count: form.value.force_count || 5,
       max_age_seconds: form.value.max_age_seconds || 20,
       window_max_msgs: form.value.window_max_msgs || 20,
-      jitter_seconds: form.value.jitter_seconds ?? 0,
-      force_count_jitter: form.value.force_count_jitter ?? 0,
-      participate_probability: form.value.participate_probability ?? 0,
-      typing_delay_max_ms: form.value.typing_delay_max_ms ?? 0,
+      jitter_seconds: Number(form.value.jitter_seconds ?? 0),
+      force_count_jitter: Number(form.value.force_count_jitter ?? 0),
+      participate_probability: Number(form.value.participate_probability ?? 0),
+      typing_delay_max_ms: Number(form.value.typing_delay_max_ms ?? 0),
     })
     toastStore.success('回复设置已保存')
   } catch (e: any) {
