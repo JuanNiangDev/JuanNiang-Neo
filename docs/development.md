@@ -111,7 +111,7 @@ docs/                   本文档树
 | `HagoCenter.SetToolActive` | ⚠ 停用只能 Unregister，无法重新注册已 Unregister 的 builtin |
 | `internal/core/handler/` | ⚠ 空目录占位 |
 | `database` 插件权限的 `prefixSQL` | ⚠ 桩，未生效，任意 SQL |
-| 内置 `vision` 工具 | ⚠ 返回提示，不真正取图 |
+| 内置 `vision` 工具 | ⚠ 下载图片并调用配置的 Vision Provider；未配置时返回提示 |
 
 ## 约定（必须遵守）
 

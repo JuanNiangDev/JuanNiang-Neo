@@ -731,6 +731,7 @@ Agent 由 LLM 自门控（输出 `__NO_REPLY__` 即静默）决定参与或附�
 （纯图/纯 sticker/表情）；含 @（CQ:at）、≤2 字短消息与纯 emoji/符号不算噪音，照常进窗口由 LLM 自门控。
 
 ### GET /reply-strategy
+
 获取配置。首次 GET 不存在时自动创建（参与窗口默认参数）。
 
 **data** `ReplyStrategyResp`: `bot_name`、`strip_markdown` bool、`agent_lite` bool、
@@ -740,6 +741,7 @@ Agent 由 LLM 自门控（输出 `__NO_REPLY__` 即静默）决定参与或附�
 `participate_probability` float（安静释放参与概率，默认 0.8）、`typing_delay_max_ms` int（打字延迟上限，默认 1500）。
 
 ### PUT /reply-strategy
+
 更新参与窗口参数。
 
 **Body** `UpdateReplyStrategyReq`: `bot_name`、`strip_markdown`、`agent_lite`（可选）；

@@ -1018,5 +1018,5 @@ Dispatch(raw, event):
 6. **系统插件目录 `system/` 每次启动被二进制覆盖** — 不要用它存自定义命令，自建插件目录
 7. **`database` 权限声称有命名空间隔离，但 `prefixSQL` 是桩未生效** — 任意 SQL，请重度谨慎
 8. **改 Lua 文件不 reload 看不到效果**：`PUT /plugins/:id/toggle` 先停再启才会重新 `DoFile`
-9. **handler 返回值约定** `(consumed, modified_event, skip_reply)`：consumed=true 短路（不调 Agent）；skip_reply=true 标记必回，跳过参与窗口直接进 Agent
+9. **handler 返回值约定** `(consumed, skip_reply)`（`modified_event` 已移除）：consumed=true 不进入 Agent（其余插件回调仍会继续执行）；skip_reply=true 标记必回，跳过参与窗口直接进 Agent
 10. **Webhook 与 CronJob 都不走 LLM**：仅喂插件，是外部集成与定时任务的钩子。若要让 Agent 处理外部输入，插件内 `onebot11.send_*_msg` 自己转发
