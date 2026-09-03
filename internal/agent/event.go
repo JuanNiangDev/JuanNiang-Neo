@@ -465,6 +465,9 @@ func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, reason st
 	defer func() {
 		if !handedOff {
 			h.clearInflight(areaID)
+			// 未投递也要重新检查累积窗口：被在途延后的窗口其定时器已消耗，
+			// 不再检查会导致窗口无定时器滞留，直到下一条新消息到达。
+			h.checkWindowRelease(areaID)
 		}
 	}()
 	// 参与窗口释放 span：定时器回调捕获的 ctx 携带的 process_event span 早已结束，
