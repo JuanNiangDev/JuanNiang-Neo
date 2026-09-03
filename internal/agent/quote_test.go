@@ -323,6 +323,61 @@ func TestQuoteWrapStripsReplyCQ(t *testing.T) {
 	}
 }
 
+// TestQuoteWrapKeepsMsgidAndSpeaker 长引用消息（带 [msgid:N] 与发言人前缀）注入原文时
+// 只剥离 reply CQ 码，保留 msgid 标记与发言人前缀。
+func TestQuoteWrapKeepsMsgidAndSpeaker(t *testing.T) {
+	mu := "[msgid:555][TuF3i(QQ:7) 在群9] [CQ:reply,id=123] 长正文"
+	got := quoteWrap(mu, "被引用原文")
+	if strings.Contains(got, "[CQ:reply") {
+		t.Errorf("注入原文应剥离 reply CQ 码，实际: %q", got)
+	}
+	if !strings.HasPrefix(got, "[msgid:555][TuF3i(QQ:7) 在群9] 长正文【引用原文】被引用原文") {
+		t.Errorf("应保留 msgid/发言人前缀，实际: %q", got)
+	}
+}
+
+// TestEnrichQuoteMemoryMsgFormat 覆盖 memoryMsg（发言人前缀）处理后再富化的真实路径：
+// 富化注入原文时应剥离首个 reply CQ 码，同时保留发言人前缀与注入原文。
+func TestEnrichQuoteMemoryMsgFormat(t *testing.T) {
+	h, mg := newQuoteTestHago(t)
+	ctx := context.Background()
+	areaID := "area-memfmt"
+	if err := mg.AddShortTermMessage(ctx, areaID, shortterm.ChatMessage{
+		Role: "user", MsgID: "123", Content: "[Alice(QQ:11)] 被引用短消息",
+	}); err != nil {
+		t.Fatalf("add shortterm: %v", err)
+	}
+	m := &adapter.MessageEvent{
+		MessageType: "group",
+		MessageID:   999,
+		UserID:      7,
+		GroupID:     9,
+		RawMessage:  "[CQ:reply,id=123] 我回复一下",
+		Message: []adapter.Segment{
+			{Type: "reply", Data: map[string]any{"id": "123"}},
+			{Type: "text", Data: map[string]any{"text": "我回复一下"}},
+		},
+		Sender: quoteSender("TuF3i", "nick"),
+	}
+	mu := memoryMsg(m)
+	if !strings.HasPrefix(mu, "[TuF3i(QQ:7) 在群9]") {
+		t.Fatalf("memoryMsg 应带发言人前缀，实际: %q", mu)
+	}
+	got, result := h.enrichQuote(ctx, mu, m, areaID, nil, nil)
+	if result != quoteEnrichShortInjected {
+		t.Errorf("短引用应注入原文，result = %s, want short_injected", result)
+	}
+	if strings.Contains(got, "[CQ:reply") {
+		t.Errorf("富化后不应保留 reply CQ 码，实际: %q", got)
+	}
+	if !strings.Contains(got, "[TuF3i(QQ:7) 在群9]") {
+		t.Errorf("应保留发言人前缀，实际: %q", got)
+	}
+	if !strings.Contains(got, "【引用原文】[Alice(QQ:11)] 被引用短消息") {
+		t.Errorf("应注入被引用原文，实际: %q", got)
+	}
+}
+
 // TestStripMsgidMarkers 剥离 [msgid:N] 标记（检索 query / Compact 摘要用）。
 func TestStripMsgidMarkers(t *testing.T) {
 	if got := stripMsgidMarkers("[msgid:123]长消息正文"); got != "长消息正文" {

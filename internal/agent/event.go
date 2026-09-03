@@ -819,14 +819,18 @@ func replySegmentEmbedded(m *adapter.MessageEvent) string {
 	return ""
 }
 
-// stripReplyCQ 剥离消息开头的 reply CQ 码（仅富化注入原文时使用）：
-// mu 形如 "[CQ:reply,id=123] 回复正文"，注入引用原文前去掉 CQ 码，
-// 避免 LLM 同时看到 CQ 码与注入原文两种形态。
+// stripReplyCQ 剥离消息中首个 reply CQ 码（仅富化注入原文时使用）：
+// memoryMsg 会给消息前缀发言人标识（长消息还前缀 [msgid:N]），reply 码不一定在
+// 字符串开头。这里定位首个 "[CQ:reply," 段并只剥离该段，保留发言人/msgid 前缀
+// 与正文，避免 LLM 同时看到 CQ 码与注入原文两种形态。
 func stripReplyCQ(mu string) string {
-	if strings.HasPrefix(mu, "[CQ:reply,") {
-		if end := strings.Index(mu, "]"); end > 0 {
-			return strings.TrimLeft(mu[end+1:], " ")
-		}
+	start := strings.Index(mu, "[CQ:reply,")
+	if start < 0 {
+		return mu
+	}
+	if endRel := strings.Index(mu[start:], "]"); endRel >= 0 {
+		end := start + endRel
+		return mu[:start] + strings.TrimLeft(mu[end+1:], " ")
 	}
 	return mu
 }
