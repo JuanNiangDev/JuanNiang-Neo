@@ -58,6 +58,20 @@ const tools = [
 // --- RAG 向量检索 ---
 let ragConfig = { base_url: 'http://localhost:3000', timeout: 30, is_active: true }
 let ragHealthy = true
+// 回复设置 mock 共享态：PUT 落盘，后续 GET 返回已保存的配置（而非始终回显默认值）
+let replyStrategyState = {
+  bot_name: '小卷',
+  strip_markdown: false,
+  agent_lite: false,
+  quiet_gap_seconds: 5,
+  force_count: 5,
+  max_age_seconds: 20,
+  window_max_msgs: 20,
+  jitter_seconds: 2,
+  force_count_jitter: 1,
+  participate_probability: 0.8,
+  typing_delay_max_ms: 1500,
+}
 // GET /info 参考 JuanNiang-RAG-Service API 文档示例（scoops: 分库名 → tag/块数量）
 let ragInfo = {
   status: 'ok',
@@ -701,24 +715,16 @@ export const mockHandlers: MockHandler[] = [
   {
     method: 'GET', path: '/reply-strategy',
     handler() {
-      return ok({
-        bot_name: '小卷',
-        strip_markdown: false,
-        agent_lite: false,
-        quiet_gap_seconds: 5,
-        force_count: 5,
-        max_age_seconds: 20,
-        window_max_msgs: 20,
-        jitter_seconds: 2,
-        force_count_jitter: 1,
-        participate_probability: 0.8,
-        typing_delay_max_ms: 1500,
-      })
+      return ok({ ...replyStrategyState })
     }
   },
   {
     method: 'PUT', path: '/reply-strategy',
-    handler({ body }) { return ok(body) }
+    handler({ body }) {
+      // 已保存配置落共享态，后续 GET 返回新值（保留现有响应形状）
+      replyStrategyState = { ...replyStrategyState, ...(body || {}) }
+      return ok(replyStrategyState)
+    }
   },
 
   // ============ Logs ============
