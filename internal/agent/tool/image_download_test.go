@@ -243,7 +243,6 @@ func (f *fakeAdapter) SendGroupMsg(groupID int64, message any) (int64, error) {
 	return 1, nil
 }
 func (f *fakeAdapter) DeleteMsg(messageID int64) error                        { return nil }
-func (f *fakeAdapter) GetMsg(messageID int64) (*adapter.MessageEvent, error)  { return nil, nil }
 func (f *fakeAdapter) GetGroupInfo(groupID int64) (*adapter.GroupInfo, error) { return nil, nil }
 func (f *fakeAdapter) GetGroupMemberList(groupID int64) ([]adapter.GroupMemberInfo, error) {
 	return nil, nil

@@ -132,6 +132,13 @@ var (
 		Name: "juanniang_agent_participation_total",
 		Help: "参与模式 Agent 处理结果总数",
 	}, []string{"result"})
+
+	// QuoteEnrichTotal 引用消息富化分支决策结果（result: no_segment / short_injected /
+	// long_pass_id / fallback_embedded / kept_cq / dup_in_batch）。
+	QuoteEnrichTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "juanniang_quote_enrich_total",
+		Help: "引用消息富化分支决策总数",
+	}, []string{"result"})
 )
 
 // ---------- LLM 用量 ----------
@@ -253,7 +260,7 @@ func init() {
 		GroupMgrLLMReviewsTotal, GroupMgrSpamTotal,
 		RAGSearchLatency, RAGSearchErrorsTotal,
 		PluginHookErrorsTotal, PluginHookDuration,
-		WindowReleasesTotal, WindowDroppedTotal, AgentParticipationTotal,
+		WindowReleasesTotal, WindowDroppedTotal, AgentParticipationTotal, QuoteEnrichTotal,
 		HTTPRequestsTotal, HTTPRequestDuration,
 		ChatRepliesTotal, ChatStatsDroppedTotal,
 		&runtimeCollector{},

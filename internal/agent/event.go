@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"regexp"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/groupmgr"
@@ -367,8 +370,7 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 		if len(kept) == 0 {
 			return
 		}
-		batchMsgs := h.writeBatchToMemory(ctx, kept, chatArea)
-		ctx = WithBatchUserMsgs(ctx, batchMsgs)
+		h.writeBatchToMemory(ctx, kept, chatArea)
 		h.runAgent(ctx, kept, chatArea, rs, false)
 		return
 	}
@@ -554,8 +556,7 @@ func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, reason st
 	if len(events) == 0 {
 		return
 	}
-	batchMsgs := h.writeBatchToMemory(releaseCtx, events, chatArea)
-	releaseCtx = WithBatchUserMsgs(releaseCtx, batchMsgs)
+	h.writeBatchToMemory(releaseCtx, events, chatArea)
 	releaseCtx = WithParticipation(releaseCtx, true)
 	handedOff = true
 	h.runAgent(releaseCtx, events, chatArea, rs, true)
@@ -639,8 +640,40 @@ func IsParticipation(ctx context.Context) bool {
 	return v
 }
 
+// longMsgRuneThreshold 引用消息按纯文本字数区分长短的阈值（rune 数）。
+// 超过阈值的"长消息"写入记忆/上下文时前缀 [msgid:N]：引用该消息时只传
+// messageid，LLM 按 [msgid:N] 在历史记忆里关联全文，省 token。
+const longMsgRuneThreshold = 100
+
+// msgidRe 匹配记忆中的长消息 ID 标记（memoryMsg 为超长消息前缀）。
+var msgidRe = regexp.MustCompile(`\[msgid:\d+\]`)
+
+// stripMsgidMarkers 移除 [msgid:N] 长消息标记：该标记是展示层/记忆关联用的内部
+// 约定，检索 query 与 Compact 摘要等非对话展示场景应剥离，避免标记污染召回
+// 与长期记忆/技能记忆语料。
+func stripMsgidMarkers(s string) string {
+	return msgidRe.ReplaceAllString(s, "")
+}
+
+// cqAnyCodeRe 匹配任意 CQ 码段（plainRuneLen 计数前剥离）。
+var cqAnyCodeRe = regexp.MustCompile(`\[CQ:[^\]]*\]`)
+
+// plainURLRe 匹配普通 URL（plainRuneLen 计数前剥离，避免长链接撑高字数）。
+var plainURLRe = regexp.MustCompile(`https?://[^\s\]\[]+`)
+
+// plainRuneLen 返回剥离 CQ 码 / URL / [msgid:N] 后的纯文本 rune 数。
+// 用于"引用消息按字数阈值"判定：CQ 码、图片链接、消息 ID 标记不计入正文长度。
+func plainRuneLen(s string) int {
+	s = cqAnyCodeRe.ReplaceAllString(s, "")
+	s = plainURLRe.ReplaceAllString(s, "")
+	s = msgidRe.ReplaceAllString(s, "")
+	return utf8.RuneCountInString(s)
+}
+
 // memoryMsg 生成写入短期记忆 / 注入上下文的用户消息文本（带发言人标识）。
-// 空消息返回 ""（调用方跳过）。
+// 空消息返回 ""（调用方跳过）。长消息（纯文本 > 阈值且带真实 message_id）前缀
+// [msgid:N]：因 memoryMsg 同时喂短期记忆与上下文，长消息在历史块与当前轮次
+// 都带 [msgid:N]，供引用消息按同 ID 关联（见 enrichQuote）。
 func memoryMsg(m *adapter.MessageEvent) string {
 	uMsg := strings.TrimSpace(m.RawMessage)
 	if uMsg == "" {
@@ -649,7 +682,177 @@ func memoryMsg(m *adapter.MessageEvent) string {
 	if speaker := buildMemorySpeaker(m); speaker != "" {
 		uMsg = speaker + uMsg
 	}
+	// 长消息（纯文本 > 阈值）前缀 [msgid:N]：放在最前，让 LLM 在历史块与当前轮次
+	// 都能一眼看到同 ID 关联（引用该消息时只传 messageid）。
+	if m.MessageID != 0 && plainRuneLen(m.RawMessage) > longMsgRuneThreshold {
+		uMsg = fmt.Sprintf("[msgid:%d]", m.MessageID) + uMsg
+	}
 	return uMsg
+}
+
+// QuoteEnrichResult 引用富化分支结果标签（metrics / span 观测）。
+const (
+	quoteEnrichNoSegment     = "no_segment"
+	quoteEnrichShortInjected = "short_injected"
+	quoteEnrichLongPassID    = "long_pass_id"
+	quoteEnrichFallbackEmbed = "fallback_embedded"
+	quoteEnrichKeptCQ        = "kept_cq"
+	quoteEnrichDupInBatch    = "dup_in_batch"
+)
+
+// enrichQuote 引用消息富化：把被引用消息的原文注入当前轮次展示层，不写入记忆。
+// 判定（优先级）：
+//   - 无 reply id 且有内嵌内容 → 注入【引用原文】（回退）
+//   - 有 id 但拿不到内容（记忆未命中且无内嵌）→ 保持 CQ 码原样（现状）
+//   - 短（≤阈值）→ 注入【引用原文】
+//   - 长（>阈值）且在记忆窗口内 → 只传 messageid（历史 [msgid:N] 可关联，省 token）
+//   - 长但不在记忆窗口 → 注入【引用原文】（无法关联则带全文）
+//
+// stIndex 为已预取的 MsgID→Content 短期记忆索引（handleMessage 复用上方全窗，
+// 避免每条消息 N+1 拉取）；nil 时降级全窗拉取（测试/独立调用路径）。
+// batchIDs 为当前批消息 ID 集合：被引用消息同批已在当前轮注入时跳过再次注入，
+// 避免当前轮重复占用 token。返回富化后文本与分支结果标签。
+func (h *HagoCenter) enrichQuote(ctx context.Context, mu string, m *adapter.MessageEvent, areaID string, stIndex map[string]string, batchIDs map[int64]struct{}) (string, string) {
+	id := replySegmentID(m)
+	embedded := replySegmentEmbedded(m)
+	// 无引用段 / 无 id 且无内嵌内容 → 保持原样
+	if id <= 0 && embedded == "" {
+		return mu, quoteEnrichNoSegment
+	}
+	// 反查短期记忆：被引用消息若在窗口内，取内容并判断是否带 [msgid:N] 长标记。
+	// 富化仅在展示层应用，反查只读、不写入记忆。
+	memContent := ""
+	if id > 0 {
+		want := strconv.FormatInt(id, 10)
+		if stIndex != nil {
+			memContent = stIndex[want]
+		} else if h.Memory != nil {
+			if msgs, err := h.Memory.GetShortTermMessages(ctx, areaID); err != nil {
+				log.Warn("引用富化查询短期记忆失败", "area_id", areaID, "err", err)
+			} else {
+				for _, sm := range msgs {
+					if sm.MsgID == want {
+						memContent = sm.Content
+						break
+					}
+				}
+			}
+		}
+	}
+	if id <= 0 {
+		// 无 id 但有内嵌内容 → 回退注入引用原文
+		return quoteWrap(mu, embedded), quoteEnrichFallbackEmbed
+	}
+	if memContent != "" {
+		// 长消息（带 [msgid:N] 标记）且在记忆窗口 → 只传 messageid，
+		// 历史记忆里同 ID 的 [msgid:N] 条目可关联全文。
+		// 前缀精确匹配真实被引用 ID：内容任意位置的 [msgid:N] 属用户正文，不作长判定。
+		if strings.HasPrefix(memContent, "[msgid:"+strconv.FormatInt(id, 10)+"]") {
+			return mu, quoteEnrichLongPassID
+		}
+		// 短消息 → 注入引用原文；被引用消息同批已在当前轮注入时跳过，避免 token 重复
+		if _, dup := batchIDs[id]; dup {
+			return mu, quoteEnrichDupInBatch
+		}
+		return quoteWrap(mu, memContent), quoteEnrichShortInjected
+	}
+	// 记忆未命中 → 回退内嵌内容；仍无内容则保持 CQ 码原样
+	if embedded != "" {
+		return quoteWrap(mu, embedded), quoteEnrichFallbackEmbed
+	}
+	return mu, quoteEnrichKeptCQ
+}
+
+// replySegmentID 从消息段中提取 reply 段被引用的消息 ID（兼容 string/int64/int/float64）。
+// 返回 0 表示无 reply 段或无有效 id。
+func replySegmentID(m *adapter.MessageEvent) int64 {
+	if m == nil {
+		return 0
+	}
+	for _, seg := range m.Message {
+		if seg.Type != "reply" {
+			continue
+		}
+		v, ok := seg.Data["id"]
+		if !ok {
+			return 0
+		}
+		switch n := v.(type) {
+		case string:
+			if id, err := strconv.ParseInt(n, 10, 64); err == nil {
+				return id
+			}
+		case json.Number:
+			// json.Decoder.UseNumber 路径下数值为 json.Number（无损字符串），
+			// 直接按十进制解析，避免 19 位 message_id 经 float64 丢精度。
+			if id, err := n.Int64(); err == nil {
+				return id
+			}
+		case int64:
+			return n
+		case int:
+			return int64(n)
+		case float64:
+			return int64(n)
+		}
+		return 0
+	}
+	return 0
+}
+
+// replySegmentEmbedded 返回 reply 段内嵌的被引用消息内容（OneBot 实现可选字段）。
+// 只信 content：name/qq 是发送者昵称/QQ 号，不是被引用消息内容，第三方 OneBot
+// 实现若带回会被 LLM 误当成"引用原文"。无内嵌返回 ""。
+func replySegmentEmbedded(m *adapter.MessageEvent) string {
+	if m == nil {
+		return ""
+	}
+	for _, seg := range m.Message {
+		if seg.Type != "reply" {
+			continue
+		}
+		if v, ok := seg.Data["content"].(string); ok && v != "" {
+			return v
+		}
+		return ""
+	}
+	return ""
+}
+
+// stripReplyCQ 剥离消息中首个 reply CQ 码（仅富化注入原文时使用）：
+// memoryMsg 会给消息前缀发言人标识（长消息还前缀 [msgid:N]），reply 码不一定在
+// 字符串开头。这里定位首个 "[CQ:reply," 段并只剥离该段，保留发言人/msgid 前缀
+// 与正文，避免 LLM 同时看到 CQ 码与注入原文两种形态。
+func stripReplyCQ(mu string) string {
+	start := strings.Index(mu, "[CQ:reply,")
+	if start < 0 {
+		return mu
+	}
+	if endRel := strings.Index(mu[start:], "]"); endRel >= 0 {
+		end := start + endRel
+		return mu[:start] + strings.TrimLeft(mu[end+1:], " ")
+	}
+	return mu
+}
+
+// quoteWrap 把引用原文包装成可见文本追加到消息后注入展示层。
+func quoteWrap(mu, quoted string) string {
+	return stripReplyCQ(mu) + "【引用原文】" + quoted
+}
+
+// formatResultCounts 把引用富化分支计数格式化为 "short_injected=2,long_pass_id=1"
+// 摘要，供 agent.handle span 属性观测本批引用决策分布。
+func formatResultCounts(counts map[string]int) string {
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", k, counts[k]))
+	}
+	return strings.Join(parts, ",")
 }
 
 // filterBlockedEvents 黑名单过滤：命中聊天黑名单的用户消息直接丢弃（管理员不豁免），
@@ -723,16 +926,13 @@ func (h *HagoCenter) memoryRecall(ctx context.Context, areaID, msg string, limit
 
 // writeBatchToMemory 批次级记忆屏障：把整批用户消息（黑名单过滤后、带发言人标识）
 // 一次性写入短期记忆（幂等去重），取代原 handleMessage 内逐组分散写入。
-// 同批并发组读到的记忆一致，避免"另一 Agent 不知情 / 重复消费"；
-// 返回整批消息文本列表，供上下文注入与记忆快照剔除。
-func (h *HagoCenter) writeBatchToMemory(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea) []string {
-	batchMsgs := make([]string, 0, len(events))
+// 同批并发组读到的记忆一致，避免"另一 Agent 不知情 / 重复消费"。
+func (h *HagoCenter) writeBatchToMemory(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea) {
 	for _, ev := range events {
 		if ev.Message == nil {
 			continue
 		}
 		if mu := memoryMsg(ev.Message); mu != "" {
-			batchMsgs = append(batchMsgs, mu)
 			if h.Memory != nil {
 				// 幂等去重键：仅真实 OneBot11 消息（message_id≠0）携带；
 				// 无 ID 的事件（cronjob/webhook 注入）不去重，避免误吞不同消息
@@ -750,20 +950,6 @@ func (h *HagoCenter) writeBatchToMemory(ctx context.Context, events []adapter.Ev
 			}
 		}
 	}
-	return batchMsgs
-}
-
-type batchUserMsgsKey struct{}
-
-// WithBatchUserMsgs 把批次级消息列表（带发言人标识，已写入短期记忆）注入 context。
-func WithBatchUserMsgs(ctx context.Context, msgs []string) context.Context {
-	return context.WithValue(ctx, batchUserMsgsKey{}, msgs)
-}
-
-// GetBatchUserMsgs 返回本批次注入的消息列表（nil 表示非批次直处理路径）。
-func GetBatchUserMsgs(ctx context.Context) []string {
-	v, _ := ctx.Value(batchUserMsgsKey{}).([]string)
-	return v
 }
 
 // participationReviewWait 参与窗口释放时有界等待在途审查出终态的上限：
@@ -1059,32 +1245,29 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		}
 	}
 
-	// 上下文消息注入（方案2）：批次路径注入整批消息（本组最后一条为主，其余全部标
-	// 背景"无需逐一回复"）；非批次直处理路径（chatArea==nil 兜底）回退到本组消息。
-	// 每条消息只在一个组的"主消息"位置出现一次，其他组看到的都是背景，避免重复消费。
-	batchMsgs := GetBatchUserMsgs(ctx)
+	// 上下文消息注入：用户消息统一从 events 生成（沿用 writeBatchToMemory 的跳过
+	// 规则：nil/空文本），并携带并行 userEvs 供引用富化（enrichQuote）在展示层使用。
+	// batchSet 去重与 mainIdx 匹配仍基于 memoryMsg 原文，与写入记忆的内容一致不重复。
 	var userMsgs []string
-	mainIdx := -1
-	if len(batchMsgs) > 0 {
-		userMsgs = batchMsgs
-		if mainMsg != "" {
-			for i, mu := range batchMsgs {
-				if mu == mainMsg {
-					mainIdx = i
-					break
-				}
+	var userEvs []*adapter.MessageEvent
+	for _, ev := range events {
+		m := ev.Message
+		if m == nil {
+			continue
+		}
+		if mu := memoryMsg(m); mu != "" {
+			userMsgs = append(userMsgs, mu)
+			userEvs = append(userEvs, m)
+		}
+	}
+	mainIdx := len(userMsgs) - 1
+	if mainMsg != "" {
+		for i, mu := range userMsgs {
+			if mu == mainMsg {
+				mainIdx = i
+				break
 			}
 		}
-		if mainIdx < 0 {
-			mainIdx = len(userMsgs) - 1 // 兜底：无主消息时取整批最后一条
-		}
-	} else {
-		for _, ev := range events {
-			if mu := memoryMsg(ev.Message); mu != "" {
-				userMsgs = append(userMsgs, mu)
-			}
-		}
-		mainIdx = len(userMsgs) - 1
 	}
 	if len(userMsgs) == 0 {
 		return
@@ -1109,7 +1292,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	if h.Memory != nil {
 		// 记忆召回：RAG 向量语义检索首选 → 降级 pg_trgm gram 召回 → 最近条目；
 		// LTM_RECALL_MODE=recent 可整体关闭语义/向量路径
-		longTermMems, _ = h.memoryRecall(ctx, chatArea.ID, combinedUserMsg, 5)
+		// 检索 query 剥离 [msgid:N] 内部标记（避免标记污染召回与日志）
+		longTermMems, _ = h.memoryRecall(ctx, chatArea.ID, stripMsgidMarkers(combinedUserMsg), 5)
 	}
 
 	sessionCtxStr := h.buildSessionContext(ctx, msg, events[len(events)-1].Admins)
@@ -1120,7 +1304,8 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	systemCtx, _ := h.Prompt.BuildFullContext(ctx, longTermMems, skillMem)
 
 	// 知识库检索注入：对话前模糊匹配，命中内容拼入系统提示词（LRU 加速）
-	if kc := h.buildKnowledgeContext(ctx, combinedUserMsg); kc != "" {
+	// query 剥离 [msgid:N] 内部标记，避免标记进入检索条件
+	if kc := h.buildKnowledgeContext(ctx, stripMsgidMarkers(combinedUserMsg)); kc != "" {
 		systemCtx += "\n\n" + kc
 	}
 
@@ -1138,12 +1323,32 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 	// 合并开头连续 system（保留一条，内容换行拼接）
 	einoMsgs = mergeLeadingSystemMsgs(einoMsgs)
+	// 引用富化预处理：预建当前批消息 ID 集合与短期记忆 MsgID→Content 索引。
+	// batchIDs 用于同批互引去重（被引用消息已在当前轮注入时跳过再次注入）；
+	// stIndex 复用下方全窗拉取，避免 enrichQuote 每条消息再拉一次 Redis（N+1 LRANGE）。
+	batchIDs := make(map[int64]struct{}, len(userEvs))
+	for _, ue := range userEvs {
+		if ue != nil && ue.MessageID != 0 {
+			batchIDs[ue.MessageID] = struct{}{}
+		}
+	}
+	var stIndex map[string]string
 	if h.Memory != nil {
 		stMsgs, err := h.Memory.GetShortTermMessages(ctx, chatArea.ID)
-		if err == nil {
-			// 方案2：剔除本批消息（已由下方 userMsgs 注入），避免上下文重复出现
-			batchSet := make(map[string]struct{}, len(batchMsgs))
-			for _, mu := range batchMsgs {
+		if err != nil {
+			log.Warn("获取短期记忆失败", "area_id", chatArea.ID, "err", err)
+		} else {
+			// 预建 MsgID→Content 索引：引用富化按被引用 id 直接反查，零额外 IO
+			stIndex = make(map[string]string, len(stMsgs))
+			for _, sm := range stMsgs {
+				if sm.MsgID != "" {
+					stIndex[sm.MsgID] = sm.Content
+				}
+			}
+			// 剔除本批消息（已由下方 userMsgs 注入，去重键用 memoryMsg 原文），
+			// 避免上下文重复出现
+			batchSet := make(map[string]struct{}, len(userMsgs))
+			for _, mu := range userMsgs {
 				batchSet[mu] = struct{}{}
 			}
 			// 短期记忆边界标记：在历史对话块前后各注入一条 system 消息框定边界，
@@ -1176,7 +1381,17 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		}
 	}
 	// 消息标签：参与模式整窗消息都作为群聊讨论语境；必回路径沿用主消息/背景消息区分。
+	// 引用富化决策观测：metrics 计数器逐条累加，本批各分支计数聚合写入 agent.handle span。
+	quoteResults := make(map[string]int)
 	for i, mu := range userMsgs {
+		// 引用消息富化：仅在当前轮次展示层应用，不写入记忆（避免重复占用 token）
+		if userEvs[i] != nil {
+			var result string
+			mu, result = h.enrichQuote(ctx, mu, userEvs[i], chatArea.ID, stIndex, batchIDs)
+			metrics.QuoteEnrichTotal.WithLabelValues(result).Inc()
+			quoteResults[result]++
+			log.Debug("引用富化", "result", result, "message_id", userEvs[i].MessageID, "area_id", chatArea.ID)
+		}
 		// QQ 图片 URL 在 CQ 码里带 HTML 实体（&amp;），LLM 原样复刻易得到无法下载的 URL；
 		// 仅解码 CQ 图片码/QQ 图床 URL 中的实体，普通用户文本（如字面 &amp;）原样保留
 		mu = decodeQQImageEntities(mu)
@@ -1189,6 +1404,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 			content = "【需要你回复的消息】" + mu
 		}
 		einoMsgs = append(einoMsgs, &einoschema.Message{Role: einoschema.User, Content: content})
+	}
+	if len(quoteResults) > 0 {
+		hspan.SetAttributes(attribute.String("quote.enrich.results", formatResultCounts(quoteResults)))
 	}
 	for _, ev := range events {
 		h.Session.AppendRecord(ctx, chatArea.ID, ev.Message.UserID, "user", strings.TrimSpace(ev.Message.RawMessage), 0, nil)
