@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/core/models"
@@ -65,13 +66,13 @@ func isDefinitelyIrrelevant(msg *adapter.MessageEvent) bool {
 	return false
 }
 
-// containsMeaningfulChars 判断文本是否包含有意义字符（ASCII 字母数字或 CJK）。
+// containsMeaningfulChars 判断文本是否包含有意义字符（字母或数字）。
+// 用 unicode 分类而非手写区间：覆盖假名/谚文/西里尔/CJK 扩展等全部文字，
+// 避免非 ASCII 文本（如 "なにそれ"/"뭐야이거"）被静默当作噪音整条丢弃；
+// 标点（"？"/"。"）与 emoji 仍不属于字母/数字，判为噪音的语义不变。
 func containsMeaningfulChars(s string) bool {
 	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			return true
-		}
-		if r >= 0x4E00 && r <= 0x9FFF { // CJK 统一表意文字
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
 			return true
 		}
 	}

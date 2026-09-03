@@ -325,8 +325,8 @@ type participationWindow struct {
 	timer         *time.Timer
 	deadlineTimer *time.Timer
 	msgCount      int
-	// countJitter 窗口创建时一次生成计数抖动（force_count ±jitter 的固定阈值），
-	// 避免每条消息重新采样导致触发点偏向区间下界。
+	// countJitter 窗口创建时一次生成计数抖动（force_count + jitter 的固定阈值，上偏，
+	// 采样 ∈ [0, jitter]），避免每条消息重新采样导致触发点偏向区间下界。
 	countJitter int
 	// created 窗口创建时间（trace 属性 window_age_ms 用）。
 	created  time.Time
@@ -376,7 +376,7 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 }
 
 // enqueueParticipation 把消息加入对应 ChatArea 的参与窗口；同时只存在一个窗口。
-// 来消息即重置 trailing 安静定时器；插话计数攒够 force_count（±jitter）条或超过
+// 来消息即重置 trailing 安静定时器；插话计数攒够 force_count（+jitter 上偏）条或超过
 // max_age 最迟必发时，忽略定时器强制释放。消息数超过 window_max_msgs 时丢最旧保最新。
 func (h *HagoCenter) enqueueParticipation(ctx context.Context, ev adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
 	areaID := chatArea.ID
@@ -392,7 +392,7 @@ func (h *HagoCenter) enqueueParticipation(ctx context.Context, ev adapter.Event,
 		h.windows[areaID] = w
 		log.Debug("参与窗口创建", "area", areaID)
 		// 最迟必发硬上界：窗口创建即挂必发定时器（不参与概率，必说）
-		w.deadlineTimer = time.AfterFunc(rs.maxAge(), func() { h.releaseWindow(ctx, areaID, "max_age") })
+		w.deadlineTimer = time.AfterFunc(rs.maxAge(), func() { h.safeRelease(ctx, areaID, "max_age") })
 	}
 	w.events = append(w.events, ev)
 	w.msgCount++
@@ -407,7 +407,7 @@ func (h *HagoCenter) enqueueParticipation(ctx context.Context, ev adapter.Event,
 		w.timer.Stop()
 	}
 	quiet := rs.quietGap() + time.Duration(jitterSec(rs.JitterSeconds))*time.Second
-	w.timer = time.AfterFunc(quiet, func() { h.releaseWindow(ctx, areaID, "quiet") })
+	w.timer = time.AfterFunc(quiet, func() { h.safeRelease(ctx, areaID, "quiet") })
 
 	overCount := w.msgCount >= rs.forceCount()+w.countJitter
 	overDeadline := time.Now().After(w.deadline)
@@ -421,8 +421,23 @@ func (h *HagoCenter) enqueueParticipation(ctx context.Context, ev adapter.Event,
 		if !overCount && overDeadline {
 			reason = "max_age"
 		}
-		go h.releaseWindow(ctx, areaID, reason)
+		h.safeRelease(ctx, areaID, reason)
 	}
+}
+
+// safeRelease 异步执行 releaseWindow 并兜底 panic：releaseWindow 含 DB GetOrCreate +
+// ACL 过滤 + 批量记忆写，任一环节 panic（LLM 客户端 bug、数据异常）都不能让整个进程崩溃；
+// runAgent 的 recover 只覆盖 handleMessage 段，覆盖不到 releaseWindow 自身，
+// 因此定时器回调与计数强发三条入口统一走这里。
+func (h *HagoCenter) safeRelease(ctx context.Context, areaID string, reason string) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("参与窗口释放 panic", "panic", r, "stack", string(debug.Stack()), "area", areaID)
+			}
+		}()
+		h.releaseWindow(ctx, areaID, reason)
+	}()
 }
 
 // releaseWindow 释放 ChatArea 的参与窗口：整窗消息一次性交给 Agent 参与（一条 ReAct 循环）。
@@ -484,6 +499,8 @@ func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, reason st
 	}
 	chatArea := h.getChatArea(releaseCtx, lastMsg)
 	if chatArea == nil {
+		metrics.WindowDroppedTotal.WithLabelValues("area_lookup_failed").Add(float64(len(events)))
+		log.Error("参与窗口释放失败：获取 ChatArea 失败，整窗丢弃", "area", areaID, "events", len(events))
 		return
 	}
 	// 黑名单过滤 + 违禁终态剔除 + 批次级记忆屏障，标记参与模式后整窗一次处理
@@ -499,11 +516,9 @@ func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, reason st
 }
 
 // discardWindow 取消并丢弃 ChatArea 的当前参与窗口（mustKeep 立即回复时调用，防串味）。
+// 只在确认存在窗口并执行丢弃时才开 span：所有 @/私聊/命令/提及名字消息都走这里，
+// 绝大多数调用没有任何丢弃行为，提前开 span 只会给 Tempo 增加无意义 span 量。
 func (h *HagoCenter) discardWindow(ctx context.Context, areaID string) {
-	_, span := otelx.Span(ctx, "participation.discard",
-		attribute.String("chat_area_id", areaID),
-	)
-	defer span.End()
 	h.windowMu.Lock()
 	w, ok := h.windows[areaID]
 	if ok {
@@ -516,6 +531,10 @@ func (h *HagoCenter) discardWindow(ctx context.Context, areaID string) {
 		delete(h.windows, areaID)
 		dropped := len(w.events)
 		h.windowMu.Unlock()
+		_, span := otelx.Span(ctx, "participation.discard",
+			attribute.String("chat_area_id", areaID),
+		)
+		defer span.End()
 		log.Info("参与窗口随 mustKeep 丢弃", "area", areaID, "events", dropped)
 		if dropped > 0 {
 			metrics.WindowDroppedTotal.WithLabelValues("window_discarded").Add(float64(dropped))

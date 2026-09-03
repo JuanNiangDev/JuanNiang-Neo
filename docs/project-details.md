@@ -505,7 +505,7 @@ flowchart TD
 ```
 
 > `isAtSelf`（`reply_strategy.go`）做的是精确 `[CQ:at,qq=<self>]` 匹配；优先用当前 `Adapter.SelfID()` 而非缓存 `SelfQQ`，支持机器人换号后立即生效。
-> 参与窗口（`dispatchToAgent` → `enqueueParticipation` → `releaseWindow`）：@/命令/提及名字/私聊 → mustKeep 立即回（跳过相关性判断，但仍进 Agent 调用 LLM 生成回复）；噪音消息（剥离 CQ 码/URL 后无任何文字，如纯图/纯 sticker/表情）→ 规则丢弃；其余候选（含 @、剥离 CQ 码/URL 后仍含文字的消息）攒进每群一个窗口；≤2 字短消息与纯 emoji/符号判为噪音丢弃——trailing 安静定时器（来消息即重置，间隔带 `jitter_seconds` 随机抖动）→ 安静释放；或攒够 `force_count`（±`force_count_jitter`）条 / 到达 `max_age_seconds` 最迟必发 → 强制释放（不参与概率，保证"攒的话必说"）。释放时整窗一次喂给 Agent，由 LLM 自门控（`__NO_REPLY__`）决定参与/静默；安静释放受 `participate_probability` 约束（1-p 静默放弃本窗）；参与路径发送前可加 `typing_delay_max_ms` 随机"打字延迟"。窗口消息数超 `window_max_msgs` 丢最旧保最新。
+> 参与窗口（`dispatchToAgent` → `enqueueParticipation` → `releaseWindow`）：@/命令/提及名字/私聊 → mustKeep 立即回（跳过相关性判断，但仍进 Agent 调用 LLM 生成回复）；噪音消息（剥离 CQ 码/URL 后无任何文字，如纯图/纯 sticker/表情）→ 规则丢弃；其余候选（含 @、剥离 CQ 码/URL 后仍含文字的消息）攒进每群一个窗口；≤2 字短消息与纯 emoji/符号判为噪音丢弃——trailing 安静定时器（来消息即重置，间隔带 `jitter_seconds` 随机抖动）→ 安静释放；或攒够 `force_count`（+`force_count_jitter` 上偏，采样 ∈ [0, force_count_jitter]）条 / 到达 `max_age_seconds` 最迟必发 → 强制释放（不参与概率，保证"攒的话必说"）。释放时整窗一次喂给 Agent，由 LLM 自门控（`__NO_REPLY__`）决定参与/静默；安静释放受 `participate_probability` 约束（1-p 静默放弃本窗）；参与路径发送前可加 `typing_delay_max_ms` 随机"打字延迟"。窗口消息数超 `window_max_msgs` 丢最旧保最新。
 
 ## 一条消息的全程（OneBot11 → 回执）
 

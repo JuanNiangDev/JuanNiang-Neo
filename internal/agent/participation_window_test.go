@@ -211,22 +211,23 @@ func TestParticipationShortSymbolNoise(t *testing.T) {
 	}
 }
 
-// TestParticipationMeaningfulTextEntersWindow 剥离 CQ 码/URL 后仍含文字（≥3 字的
-// CJK/字母数字，如 "666"/"哈哈哈"）不算噪音：进参与窗口等待安静释放（而非被规则丢弃）。
+// TestParticipationMeaningfulTextEntersWindow 剥离 CQ 码/URL 后仍含文字的消息不算噪音：
+// 覆盖 CJK/字母数字（"666"/"哈哈哈"）及非 ASCII 文字（假名"なにそれ"/谚文"뭐야이거"，
+// unicode 字母分类判定），均进参与窗口等待安静释放（而非被规则丢弃）。
 func TestParticipationMeaningfulTextEntersWindow(t *testing.T) {
 	h, db := newDedupTestHago(t)
 	ctx := context.Background()
 	rs := partRS()
 	rs.QuietGapSeconds = 1
 
-	for i, raw := range []string{"666", "哈哈哈"} {
+	for i, raw := range []string{"666", "哈哈哈", "なにそれ", "뭐야이거"} {
 		msg := partMsg(int64(i+1), int64(111+i))
 		msg.Message.RawMessage = raw
 		msg.Message.Message = []adapter.Segment{{Type: "text", Data: map[string]any{"text": raw}}}
 		h.dispatchToAgent(ctx, msg, rs)
 	}
 
-	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 2 })
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 4 })
 }
 
 // TestParticipationNoTextNoise 剥离 CQ 码/URL 后无任何文字（纯图片/纯 sticker）仍算噪音，
