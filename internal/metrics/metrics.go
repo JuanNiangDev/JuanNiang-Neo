@@ -112,6 +112,28 @@ var (
 	})
 )
 
+// ---------- 参与窗口 ----------
+
+var (
+	// WindowReleasesTotal 参与窗口释放次数（reason: quiet 安静 / force_count 插话计数强发 / max_age 最迟必发）。
+	WindowReleasesTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "juanniang_participation_window_releases_total",
+		Help: "参与窗口释放总数（按释放原因）",
+	}, []string{"reason"})
+
+	// WindowDroppedTotal 参与窗口丢弃消息数（reason: window_silenced 概率静默 / window_discarded mustKeep 丢窗 / overflow 窗口溢出丢最旧）。
+	WindowDroppedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "juanniang_participation_window_dropped_total",
+		Help: "参与窗口丢弃消息总数",
+	}, []string{"reason"})
+
+	// AgentParticipationTotal 参与模式 Agent 处理结果（result: reply 参与回复 / silent 静默 __NO_REPLY__）。
+	AgentParticipationTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "juanniang_agent_participation_total",
+		Help: "参与模式 Agent 处理结果总数",
+	}, []string{"result"})
+)
+
 // ---------- LLM 用量 ----------
 
 var (
@@ -231,6 +253,7 @@ func init() {
 		GroupMgrLLMReviewsTotal, GroupMgrSpamTotal,
 		RAGSearchLatency, RAGSearchErrorsTotal,
 		PluginHookErrorsTotal, PluginHookDuration,
+		WindowReleasesTotal, WindowDroppedTotal, AgentParticipationTotal,
 		HTTPRequestsTotal, HTTPRequestDuration,
 		ChatRepliesTotal, ChatStatsDroppedTotal,
 		&runtimeCollector{},
