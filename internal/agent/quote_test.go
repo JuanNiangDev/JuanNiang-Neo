@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -140,7 +141,7 @@ func TestEnrichQuoteShortInMemory(t *testing.T) {
 		t.Fatalf("add shortterm: %v", err)
 	}
 	m := quoteMsg(999, map[string]any{"id": "123"})
-	got := h.enrichQuote(ctx, "[CQ:reply,id=123] 我回复一下", m, areaID)
+	got, _ := h.enrichQuote(ctx, "[CQ:reply,id=123] 我回复一下", m, areaID, nil, nil)
 	if !strings.Contains(got, "【引用原文】") || !strings.Contains(got, "[Alice(QQ:11)] 你好呀") {
 		t.Errorf("短引用应注入引用原文，实际: %q", got)
 	}
@@ -160,7 +161,7 @@ func TestEnrichQuoteLongInMemoryPassIDOnly(t *testing.T) {
 	}
 	mu := "[CQ:reply,id=456] 这条太长我只引用一下"
 	m := quoteMsg(999, map[string]any{"id": "456"})
-	if got := h.enrichQuote(ctx, mu, m, areaID); got != mu {
+	if got, _ := h.enrichQuote(ctx, mu, m, areaID, nil, nil); got != mu {
 		t.Errorf("长引用在记忆窗口应只传 messageid（不注入），实际: %q", got)
 	}
 	if strings.Contains(mu, "【引用原文】") {
@@ -175,7 +176,7 @@ func TestEnrichQuoteLongNotInMemoryInject(t *testing.T) {
 	areaID := "area-empty"
 	embedded := "一条已经不在记忆窗口里的被引用长消息"
 	m := quoteMsg(999, map[string]any{"id": "789", "content": embedded})
-	got := h.enrichQuote(ctx, "[CQ:reply,id=789] 回复", m, areaID)
+	got, _ := h.enrichQuote(ctx, "[CQ:reply,id=789] 回复", m, areaID, nil, nil)
 	if !strings.Contains(got, "【引用原文】") || !strings.Contains(got, embedded) {
 		t.Errorf("长引用不在记忆应回退注入内嵌内容，实际: %q", got)
 	}
@@ -187,7 +188,7 @@ func TestEnrichQuoteNoIDEmbeddedInject(t *testing.T) {
 	ctx := context.Background()
 	embedded := "内嵌引用内容（无 id）"
 	m := quoteMsg(999, map[string]any{"content": embedded})
-	got := h.enrichQuote(ctx, "[CQ:reply] 回复", m, "area-no-id")
+	got, _ := h.enrichQuote(ctx, "[CQ:reply] 回复", m, "area-no-id", nil, nil)
 	if !strings.Contains(got, "【引用原文】") || !strings.Contains(got, embedded) {
 		t.Errorf("无 id 有内嵌内容应注入引用原文，实际: %q", got)
 	}
@@ -200,7 +201,7 @@ func TestEnrichQuoteIDNoContentKeepCQ(t *testing.T) {
 	ctx := context.Background()
 	mu := "[CQ:reply,id=99999] 这条引用查不到"
 	m := quoteMsg(1000, map[string]any{"id": "99999"})
-	if got := h.enrichQuote(ctx, mu, m, "area-unknown"); got != mu {
+	if got, _ := h.enrichQuote(ctx, mu, m, "area-unknown", nil, nil); got != mu {
 		t.Errorf("有 id 无内容应保持 CQ 码原样，实际: %q", got)
 	}
 }
@@ -211,7 +212,7 @@ func TestEnrichQuoteNoReplySegment(t *testing.T) {
 	ctx := context.Background()
 	m := quoteMsg(1001, nil)
 	mu := "没有引用的普通消息"
-	if got := h.enrichQuote(ctx, mu, m, "area-none"); got != mu {
+	if got, _ := h.enrichQuote(ctx, mu, m, "area-none", nil, nil); got != mu {
 		t.Errorf("无 reply 段应原样返回，实际: %q", got)
 	}
 }
@@ -227,6 +228,8 @@ func TestReplySegmentID(t *testing.T) {
 		{"int64", map[string]any{"id": int64(456)}, 456},
 		{"int", map[string]any{"id": 789}, 789},
 		{"float64", map[string]any{"id": float64(1011)}, 1011},
+		{"string 19 位", map[string]any{"id": "1234567890123456789"}, 1234567890123456789},
+		{"json.Number 19 位", map[string]any{"id": json.Number("1234567890123456789")}, 1234567890123456789},
 		{"无 id", map[string]any{"content": "x"}, 0},
 		{"无 reply 段", nil, 0},
 	} {
@@ -234,5 +237,101 @@ func TestReplySegmentID(t *testing.T) {
 		if got := replySegmentID(m); got != c.want {
 			t.Errorf("%s: replySegmentID = %d, want %d", c.name, got, c.want)
 		}
+	}
+}
+
+// TestEnrichQuoteMsgidForgery 内容任意位置的 [msgid:N] 不作长消息判定：
+// 用户正文含字面 [msgid:999] 的短消息被引用时应注入原文而非只传 id。
+func TestEnrichQuoteMsgidForgery(t *testing.T) {
+	h, mg := newQuoteTestHago(t)
+	ctx := context.Background()
+	areaID := "area-forge"
+	if err := mg.AddShortTermMessage(ctx, areaID, shortterm.ChatMessage{
+		Role: "user", MsgID: "123", Content: "前面聊过 [msgid:999] 这个标记但这是正文",
+	}); err != nil {
+		t.Fatalf("add shortterm: %v", err)
+	}
+	m := quoteMsg(888, map[string]any{"id": "123"})
+	got, result := h.enrichQuote(ctx, "[CQ:reply,id=123] 回复", m, areaID, nil, nil)
+	if result != quoteEnrichShortInjected {
+		t.Errorf("伪造标记不应判定为长消息，result = %s, want short_injected", result)
+	}
+	if !strings.Contains(got, "【引用原文】") {
+		t.Errorf("应注入原文，实际: %q", got)
+	}
+}
+
+// TestEnrichQuoteNameQQNotTrusted name/qq 字段不当作引用原文：只有 name/qq 时
+// 走无内嵌路径（保持 CQ 码原样），避免 LLM 把 QQ 号当原文。
+func TestEnrichQuoteNameQQNotTrusted(t *testing.T) {
+	h, _ := newQuoteTestHago(t)
+	ctx := context.Background()
+	mu := "[CQ:reply,id=777] 回复"
+	m := quoteMsg(999, map[string]any{"id": "777", "name": "Alice", "qq": "123456"})
+	got, result := h.enrichQuote(ctx, mu, m, "area-nq", nil, nil)
+	if result != quoteEnrichKeptCQ {
+		t.Errorf("name/qq 不应作为内嵌内容注入，result = %s, want kept_cq", result)
+	}
+	if got != mu {
+		t.Errorf("应保持 CQ 码原样，实际: %q", got)
+	}
+}
+
+// TestEnrichQuoteDupInBatch 同批互引：被引用短消息已在当前轮作为独立 userMsg 注入，
+// 富化应跳过再次注入原文，避免当前轮重复占用 token。
+func TestEnrichQuoteDupInBatch(t *testing.T) {
+	h, mg := newQuoteTestHago(t)
+	ctx := context.Background()
+	areaID := "area-batch"
+	// A（MsgID=500，短消息）已在当前批 → 同时存在于记忆与 batchIDs
+	if err := mg.AddShortTermMessage(ctx, areaID, shortterm.ChatMessage{
+		Role: "user", MsgID: "500", Content: "[Alice(QQ:11)] 你好呀",
+	}); err != nil {
+		t.Fatalf("add shortterm: %v", err)
+	}
+	batchIDs := map[int64]struct{}{500: {}}
+	m := quoteMsg(501, map[string]any{"id": "500"})
+	got, result := h.enrichQuote(ctx, "[CQ:reply,id=500] 回复", m, areaID, nil, batchIDs)
+	if result != quoteEnrichDupInBatch {
+		t.Errorf("同批互引应跳过注入，result = %s, want dup_in_batch", result)
+	}
+	if strings.Contains(got, "【引用原文】") {
+		t.Errorf("同批互引不应再注入原文，实际: %q", got)
+	}
+}
+
+// TestReplySegmentEmbeddedOnlyContent 只信任 content：name/qq 不作为引用原文。
+func TestReplySegmentEmbeddedOnlyContent(t *testing.T) {
+	m := quoteMsg(1, map[string]any{"name": "Alice", "qq": "123456"})
+	if got := replySegmentEmbedded(m); got != "" {
+		t.Errorf("仅 name/qq 不应返回内容，实际: %q", got)
+	}
+	m2 := quoteMsg(1, map[string]any{"content": "真实原文", "name": "Alice"})
+	if got := replySegmentEmbedded(m2); got != "真实原文" {
+		t.Errorf("有 content 应返回 content，实际: %q", got)
+	}
+}
+
+// TestQuoteWrapStripsReplyCQ 注入原文前剥离 reply CQ 码，避免两种形态并存。
+func TestQuoteWrapStripsReplyCQ(t *testing.T) {
+	got := quoteWrap("[CQ:reply,id=123] 回复正文", "被引用原文")
+	if strings.Contains(got, "[CQ:reply") {
+		t.Errorf("注入原文应剥离 reply CQ 码，实际: %q", got)
+	}
+	if !strings.HasPrefix(got, "回复正文【引用原文】被引用原文") {
+		t.Errorf("剥离后应保留正文+引用原文，实际: %q", got)
+	}
+}
+
+// TestStripMsgidMarkers 剥离 [msgid:N] 标记（检索 query / Compact 摘要用）。
+func TestStripMsgidMarkers(t *testing.T) {
+	if got := stripMsgidMarkers("[msgid:123]长消息正文"); got != "长消息正文" {
+		t.Errorf("应剥离标记，实际: %q", got)
+	}
+	if got := stripMsgidMarkers("普通消息"); got != "普通消息" {
+		t.Errorf("无标记应原样，实际: %q", got)
+	}
+	if got := stripMsgidMarkers("多标记 [msgid:1] 与 [msgid:2] 文本"); got != "多标记  与  文本" {
+		t.Errorf("应剥离全部标记，实际: %q", got)
 	}
 }
