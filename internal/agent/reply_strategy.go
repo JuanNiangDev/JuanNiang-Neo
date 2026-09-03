@@ -27,10 +27,16 @@ func isDefinitelyRelevant(msg *adapter.MessageEvent, rs ReplySettings) bool {
 	return false
 }
 
-// isDefinitelyIrrelevant 规则快路径（L1）：仅把无参与价值的消息视为噪音，直接丢弃不进参与窗口。
-// 噪音覆盖：完全空消息；以及剥离 CQ 码/URL 后无任何文字的消息（纯图/纯 sticker/表情，无配套文本）。
-// 不算噪音（进窗口由 LLM 自门控决定是否参与）：≤2 字短消息、纯 emoji/符号（"哈哈"/"666"/"😂😂😂"）、
-// 以及含 @（CQ:at，即使只 @ 别人无文字）的消息——@ 是明确的互动信号，必须参与。
+// isDefinitelyIrrelevant 规则快路径（L1）：把无参与价值的群聊消息视为噪音，直接丢弃不进参与窗口。
+// 噪音覆盖：
+//   - 完全空消息；
+//   - 剥离 CQ 码/URL 后无任何文字的消息（纯图/纯 sticker/表情，无配套文本）；
+//   - ≤2 字短消息（"哈哈"/"嗯"/"1"）与纯 emoji/符号（"😂😂😂"/"？？？"）——水群/无参与价值。
+//
+// 不算噪音（进窗口由 LLM 自门控决定是否参与）：
+//   - 含 @（CQ:at，即使只 @ 别人无文字）的消息——@ 是明确的互动信号；
+//   - 剥离 CQ 码/URL 后仍含文字（CJK/字母数字，如 "666"/"哈哈哈"/"今天天气如何"）的消息。
+//
 // @ 机器人本身走 isAtSelf mustKeep 立即回，不经此判定。
 func isDefinitelyIrrelevant(msg *adapter.MessageEvent) bool {
 	text := strings.TrimSpace(msg.RawMessage)
@@ -45,8 +51,31 @@ func isDefinitelyIrrelevant(msg *adapter.MessageEvent) bool {
 	plain := cqCodeRegexp.ReplaceAllString(text, "")
 	plain = urlRegexp.ReplaceAllString(plain, "")
 	plain = strings.TrimSpace(plain)
-	// 无任何有效文字 → 噪音（纯图/纯 sticker/表情，无配套文本）
-	return plain == ""
+	if plain == "" {
+		return true // 无任何有效文字（纯图/纯 sticker/表情，无配套文本）
+	}
+	// ≤2 字短消息 → 噪音（"哈哈"/"嗯"/"1"——水群刷屏，无参与价值）
+	if len([]rune(plain)) <= 2 {
+		return true
+	}
+	// 纯 emoji/符号（无 CJK/字母数字，如 "😂😂😂"/"？？？"）→ 噪音
+	if !containsMeaningfulChars(plain) {
+		return true
+	}
+	return false
+}
+
+// containsMeaningfulChars 判断文本是否包含有意义字符（ASCII 字母数字或 CJK）。
+func containsMeaningfulChars(s string) bool {
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return true
+		}
+		if r >= 0x4E00 && r <= 0x9FFF { // CJK 统一表意文字
+			return true
+		}
+	}
+	return false
 }
 
 // getRecentMessages 获取 ChatArea 中最近 N 条消息（不含当前消息）。

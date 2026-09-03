@@ -187,9 +187,9 @@ func TestJitterSecDeterministic(t *testing.T) {
 	}
 }
 
-// TestParticipationShortSymbolNotNoise ≤2 字与纯 emoji/符号不算噪音：进参与窗口
-// 等待安静释放（而非被 isDefinitelyIrrelevant 规则丢弃）。
-func TestParticipationShortSymbolNotNoise(t *testing.T) {
+// TestParticipationShortSymbolNoise ≤2 字短消息与纯 emoji/符号按产品契约判定为噪音：
+// 不进参与窗口、不消费（"哈哈"/"😂😂😂" 属水群刷屏，规则直接丢弃）。
+func TestParticipationShortSymbolNoise(t *testing.T) {
 	h, db := newDedupTestHago(t)
 	ctx := context.Background()
 	rs := partRS()
@@ -204,6 +204,27 @@ func TestParticipationShortSymbolNotNoise(t *testing.T) {
 
 	h.dispatchToAgent(ctx, shortMsg, rs)
 	h.dispatchToAgent(ctx, symMsg, rs)
+
+	time.Sleep(1600 * time.Millisecond)
+	if got := countUserRecords(t, db); got != 0 {
+		t.Fatalf("≤2 字/纯 emoji 应作为噪音丢弃，实际消费 %d", got)
+	}
+}
+
+// TestParticipationMeaningfulTextEntersWindow 剥离 CQ 码/URL 后仍含文字（≥3 字的
+// CJK/字母数字，如 "666"/"哈哈哈"）不算噪音：进参与窗口等待安静释放（而非被规则丢弃）。
+func TestParticipationMeaningfulTextEntersWindow(t *testing.T) {
+	h, db := newDedupTestHago(t)
+	ctx := context.Background()
+	rs := partRS()
+	rs.QuietGapSeconds = 1
+
+	for i, raw := range []string{"666", "哈哈哈"} {
+		msg := partMsg(int64(i+1), int64(111+i))
+		msg.Message.RawMessage = raw
+		msg.Message.Message = []adapter.Segment{{Type: "text", Data: map[string]any{"text": raw}}}
+		h.dispatchToAgent(ctx, msg, rs)
+	}
 
 	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 2 })
 }

@@ -228,6 +228,17 @@ const VALID_TOKEN = 'mock-jwt-token-juanniang'
 const ok = (data: any = null) => ({ status: 0, info: 'OK', data })
 const err = (status: number, info: string) => ({ status, info, data: null })
 
+// normalizeInt 与服务端 service.go normalizeInt 对齐：v<0 或越界 → null（校验失败）；
+// 未提供（undefined/null）或 v=0 → 返回默认值 def。
+const normalizeInt = (v: any, min: number, max: number, def: number): number | null => {
+  const n = Number(v ?? 0)
+  if (!Number.isFinite(n)) return null
+  if (n < 0) return null
+  if (n === 0) return def
+  if (n < min || n > max) return null
+  return Math.trunc(n)
+}
+
 // ============================================================
 // Route Handlers
 // ============================================================
@@ -721,9 +732,42 @@ export const mockHandlers: MockHandler[] = [
   {
     method: 'PUT', path: '/reply-strategy',
     handler({ body }) {
-      // 已保存配置落共享态，后续 GET 返回新值（保留现有响应形状）
-      replyStrategyState = { ...replyStrategyState, ...(body || {}) }
-      return ok(replyStrategyState)
+      // 与服务端行为对齐：把请求绑定到零值策略上——只取请求里显式给出的字段，
+      // 未提供的字段落回默认值，而不是浅合并旧状态（否则删掉的字段会残留）。
+      const b = body || {}
+      const quietGap = normalizeInt(b.quiet_gap_seconds, 1, 30, 5)
+      if (quietGap === null) return err(40032, '安静间隔必须在 1-30 秒之间（0=默认 5s）')
+      const forceCount = normalizeInt(b.force_count, 2, 20, 5)
+      if (forceCount === null) return err(40032, '插话计数强发必须在 2-20 条之间（0=默认 5）')
+      const maxAge = normalizeInt(b.max_age_seconds, 5, 120, 20)
+      if (maxAge === null) return err(40032, '最迟必发必须在 5-120 秒之间（0=默认 20s）')
+      const windowMax = normalizeInt(b.window_max_msgs, 5, 50, 20)
+      if (windowMax === null) return err(40032, '窗口消息数上限必须在 5-50 条之间（0=默认 20）')
+      // 随机抖动/概率/打字延迟：0 为合法值（关闭），仅做范围校验（与服务端一致）
+      const jitter = Number(b.jitter_seconds ?? 0)
+      if (!Number.isFinite(jitter) || jitter < 0 || jitter > 10) return err(40032, '随机抖动幅度必须在 0-10 秒之间')
+      const forceJitter = Number(b.force_count_jitter ?? 0)
+      if (!Number.isFinite(forceJitter) || forceJitter < 0 || forceJitter > 5) return err(40032, '计数抖动幅度必须在 0-5 之间')
+      const prob = Number(b.participate_probability ?? 0)
+      if (!Number.isFinite(prob) || prob < 0 || prob > 1) return err(40032, '参与概率必须在 0-1 之间')
+      const typingDelay = Number(b.typing_delay_max_ms ?? 0)
+      if (!Number.isFinite(typingDelay) || typingDelay < 0 || typingDelay > 5000) return err(40032, '打字延迟必须在 0-5000 毫秒之间')
+      // 全量替换持久化状态：未提供的字段（bot_name/strip_markdown/agent_lite）落回零值，
+      // 参与窗口整数参数 0=默认已由上方归一化。
+      replyStrategyState = {
+        bot_name: typeof b.bot_name === 'string' ? b.bot_name : '',
+        strip_markdown: !!b.strip_markdown,
+        agent_lite: !!b.agent_lite,
+        quiet_gap_seconds: quietGap,
+        force_count: forceCount,
+        max_age_seconds: maxAge,
+        window_max_msgs: windowMax,
+        jitter_seconds: jitter,
+        force_count_jitter: forceJitter,
+        participate_probability: prob,
+        typing_delay_max_ms: typingDelay,
+      }
+      return ok({ ...replyStrategyState })
     }
   },
 

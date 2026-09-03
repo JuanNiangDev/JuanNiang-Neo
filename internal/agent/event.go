@@ -354,9 +354,15 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 		h.discardWindow(ctx, chatArea.ID)
 		// 必回消息与攒窗路径对齐：先写短期记忆并注入批次用户消息，
 		// 否则历史上下文只有 assistant 发言、没有用户发言（私聊语境损坏）。
-		batchMsgs := h.writeBatchToMemory(ctx, []adapter.Event{ev}, chatArea)
+		// 黑名单/违禁终态过滤提前到写记忆之前：被过滤的消息不写记忆、不启动 Agent。
+		kept := h.filterBlockedEvents(ctx, []adapter.Event{ev}, chatArea)
+		kept = h.filterViolatedEvents(ctx, kept)
+		if len(kept) == 0 {
+			return
+		}
+		batchMsgs := h.writeBatchToMemory(ctx, kept, chatArea)
 		ctx = WithBatchUserMsgs(ctx, batchMsgs)
-		h.runAgent(ctx, []adapter.Event{ev}, chatArea, rs)
+		h.runAgent(ctx, kept, chatArea, rs)
 		return
 	}
 	// 明显噪音：完全空消息 / 纯图·纯 sticker·表情（剥离 CQ 码/URL 后无文字）→ 直接丢弃
@@ -719,6 +725,20 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	}
 	start := time.Now()
 	outcome := "ok"
+
+	msg := events[len(events)-1].Message
+	userID := msg.UserID
+
+	// 如果没有传入 chatArea，尝试获取（fallback 路径：dispatchToAgent 经 runAgent 且
+	// getChatArea 失败返回 nil 时，事件直接处理——不限制并发、不攒窗）。
+	// 必须提前到创建 agent.handle span 之前：span 属性要写 chatArea.ID，此时 chatArea 必须有效。
+	if chatArea == nil {
+		chatArea = h.getChatArea(ctx, msg)
+		if chatArea == nil {
+			return
+		}
+	}
+
 	// 链路追踪：Agent ReAct 循环 span（含多轮 LLM/工具，全流程中最长的一段）。
 	// 用新 ctx 继续后续调用：Agent.Run 内的 llm.call / tool.execute 及记忆召回的
 	// rag.search 需嵌套在 handle 下（而非与 handle 平级挂在 process_event 下）。
@@ -732,16 +752,6 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		metrics.AgentLoopsTotal.WithLabelValues(outcome).Inc()
 		metrics.AgentLoopDuration.Observe(time.Since(start).Seconds())
 	}()
-	msg := events[len(events)-1].Message
-	userID := msg.UserID
-
-	// 如果没有传入 chatArea，尝试获取（fallback 路径）
-	if chatArea == nil {
-		chatArea = h.getChatArea(ctx, msg)
-		if chatArea == nil {
-			return
-		}
-	}
 
 	// 聊天黑名单检查：命中黑名单的消息直接丢弃（不进入 Agent 循环）
 	// （派发路径已过滤一次，此处为 fallback 路径双保险）
@@ -1096,10 +1106,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		// 注意：交付消息即本轮的 assistant 回复，需携带真实 token 用量，
 		// 否则 chat_records.token_count 总和（Overview 总用量）不会增长。
 		recordedTokens := false
+		// deliveredCurrent 标记工具是否已实际向当前会话投递回复（Flush 真实发送结果）：
+		// 参与模式结果计数按"实际投递"判定，避免群管理审核丢弃的投递被误记为 reply。
+		deliveredCurrent := false
 		for _, s := range flushed {
 			if !s.Delivery || s.MessageType != msg.MessageType || s.TargetID != currentTargetID {
 				continue
 			}
+			deliveredCurrent = true
 			if text := s.Text(); text != "" {
 				tokens := 0
 				if !recordedTokens {
@@ -1114,8 +1128,9 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		}
 
 		// 后处理：静默检测 + 发送 + 记忆
+		silenced := false
 		if assistantContent != "" && !deliveredToCurrent {
-			silenced := msg.MessageType == "group" && isSilenceResponse(assistantContent)
+			silenced = msg.MessageType == "group" && isSilenceResponse(assistantContent)
 			if silenced {
 				log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
 				metrics.DroppedTotal.WithLabelValues("silenced").Inc()
@@ -1126,16 +1141,22 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 					h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
 				}
 			}
-			// 参与模式结果计数：reply=参与回复（含经工具投递）；silent=__NO_REPLY__ 静默
-			if IsParticipation(ctx) {
-				result := "reply"
-				if silenced {
-					result = "silent"
-				}
-				metrics.AgentParticipationTotal.WithLabelValues(result).Inc()
-			}
 		} else if assistantContent != "" {
 			log.Info("已通过工具向当前会话发送消息，跳过最终回复", "content", assistantContent, "message_type", msg.MessageType, "target", currentTargetID)
+		}
+
+		// 参与模式结果计数：reply=参与回复（含经工具实际投递）；silent=__NO_REPLY__ 静默。
+		// 最终文本回复与 __NO_REPLY__ 互斥；同一参与窗口只计一次（按实际发送结果择一）：
+		// 工具已实际投递到当前会话 → reply；__NO_REPLY__/静默短语 → silent；最终文本回复 → reply；
+		// 三者均未发生（如无回复亦无投递）→ 不计。
+		if IsParticipation(ctx) {
+			result := "reply"
+			if !deliveredCurrent && silenced {
+				result = "silent"
+			}
+			if deliveredCurrent || assistantContent != "" {
+				metrics.AgentParticipationTotal.WithLabelValues(result).Inc()
+			}
 		}
 	}
 
