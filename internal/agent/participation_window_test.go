@@ -336,3 +336,83 @@ func TestParticipationMustKeepWritesShortTermMemory(t *testing.T) {
 	}
 	t.Fatalf("mustKeep 路径用户消息未写入短期记忆，当前记忆: %+v", msgs)
 }
+
+// TestParticipationInflightSerialization 参与窗口在途互斥（双窗口串行化）：上一窗口在
+// Agent 处理中（inflight 槽位被占用）时，本窗的 force_count 释放被延后——窗口保留继续攒、
+// 不消费；上一窗口处理完（clearInflight + checkWindowRelease）后按释放条件检查再释放。
+func TestParticipationInflightSerialization(t *testing.T) {
+	h, db := newDedupTestHago(t)
+	ctx := context.Background()
+	rs := partRS()
+	rs.QuietGapSeconds = 60 // 关闭安静释放，只靠 force_count
+	rs.ForceCount = 2
+
+	area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, 456)
+	if err != nil {
+		t.Fatalf("get chat area: %v", err)
+	}
+
+	// 模拟上一参与窗口正在 Agent 处理：先占用在途槽位
+	if !h.tryAcquireInflight(area.ID) {
+		t.Fatal("应在空闲时成功占用在途槽位")
+	}
+	defer h.clearInflight(area.ID)
+
+	// 攒 2 条（force_count=2 已满足）：releaseWindow 检测到在途应延后，窗口保留、不消费
+	h.dispatchToAgent(ctx, partMsg(1, 111), rs)
+	h.dispatchToAgent(ctx, partMsg(2, 222), rs)
+
+	time.Sleep(300 * time.Millisecond) // 给延后释放的 goroutine 一点执行时间
+	if got := countUserRecords(t, db); got != 0 {
+		t.Fatalf("在途期间本窗不应被释放消费，实际消费 %d", got)
+	}
+	h.windowMu.Lock()
+	_, exists := h.windows[area.ID]
+	h.windowMu.Unlock()
+	if !exists {
+		t.Fatal("在途期间窗口应保留继续攒，实际已被释放")
+	}
+
+	// 上一窗口处理完：释放槽位 + 重新检查释放条件 → force_count 已满足，应释放
+	h.clearInflight(area.ID)
+	h.checkWindowRelease(area.ID)
+
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 2 })
+}
+
+// TestParticipationInflightDeferredUntilCondition 在途释放延后时，若累积窗口未满足释放
+// 条件（如仅 1 条 < force_count），checkWindowRelease 不应释放，窗口继续保留。
+func TestParticipationInflightDeferredUntilCondition(t *testing.T) {
+	h, db := newDedupTestHago(t)
+	ctx := context.Background()
+	rs := partRS()
+	rs.QuietGapSeconds = 60
+	rs.ForceCount = 5
+
+	area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, 456)
+	if err != nil {
+		t.Fatalf("get chat area: %v", err)
+	}
+	if !h.tryAcquireInflight(area.ID) {
+		t.Fatal("应在空闲时成功占用在途槽位")
+	}
+	defer h.clearInflight(area.ID)
+
+	// 仅 1 条，远低于 force_count=5
+	h.dispatchToAgent(ctx, partMsg(1, 111), rs)
+	time.Sleep(300 * time.Millisecond)
+
+	// 上一窗口处理完，但条件不满足 → 不释放
+	h.clearInflight(area.ID)
+	h.checkWindowRelease(area.ID)
+	time.Sleep(300 * time.Millisecond)
+	if got := countUserRecords(t, db); got != 0 {
+		t.Fatalf("未满足释放条件不应释放，实际消费 %d", got)
+	}
+	h.windowMu.Lock()
+	_, exists := h.windows[area.ID]
+	h.windowMu.Unlock()
+	if !exists {
+		t.Fatal("未满足释放条件时窗口应保留")
+	}
+}

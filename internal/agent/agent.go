@@ -76,6 +76,12 @@ type HagoCenter struct {
 	// 参与窗口：每群一个，攒窗后整窗一次喂给 Agent（trailing 安静定时器 + 计数/最迟必发）
 	windows  map[string]*participationWindow
 	windowMu sync.Mutex
+	// inflight 参与窗口在途互斥：同一 ChatArea 同一时间只允许一个参与窗口在 Agent 处理中。
+	// 处理期间新消息进入累积窗口只攒不放（releaseWindow 检测到在途即延后），
+	// 等上一窗口处理完（runAgent 完成回调 → checkWindowRelease）再检查释放条件，
+	// 避免"攒 5 条就回，一刷 15 条 bot 连回 3 次"的突发重复回复。
+	inflightMu sync.Mutex
+	inflight   map[string]bool
 
 	// sendMu 全局发送互斥锁：所有窗口/批次的发送动作串行执行，
 	// 避免多窗口/多群并行完成时回复交叉乱序（如一条完整回复被另一条插入打断）。
@@ -140,6 +146,7 @@ func NewHagoCenter() *HagoCenter {
 		CronJobEvents: make(chan adapter.Event, 64),
 		Loops:         NewLoopTracker(),
 		windows:       make(map[string]*participationWindow),
+		inflight:      make(map[string]bool),
 		toolAdminOnly: make(map[string]bool),
 		knowledgeLRU:  newKnowledgeLRU(50),
 		msgDedup:      newMemoryDedup(dedupWindow), // 占位，Init 时按 Cache 可用性覆盖为 redisDedup

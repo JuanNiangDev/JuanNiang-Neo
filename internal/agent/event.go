@@ -331,6 +331,11 @@ type participationWindow struct {
 	// created 窗口创建时间（trace 属性 window_age_ms 用）。
 	created  time.Time
 	deadline time.Time
+	// lastMsgAt 最后一条消息入窗时间（在途延后后 re-check 安静间隔是否已到用）。
+	lastMsgAt time.Time
+	// relay message_id → 因违禁审查未决被传递到下一个窗口的次数。
+	// 达到 maxParticipationRelay 后强制放行（不再传递），防止审查异常时消息无限延后。
+	relay map[int64]int
 }
 
 type participationKey struct{}
@@ -344,7 +349,7 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 	chatArea := h.getChatArea(ctx, msg)
 	if chatArea == nil {
 		// 无法获取 ChatArea 时直接处理（不限制并发、不攒窗）
-		h.runAgent(ctx, []adapter.Event{ev}, nil, rs)
+		h.runAgent(ctx, []adapter.Event{ev}, nil, rs, false)
 		return
 	}
 	// 必回快路径：@ 自己 / 插件命令 / 提及名字 / 私聊 / 插件标记跳过检查
@@ -356,13 +361,15 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 		// 否则历史上下文只有 assistant 发言、没有用户发言（私聊语境损坏）。
 		// 黑名单/违禁终态过滤提前到写记忆之前：被过滤的消息不写记忆、不启动 Agent。
 		kept := h.filterBlockedEvents(ctx, []adapter.Event{ev}, chatArea)
+		// mustKeep 跑在事件循环 goroutine 上：非阻塞过滤，审查在途消息保留，
+		// 回复由 finish 内 WaitReview 发送前兜底（事件循环内不能等待审查）。
 		kept = h.filterViolatedEvents(ctx, kept)
 		if len(kept) == 0 {
 			return
 		}
 		batchMsgs := h.writeBatchToMemory(ctx, kept, chatArea)
 		ctx = WithBatchUserMsgs(ctx, batchMsgs)
-		h.runAgent(ctx, kept, chatArea, rs)
+		h.runAgent(ctx, kept, chatArea, rs, false)
 		return
 	}
 	// 明显噪音：完全空消息 / 纯图·纯 sticker·表情（剥离 CQ 码/URL 后无文字）→ 直接丢弃
@@ -388,6 +395,8 @@ func (h *HagoCenter) enqueueParticipation(ctx context.Context, ev adapter.Event,
 			deadline:    time.Now().Add(rs.maxAge()),
 			created:     time.Now(),
 			countJitter: jitterSec(rs.ForceCountJitter),
+			lastMsgAt:   time.Now(),
+			relay:       map[int64]int{},
 		}
 		h.windows[areaID] = w
 		log.Debug("参与窗口创建", "area", areaID)
@@ -396,6 +405,7 @@ func (h *HagoCenter) enqueueParticipation(ctx context.Context, ev adapter.Event,
 	}
 	w.events = append(w.events, ev)
 	w.msgCount++
+	w.lastMsgAt = time.Now()
 	if limit := rs.windowMaxMsgs(); limit > 0 && len(w.events) > limit {
 		dropped := len(w.events) - limit
 		w.events = append([]adapter.Event(nil), w.events[len(w.events)-limit:]...)
@@ -444,6 +454,19 @@ func (h *HagoCenter) safeRelease(ctx context.Context, areaID string, reason stri
 // reason 说明释放时机：quiet 安静释放（受 participate_probability 约束）；
 // force_count 插话计数强发 / max_age 最迟必发（必说，不参与概率）。
 func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, reason string) {
+	// 参与窗口在途互斥：同一 ChatArea 同时只允许一个参与窗口在 Agent 处理中。
+	// 若已有窗口在途，本窗保留继续攒，等上一窗口处理完（checkWindowRelease）再释放，
+	// 避免"攒 5 条就回，一刷 15 条连回 3 次"的突发重复回复。
+	if !h.tryAcquireInflight(areaID) {
+		log.Debug("参与窗口释放延后：上一窗口在途", "area", areaID, "reason", reason)
+		return
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			h.clearInflight(areaID)
+		}
+	}()
 	// 参与窗口释放 span：定时器回调捕获的 ctx 携带的 process_event span 早已结束，
 	// 用新根 ctx 开独立 span（participation.release），避免瀑布图出现 5~30s 虚假间隙。
 	releaseCtx, relSpan := otelx.NewRootSpan(ctx, "participation.release",
@@ -476,6 +499,7 @@ func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, reason st
 	}
 	events := append([]adapter.Event(nil), w.events...)
 	rs := w.rs
+	relay := w.relay
 	windowAgeMs = time.Since(w.created).Milliseconds()
 	h.windowMu.Unlock()
 
@@ -503,8 +527,26 @@ func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, reason st
 		log.Error("参与窗口释放失败：获取 ChatArea 失败，整窗丢弃", "area", areaID, "events", len(events))
 		return
 	}
-	// 黑名单过滤 + 违禁终态剔除 + 批次级记忆屏障，标记参与模式后整窗一次处理
+	// 黑名单过滤 + 违禁终态剔除（非阻塞）+ 审查协调，再写批次记忆、标记参与模式后整窗处理。
+	// 审查协调：有界等待在途审查出终态；仍未决且未达最大传递次数的消息传递到下一个窗口
+	// （累积窗口，relay+1），已出终态的消息本次照常处理。避免"审查异步晚于释放到达 → 违规
+	// 消息已进 LLM 语境与短期记忆、finish 兜底只覆盖最后一条"的竞态；达到最大传递次数后
+	// 强制放行（按无违规处理）。本路径跑在 release goroutine，等待/传递不阻塞事件循环。
 	events = h.filterBlockedEvents(releaseCtx, events, chatArea)
+	if len(events) == 0 {
+		return
+	}
+	events = h.filterViolatedEvents(releaseCtx, events)
+	if len(events) == 0 {
+		return
+	}
+	keep, defers := h.resolveReview(releaseCtx, events, relay)
+	if len(defers) > 0 {
+		// 审查未决的消息传递到累积窗口（下一个窗口），已出终态的 keep 本次照常处理
+		h.requeueWindow(releaseCtx, areaID, defers, rs, relay)
+	}
+	events = keep
+	// resolveReview 等待期间可能新出 black 终态，再次剔除
 	events = h.filterViolatedEvents(releaseCtx, events)
 	if len(events) == 0 {
 		return
@@ -512,7 +554,8 @@ func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, reason st
 	batchMsgs := h.writeBatchToMemory(releaseCtx, events, chatArea)
 	releaseCtx = WithBatchUserMsgs(releaseCtx, batchMsgs)
 	releaseCtx = WithParticipation(releaseCtx, true)
-	h.runAgent(releaseCtx, events, chatArea, rs)
+	handedOff = true
+	h.runAgent(releaseCtx, events, chatArea, rs, true)
 }
 
 // discardWindow 取消并丢弃 ChatArea 的当前参与窗口（mustKeep 立即回复时调用，防串味）。
@@ -548,7 +591,7 @@ func (h *HagoCenter) discardWindow(ctx context.Context, areaID string) {
 // 供 mustKeep 立即回复与参与窗口释放两条路径共用。
 // chatArea 允许为 nil（getChatArea 失败时的兜底路径）：nil 时不限制并发、不攒窗直接处理，
 // 且 panic 兜底日志不再解引用 chatArea.ID（避免 nil 二次 panic）。
-func (h *HagoCenter) runAgent(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
+func (h *HagoCenter) runAgent(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea, rs ReplySettings, participation bool) {
 	go func() {
 		areaID := ""
 		if chatArea != nil {
@@ -559,6 +602,12 @@ func (h *HagoCenter) runAgent(ctx context.Context, events []adapter.Event, chatA
 		defer func() {
 			if r := recover(); r != nil {
 				log.Error("Agent 处理 goroutine panic", "panic", r, "stack", string(debug.Stack()), "area", areaID, "events", len(events))
+			}
+			// 参与窗口处理完成：释放在途槽位并重新检查累积窗口是否满足释放条件
+			// （串行化：下一窗口等本窗口处理完再释放，避免突发连回多条）。
+			if participation && chatArea != nil {
+				h.clearInflight(areaID)
+				h.checkWindowRelease(areaID)
 			}
 		}()
 		if h.Concurrency != nil && chatArea != nil {
@@ -622,8 +671,9 @@ func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.E
 }
 
 // filterViolatedEvents 违禁终态（black）消息剔除出参与窗口：不进 LLM 语境、不写短期记忆。
-// ReviewGate 是非阻塞查询：verdict 终态(black) → 剔除；pending/无记录 → 保留（撤回兜底）。
-// finish 内的 WaitReview（只查整窗最后一条）仍保留，兜"释放后才判 black"的残余竞态。
+// ReviewGate 是非阻塞查询：verdict 终态(black) → 剔除；在途（pending）/无记录 → 保留。
+// 在途审查的等待/整窗传递由 releaseWindow 的 resolveReview/requeueWindow 负责（见上），
+// 本函数只做非阻塞剔除，供 mustKeep 事件循环路径与释放路径共用。
 func (h *HagoCenter) filterViolatedEvents(ctx context.Context, events []adapter.Event) []adapter.Event {
 	if h.GroupMgr == nil {
 		return events
@@ -711,6 +761,198 @@ func WithBatchUserMsgs(ctx context.Context, msgs []string) context.Context {
 func GetBatchUserMsgs(ctx context.Context) []string {
 	v, _ := ctx.Value(batchUserMsgsKey{}).([]string)
 	return v
+}
+
+// participationReviewWait 参与窗口释放时有界等待在途审查出终态的上限：
+// 覆盖审查批窗口（3s 默认）+ LLM 余量；超时仍未决的消息传递到下一个窗口。
+const participationReviewWait = 5 * time.Second
+
+// maxParticipationRelay 参与窗口消息因审查未决被传递到下一个窗口的最大次数：
+// 防止审查长时间不返回时消息无限延后；达到上限后强制放行（按无违规处理）。
+const maxParticipationRelay = 3
+
+// resolveReview 参与窗口审查协调：有界等待在途审查出终态，仍未决且未达最大传递次数的
+// 消息传递到下一个窗口（累积窗口），已出终态的消息本次照常处理——不整窗等待，
+// 已审查完的消息不被在途消息拖累。已判 black 由调用方 filterViolatedEvents 剔除。
+func (h *HagoCenter) resolveReview(ctx context.Context, events []adapter.Event, relay map[int64]int) (keep, defers []adapter.Event) {
+	if h.GroupMgr == nil {
+		return events, nil
+	}
+	// 找出在途审查的消息
+	var pending []adapter.Event
+	for _, ev := range events {
+		m := ev.Message
+		if m == nil {
+			continue
+		}
+		if _, p := h.GroupMgr.ReviewGate(ctx, m.GroupID, m.UserID, m.MessageID); p {
+			pending = append(pending, ev)
+		}
+	}
+	if len(pending) == 0 {
+		return events, nil
+	}
+	// 是否有可传递（未达上限）的在途消息；全达上限 → 全部强制放行（不再等待/传递）
+	deferrable := false
+	for _, ev := range pending {
+		if relay[ev.Message.MessageID] < maxParticipationRelay {
+			deferrable = true
+			break
+		}
+	}
+	if deferrable {
+		// 有界等待在途消息出终态（共享截止时间，批窗口 3s + LLM 余量）
+		h.waitReviewSettled(ctx, events, participationReviewWait)
+	}
+	// 等待后分区：仍未决且未达上限 → 传递；其余（已出终态 / 已达上限）→ 本次处理
+	for _, ev := range events {
+		m := ev.Message
+		if m == nil {
+			continue
+		}
+		if _, p := h.GroupMgr.ReviewGate(ctx, m.GroupID, m.UserID, m.MessageID); p && relay[m.MessageID] < maxParticipationRelay {
+			defers = append(defers, ev)
+		} else {
+			keep = append(keep, ev)
+		}
+	}
+	return keep, defers
+}
+
+// waitReviewSettled 有界等待窗口内所有消息的违禁审查终态（共享截止时间，轮询 ReviewGate）。
+// 返回 true = 超时前全部出裁决（可能含 black，由调用方剔除）；false = 仍有在途。
+func (h *HagoCenter) waitReviewSettled(ctx context.Context, events []adapter.Event, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		allDone := true
+		for _, ev := range events {
+			m := ev.Message
+			if m == nil {
+				continue
+			}
+			if _, p := h.GroupMgr.ReviewGate(ctx, m.GroupID, m.UserID, m.MessageID); p {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// requeueWindow 审查未决的消息放回参与窗口（合并到已存在的累积窗口或重建），
+// 每条消息 relay+1 并重置安静定时器；下次释放时重新检查审查终态。
+// maxParticipationRelay 防止无限传递（调用方 resolveReview 在达到上限后不再传递）。
+func (h *HagoCenter) requeueWindow(ctx context.Context, areaID string, events []adapter.Event, rs ReplySettings, relay map[int64]int) {
+	h.windowMu.Lock()
+	w, ok := h.windows[areaID]
+	if !ok {
+		w = &participationWindow{
+			rs:          rs,
+			deadline:    time.Now().Add(rs.maxAge()),
+			created:     time.Now(),
+			countJitter: jitterSec(rs.ForceCountJitter),
+			lastMsgAt:   time.Now(),
+			relay:       map[int64]int{},
+		}
+		h.windows[areaID] = w
+		log.Debug("参与窗口重建（审查未决传递）", "area", areaID)
+		w.deadlineTimer = time.AfterFunc(rs.maxAge(), func() { h.safeRelease(ctx, areaID, "max_age") })
+	}
+	if w.relay == nil {
+		w.relay = map[int64]int{}
+	}
+	for _, ev := range events {
+		if ev.Message == nil {
+			continue
+		}
+		w.events = append(w.events, ev)
+		w.msgCount++
+		w.relay[ev.Message.MessageID] = relay[ev.Message.MessageID] + 1
+	}
+	w.lastMsgAt = time.Now()
+	if limit := rs.windowMaxMsgs(); limit > 0 && len(w.events) > limit {
+		dropped := len(w.events) - limit
+		w.events = append([]adapter.Event(nil), w.events[len(w.events)-limit:]...)
+		metrics.WindowDroppedTotal.WithLabelValues("overflow").Add(float64(dropped))
+		log.Debug("参与窗口溢出丢最旧", "area", areaID, "dropped", dropped, "limit", limit)
+	}
+	// 重置安静定时器（来消息即重置，间隔带随机抖动）
+	if w.timer != nil {
+		w.timer.Stop()
+	}
+	quiet := rs.quietGap() + time.Duration(jitterSec(rs.JitterSeconds))*time.Second
+	w.timer = time.AfterFunc(quiet, func() { h.safeRelease(ctx, areaID, "quiet") })
+	h.windowMu.Unlock()
+	log.Info("参与窗口审查未决，消息传递到下一个窗口", "area", areaID, "events", len(events))
+}
+
+// tryAcquireInflight 尝试占用某 ChatArea 的参与窗口在途槽位（同一时间只允许一个窗口在 Agent 处理）。
+// 已被占用返回 false，调用方（releaseWindow）应延后释放，保留窗口继续攒。
+func (h *HagoCenter) tryAcquireInflight(areaID string) bool {
+	h.inflightMu.Lock()
+	defer h.inflightMu.Unlock()
+	if h.inflight[areaID] {
+		return false
+	}
+	h.inflight[areaID] = true
+	return true
+}
+
+// clearInflight 释放某 ChatArea 的参与窗口在途槽位（runAgent 完成回调 / releaseWindow 未投递时）。
+func (h *HagoCenter) clearInflight(areaID string) {
+	h.inflightMu.Lock()
+	delete(h.inflight, areaID)
+	h.inflightMu.Unlock()
+}
+
+// checkWindowRelease 参与窗口处理完成后调用（runAgent 完成回调）：重新检查该 ChatArea 累积
+// 窗口是否满足释放条件（插话计数 / 最迟必发 / 安静间隔），满足则释放；未满足则重新挂安静
+// 定时器，避免定时器在在途期间已触发、延后后失去下次触发机会。
+func (h *HagoCenter) checkWindowRelease(areaID string) {
+	ctx := context.Background()
+	h.windowMu.Lock()
+	w, ok := h.windows[areaID]
+	if !ok {
+		h.windowMu.Unlock()
+		return
+	}
+	overCount := w.msgCount >= w.rs.forceCount()+w.countJitter
+	overDeadline := time.Now().After(w.deadline)
+	quietElapsed := time.Since(w.lastMsgAt) >= w.rs.quietGap()
+	if !overCount && !overDeadline && !quietElapsed {
+		// 未满足释放条件：重新挂安静定时器（剩余安静间隔后再试）
+		remaining := w.rs.quietGap() - time.Since(w.lastMsgAt)
+		if remaining < time.Millisecond {
+			remaining = time.Millisecond
+		}
+		if w.timer != nil {
+			w.timer.Stop()
+		}
+		w.timer = time.AfterFunc(remaining, func() { h.safeRelease(ctx, areaID, "quiet") })
+		h.windowMu.Unlock()
+		return
+	}
+	h.windowMu.Unlock()
+	reason := "coalesce"
+	switch {
+	case overDeadline:
+		reason = "max_age"
+	case overCount:
+		reason = "force_count"
+	case quietElapsed:
+		reason = "quiet"
+	}
+	h.safeRelease(ctx, areaID, reason)
 }
 
 // getChatArea 根据消息类型获取或创建 ChatArea，失败返回 nil。
