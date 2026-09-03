@@ -325,7 +325,12 @@ type participationWindow struct {
 	timer         *time.Timer
 	deadlineTimer *time.Timer
 	msgCount      int
-	deadline      time.Time
+	// countJitter 窗口创建时一次生成计数抖动（force_count ±jitter 的固定阈值），
+	// 避免每条消息重新采样导致触发点偏向区间下界。
+	countJitter int
+	// created 窗口创建时间（trace 属性 window_age_ms 用）。
+	created  time.Time
+	deadline time.Time
 }
 
 type participationKey struct{}
@@ -346,7 +351,11 @@ func (h *HagoCenter) dispatchToAgent(ctx context.Context, ev adapter.Event, rs R
 	// → 立即回复，并丢弃当前参与窗口（避免刚回复过又被窗口补刀串味）
 	if ev.SkipReplyCheck || msg.MessageType != "group" ||
 		h.isAtSelf(msg.RawMessage, ev.SelfID) || h.isPluginCommand(msg.RawMessage) || isDefinitelyRelevant(msg, rs) {
-		h.discardWindow(chatArea.ID)
+		h.discardWindow(ctx, chatArea.ID)
+		// 必回消息与攒窗路径对齐：先写短期记忆并注入批次用户消息，
+		// 否则历史上下文只有 assistant 发言、没有用户发言（私聊语境损坏）。
+		batchMsgs := h.writeBatchToMemory(ctx, []adapter.Event{ev}, chatArea)
+		ctx = WithBatchUserMsgs(ctx, batchMsgs)
 		h.runAgent(ctx, []adapter.Event{ev}, chatArea, rs)
 		return
 	}
@@ -368,36 +377,69 @@ func (h *HagoCenter) enqueueParticipation(ctx context.Context, ev adapter.Event,
 	h.windowMu.Lock()
 	w, ok := h.windows[areaID]
 	if !ok {
-		w = &participationWindow{rs: rs, deadline: time.Now().Add(rs.maxAge())}
+		w = &participationWindow{
+			rs:          rs,
+			deadline:    time.Now().Add(rs.maxAge()),
+			created:     time.Now(),
+			countJitter: jitterSec(rs.ForceCountJitter),
+		}
 		h.windows[areaID] = w
+		log.Debug("参与窗口创建", "area", areaID)
 		// 最迟必发硬上界：窗口创建即挂必发定时器（不参与概率，必说）
-		w.deadlineTimer = time.AfterFunc(rs.maxAge(), func() { h.releaseWindow(ctx, areaID, false) })
+		w.deadlineTimer = time.AfterFunc(rs.maxAge(), func() { h.releaseWindow(ctx, areaID, "max_age") })
 	}
 	w.events = append(w.events, ev)
 	w.msgCount++
-	if max := rs.windowMaxMsgs(); max > 0 && len(w.events) > max {
-		w.events = append([]adapter.Event(nil), w.events[len(w.events)-max:]...)
+	if limit := rs.windowMaxMsgs(); limit > 0 && len(w.events) > limit {
+		dropped := len(w.events) - limit
+		w.events = append([]adapter.Event(nil), w.events[len(w.events)-limit:]...)
+		metrics.WindowDroppedTotal.WithLabelValues("overflow").Add(float64(dropped))
+		log.Debug("参与窗口溢出丢最旧", "area", areaID, "dropped", dropped, "limit", limit)
 	}
 	// trailing 安静定时器：有消息就重置（间隔带随机抖动）
 	if w.timer != nil {
 		w.timer.Stop()
 	}
 	quiet := rs.quietGap() + time.Duration(jitterSec(rs.JitterSeconds))*time.Second
-	w.timer = time.AfterFunc(quiet, func() { h.releaseWindow(ctx, areaID, true) })
+	w.timer = time.AfterFunc(quiet, func() { h.releaseWindow(ctx, areaID, "quiet") })
 
-	overCount := w.msgCount >= rs.forceCount()+jitterSec(rs.ForceCountJitter)
+	overCount := w.msgCount >= rs.forceCount()+w.countJitter
 	overDeadline := time.Now().After(w.deadline)
 	h.windowMu.Unlock()
 
-	// 计数强发 / 最迟必发：忽略定时器，直接释放（不参与概率，保证"攒的话必说"）
+	// 计数强发 / 最迟必发：忽略定时器，直接释放（不参与概率，保证"攒的话必说"）。
+	// 异步 goroutine 释放：releaseWindow 含 DB GetOrCreate + ACL 过滤 + 批量记忆写，
+	// 内联执行会阻塞事件循环对后续所有消息的处理。
 	if overCount || overDeadline {
-		h.releaseWindow(ctx, areaID, false)
+		reason := "force_count"
+		if !overCount && overDeadline {
+			reason = "max_age"
+		}
+		go h.releaseWindow(ctx, areaID, reason)
 	}
 }
 
 // releaseWindow 释放 ChatArea 的参与窗口：整窗消息一次性交给 Agent 参与（一条 ReAct 循环）。
-// quiet=true 表示安静释放（受 participate_probability 约束）；false 表示计数/最迟强发（必说）。
-func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, quiet bool) {
+// reason 说明释放时机：quiet 安静释放（受 participate_probability 约束）；
+// force_count 插话计数强发 / max_age 最迟必发（必说，不参与概率）。
+func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, reason string) {
+	// 参与窗口释放 span：定时器回调捕获的 ctx 携带的 process_event span 早已结束，
+	// 用新根 ctx 开独立 span（participation.release），避免瀑布图出现 5~30s 虚假间隙。
+	releaseCtx, relSpan := otelx.NewRootSpan(ctx, "participation.release",
+		attribute.String("chat_area_id", areaID),
+		attribute.String("release_reason", reason),
+	)
+	eventsCount, windowAgeMs := 0, int64(0)
+	silenced := false
+	defer func() {
+		relSpan.SetAttributes(
+			attribute.Int("events", eventsCount),
+			attribute.Int64("window_age_ms", windowAgeMs),
+			attribute.Bool("silenced", silenced),
+		)
+		relSpan.End()
+	}()
+
 	h.windowMu.Lock()
 	w, ok := h.windows[areaID]
 	if !ok {
@@ -413,40 +455,49 @@ func (h *HagoCenter) releaseWindow(ctx context.Context, areaID string, quiet boo
 	}
 	events := append([]adapter.Event(nil), w.events...)
 	rs := w.rs
+	windowAgeMs = time.Since(w.created).Milliseconds()
 	h.windowMu.Unlock()
 
+	eventsCount = len(events)
 	if len(events) == 0 {
 		return
 	}
 	// 参与概率只作用于安静释放：1-p 静默放弃本窗（计数强发/最迟必发不受影响）
-	if quiet && rs.ParticipateProbability < 1.0 && rand.Float64() > rs.ParticipateProbability {
+	if reason == "quiet" && rs.ParticipateProbability < 1.0 && rand.Float64() > rs.ParticipateProbability {
+		silenced = true
 		log.Debug("参与: 概率静默放弃本窗", "area", areaID, "events", len(events), "prob", rs.ParticipateProbability)
-		metrics.DroppedTotal.WithLabelValues("silenced").Inc()
+		metrics.WindowDroppedTotal.WithLabelValues("window_silenced").Add(float64(len(events)))
 		return
 	}
-	log.Info("参与窗口释放", "area", areaID, "events", len(events), "quiet", quiet, "force", !quiet)
+	log.Info("参与窗口释放", "area", areaID, "events", len(events), "reason", reason)
+	metrics.WindowReleasesTotal.WithLabelValues(reason).Inc()
 
 	lastMsg := events[len(events)-1].Message
 	if lastMsg == nil {
 		return
 	}
-	chatArea := h.getChatArea(ctx, lastMsg)
+	chatArea := h.getChatArea(releaseCtx, lastMsg)
 	if chatArea == nil {
 		return
 	}
-	// 黑名单过滤 + 批次级记忆屏障，标记参与模式后整窗一次处理
-	events = h.filterBlockedEvents(ctx, events, chatArea)
+	// 黑名单过滤 + 违禁终态剔除 + 批次级记忆屏障，标记参与模式后整窗一次处理
+	events = h.filterBlockedEvents(releaseCtx, events, chatArea)
+	events = h.filterViolatedEvents(releaseCtx, events)
 	if len(events) == 0 {
 		return
 	}
-	batchMsgs := h.writeBatchToMemory(ctx, events, chatArea)
-	ctx = WithBatchUserMsgs(ctx, batchMsgs)
-	ctx = WithParticipation(ctx, true)
-	h.runAgent(ctx, events, chatArea, rs)
+	batchMsgs := h.writeBatchToMemory(releaseCtx, events, chatArea)
+	releaseCtx = WithBatchUserMsgs(releaseCtx, batchMsgs)
+	releaseCtx = WithParticipation(releaseCtx, true)
+	h.runAgent(releaseCtx, events, chatArea, rs)
 }
 
 // discardWindow 取消并丢弃 ChatArea 的当前参与窗口（mustKeep 立即回复时调用，防串味）。
-func (h *HagoCenter) discardWindow(areaID string) {
+func (h *HagoCenter) discardWindow(ctx context.Context, areaID string) {
+	_, span := otelx.Span(ctx, "participation.discard",
+		attribute.String("chat_area_id", areaID),
+	)
+	defer span.End()
 	h.windowMu.Lock()
 	w, ok := h.windows[areaID]
 	if ok {
@@ -457,22 +508,35 @@ func (h *HagoCenter) discardWindow(areaID string) {
 			w.deadlineTimer.Stop()
 		}
 		delete(h.windows, areaID)
+		dropped := len(w.events)
+		h.windowMu.Unlock()
+		log.Info("参与窗口随 mustKeep 丢弃", "area", areaID, "events", dropped)
+		if dropped > 0 {
+			metrics.WindowDroppedTotal.WithLabelValues("window_discarded").Add(float64(dropped))
+		}
+		return
 	}
 	h.windowMu.Unlock()
 }
 
 // runAgent 在 goroutine 内执行一次 Agent 处理（带并发令牌与 panic 兜底），不阻塞事件循环。
 // 供 mustKeep 立即回复与参与窗口释放两条路径共用。
+// chatArea 允许为 nil（getChatArea 失败时的兜底路径）：nil 时不限制并发、不攒窗直接处理，
+// 且 panic 兜底日志不再解引用 chatArea.ID（避免 nil 二次 panic）。
 func (h *HagoCenter) runAgent(ctx context.Context, events []adapter.Event, chatArea *models.ChatArea, rs ReplySettings) {
 	go func() {
+		areaID := ""
+		if chatArea != nil {
+			areaID = chatArea.ID
+		}
 		// Agent 处理 goroutine 兜底：任一环节 panic（LLM 客户端 bug、工具实现缺陷、
 		// 数据异常）都不能让整个进程崩溃，只丢弃本条消息并记录堆栈。
 		defer func() {
 			if r := recover(); r != nil {
-				log.Error("Agent 处理 goroutine panic", "panic", r, "stack", string(debug.Stack()), "area", chatArea.ID, "events", len(events))
+				log.Error("Agent 处理 goroutine panic", "panic", r, "stack", string(debug.Stack()), "area", areaID, "events", len(events))
 			}
 		}()
-		if h.Concurrency != nil {
+		if h.Concurrency != nil && chatArea != nil {
 			acquireCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
 			defer cancel()
 			if err := h.Concurrency.Acquire(acquireCtx, chatArea.ID); err != nil {
@@ -528,6 +592,29 @@ func (h *HagoCenter) filterBlockedEvents(ctx context.Context, events []adapter.E
 			log.Info("聊天黑名单丢弃消息", "user_id", m.UserID, "chat_area_id", chatArea.ID)
 			metrics.BlockedTotal.WithLabelValues("blacklist").Inc()
 		}
+	}
+	return kept
+}
+
+// filterViolatedEvents 违禁终态（black）消息剔除出参与窗口：不进 LLM 语境、不写短期记忆。
+// ReviewGate 是非阻塞查询：verdict 终态(black) → 剔除；pending/无记录 → 保留（撤回兜底）。
+// finish 内的 WaitReview（只查整窗最后一条）仍保留，兜"释放后才判 black"的残余竞态。
+func (h *HagoCenter) filterViolatedEvents(ctx context.Context, events []adapter.Event) []adapter.Event {
+	if h.GroupMgr == nil {
+		return events
+	}
+	kept := make([]adapter.Event, 0, len(events))
+	for _, ev := range events {
+		m := ev.Message
+		if m == nil {
+			continue
+		}
+		if blocked, _ := h.GroupMgr.ReviewGate(ctx, m.GroupID, m.UserID, m.MessageID); blocked {
+			log.Info("参与窗口剔除违禁消息", "message_id", m.MessageID, "group_id", m.GroupID)
+			metrics.DroppedTotal.WithLabelValues("gm_verdict_black").Inc()
+			continue
+		}
+		kept = append(kept, ev)
 	}
 	return kept
 }
@@ -819,7 +906,7 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		// QQ 图片 URL 在 CQ 码里带 HTML 实体（&amp;），LLM 原样复刻易得到无法下载的 URL；
 		// 仅解码 CQ 图片码/QQ 图床 URL 中的实体，普通用户文本（如字面 &amp;）原样保留
 		mu = decodeQQImageEntities(mu)
-		content := mu
+		var content string
 		if IsParticipation(ctx) {
 			content = "【窗口消息·群聊讨论】" + mu
 		} else if i != mainIdx {
@@ -945,7 +1032,12 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 
 	// ---------- Token 用量：会话总账（Session）+ 每日统计（TokenUsageDaily） ----------
 	if totalTokens > 0 {
-		metrics.LLMTokensTotal.WithLabelValues("agent").Add(float64(totalTokens))
+		// 参与模式整窗处理走独立 phase，参与成本可与必回/必回对话分开统计
+		phase := "agent"
+		if IsParticipation(ctx) {
+			phase = "participation"
+		}
+		metrics.LLMTokensTotal.WithLabelValues(phase).Add(float64(totalTokens))
 		if err := h.Session.RecordTokenUsage(ctx, sess.ID, totalTokens); err != nil {
 			log.Error("记录 Token 用量失败", "err", err)
 		}
@@ -1033,6 +1125,14 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 				if h.Memory != nil {
 					h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
 				}
+			}
+			// 参与模式结果计数：reply=参与回复（含经工具投递）；silent=__NO_REPLY__ 静默
+			if IsParticipation(ctx) {
+				result := "reply"
+				if silenced {
+					result = "silent"
+				}
+				metrics.AgentParticipationTotal.WithLabelValues(result).Inc()
 			}
 		} else if assistantContent != "" {
 			log.Info("已通过工具向当前会话发送消息，跳过最终回复", "content", assistantContent, "message_type", msg.MessageType, "target", currentTargetID)

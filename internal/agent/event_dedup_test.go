@@ -63,10 +63,19 @@ func groupMsg(id int64) adapter.Event {
 	}
 }
 
-func waitBatchConsumed(t *testing.T) {
+func waitBatchConsumed(t *testing.T, db *gorm.DB, want int64) {
 	t.Helper()
-	// mustKeep 消息异步经 runAgent goroutine 处理（sqlite 写库同步），留足执行时间
-	time.Sleep(500 * time.Millisecond)
+	// mustKeep 消息异步经 runAgent goroutine 处理（sqlite 写库同步），
+	// 固定 sleep 在慢机上不保证覆盖 Session 创建/技能匹配/提示词构建耗时，
+	// 改为带超时轮询 chat_records 达到期望条数。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if countUserRecords(t, db) == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("等待 %d 条 user 记录落库超时（实际 %d）", want, countUserRecords(t, db))
 }
 
 func countUserRecords(t *testing.T, db *gorm.DB) int64 {
@@ -88,7 +97,7 @@ func TestDuplicateMessageIDConsumedTwice(t *testing.T) {
 	h.processEvent(ctx, groupMsg(10086))
 	h.processEvent(ctx, groupMsg(10086)) // 同一条消息再次投递
 
-	waitBatchConsumed(t)
+	waitBatchConsumed(t, db, 1)
 
 	if got := countUserRecords(t, db); got != 1 {
 		t.Fatalf("同一条 message_id=10086 被消费了 %d 次，期望 1 次", got)
@@ -103,7 +112,7 @@ func TestDistinctMessageIDsProcessedOnce(t *testing.T) {
 	h.processEvent(ctx, groupMsg(10086))
 	h.processEvent(ctx, groupMsg(10087))
 
-	waitBatchConsumed(t)
+	waitBatchConsumed(t, db, 2)
 
 	if got := countUserRecords(t, db); got != 2 {
 		t.Fatalf("两条不同消息应各自消费一次，实际消费 %d 次", got)

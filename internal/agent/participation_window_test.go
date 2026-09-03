@@ -2,10 +2,19 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"JuanNiang-Neo/internal/adapter"
+	"JuanNiang-Neo/internal/agent/memory"
+	"JuanNiang-Neo/internal/agent/memory/longterm"
+	"JuanNiang-Neo/internal/agent/memory/shortterm"
+	"JuanNiang-Neo/internal/core/cache"
+	"JuanNiang-Neo/internal/core/models"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 )
 
 // partMsg 构造一条走参与窗口的群聊消息：非 @/命令/名字（不进 mustKeep），且非噪音。
@@ -37,6 +46,20 @@ func partRS() ReplySettings {
 	}
 }
 
+// waitUntil 带超时轮询等待：runAgent 异步落库在慢机上耗时不定，固定 sleep 会间歇失败；
+// 轮询直到 cond 为 true（或到达超时则测试失败）。
+func waitUntil(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("等待超时（%v）", timeout)
+}
+
 // TestParticipationWindowForceCount 插话计数强发：攒够 force_count 条即释放整窗，
 // 两条消息都被一次 handleMessage 消费（写 user chat_records）。
 func TestParticipationWindowForceCount(t *testing.T) {
@@ -48,10 +71,7 @@ func TestParticipationWindowForceCount(t *testing.T) {
 	h.dispatchToAgent(ctx, partMsg(1, 111), rs)
 	h.dispatchToAgent(ctx, partMsg(2, 222), rs)
 
-	time.Sleep(300 * time.Millisecond) // 让 runAgent goroutine 落库
-	if got := countUserRecords(t, db); got != 2 {
-		t.Fatalf("计数强发应消费整窗 2 条，实际 %d", got)
-	}
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 2 })
 }
 
 // TestParticipationWindowQuietRelease 安静释放：窗口消息后无人插话，安静间隔到期触发释放。
@@ -63,10 +83,7 @@ func TestParticipationWindowQuietRelease(t *testing.T) {
 
 	h.dispatchToAgent(ctx, partMsg(1, 111), rs)
 
-	time.Sleep(1600 * time.Millisecond)
-	if got := countUserRecords(t, db); got != 1 {
-		t.Fatalf("安静释放应消费 1 条，实际 %d", got)
-	}
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 1 })
 }
 
 // TestParticipationWindowMaxAge 最迟必发：窗口创建 max_age 到期后即使无新消息也强制释放。
@@ -79,10 +96,7 @@ func TestParticipationWindowMaxAge(t *testing.T) {
 
 	h.dispatchToAgent(ctx, partMsg(1, 111), rs)
 
-	time.Sleep(1600 * time.Millisecond)
-	if got := countUserRecords(t, db); got != 1 {
-		t.Fatalf("max_age 强制释放应消费 1 条，实际 %d", got)
-	}
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 1 })
 }
 
 // TestParticipationWindowProbabilitySkip 安静释放参与概率：probability=0 时安静路径静默放弃本窗。
@@ -95,7 +109,17 @@ func TestParticipationWindowProbabilitySkip(t *testing.T) {
 
 	h.dispatchToAgent(ctx, partMsg(1, 111), rs)
 
-	time.Sleep(1600 * time.Millisecond)
+	// 等窗口被释放（概率静默路径不进 handleMessage，不会落 user 记录）再断言
+	area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypeGroup, 456)
+	if err != nil {
+		t.Fatalf("get chat area: %v", err)
+	}
+	waitUntil(t, 5*time.Second, func() bool {
+		h.windowMu.Lock()
+		defer h.windowMu.Unlock()
+		_, exists := h.windows[area.ID]
+		return !exists
+	})
 	if got := countUserRecords(t, db); got != 0 {
 		t.Fatalf("参与概率 0 应静默放弃本窗，实际消费 %d", got)
 	}
@@ -112,6 +136,8 @@ func TestParticipationMustKeepDiscardsWindow(t *testing.T) {
 	h.dispatchToAgent(ctx, partMsg(1, 111), rs) // 进参与窗口
 	h.dispatchToAgent(ctx, groupMsg(2), rs)     // 含"机器人"→ mustKeep，丢弃窗口并立即回
 
+	// 先等 mustKeep 立即回复落库，再覆盖安静间隔确认被丢弃的窗口消息不被补发
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 1 })
 	time.Sleep(1600 * time.Millisecond) // 覆盖安静间隔
 	if got := countUserRecords(t, db); got != 1 {
 		t.Fatalf("mustKeep 应立即回复且丢弃窗口（窗口消息不应被消费），实际消费 %d", got)
@@ -126,10 +152,7 @@ func TestParticipationMustKeepImmediate(t *testing.T) {
 
 	h.dispatchToAgent(ctx, groupMsg(1), rs) // "你好机器人" → isDefinitelyRelevant
 
-	time.Sleep(300 * time.Millisecond)
-	if got := countUserRecords(t, db); got != 1 {
-		t.Fatalf("mustKeep 应立即消费 1 条，实际 %d", got)
-	}
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 1 })
 }
 
 // TestReplySettingsDefaults 参与窗口参数缺省（0）时回退默认值。
@@ -182,10 +205,7 @@ func TestParticipationShortSymbolNotNoise(t *testing.T) {
 	h.dispatchToAgent(ctx, shortMsg, rs)
 	h.dispatchToAgent(ctx, symMsg, rs)
 
-	time.Sleep(1600 * time.Millisecond) // 覆盖安静间隔，窗口整窗释放
-	if got := countUserRecords(t, db); got != 2 {
-		t.Fatalf("≤2 字/纯符号应进窗口并在安静释放时消费，实际消费 %d", got)
-	}
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 2 })
 }
 
 // TestParticipationNoTextNoise 剥离 CQ 码/URL 后无任何文字（纯图片/纯 sticker）仍算噪音，
@@ -222,10 +242,7 @@ func TestParticipationAtOnlyEntersWindow(t *testing.T) {
 
 	h.dispatchToAgent(ctx, atMsg, rs)
 
-	time.Sleep(1600 * time.Millisecond) // 覆盖安静间隔，窗口整窗释放
-	if got := countUserRecords(t, db); got != 1 {
-		t.Fatalf("只 @ 的消息应进窗口并在安静释放时消费，实际消费 %d", got)
-	}
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 1 })
 }
 
 // TestParticipationEmptyMessageNoise 完全空消息仍算噪音，不进入参与窗口。
@@ -245,4 +262,55 @@ func TestParticipationEmptyMessageNoise(t *testing.T) {
 	if got := countUserRecords(t, db); got != 0 {
 		t.Fatalf("完全空消息应作为噪音丢弃，实际消费 %d", got)
 	}
+}
+
+// TestParticipationMustKeepWritesShortTermMemory 回归（P0）：mustKeep 路径（私聊/@/插件命令/提及名字）
+// 用户消息必须写入短期记忆——否则 LLM 历史上下文只有 assistant 发言、没有用户发言（私聊语境损坏）。
+// 用 miniredis 提供真实 Redis 语义 + 真实 MemoryGroup，验证 AddShortTermMessage 真实落库。
+func TestParticipationMustKeepWritesShortTermMemory(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rc.Close() })
+	cc := cache.NewCache(rc, "juan-test:")
+
+	h, db := newDedupTestHago(t)
+	h.Memory = memory.NewMemoryGroup(
+		shortterm.New(shortterm.Config{WindowSize: 100}, cc),
+		// RecallModeRecent：避免 SQLite 上走 pg_trgm 语义召回（回退最近，仅验证短期记忆写入）
+		longterm.New(longterm.Config{RecallMode: longterm.RecallModeRecent}, h.DAO.LongTermMemItem),
+		nil,
+	)
+	ctx := context.Background()
+	rs := partRS()
+	// 私聊消息 → 走 mustKeep 立即回（MessageType != group）
+	ev := adapter.Event{
+		PostType: "message",
+		Message: &adapter.MessageEvent{
+			MessageType: "private",
+			MessageID:   1,
+			UserID:      111,
+			RawMessage:  "你好机器人",
+			Message:     []adapter.Segment{{Type: "text", Data: map[string]any{"text": "你好机器人"}}},
+		},
+	}
+	h.dispatchToAgent(ctx, ev, rs)
+
+	// 等 runAgent goroutine 消费落库（user chat_records 出现即处理完成）
+	waitUntil(t, 5*time.Second, func() bool { return countUserRecords(t, db) == 1 })
+
+	// 短期记忆应包含该用户消息
+	area, err := h.DAO.ChatArea.GetOrCreate(ctx, models.AreaTypePrivate, 111)
+	if err != nil {
+		t.Fatalf("get chat area: %v", err)
+	}
+	msgs, err := h.Memory.GetShortTermMessages(ctx, area.ID)
+	if err != nil {
+		t.Fatalf("get shortterm messages: %v", err)
+	}
+	for _, m := range msgs {
+		if m.Role == "user" && strings.Contains(m.Content, "你好机器人") {
+			return
+		}
+	}
+	t.Fatalf("mustKeep 路径用户消息未写入短期记忆，当前记忆: %+v", msgs)
 }
