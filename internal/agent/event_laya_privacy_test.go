@@ -58,15 +58,27 @@ func TestHandleMessageLayaOnlySendsPrimaryUserMessage(t *testing.T) {
 			h.DAO.Knowledge = nil
 			h.DAO.Sticker = nil
 			// An in-process OneBot peer acknowledges actual reply sends; no external service.
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
+			// The adapter cannot accept a pre-bound listener or expose its
+			// port-0 address. Retry if another process claims the selected port.
+			var addr string
+			var startErr error
+			for attempt := 0; attempt < 5; attempt++ {
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				addr = listener.Addr().String()
+				if err := listener.Close(); err != nil {
+					t.Fatal(err)
+				}
+				h.Adapter = adapter.New(adapter.Config{Addr: addr, Enable: true})
+				startErr = h.Adapter.Start(ctx)
+				if startErr == nil {
+					break
+				}
 			}
-			addr := listener.Addr().String()
-			listener.Close()
-			h.Adapter = adapter.New(adapter.Config{Addr: addr, Enable: true})
-			if err := h.Adapter.Start(ctx); err != nil {
-				t.Fatal(err)
+			if startErr != nil {
+				t.Fatalf("adapter start failed after 5 port attempts: %v", startErr)
 			}
 			t.Cleanup(func() { h.Adapter.Stop(ctx) })
 			conn, _, err := websocket.DefaultDialer.Dial("ws://"+addr+"/", nil)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -97,6 +98,19 @@ func (c *Client) Decide(ctx context.Context, request DecisionRequest) (DecisionR
 func (c *Client) doJSON(ctx context.Context, method, endpoint string, body []byte, contentType string) ([]byte, error) {
 	if strings.TrimSpace(endpoint) == "" {
 		return nil, errors.New("Laya endpoint 为空")
+	}
+	// Reject an insecure first hop before attaching a Bearer credential.
+	// Local Laya instances may use HTTP; all other credential destinations need TLS.
+	if strings.TrimSpace(c.config.APIKey) != "" {
+		target, err := url.Parse(endpoint)
+		if err != nil {
+			return nil, fmt.Errorf("Laya endpoint URL 无效: %w", err)
+		}
+		hostIP := net.ParseIP(target.Hostname())
+		if target.Scheme == "http" && !strings.EqualFold(target.Hostname(), "localhost") &&
+			(hostIP == nil || !hostIP.IsLoopback()) {
+			return nil, errors.New("配置 API Key 时，Laya HTTP endpoint 仅允许 localhost 或回环 IP；其他地址必须使用 HTTPS")
+		}
 	}
 	requestCtx, cancel := c.requestContext(ctx)
 	defer cancel()

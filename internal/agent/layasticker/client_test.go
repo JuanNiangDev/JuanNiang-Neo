@@ -249,3 +249,71 @@ func TestClientProvidesCriteriaMapFromEnabledCategories(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestClientRejectsBearerOverNonLoopbackHTTPBeforeSending(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://laya.example/v1/systemone",
+		"http://192.0.2.1/v1/systemone",
+		"http://localhost.attacker.example/v1/systemone",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			cfg := testConfig(endpoint)
+			cfg.CapabilitiesEndpoint = endpoint
+			cfg.APIKey = "test-secret"
+			sent := 0
+			transport := originTestTransport(func(*http.Request) (*http.Response, error) {
+				sent++
+				return nil, errors.New("unexpected outbound request")
+			})
+			client, err := NewClientWithHTTP(cfg, &http.Client{Transport: transport})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Decide(context.Background(), DecisionRequest{}); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+				t.Fatalf("decision must reject insecure API key destination: %v", err)
+			}
+			if _, err := client.DiscoverCapabilities(context.Background()); err == nil || !strings.Contains(err.Error(), "HTTPS") {
+				t.Fatalf("capability discovery must reject insecure API key destination: %v", err)
+			}
+			if sent != 0 {
+				t.Fatalf("sent %d requests before rejecting insecure endpoint", sent)
+			}
+		})
+	}
+}
+
+func TestClientAllowsBearerToLoopbackHTTP(t *testing.T) {
+	for _, endpoint := range []string{
+		"http://localhost:15721/v1/systemone",
+		"http://127.0.0.1:15721/v1/systemone",
+		"http://[::1]:15721/v1/systemone",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			cfg := testConfig(endpoint)
+			cfg.APIKey = "local-key"
+			sent := 0
+			transport := originTestTransport(func(r *http.Request) (*http.Response, error) {
+				sent++
+				if got := r.Header.Get("Authorization"); got != "Bearer local-key" {
+					t.Errorf("loopback authorization = %q", got)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"answers":{"sticker":{"choice":"NONE"}}}`)),
+					Request:    r,
+				}, nil
+			})
+			client, err := NewClientWithHTTP(cfg, &http.Client{Transport: transport})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Decide(context.Background(), DecisionRequest{}); err != nil {
+				t.Fatal(err)
+			}
+			if sent != 1 {
+				t.Fatalf("loopback requests = %d, want 1", sent)
+			}
+		})
+	}
+}

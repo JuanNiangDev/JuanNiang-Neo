@@ -74,3 +74,18 @@ func JWTAuth() app.HandlerFunc {
 		c.Next(ctx)
 	}
 }
+
+// RequireAdmin requires an authenticated administrator for privileged API routes.
+// It must be registered after JWTAuth, which populates the role in the context.
+func RequireAdmin() app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		role, ok := c.Get("role")
+		if !ok || role != "admin" {
+			c.AbortWithStatusJSON(http.StatusForbidden, map[string]any{
+				"code": 403, "msg": "administrator access required",
+			})
+			return
+		}
+		c.Next(ctx)
+	}
+}

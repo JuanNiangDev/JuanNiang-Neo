@@ -22,7 +22,7 @@ func TestClientRedirectCredentialOrigins(t *testing.T) {
 		{"default port", []string{"https://laya.example/start", "https://laya.example:443/next"}, []bool{true, true}},
 		{"other host", []string{"https://laya.example/start", "https://other.example/next"}, []bool{true, false}},
 		{"changed scheme", []string{"https://laya.example/start", "http://laya.example/next"}, []bool{true, false}},
-		{"cross port then same source", []string{"http://laya.example:8000/start", "http://laya.example:8001/hop", "http://laya.example:8001/end"}, []bool{true, false, false}},
+		{"cross port then same source", []string{"https://laya.example:8000/start", "https://laya.example:8001/hop", "https://laya.example:8001/end"}, []bool{true, false, false}},
 		{"return after crossing", []string{"https://laya.example/start", "http://laya.example/hop", "https://laya.example/end"}, []bool{true, false, false}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
