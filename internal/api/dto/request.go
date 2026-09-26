@@ -360,14 +360,37 @@ type ToggleCronJobReq struct {
 // 以下均为相关性判断的参数配置。
 
 type UpdateReplyStrategyReq struct {
-	RelevanceThreshold float64 `json:"relevance_threshold"`
-	BotName            string  `json:"bot_name"`
-	StripMarkdown      bool    `json:"strip_markdown"`
-	AgentLite          bool    `json:"agent_lite"`
-	RelevancePrompt    string  `json:"relevance_prompt"`  // 相关性检测自定义提示词（空则用默认）
-	RelevanceModel     string  `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID（空则用默认）
-	RelevanceTimeout   int     `json:"relevance_timeout"` // 相关性检测超时（秒），0=默认 10s
-	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop=不回复（默认）, reply=照常回复
+	RelevanceThreshold                float64           `json:"relevance_threshold"`
+	BotName                           string            `json:"bot_name"`
+	StripMarkdown                     bool              `json:"strip_markdown"`
+	AgentLite                         bool              `json:"agent_lite"`
+	RelevancePrompt                   string            `json:"relevance_prompt"`  // 相关性检测自定义提示词（空则用默认）
+	RelevanceModel                    string            `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID（空则用默认）
+	RelevanceTimeout                  int               `json:"relevance_timeout"` // 相关性检测超时（秒），0=默认 10s
+	JudgeFailPolicy                   string            `json:"judge_fail_policy"` // 判断失败策略: drop=不回复（默认）, reply=照常回复
+	LayaStickerEnabled                bool              `json:"laya_sticker_enabled"`
+	LayaStickerEndpoint               string            `json:"laya_sticker_endpoint"`
+	LayaCapabilitiesEndpoint          string            `json:"laya_capabilities_endpoint"`
+	LayaStickerAPIKey                 string            `json:"laya_sticker_api_key"`
+	LayaStickerClearAPIKey            bool              `json:"laya_sticker_clear_api_key"`
+	LayaStickerModel                  string            `json:"laya_sticker_model"`
+	LayaStickerTimeout                int               `json:"laya_sticker_timeout"`
+	LayaStickerProtocolMode           string            `json:"laya_sticker_protocol_mode"`
+	LayaStickerHTTPMethod             string            `json:"laya_sticker_http_method"`
+	LayaStickerRequestTemplate        string            `json:"laya_sticker_request_template"`
+	LayaStickerResponseCategoryPath   string            `json:"laya_sticker_response_category_path"`
+	LayaStickerResponseConfidencePath string            `json:"laya_sticker_response_confidence_path"`
+	LayaStickerCategories             []LayaCategoryReq `json:"laya_sticker_categories"`
+	LayaStickerMinConfidence          float64           `json:"laya_sticker_min_confidence"`
+	LayaStickerTaskTTL                int               `json:"laya_sticker_task_ttl_seconds"`
+}
+
+type LayaCategoryReq struct {
+	ID          string   `json:"id"`
+	Description string   `json:"description"`
+	StickerTags []string `json:"sticker_tags"`
+	NoSend      bool     `json:"no_send"`
+	Enabled     bool     `json:"enabled"`
 }
 
 // ---------- 群管理 ----------

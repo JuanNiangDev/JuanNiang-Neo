@@ -195,9 +195,9 @@ func TestOrderedReplierOrder(t *testing.T) {
 	}
 
 	// 模拟并行完成：index 乱序到达（2 先完成，然后 0、1）
-	r.Enqueue(2, fn(2))
-	r.Enqueue(0, fn(0))
-	r.Enqueue(1, fn(1))
+	r.Submit(2, fn(2))
+	r.Submit(0, fn(0))
+	r.Submit(1, fn(1))
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -215,11 +215,107 @@ func TestOrderedReplierOrder(t *testing.T) {
 func TestOrderedReplierSequential(t *testing.T) {
 	r := newOrderedReplier()
 	var got []int
-	r.Enqueue(0, func() { got = append(got, 0) })
-	r.Enqueue(1, func() { got = append(got, 1) })
-	r.Enqueue(2, func() { got = append(got, 2) })
+	r.Submit(0, func() { got = append(got, 0) })
+	r.Submit(1, func() { got = append(got, 1) })
+	r.Submit(2, func() { got = append(got, 2) })
 	if len(got) != 3 || got[0] != 0 || got[1] != 1 || got[2] != 2 {
 		t.Fatalf("顺序到达应依次执行: %v", got)
+	}
+}
+
+// TestOrderedReplierMarkDoneUnblocksLaterIndex 验证被过滤（提前返回）的 index
+// 不会卡住后续 index：0 号 MarkDone 后 1 号必须能发送。
+func TestOrderedReplierMarkDoneUnblocksLaterIndex(t *testing.T) {
+	r := newOrderedReplier()
+	var mu sync.Mutex
+	var got []int
+	// 1 号先完成并入队（此时 0 号尚未定终态，必须暂存）
+	r.Submit(1, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, 1)
+	})
+	mu.Lock()
+	if len(got) != 0 {
+		mu.Unlock()
+		t.Fatalf("前序 index 未定终态时不应执行: %v", got)
+	}
+	mu.Unlock()
+
+	// 0 号被过滤 → MarkDone，1 号随即放行
+	r.MarkDone(0)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("MarkDone 后应执行 1 号，实际 %v", got)
+	}
+}
+
+// TestOrderedReplierMarkDoneAfterSubmit 已入队的 index 再做 MarkDone 不能推进两次。
+func TestOrderedReplierMarkDoneAfterSubmit(t *testing.T) {
+	r := newOrderedReplier()
+	var got []int
+	r.Submit(0, func() { got = append(got, 0) })
+	r.MarkDone(0)
+	r.Submit(1, func() { got = append(got, 1) })
+	if len(got) != 2 || got[0] != 0 || got[1] != 1 {
+		t.Fatalf("重复推进检测失败: %v", got)
+	}
+	// 同一 index 重复 Submit 只生效一次
+	r.Submit(2, func() { got = append(got, 2) })
+	r.Submit(2, func() { got = append(got, 22) })
+	if len(got) != 3 || got[2] != 2 {
+		t.Fatalf("重复 Submit 应只生效一次: %v", got)
+	}
+}
+
+// TestOrderedReplierPanicDoesNotStallQueue finish 内部 panic 不能带着锁展开，
+// 否则后续 index 永久卡在 pending。
+func TestOrderedReplierPanicDoesNotStallQueue(t *testing.T) {
+	r := newOrderedReplier()
+	var got []int
+	r.Submit(0, func() { panic("boom") })
+	r.Submit(1, func() { got = append(got, 1) })
+	if len(got) != 1 || got[0] != 1 {
+		t.Fatalf("panic 后仍应继续执行后续 index: %v", got)
+	}
+}
+
+// TestOrderedReplierConcurrentMarkDoneAndSubmit 并发下"提交或标记"只生效一次，
+// 且不出现重复推进（-race 下同时验证无数据竞争）。
+func TestOrderedReplierConcurrentMarkDoneAndSubmit(t *testing.T) {
+	r := newOrderedReplier()
+	var mu sync.Mutex
+	executed := 0
+	var wg sync.WaitGroup
+	for index := 0; index < 32; index++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			r.Submit(i, func() {
+				mu.Lock()
+				executed++
+				mu.Unlock()
+			})
+		}(index)
+		go func(i int) {
+			defer wg.Done()
+			r.MarkDone(i)
+		}(index)
+	}
+	wg.Wait()
+	// 每个 index 最多执行一次；全部 MarkDone 后队列必须已推进到 32。
+	r.mu.Lock()
+	next := r.next
+	pending := len(r.pending)
+	r.mu.Unlock()
+	if next != 32 || pending != 0 {
+		t.Fatalf("队列未完全推进: next=%d pending=%d executed=%d", next, pending, executed)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if executed > 32 {
+		t.Fatalf("执行次数超过 index 数: %d", executed)
 	}
 }
 

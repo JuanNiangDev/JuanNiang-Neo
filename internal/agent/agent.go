@@ -122,6 +122,15 @@ type HagoCenter struct {
 	replySettingsMu  sync.Mutex
 	replySettings    ReplySettings
 	replySettingsExp time.Time
+
+	// layaAutoMu protects the recent successfully delivered automatic stickers per
+	// chat target (newest first, bounded window). This state is intentionally memory-only.
+	layaAutoMu   sync.Mutex
+	layaLastAuto map[string][]string
+
+	// layaPost 自动表情后处理器：决策与发送都在主发送链路之外执行，
+	// 慢请求不阻塞同批次回复、不占用并发令牌。
+	layaPost *layaPostProcessor
 }
 
 // Config HagoCenter 初始化配置。
@@ -153,6 +162,7 @@ func NewHagoCenter() *HagoCenter {
 		relevanceSem:  make(chan struct{}, relevanceSemLimit),
 		toolAdminOnly: make(map[string]bool),
 		knowledgeLRU:  newKnowledgeLRU(50),
+		layaLastAuto:  make(map[string][]string),
 		msgDedup:      newMemoryDedup(dedupWindow), // 占位，Init 时按 Cache 可用性覆盖为 redisDedup
 	}
 }
@@ -181,6 +191,11 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 		log.Info("消息去重器已启用 Redis 模式", "ttl", dedupWindow)
 	} else {
 		log.Warn("Cache 未注入，消息去重器降级为内存模式（重启即丢失）")
+	}
+
+	// 自动表情后处理器：独立 worker 池，承接发送完成后的 Laya 决策与表情发送。
+	if h.layaPost == nil {
+		h.layaPost = newLayaPostProcessor(ctx, h, layaWorkerCount)
 	}
 
 	// 缓存机器人自己的 QQ 号和昵称
@@ -503,6 +518,9 @@ func (h *HagoCenter) isToolAdminOnly(name string) bool {
 
 // Stop 停止 Agent 系统。
 func (h *HagoCenter) Stop() {
+	if h.layaPost != nil {
+		h.layaPost.Stop()
+	}
 	// 冲刷统计事件缓冲（Loki+Promtail 通道，独立于主日志）
 	if h.Stats != nil {
 		h.Stats.Close()

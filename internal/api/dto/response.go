@@ -487,15 +487,42 @@ type CronJobResp struct {
 // ---------- 回复策略 ----------
 
 type ReplyStrategyResp struct {
-	Strategy           string  `json:"strategy"`
-	RelevanceThreshold float64 `json:"relevance_threshold"`
-	BotName            string  `json:"bot_name"`
-	StripMarkdown      bool    `json:"strip_markdown"`
-	AgentLite          bool    `json:"agent_lite"`
-	RelevancePrompt    string  `json:"relevance_prompt"`  // 相关性检测自定义提示词
-	RelevanceModel     string  `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID
-	RelevanceTimeout   int     `json:"relevance_timeout"` // 相关性检测超时（秒）
-	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop / reply
+	Strategy                          string             `json:"strategy"`
+	RelevanceThreshold                float64            `json:"relevance_threshold"`
+	BotName                           string             `json:"bot_name"`
+	StripMarkdown                     bool               `json:"strip_markdown"`
+	AgentLite                         bool               `json:"agent_lite"`
+	RelevancePrompt                   string             `json:"relevance_prompt"`  // 相关性检测自定义提示词
+	RelevanceModel                    string             `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID
+	RelevanceTimeout                  int                `json:"relevance_timeout"` // 相关性检测超时（秒）
+	JudgeFailPolicy                   string             `json:"judge_fail_policy"` // 判断失败策略: drop / reply
+	LayaStickerEnabled                bool               `json:"laya_sticker_enabled"`
+	LayaStickerEndpoint               string             `json:"laya_sticker_endpoint"`
+	LayaCapabilitiesEndpoint          string             `json:"laya_capabilities_endpoint"`
+	LayaStickerAPIKey                 string             `json:"laya_sticker_api_key,omitempty"`
+	LayaStickerAPIKeySet              bool               `json:"laya_sticker_api_key_set"`
+	LayaStickerModel                  string             `json:"laya_sticker_model"`
+	LayaStickerTimeout                int                `json:"laya_sticker_timeout"`
+	LayaStickerProtocolMode           string             `json:"laya_sticker_protocol_mode"`
+	LayaStickerHTTPMethod             string             `json:"laya_sticker_http_method"`
+	LayaStickerRequestTemplate        string             `json:"laya_sticker_request_template"`
+	LayaStickerResponseCategoryPath   string             `json:"laya_sticker_response_category_path"`
+	LayaStickerResponseConfidencePath string             `json:"laya_sticker_response_confidence_path"`
+	LayaStickerCategories             []LayaCategoryResp `json:"laya_sticker_categories"`
+	LayaStickerMinConfidence          float64            `json:"laya_sticker_min_confidence"`
+	LayaStickerTaskTTL                int                `json:"laya_sticker_task_ttl_seconds"`
+	LayaCapabilityPreview             bool               `json:"laya_capability_preview,omitempty"`
+	LayaCapabilitySnapshot            any                `json:"laya_capability_snapshot,omitempty"`
+	LayaCapabilityFetchedAt           *time.Time         `json:"laya_capability_fetched_at,omitempty"`
+	LayaCapabilityError               string             `json:"laya_capability_error,omitempty"`
+}
+
+type LayaCategoryResp struct {
+	ID          string   `json:"id"`
+	Description string   `json:"description"`
+	StickerTags []string `json:"sticker_tags"`
+	NoSend      bool     `json:"no_send"`
+	Enabled     bool     `json:"enabled"`
 }
 
 // ---------- 群管理 ----------
