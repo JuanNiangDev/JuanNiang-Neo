@@ -10,8 +10,8 @@ import (
 
 func TestRequireAdmin(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		role string
+		name      string
+		role      string
 		forbidden bool
 	}{
 		{name: "missing role", forbidden: true},
