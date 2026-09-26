@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -153,11 +154,18 @@ func NewClientWithHTTP(cfg Config, httpClient *http.Client) (*Client, error) {
 	httpClient = cloneHTTPClient(httpClient)
 	previousRedirect := httpClient.CheckRedirect
 	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
-		if len(via) > 0 && !sameOrigin(via[len(via)-1].URL, req.URL) {
-			req.Header.Del("Authorization")
-		}
 		if previousRedirect != nil {
-			return previousRedirect(req, via)
+			if err := previousRedirect(req, via); err != nil {
+				return err
+			}
+		}
+		// net/http may restore initial headers on later hops. Once a chain
+		// crosses an origin, never reintroduce its original credential.
+		for _, previous := range via {
+			if !sameOrigin(previous.URL, req.URL) {
+				req.Header.Del("Authorization")
+				break
+			}
 		}
 		return nil
 	}
@@ -189,7 +197,45 @@ func sameOrigin(a, b *url.URL) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Host, b.Host)
+	return strings.EqualFold(a.Scheme, b.Scheme) && strings.EqualFold(a.Hostname(), b.Hostname()) && originPort(a) == originPort(b)
+}
+
+func originPort(u *url.URL) string {
+	port := u.Port()
+	if port == "" {
+		if strings.EqualFold(u.Scheme, "https") {
+			return "443"
+		}
+		return "80"
+	}
+	if number, err := strconv.ParseUint(port, 10, 16); err == nil {
+		return strconv.FormatUint(number, 10)
+	}
+	return port
+}
+
+// SameServiceOrigins compares both credential destinations, including the
+// default /capabilities endpoint. Paths do not change a service's origin.
+func SameServiceOrigins(a, b Config) bool {
+	sameURLOrigin := func(left, right string) bool {
+		left, right = strings.TrimSpace(left), strings.TrimSpace(right)
+		if left == "" || right == "" {
+			return left == right
+		}
+		if validateHTTPURL(left) != nil || validateHTTPURL(right) != nil {
+			return false
+		}
+		u, _ := url.Parse(left)
+		v, _ := url.Parse(right)
+		return sameOrigin(u, v)
+	}
+	capabilities := func(cfg Config) string {
+		if strings.TrimSpace(cfg.CapabilitiesEndpoint) != "" {
+			return cfg.CapabilitiesEndpoint
+		}
+		return cfg.Endpoint
+	}
+	return sameURLOrigin(a.Endpoint, b.Endpoint) && sameURLOrigin(capabilities(a), capabilities(b))
 }
 
 func validateURLs(cfg Config) error {

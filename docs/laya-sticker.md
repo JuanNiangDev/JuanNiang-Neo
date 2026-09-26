@@ -1,6 +1,6 @@
 # Laya 自动表情接入指南
 
-本文面向首次接入的使用者，以及维护 Laya HTTP 适配的开发者，以当前 `feat/laya-sticker-original` 分支源码为准。当前支持 `systemone.v1` 原生协议和 `json` 可配置协议。
+本文面向首次接入的使用者，以及维护 Laya HTTP 适配的开发者，以当前仓库源码为准。当前支持 `systemone.v1` 原生协议和 `json` 可配置协议。
 
 ## 1. 功能与工作流程
 

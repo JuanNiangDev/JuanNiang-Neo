@@ -22,7 +22,7 @@ import (
 )
 
 func TestApplyLayaConfigPreservesAndClearsAPIKey(t *testing.T) {
-	cfg := &models.ReplyStrategyConfig{LayaStickerAPIKey: "old-secret"}
+	cfg := &models.ReplyStrategyConfig{LayaStickerAPIKey: "old-secret", LayaStickerEndpoint: "https://laya.example/v1/systemone"}
 	req := dto.UpdateReplyStrategyReq{
 		LayaStickerEnabled:              true,
 		LayaStickerEndpoint:             "https://laya.example/v1/systemone",
@@ -388,8 +388,10 @@ func TestApplyLayaConfigInvalidatesCapabilityForChangedSource(t *testing.T) {
 			switch field {
 			case "endpoint":
 				req.LayaStickerEndpoint = "https://new.example/v1/systemone"
+				req.LayaStickerAPIKey = "new-key"
 			case "capabilities_endpoint":
 				req.LayaCapabilitiesEndpoint = "https://new.example/capabilities"
+				req.LayaStickerAPIKey = "new-key"
 			case "api_key":
 				req.LayaStickerAPIKey = "new-key"
 			}

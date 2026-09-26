@@ -1372,9 +1372,10 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 					"gate_passed", layaGatePassed)
 			}
 			if layaGatePassed {
+				// Laya 只接收当前触发消息；整批上下文仍仅供 Agent 使用。
 				task := &layaTask{
 					msg:              msg,
-					userMessage:      combinedUserMsg,
+					userMessage:      strings.TrimSpace(msg.RawMessage),
 					assistantContent: assistantContent,
 					cfg:              rs.LayaSticker,
 					triggerMessageID: msg.MessageID,

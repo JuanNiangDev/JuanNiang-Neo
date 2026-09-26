@@ -103,6 +103,12 @@ func (s DeferredSend) Text() string {
 // 已排队/已发送的内容。成功语义与 Flush 一致：适配器返回 nil error
 // （OneBot 返回 message_id）才算送达，没有"已提交"中间态。
 func (q *DeferredSendQueue) SendNow(ctx context.Context, a AdapterProvider, s DeferredSend) bool {
+	return sendDeferred(a, s)
+}
+
+// sendDeferred 共用单条消息的校验、静默过滤及确认送达逻辑。
+// AdapterProvider 的发送接口不接收 context；队列管理由调用方负责。
+func sendDeferred(a AdapterProvider, s DeferredSend) bool {
 	if a == nil {
 		return false
 	}
@@ -156,35 +162,7 @@ func (q *DeferredSendQueue) Flush(ctx context.Context, a AdapterProvider) []Defe
 
 	delivered := make([]DeferredSend, 0, len(sends))
 	for _, s := range sends {
-		if s.TargetID <= 0 {
-			log.Warn("延迟发送跳过无效目标", "type", s.MessageType, "target", s.TargetID)
-			continue
-		}
-		// 静默内容（LLM 把 __NO_REPLY__ 或纯静默短语当作工具消息发出）不发送，防止占位标记泄漏到群里。
-		if isSilenceToolContent(s.Text()) {
-			log.Info("延迟发送跳过静默内容", "content", s.Text(), "type", s.MessageType, "target", s.TargetID)
-			continue
-		}
-		sent := false
-		switch s.MessageType {
-		case "private":
-			if _, err := a.SendPrivateMsg(s.TargetID, s.Message); err != nil {
-				log.Error("延迟发送私聊消息失败", "target", s.TargetID, "err", err)
-			} else {
-				log.Info("延迟发送私聊消息成功", "target", s.TargetID)
-				sent = true
-			}
-		case "group":
-			if _, err := a.SendGroupMsg(s.TargetID, s.Message); err != nil {
-				log.Error("延迟发送群消息失败", "target", s.TargetID, "err", err)
-			} else {
-				log.Info("延迟发送群消息成功", "target", s.TargetID)
-				sent = true
-			}
-		default:
-			log.Warn("延迟发送忽略未知消息类型", "type", s.MessageType)
-		}
-		if sent {
+		if sendDeferred(a, s) {
 			delivered = append(delivered, s)
 		}
 	}

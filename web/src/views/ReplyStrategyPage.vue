@@ -214,7 +214,7 @@
                 原生协议模式：请求由客户端按 systemone.v1 结构自动生成（model + state + questions.sticker.criteria），无需填写 JSON 请求模板。只需配置 Endpoint、模型、API Key、超时、动态类别与表情标签映射。
               </v-alert>
 
-              <div class="d-flex align-center justify-space-between mt-4 mb-2">
+              <div class="d-flex align-center justify-space-between flex-wrap ga-3 mt-4 mb-2">
                 <div>
                   <div class="text-subtitle-2 font-weight-bold">类别映射</div>
                   <div class="text-caption text-medium-emphasis">类别 ID 由 Laya 返回，表情标签复用原版 Sticker 库；启用的 no_send 类别表示不发送。</div>
@@ -224,24 +224,22 @@
                 </v-btn>
               </div>
               <v-alert v-if="form.laya_sticker_categories.length === 0" type="info" variant="tonal" density="comfortable" class="mb-3">启用 Laya 前至少配置一个启用的 no_send 类别。</v-alert>
-              <v-row v-for="(category, index) in form.laya_sticker_categories" :key="`${category.id}-${index}`" class="align-center mb-1">
-                <v-col cols="12" sm="2">
+              <v-row v-for="(category, index) in form.laya_sticker_categories" :key="category.rowKey" class="align-center mb-1">
+                <v-col cols="12" sm="4" lg="2">
                   <v-text-field v-model="category.id" label="ID" density="compact" variant="outlined" hide-details="auto" />
                 </v-col>
-                <v-col cols="12" sm="3">
+                <v-col cols="12" sm="8" lg="3">
                   <v-text-field v-model="category.description" label="说明" density="compact" variant="outlined" hide-details="auto" />
                 </v-col>
-                <v-col cols="12" sm="4">
+                <v-col cols="12" md="8" lg="4">
                   <v-combobox v-model="category.sticker_tags" :items="stickerTagOptions" label="Sticker 标签" multiple chips closable-chips density="compact" variant="outlined" hide-details="auto" />
                 </v-col>
-                <v-col cols="6" sm="1">
-                  <v-switch v-model="category.enabled" label="启用" color="primary" density="compact" hide-details />
-                </v-col>
-                <v-col cols="5" sm="1">
-                  <v-switch v-model="category.no_send" label="不发送" color="warning" density="compact" hide-details />
-                </v-col>
-                <v-col cols="1" class="text-right">
-                  <v-btn icon="mdi-delete-outline" size="small" variant="text" color="error" :aria-label="`删除类别 ${category.id || index + 1}`" @click="removeCategory(index)" />
+                <v-col cols="12" md="4" lg="3">
+                  <div class="category-actions">
+                    <v-switch v-model="category.enabled" label="启用" color="primary" density="compact" hide-details />
+                    <v-switch v-model="category.no_send" label="不发送" color="warning" density="compact" hide-details />
+                    <v-btn icon="mdi-delete-outline" size="small" variant="text" color="error" :aria-label="`删除类别 ${category.id || index + 1}`" @click="removeCategory(index)" />
+                  </div>
                 </v-col>
               </v-row>
 
@@ -338,6 +336,20 @@ const capabilityPreview = ref(false)
 const layaCapability = ref<LayaCapabilitySnapshot | null>(null)
 const stickerTagOptions = ref<string[]>([])
 
+type CategoryRow = LayaCategoryReq & { readonly rowKey: number }
+let nextCategoryRowKey = 0
+
+function createCategoryRow(category: LayaCategoryReq): CategoryRow {
+  return { ...category, rowKey: nextCategoryRowKey++ }
+}
+
+// 显式构造 API DTO，避免把前端行标识发送到后端。
+function categoryDTOs(): LayaCategoryReq[] {
+  return form.value.laya_sticker_categories.map(({ id, description, sticker_tags, no_send, enabled }) => ({
+    id, description, sticker_tags: [...sticker_tags], no_send, enabled,
+  }))
+}
+
 type ReplyForm = {
   relevance_threshold: number
   bot_name: string
@@ -362,7 +374,7 @@ type ReplyForm = {
   laya_sticker_request_template: string
   laya_sticker_response_category_path: string
   laya_sticker_response_confidence_path: string
-  laya_sticker_categories: LayaCategoryReq[]
+  laya_sticker_categories: CategoryRow[]
   laya_capability_fetched_at: string | null
   laya_capability_error: string
 }
@@ -433,7 +445,7 @@ async function load() {
       form.value.laya_sticker_request_template = d.laya_sticker_request_template || ''
       form.value.laya_sticker_response_category_path = d.laya_sticker_response_category_path || '/answers/sticker/choice'
       form.value.laya_sticker_response_confidence_path = d.laya_sticker_response_confidence_path || '/answers/sticker/answer_confidence'
-      form.value.laya_sticker_categories = (d.laya_sticker_categories || []).map((item: LayaCategoryReq) => ({
+      form.value.laya_sticker_categories = (d.laya_sticker_categories || []).map((item: LayaCategoryReq) => createCategoryRow({
         id: item.id || '', description: item.description || '', sticker_tags: [...(item.sticker_tags || [])], no_send: !!item.no_send, enabled: !!item.enabled,
       }))
       form.value.laya_sticker_api_key_set = !!d.laya_sticker_api_key_set
@@ -455,7 +467,7 @@ async function loadStickerTags() {
 }
 
 function addCategory() {
-  form.value.laya_sticker_categories.push({ id: '', description: '', sticker_tags: [], no_send: false, enabled: true })
+  form.value.laya_sticker_categories.push(createCategoryRow({ id: '', description: '', sticker_tags: [], no_send: false, enabled: true }))
 }
 
 function removeCategory(index: number) {
@@ -531,7 +543,7 @@ async function refreshCapabilities(savedConfig = false) {
       laya_sticker_request_template: form.value.laya_sticker_request_template,
       laya_sticker_response_category_path: form.value.laya_sticker_response_category_path,
       laya_sticker_response_confidence_path: form.value.laya_sticker_response_confidence_path,
-      laya_sticker_categories: form.value.laya_sticker_categories,
+      laya_sticker_categories: categoryDTOs(),
       laya_sticker_min_confidence: form.value.laya_sticker_min_confidence,
       laya_sticker_task_ttl_seconds: form.value.laya_sticker_task_ttl_seconds,
     })
@@ -588,7 +600,7 @@ async function handleSave() {
         laya_sticker_request_template: form.value.laya_sticker_request_template,
         laya_sticker_response_category_path: form.value.laya_sticker_response_category_path,
         laya_sticker_response_confidence_path: form.value.laya_sticker_response_confidence_path,
-        laya_sticker_categories: form.value.laya_sticker_categories,
+        laya_sticker_categories: categoryDTOs(),
       })
       form.value.laya_sticker_api_key = ''
       form.value.laya_sticker_clear_api_key = false
@@ -611,3 +623,20 @@ async function handleSave() {
 
 onMounted(() => { load(); loadModels(); loadStickerTags() })
 </script>
+
+<style scoped>
+.category-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+}
+
+.category-actions > * {
+  flex: 0 0 auto;
+}
+
+.category-actions :deep(.v-label) {
+  white-space: nowrap;
+}
+</style>

@@ -117,6 +117,14 @@ func applyLayaConfig(cfg *models.ReplyStrategyConfig, req dto.UpdateReplyStrateg
 		MinConfidence:        minConfidence,
 		TaskTTL:              time.Duration(taskTTL) * time.Second,
 	}
+	// Preview disables decision validation, but must still enforce credential
+	// origins before any capability request can be sent.
+	if cfg.LayaStickerAPIKey != "" && !req.LayaStickerClearAPIKey && strings.TrimSpace(req.LayaStickerAPIKey) == "" {
+		previous := layasticker.Config{Endpoint: cfg.LayaStickerEndpoint, CapabilitiesEndpoint: cfg.LayaCapabilitiesEndpoint}
+		if !layasticker.SameServiceOrigins(previous, newConfig) {
+			return errors.New("Laya 服务来源已变化，请重新输入 API Key 或明确清除已保存的 API Key")
+		}
+	}
 	if err := layasticker.ValidateConfig(newConfig); err != nil {
 		return err
 	}
