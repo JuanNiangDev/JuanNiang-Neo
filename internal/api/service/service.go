@@ -2496,17 +2496,12 @@ func (s *Service) GetReplyStrategy(ctx context.Context, c *app.RequestContext) {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
 		return
 	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ReplyStrategyResp{
-		Strategy:           string(cfg.Strategy),
-		RelevanceThreshold: cfg.RelevanceThreshold,
-		BotName:            cfg.BotName,
-		StripMarkdown:      cfg.StripMarkdown,
-		AgentLite:          cfg.AgentLite,
-		RelevancePrompt:    cfg.RelevancePrompt,
-		RelevanceModel:     cfg.RelevanceModel,
-		RelevanceTimeout:   cfg.RelevanceTimeout,
-		JudgeFailPolicy:    cfg.JudgeFailPolicy,
-	}))
+	resp, err := replyStrategyResp(cfg)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
 }
 
 func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext) {
@@ -2562,6 +2557,10 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 	cfg.RelevanceModel = data.RelevanceModel
 	cfg.RelevanceTimeout = data.RelevanceTimeout
 	cfg.JudgeFailPolicy = data.JudgeFailPolicy
+	if err := applyLayaConfig(cfg, data); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: err.Error()}, nil))
+		return
+	}
 
 	if err := s.DAO.ReplyStrategy.Update(ctx, cfg); err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
@@ -2573,17 +2572,12 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		s.OnReplyStrategyChanged()
 	}
 
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ReplyStrategyResp{
-		Strategy:           string(cfg.Strategy),
-		RelevanceThreshold: cfg.RelevanceThreshold,
-		BotName:            cfg.BotName,
-		StripMarkdown:      cfg.StripMarkdown,
-		AgentLite:          cfg.AgentLite,
-		RelevancePrompt:    cfg.RelevancePrompt,
-		RelevanceModel:     cfg.RelevanceModel,
-		RelevanceTimeout:   cfg.RelevanceTimeout,
-		JudgeFailPolicy:    cfg.JudgeFailPolicy,
-	}))
+	resp, err := replyStrategyResp(cfg)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, resp))
 }
 
 // ---------- 知识库 ----------

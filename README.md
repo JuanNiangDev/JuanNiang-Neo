@@ -68,6 +68,7 @@
 | 部署 | [deployment.md](docs/deployment.md) | 部署模式、环境变量、构建流程、健康检查、日志排查、反向代理、systemd、FAQ |
 | 二次开发 | [development.md](docs/development.md) | 该读什么 / 该改什么 / 不该动什么、当前实现状态、约定、写 Agent 工具与 Web API 的最小范式 |
 | 外部服务 | [external-services.md](docs/external-services.md) | 各外部服务的客户端构造、热更新机制、HagoCenter 与 Service 共享指针、鉴权与健康检查 |
+| Laya 自动表情 | [laya-sticker.md](docs/laya-sticker.md) | 外部 Laya 服务接口与部署要求、原生/JSON 协议配置、类别与图库映射、异步发送策略及 QQ 联调排查 |
 | Webhook / CronJob | [webhook-cronjob.md](docs/webhook-cronjob.md) | Webhook 接外部 HTTP 触发 Lua 插件；CronJob 6 字段秒级 cron 定时触发 Lua 插件 `on_cronjob` 回调（不经过 Agent）；含 GitHub PR / 早安提醒示例 |
 
 ## 快速部署（Docker Compose）

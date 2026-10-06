@@ -310,6 +310,23 @@ export interface ReplyStrategyResp {
   relevance_model: string
   relevance_timeout: number
   judge_fail_policy: string
+  laya_sticker_enabled: boolean
+  laya_sticker_endpoint: string
+  laya_capabilities_endpoint: string
+  laya_sticker_api_key?: string
+  laya_sticker_api_key_set: boolean
+  laya_sticker_model: string
+  laya_sticker_timeout: number
+  laya_sticker_protocol_mode: string
+  laya_sticker_http_method: string
+  laya_sticker_request_template: string
+  laya_sticker_response_category_path: string
+  laya_sticker_response_confidence_path: string
+  laya_sticker_categories: LayaCategoryResp[]
+  laya_capability_preview?: boolean
+  laya_capability_snapshot?: LayaCapabilitySnapshot | null
+  laya_capability_fetched_at?: string | null
+  laya_capability_error?: string
 }
 
 export interface UpdateReplyStrategyReq {
@@ -321,11 +338,54 @@ export interface UpdateReplyStrategyReq {
   relevance_model?: string
   relevance_timeout?: number
   judge_fail_policy?: string
+  laya_sticker_enabled: boolean
+  laya_sticker_endpoint: string
+  laya_capabilities_endpoint: string
+  laya_sticker_api_key?: string
+  laya_sticker_clear_api_key?: boolean
+  laya_sticker_model: string
+  laya_sticker_timeout: number
+  laya_sticker_protocol_mode: string
+  laya_sticker_http_method: string
+  laya_sticker_request_template: string
+  laya_sticker_response_category_path: string
+  laya_sticker_response_confidence_path: string
+  laya_sticker_categories: LayaCategoryReq[]
+  laya_sticker_min_confidence: number
+  laya_sticker_task_ttl_seconds: number
+}
+
+export interface LayaCategoryReq {
+  id: string
+  description: string
+  sticker_tags: string[]
+  no_send: boolean
+  enabled: boolean
+}
+export type LayaCategoryResp = LayaCategoryReq
+export interface LayaCapabilitySnapshot {
+  source_endpoint?: string
+  source_capabilities_endpoint?: string
+  schema_version?: number
+  service?: string
+  api?: { protocol?: string; decision_path?: string; method?: string }
+  models?: Array<{
+    id: string
+    loaded?: boolean
+    sticker?: {
+      category_mode?: string
+      categories?: LayaCategoryResp[]
+      suggested_categories?: LayaCategoryResp[]
+      max_categories?: number
+    }
+  }>
+  response?: { category_pointer?: string; confidence_pointer?: string }
 }
 
 export const replyStrategyApi = {
   get: () => client.get('/reply-strategy'),
   update: (data: UpdateReplyStrategyReq) => client.put('/reply-strategy', data),
+  refreshLayaCapabilities: (data?: UpdateReplyStrategyReq) => client.post('/reply-strategy/laya/capabilities', data),
 }
 
 export interface KnowledgeResp {

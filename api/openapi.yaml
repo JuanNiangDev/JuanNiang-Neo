@@ -1896,7 +1896,7 @@ paths:
     get:
       tags: [ReplyStrategy]
       summary: 获取回复策略
-      description: 首次 GET 不存在时自动创建默认配置（strategy=always, relevance_threshold=0.5）。
+      description: 首次 GET 不存在时自动创建默认配置（strategy=relevance, relevance_threshold=0.5）。
       responses:
         '200':
           description: 成功
@@ -1921,6 +1921,25 @@ paths:
       responses:
         '200':
           description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FinalResponse'
+
+  /reply-strategy/laya/capabilities:
+    post:
+      tags: [ReplyStrategy]
+      summary: 预览或刷新 Laya 能力快照
+      description: 无请求体时刷新已保存配置的正式快照。携带请求体时仅返回临时预览（laya_capability_preview=true），成功或失败均不持久化配置、快照、时间或错误。来源变更后旧检测结果不会覆盖新状态，并返回业务状态 40901（配置已变化，请重新检测）。需要管理员鉴权。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateReplyStrategyReq'
+      responses:
+        '200':
+          description: 成功或上游能力服务错误
           content:
             application/json:
               schema:
@@ -3808,13 +3827,104 @@ components:
         judge_fail_policy:
           type: string
           enum: [drop, reply]
+        laya_sticker_enabled:
+          type: boolean
+        laya_sticker_endpoint:
+          type: string
+        laya_capabilities_endpoint:
+          type: string
+        laya_sticker_api_key_set:
+          type: boolean
+          description: 是否已保存 API Key；API Key 本身不会返回
+        laya_sticker_model:
+          type: string
+        laya_sticker_timeout:
+          type: integer
+        laya_sticker_min_confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 仅服务端返回 confidence 时使用的最低置信度；0 表示不拦截
+        laya_sticker_task_ttl_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          description: 自动表情任务的有效期，过期任务会被丢弃
+        laya_sticker_protocol_mode:
+          type: string
+          enum: [json, systemone.v1]
+        laya_sticker_http_method:
+          type: string
+          enum: [POST]
+        laya_sticker_request_template:
+          type: string
+          description: "JSON 请求模板；{{criteria_map}} 输出启用类别 ID 到描述的对象，{{criteria}} 保留为 ID 数组。"
+        laya_sticker_response_category_path:
+          type: string
+        laya_sticker_response_confidence_path:
+          type: string
+        laya_sticker_categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/LayaStickerCategory'
+        laya_capability_preview:
+          type: boolean
+          description: 为 true 时表示未持久化的临时预览
+        laya_capability_snapshot:
+          $ref: '#/components/schemas/LayaCapabilitySnapshot'
+        laya_capability_fetched_at:
+          type: string
+          format: date-time
+        laya_capability_error:
+          type: string
+
+    LayaStickerCategory:
+      type: object
+      required: [id, description, sticker_tags, no_send, enabled]
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+        sticker_tags:
+          type: array
+          items:
+            type: string
+        no_send:
+          type: boolean
+        enabled:
+          type: boolean
+
+    LayaCapabilitySnapshot:
+      type: object
+      description: 经校验的 Laya capabilities 快照或临时预览，不会自动应用其中的配置建议
+      properties:
+        source_endpoint:
+          type: string
+          description: 后端记录的决策 Endpoint；旧快照可能缺省
+        source_capabilities_endpoint:
+          type: string
+          description: 后端记录的实际能力请求地址
+        models:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              loaded:
+                type: boolean
+                description: true 已加载，false 未加载；缺省为未提供状态
+              sticker:
+                type: object
+                additionalProperties: true
+            additionalProperties: true
+      additionalProperties: true
 
     UpdateReplyStrategyReq:
       type: object
       properties:
-        strategy:
-          type: string
-          enum: [never, at_only, always, relevance]
         relevance_threshold:
           type: number
           format: float
@@ -3833,6 +3943,52 @@ components:
         judge_fail_policy:
           type: string
           enum: [drop, reply]
+        laya_sticker_enabled:
+          type: boolean
+        laya_sticker_endpoint:
+          type: string
+        laya_capabilities_endpoint:
+          type: string
+        laya_sticker_api_key:
+          type: string
+          writeOnly: true
+          description: 空值保持旧 Key；不会在响应中返回
+        laya_sticker_clear_api_key:
+          type: boolean
+        laya_sticker_model:
+          type: string
+        laya_sticker_timeout:
+          type: integer
+          minimum: 1
+          maximum: 120
+        laya_sticker_min_confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+          description: 仅服务端返回 confidence 时使用的最低置信度；0 表示不拦截
+        laya_sticker_task_ttl_seconds:
+          type: integer
+          minimum: 1
+          maximum: 300
+          description: 自动表情任务的有效期，过期任务会被丢弃
+        laya_sticker_protocol_mode:
+          type: string
+          enum: [json, systemone.v1]
+        laya_sticker_http_method:
+          type: string
+          enum: [POST]
+        laya_sticker_request_template:
+          type: string
+          description: "JSON 请求模板；{{criteria_map}} 输出启用类别 ID 到描述的对象，{{criteria}} 保留为 ID 数组。"
+        laya_sticker_response_category_path:
+          type: string
+        laya_sticker_response_confidence_path:
+          type: string
+        laya_sticker_categories:
+          type: array
+          items:
+            $ref: '#/components/schemas/LayaStickerCategory'
 
     # ---------- Knowledge ----------
     KnowledgeResp:

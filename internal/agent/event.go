@@ -12,6 +12,7 @@ import (
 
 	"JuanNiang-Neo/internal/adapter"
 	"JuanNiang-Neo/internal/agent/groupmgr"
+	"JuanNiang-Neo/internal/agent/layasticker"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
 	"JuanNiang-Neo/internal/agent/stats"
@@ -69,6 +70,7 @@ type ReplySettings struct {
 	RelevanceModel     string        // 相关性检测使用的 Text Provider ID（空则用默认）
 	RelevanceTimeout   time.Duration // 相关性检测超时（含信号量等待与 LLM 调用总预算）
 	JudgeFailPolicy    string        // 判断失败策略: drop=不回复（默认）, reply=照常回复
+	LayaSticker        layasticker.Config
 }
 
 // runEventLoop 是主事件循环，监听 OneBot11 事件并调用 Agent 处理。
@@ -270,6 +272,11 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 		RelevanceModel:     cfg.RelevanceModel,
 		RelevanceTimeout:   timeout,
 		JudgeFailPolicy:    cfg.JudgeFailPolicy,
+	}
+	if layaCfg, err := layaConfigFromModel(cfg); err != nil {
+		log.Warn("Laya 表情配置无效，本轮回退原版行为", "err", err)
+	} else {
+		rs.LayaSticker = layaCfg
 	}
 	h.replySettings = rs
 	h.replySettingsExp = time.Now().Add(replySettingsTTL)
@@ -567,68 +574,181 @@ func (h *HagoCenter) spawnBatch(ctx context.Context, events []adapter.Event, rs 
 		group := g
 		index := i
 		go func() {
+			// 该 index 的终态必须恰好落定一次。defer 的顺序很重要：
+			// panic 先被恢复，再由 MarkDone 补齐提前退出的 index；若 finish 已提交，
+			// MarkDone 会识别 submitted 状态并保持队列推进权归 orderedReplier。
+			defer replier.MarkDone(index)
 			// Agent 处理 goroutine 兜底：任一环节 panic（LLM 客户端 bug、工具实现缺陷、
 			// 数据异常）都不能让整个进程崩溃，只丢弃本条消息并记录堆栈。
 			defer func() {
 				if r := recover(); r != nil {
-					log.Error("Agent 处理 goroutine panic", "panic", r, "stack", string(debug.Stack()), "area", chatArea.ID, "events", len(group))
+					areaID := ""
+					if chatArea != nil {
+						areaID = chatArea.ID
+					}
+					log.Error("Agent 处理 goroutine panic", "panic", r, "stack", string(debug.Stack()), "area", areaID, "events", len(group))
 				}
 			}()
-			filtered := h.filterRelevant(ctx, group, rs)
-			if len(filtered) == 0 {
-				return
+			// 该 index 的终态必须恰好落定一次：要么把 finish 提交给按序发送器，
+			// 要么在此标记完成。提前返回（过滤为空、handleMessage 内部早退、
+			// panic）都要 MarkDone，否则 next 永不推进，后续 index 全部卡在 pending。
+			if filtered := h.filterRelevant(ctx, group, rs); len(filtered) > 0 {
+				acquireCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
+				defer cancel()
+				if err := h.Concurrency.Acquire(acquireCtx, chatArea.ID); err != nil {
+					// 等待超时直接放行处理（跳过排队），但此时未持有令牌，不能 Release，
+					// 否则会误释放其他 goroutine 占用的槽位（over-release）。
+					log.Warn("Agent 并发令牌等待超时，直接派发处理（跳过排队）", "err", err, "area", chatArea.ID, "events", len(group))
+				} else {
+					defer h.Concurrency.Release(chatArea.ID)
+				}
+				h.handleMessage(WithOrderedReplier(ctx, replier, index), filtered, chatArea, rs)
 			}
-			acquireCtx, cancel := context.WithTimeout(ctx, acquireTimeout)
-			defer cancel()
-			if err := h.Concurrency.Acquire(acquireCtx, chatArea.ID); err != nil {
-				// 等待超时直接放行处理（跳过排队），但此时未持有令牌，不能 Release，
-				// 否则会误释放其他 goroutine 占用的槽位（over-release）。
-				log.Warn("Agent 并发令牌等待超时，直接派发处理（跳过排队）", "err", err, "area", chatArea.ID, "events", len(group))
-			} else {
-				defer h.Concurrency.Release(chatArea.ID)
-			}
-			h.handleMessage(WithOrderedReplier(ctx, replier, index), filtered, chatArea, rs)
 		}()
 	}
 }
 
 // orderedReplier 按 index 顺序执行发送动作：不同用户子批次并行处理完成后，
 // 回复按消息到达顺序投递，避免并行导致的回复乱序（如后发先回）。
+//
+// 顺序推进只由本结构负责，每个 index 恰好经历一种终态：
+//   - 消息在入队前被过滤/提前返回 → 提交方调用 MarkDone 标记该 index 完成；
+//   - 消息进入队列 → 由 runAvailableLocked 在执行前推进 next。
+//
+// Submit/MarkDone 的状态决策在同一把锁内完成；finish 不得调用 MarkDone，
+// 因为队列执行任务时可能持有这把锁。
 type orderedReplier struct {
 	mu      sync.Mutex
 	next    int
 	pending map[int]func()
+	states  map[int]orderedIndexState
+	running bool
+}
+
+type orderedIndexState struct {
+	submitted bool
+	done      bool
+	processed bool
 }
 
 func newOrderedReplier() *orderedReplier {
-	return &orderedReplier{pending: make(map[int]func())}
+	return &orderedReplier{
+		pending: make(map[int]func()),
+		states:  make(map[int]orderedIndexState),
+	}
 }
 
-// Enqueue 注册 index 对应的发送动作。index == next 时立即执行并推进，
-// 否则暂存，等前面的 index 完成后再按序执行。
-func (r *orderedReplier) Enqueue(index int, fn func()) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if index == r.next {
-		r.next++
-		r.runAvailableLocked(fn)
+// Submit 注册 index 对应的发送动作。每个 index 只有第一次 Submit 或 MarkDone
+// 生效，后续调用都是幂等 no-op。
+func (r *orderedReplier) Submit(index int, fn func()) {
+	if r == nil || fn == nil {
 		return
 	}
+	r.mu.Lock()
+	state := r.states[index]
+	if state.submitted || state.done || state.processed {
+		r.mu.Unlock()
+		return
+	}
+	state.submitted = true
+	r.states[index] = state
 	r.pending[index] = fn
+	first, ok := r.startDrainLocked()
+	r.mu.Unlock()
+	if ok {
+		r.drain(first)
+	}
 }
 
-// runAvailableLocked 执行当前动作并连续执行后续已就绪的 pending 动作（调用方持锁）。
-func (r *orderedReplier) runAvailableLocked(first func()) {
-	first()
+// Enqueue 保留旧调用名，兼容现有测试与包内调用；新的代码使用 Submit。
+func (r *orderedReplier) Enqueue(index int, fn func()) {
+	r.Submit(index, fn)
+}
+
+// MarkDone 标记 index 已完成但未提交发送动作。若该 index 已提交，推进权归
+// orderedReplier 自身，MarkDone 不会重复推进 next。
+func (r *orderedReplier) MarkDone(index int) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	state := r.states[index]
+	if state.submitted || state.done || state.processed {
+		r.mu.Unlock()
+		return
+	}
+	state.done = true
+	r.states[index] = state
+	first, ok := r.startDrainLocked()
+	r.mu.Unlock()
+	if ok {
+		r.drain(first)
+	}
+}
+
+// startDrainLocked 标记一个 drain 执行器并取出下一个就绪动作（调用方持锁）。
+// 回调不会在锁内执行，因此回调内部再次 Submit/MarkDone 也不会重入死锁。
+func (r *orderedReplier) startDrainLocked() (func(), bool) {
+	if r.running {
+		return nil, false
+	}
+	fn, ok := r.takeNextLocked()
+	if !ok {
+		return nil, false
+	}
+	r.running = true
+	return fn, true
+}
+
+// takeNextLocked 清扫已提前完成的 index，或取出紧随其后的 pending 动作。
+func (r *orderedReplier) takeNextLocked() (func(), bool) {
 	for {
+		state := r.states[r.next]
+		if state.done {
+			state.processed = true
+			r.states[r.next] = state
+			r.next++
+			continue
+		}
 		fn, ok := r.pending[r.next]
 		if !ok {
-			return
+			return nil, false
 		}
 		delete(r.pending, r.next)
+		state.processed = true
+		r.states[r.next] = state
 		r.next++
-		fn()
+		return fn, true
 	}
+}
+
+// drain 在不持有 orderedReplier.mu 的情况下执行当前动作，并持续取出后续动作。
+// 若动作内部产生新的 Submit/MarkDone，它们只会入队，随后由本 drain 继续消费。
+func (r *orderedReplier) drain(first func()) {
+	fn := first
+	for {
+		safeCall(fn)
+		r.mu.Lock()
+		next, ok := r.takeNextLocked()
+		if !ok {
+			r.running = false
+			r.mu.Unlock()
+			return
+		}
+		r.mu.Unlock()
+		fn = next
+	}
+}
+
+// safeCall 在任务边界内兜底 panic：发送/记忆写入中的任何异常都只影响当前任务，
+// 不向上传播（否则会带着 orderedReplier.mu 与 sendMu 一起展开）。
+func safeCall(fn func()) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Error("按序发送任务 panic，已丢弃该条并继续后续发送", "panic", rec, "stack", string(debug.Stack()))
+		}
+	}()
+	fn()
 }
 
 type (
@@ -1123,11 +1243,21 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 	case "group":
 		currentTargetID = msg.GroupID
 	}
+	// 工具交付消息在 Flush 前只作为"是否已有交付"的参考：真正是否送达由
+	// Flush 返回的确认结果决定（发送失败的工具消息不能抑制最终回复）。
 	deliveredToCurrent := deferredSends.DeliveredTo(msg.MessageType, currentTargetID)
+	expressionToCurrent := false
+	if rs.LayaSticker.Enabled {
+		expressionToCurrent = deferredSends.HasExpressionTo(msg.MessageType, currentTargetID)
+	}
+	reviewBlocked := false
 
 	// 后处理闭包：统一发送任务期间排队的内容 + 写回记忆 + 最终回复。
 	// 并行分组模式下（存在 orderedReplier）整体按消息顺序执行，避免多人回复乱序；
 	// 非分组模式直接执行。全局 sendMu 保证跨批次的发送也串行（回复不被插入打断）。
+	//
+	// 顺序终态由本闭包内部自行提交（submitOnce 保证一次），提前返回也必须提交，
+	// 否则 orderedReplier.next 不再推进。
 	finish := func() {
 		// 群管理审核闸门（发送前，锁外执行避免持锁等待）：触发本轮 Agent 的群消息
 		// 已被 LLM 判定违规（black）时，丢弃投递到当前群会话的交付消息与最终回复——
@@ -1135,63 +1265,138 @@ func (h *HagoCenter) handleMessage(ctx context.Context, events []adapter.Event, 
 		// （Agent ReAct 通常已覆盖审核时间，多数零等待）；超时/未送审按放行（撤回兜底）。
 		if msg.MessageType == "group" && h.GroupMgr != nil {
 			if blocked := h.GroupMgr.WaitReview(ctx, msg.GroupID, msg.UserID, msg.MessageID, groupmgr.ReviewGateWait); blocked {
+				reviewBlocked = true
 				log.Info("群管理审核违规，丢弃 Agent 回复", "message_id", msg.MessageID, "user_id", msg.UserID, "group_id", msg.GroupID)
 				metrics.DroppedTotal.WithLabelValues("gm_verdict_black").Inc()
 				// 移除投递到当前群会话的交付消息（私聊/其他群工具消息保留）
 				deferredSends.DropDelivery(msg.MessageType, currentTargetID)
+				if rs.LayaSticker.Enabled {
+					deferredSends.DropOnReview(msg.MessageType, currentTargetID)
+				}
 				assistantContent = ""
 			}
 		}
-		h.sendMu.Lock()
-		defer h.sendMu.Unlock()
 
-		// 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发）
-		flushed := deferredSends.Flush(ctx, h.Adapter)
+		// 发送动作整体持有全局发送锁：记忆写回与 sendReply 都在锁内，
+		// 用 defer 释放，避免中途 panic 时锁泄漏（原实现手工 Unlock 会把
+		// 全局发送通道永久锁死）。
+		var textSent bool
+		func() {
+			h.sendMu.Lock()
+			defer h.sendMu.Unlock()
 
-		// 将投递给当前会话的交付消息写回记忆与聊天记录：
-		// 否则对话历史会停留在"用户消息无人回复"，导致后续 LLM 误以为旧任务仍待执行
-		// （如用户再次发言时，模型把上一个未回复的天气请求又执行一遍）。
-		// 注意：交付消息即本轮的 assistant 回复，需携带真实 token 用量，
-		// 否则 chat_records.token_count 总和（Overview 总用量）不会增长。
-		recordedTokens := false
-		for _, s := range flushed {
-			if !s.Delivery || s.MessageType != msg.MessageType || s.TargetID != currentTargetID {
-				continue
-			}
-			if text := s.Text(); text != "" {
-				tokens := 0
-				if !recordedTokens {
-					tokens = int(totalTokens)
-					recordedTokens = true // 同一轮的 token 只记一次，避免多条投递重复计数
-				}
-				h.recordChat(ctx, chatArea.ID, userID, "assistant", text, tokens, callsJSON)
-				if h.Memory != nil {
-					h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: text})
-				}
-			}
-		}
+			// 任务执行完成：统一发送任务期间排队的内容（中途不发，执行完再发）
+			flushed := deferredSends.Flush(ctx, h.Adapter)
 
-		// 后处理：静默检测 + 发送 + 记忆
-		if assistantContent != "" && !deliveredToCurrent {
-			silenced := msg.MessageType == "group" && isSilenceResponse(assistantContent)
-			if silenced {
-				log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
-				metrics.DroppedTotal.WithLabelValues("silenced").Inc()
-			} else {
-				h.sendReply(ctx, msg, assistantContent, rs)
-				h.recordChat(ctx, chatArea.ID, userID, "assistant", assistantContent, int(totalTokens), callsJSON)
-				if h.Memory != nil {
-					h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: assistantContent})
+			// 将投递给当前会话的交付消息写回记忆与聊天记录：
+			// 否则对话历史会停留在"用户消息无人回复"，导致后续 LLM 误以为旧任务仍待执行
+			// （如用户再次发言时，模型把上一个未回复的天气请求又执行一遍）。
+			// 注意：交付消息即本轮的 assistant 回复，需携带真实 token 用量，
+			// 否则 chat_records.token_count 总和（Overview 总用量）不会增长。
+			recordedTokens := false
+			deliveredToCurrent = false
+			expressionToCurrent = false
+			for _, sent := range flushed {
+				if sent.MessageType != msg.MessageType || sent.TargetID != currentTargetID {
+					continue
+				}
+				if sent.Delivery {
+					deliveredToCurrent = true
+				}
+				if tool.MessageHasExpression(sent.Message) {
+					expressionToCurrent = true
+				}
+				if !sent.Delivery {
+					continue
+				}
+				if text := sent.Text(); text != "" {
+					tokens := 0
+					if !recordedTokens {
+						tokens = int(totalTokens)
+						recordedTokens = true // 同一轮的 token 只记一次，避免多条投递重复计数
+					}
+					h.recordChat(ctx, chatArea.ID, userID, "assistant", text, tokens, callsJSON)
+					if h.Memory != nil {
+						h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: text})
+					}
 				}
 			}
-		} else if assistantContent != "" {
-			log.Info("已通过工具向当前会话发送消息，跳过最终回复", "content", assistantContent, "message_type", msg.MessageType, "target", currentTargetID)
-		}
+
+			// 后处理：静默检测 + 发送 + 记忆。原版发送语义仍在全局锁内，
+			// 以保持跨批次的队列 FIFO 和回复顺序。
+			if assistantContent != "" && !deliveredToCurrent {
+				silenced := msg.MessageType == "group" && isSilenceResponse(assistantContent)
+				if silenced {
+					log.Info("群聊静默响应已丢弃", "content", assistantContent, "group_id", msg.GroupID)
+					metrics.DroppedTotal.WithLabelValues("silenced").Inc()
+				} else {
+					sent := h.sendReply(ctx, msg, assistantContent, rs)
+					textSent = sent.sentAll
+					// 记忆只写实际送达的片段：全部失败不写 assistant 回合，
+					// 部分成功只写已送达部分，避免历史里出现用户从未收到的回复。
+					if text := sent.deliveredText(); text != "" {
+						h.recordChat(ctx, chatArea.ID, userID, "assistant", text, int(totalTokens), callsJSON)
+						if h.Memory != nil {
+							h.Memory.AddShortTermMessage(ctx, chatArea.ID, shortterm.ChatMessage{Role: "assistant", Content: text})
+						}
+					}
+					if !sent.sentAll {
+						log.Error("最终回复发送不完整，记忆只记录已送达片段",
+							"attempted", sent.Attempted, "delivered", sent.Delivered,
+							"message_type", msg.MessageType, "target", currentTargetID)
+					}
+				}
+			} else if assistantContent != "" {
+				log.Info("已通过工具向当前会话发送消息，跳过最终回复", "content", assistantContent, "message_type", msg.MessageType, "target", currentTargetID)
+			}
+
+			// 每个新回合都推进目标水位，而不只是“本回合准备追加 Laya”
+			// 的情况。这样原版工具表情、审核拒绝、文字发送失败等新回合
+			// 也会让此前尚未完成的 Laya 决策失效。
+			layaSequence := h.advanceLayaTarget(msg)
+
+			// 只有原版工具消息和正常文字都已发送成功后才追加自动表情。
+			// 决策与发送全部交给后台后处理器：慢请求不占用 orderedReplier
+			// 顺序锁、不占用全局发送锁、也不拖住本轮的并发令牌。
+			layaGatePassed := textSent && rs.LayaSticker.Enabled && !deliveredToCurrent && !expressionToCurrent && !reviewBlocked
+			if rs.LayaSticker.Enabled {
+				// 诊断日志（第 7 版）：定位"文字已回复但未发起 Laya 决策"的
+				// 具体闸门。只记录回合标识与布尔状态，不记录聊天内容。
+				log.Info("Laya 自动表情提交闸门诊断",
+					"seq", layaSequence, "message_id", msg.MessageID,
+					"text_sent", textSent,
+					"laya_enabled", rs.LayaSticker.Enabled,
+					"delivered_to_current", deliveredToCurrent,
+					"expression_to_current", expressionToCurrent,
+					"review_blocked", reviewBlocked,
+					"gate_passed", layaGatePassed)
+			}
+			if layaGatePassed {
+				// Laya 只接收当前触发消息；整批上下文仍仅供 Agent 使用。
+				task := &layaTask{
+					msg:              msg,
+					userMessage:      strings.TrimSpace(msg.RawMessage),
+					assistantContent: assistantContent,
+					cfg:              rs.LayaSticker,
+					triggerMessageID: msg.MessageID,
+					queuedAt:         time.Now(),
+					sequence:         layaSequence,
+				}
+				// 必须在同一把发送锁仍持有时提交后处理任务：否则新回合的文字
+				// 已发送但任务尚未进入水位，旧回合的 Laya worker 可能抢先发出
+				// 过期表情，造成“新文字之后插入旧表情”的时序错误。
+				submitted := h.submitLayaTask(task)
+				log.Info("Laya 自动表情任务提交结果",
+					"seq", layaSequence, "message_id", msg.MessageID, "submitted", submitted)
+			}
+		}()
 	}
 
-	// 并行分组模式：发送动作按消息顺序投递
+	// 并行分组模式：发送动作按消息顺序投递。提交是"该 index 的终态决策"，
+	// 必须恰好生效一次——提交后由队列推进 next，未提交的路径由 spawnBatch
+	// goroutine 末尾的 MarkDone 补齐。
 	if replier := GetOrderedReplier(ctx); replier != nil {
-		replier.Enqueue(GetOrderedReplierIndex(ctx), finish)
+		replier.Submit(GetOrderedReplierIndex(ctx), finish)
 		return
 	}
 	finish()
@@ -1220,9 +1425,34 @@ var emojiPrefixRe = regexp.MustCompile(`^[\x{1F000}-\x{1FAFF}\x{2600}-\x{27BF}\x
 // 200ms 在实测中既能避开风控，又不会让多段回复显得拖沓。
 const replySegmentInterval = 200 * time.Millisecond
 
-// sendReply 解析 CQ 码并组装消息段发送。
+// partResult 单个分段（splitMessages 产出的 part）的发送结果。
+// 记忆写回只使用 Sent 为 true 的片段文本：部分送达时不能把整段原文写进历史，
+// 否则下一轮 LLM 会以为未送出的内容已经告诉用户。
+type partResult struct {
+	Index int
+	Text  string // 已做 stripMarkdown 处理后的实际发送文本
+	Sent  bool
+	Err   error
+}
+
+// replyResult 一次最终回复的发送结果（含全部/部分/未送达语义）。
+type replyResult struct {
+	Parts       []partResult
+	Attempted   int
+	Delivered   int
+	sentAny     bool
+	sentAll     bool
+	recordedTxt string // 实际送达文本，按段拼接（供记忆写回）
+}
+
+// deliveredText 返回实际送达的文本（无成功分段则为空串）。
+func (r replyResult) deliveredText() string {
+	return r.recordedTxt
+}
+
+// sendReply 解析 CQ 码并组装消息段发送，返回逐段送达结果。
 // rs 从调用链传入，避免读取 HagoCenter 共享字段导致数据竞争。
-func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, content string, rs ReplySettings) {
+func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, content string, rs ReplySettings) replyResult {
 	// 链路追踪：回复发送 span（段间延迟风控包含在耗时内）
 	_, span := otelx.Span(ctx, "send.reply",
 		attribute.String("message_type", msg.MessageType),
@@ -1257,6 +1487,8 @@ func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, c
 		"message_type", msg.MessageType,
 		"strip_markdown", rs.StripMarkdown,
 	)
+	result := replyResult{Parts: make([]partResult, 0, len(parts)), Attempted: len(parts)}
+	delivered := make([]string, 0, len(parts))
 	for i, part := range parts {
 		// 段间延迟：首段立即发，后续段之间间隔 replySegmentInterval，规避 QQ 风控
 		if i > 0 {
@@ -1284,7 +1516,11 @@ func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, c
 			_, err = h.Adapter.SendPrivateMsg(msg.UserID, segments)
 		case "group":
 			_, err = h.Adapter.SendGroupMsg(msg.GroupID, segments)
+		default:
+			err = fmt.Errorf("不支持的消息类型: %s", msg.MessageType)
 		}
+		item := partResult{Index: i, Text: part, Sent: err == nil, Err: err}
+		result.Parts = append(result.Parts, item)
 		if err != nil {
 			log.Error("发送消息失败",
 				"part", i+1,
@@ -1292,8 +1528,15 @@ func (h *HagoCenter) sendReply(ctx context.Context, msg *adapter.MessageEvent, c
 				"message_type", msg.MessageType,
 				"err", err,
 			)
+		} else {
+			result.Delivered++
+			delivered = append(delivered, part)
 		}
 	}
+	result.sentAny = result.Delivered > 0
+	result.sentAll = result.Attempted > 0 && result.Delivered == result.Attempted
+	result.recordedTxt = strings.Join(delivered, "\n")
+	return result
 }
 
 // parseCQToSegments 将包含 CQ 码的文本解析为 adapter.Segment 数组。

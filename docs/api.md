@@ -733,12 +733,16 @@ CronJob 增删改/toggle 后**自动 reload** 调度器（`robfig/cron`，6 字�
 ### GET /reply-strategy
 获取配置。首次 GET 不存在时自动创建（`strategy=relevance, relevance_threshold=0.5`）。
 
-**data** `ReplyStrategyResp`: `strategy`（恒为 `relevance`）、`relevance_threshold` float64、`bot_name`、`strip_markdown` bool、`agent_lite` bool、`relevance_prompt` string、`relevance_model` string、`relevance_timeout` int（相关性判断超时秒，默认 10）、`judge_fail_policy` string（`drop`=判断失败不回复（默认）/ `reply`=照常回复）。
+**data** `ReplyStrategyResp`: `strategy`（恒为 `relevance`）、相关性字段，以及可选的 Laya 配置：`laya_sticker_enabled`、`laya_sticker_endpoint`、`laya_capabilities_endpoint`、`laya_sticker_model`、`laya_sticker_timeout`、`laya_sticker_min_confidence`（最低置信度，0 不拦截；设置后响应缺少置信度字段同样不发送）、`laya_sticker_task_ttl_seconds`（过期任务丢弃）、`laya_sticker_protocol_mode`、`laya_sticker_http_method`、`laya_sticker_request_template`、两个响应 JSON Pointer、`laya_sticker_categories`。`laya_sticker_api_key_set` 只表示是否已保存 API Key，GET 不返回 Key 明文；`laya_capability_snapshot`、`laya_capability_fetched_at`、`laya_capability_error` 用于展示最近能力发现状态。
+
+`laya_sticker_request_template` 支持结构化变量 `{{criteria_map}}`：按启用类别动态生成 `{类别 ID: 描述}` JSON 对象（含启用的 `no_send` 类别，排除禁用类别）。Laya 的 `questions.sticker.criteria` 应使用 `"criteria": {{criteria_map}}`；旧变量 `{{criteria}}` 仍输出类别 ID 数组以兼容已有模板。
+
+Laya 自动表情在最终发送前再次检查群审核：已拒绝（`blocked`）或仍在途（`pending`）均丢弃；原版文字回复的审核等待和超时放行规则保持不变。
 
 ### PUT /reply-strategy
 更新（不再接受 `strategy` 字段，策略恒为 `relevance`）。
 
-**Body** `UpdateReplyStrategyReq`: `relevance_threshold`（必填）；`bot_name`、`strip_markdown`、`agent_lite`（可选）；`relevance_prompt`（相关性检测自定义提示词，空=默认）、`relevance_model`（相关性检测 Text Provider ID，空=默认）、`relevance_timeout`（相关性判断超时秒，0=默认 10s，范围 1-120）、`judge_fail_policy`（`drop`/`reply`，空=默认 `drop`）。
+**Body** `UpdateReplyStrategyReq`: 相关性字段，以及 Laya 配置字段（含 `laya_sticker_min_confidence` 和 `laya_sticker_task_ttl_seconds`）。`laya_sticker_api_key` 为空时保持旧值，设置 `laya_sticker_clear_api_key=true` 才会清除；启用 Laya 时需至少一个启用的 `no_send` 类别；`json` 模式另需有效 JSON 请求模板与响应 JSON Pointer，`systemone.v1` 原生模式请求由客户端自动生成（另需模型），不要求请求模板。类别的 `sticker_tags` 只引用原版 Sticker 库标签。
 
 **data** `ReplyStrategyResp`。
 
@@ -747,6 +751,16 @@ curl -X PUT http://localhost:8090/api/v1/reply-strategy \
   -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \
   -d '{"relevance_threshold":0.6,"bot_name":"小卷","judge_fail_policy":"reply"}'
 ```
+
+### POST /reply-strategy/laya/capabilities
+
+无请求体时，使用当前已保存的 Endpoint 和 API Key 请求 `/capabilities`（或显式配置的 capabilities Endpoint），更新正式快照；失败时保留同一来源的上次成功快照并记录错误。
+
+携带 `UpdateReplyStrategyReq` 请求体时，仅检测临时配置并返回 `laya_capability_preview=true` 的预览；无论成功或失败，均不修改数据库中的配置、快照、获取时间和错误状态。网页保存配置后，会再发送无请求体请求刷新正式快照。保存时若 Endpoint、Capabilities Endpoint 或 API Key 改变，会清除旧能力状态；旧来源的在途检测结果不会覆盖新配置的状态；条件更新未命中时返回业务状态 `40901` 和“配置已变化，请重新检测”，页面不会提示刷新成功。
+
+快照记录 `source_endpoint` 和 `source_capabilities_endpoint`，由后端按实际请求填写。模型列表的 `loaded` 为可选布尔值：`true` 已加载、`false` 未加载、缺省为未提供状态；解析、保存和读取均保留这个区别。旧快照未记录来源时，页面提示重新获取能力。
+
+该操作沿用管理员鉴权，不会自动切换协议或类别映射。API Key 不出现在 GET、日志或错误信息中。
 
 ---
 

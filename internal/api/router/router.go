@@ -159,6 +159,7 @@ func RegisterRoutes(h *server.Hertz, svc *service.Service) {
 	// Reply Strategy
 	api.GET("/reply-strategy", auth, svc.GetReplyStrategy)
 	api.PUT("/reply-strategy", auth, svc.UpdateReplyStrategy)
+	api.POST("/reply-strategy/laya/capabilities", auth, middleware.RequireAdmin(), svc.RefreshLayaCapabilities)
 
 	// Knowledge 知识库
 	// 知识库
