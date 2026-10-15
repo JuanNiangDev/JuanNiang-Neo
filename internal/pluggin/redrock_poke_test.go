@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	lua "github.com/yuin/gopher-lua"
 )
@@ -243,9 +244,20 @@ func TestRedrockPokeTextFallbackWhenPoolEmpty(t *testing.T) {
 // TestRedrockPokeIgnoresOthersPoke 被戳对象不是机器人时不应回复。
 func TestRedrockPokeIgnoresOthersPoke(t *testing.T) {
 	pe, adp := newMiniTestEngine(t, nil)
+	adp.notify = make(chan struct{}, 16)
 	L := loadPokeTestPlugin(t, pe, []string{"onebot11", "image"}, "表情包", "1", "1", "0")
 	runOnNoticePoke(t, pe, L, 619463411, 2706880859, 99999)
 
+	// send_group_msg 在 goroutine 里异步落账：有界等待发送通知——
+	// 通知到达即失败（说明戳别人触发了回复）；超时后复查账本兜底
+	select {
+	case <-adp.notify:
+		adp.mu.Lock()
+		n := len(adp.groups)
+		adp.mu.Unlock()
+		t.Fatalf("戳别人时不应回复，实际发送 %d 条", n)
+	case <-time.After(300 * time.Millisecond):
+	}
 	adp.mu.Lock()
 	n := len(adp.groups)
 	adp.mu.Unlock()

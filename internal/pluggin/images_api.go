@@ -60,19 +60,13 @@ func (pe *PluginEngine) injectImagesAPI(L *lua.LState) {
 			}
 			folder = normalizeImageFolderArg(folder)
 			ctx := context.Background()
-			var out []models.ImageAsset
-			for offset := 0; offset < 500; offset += 100 {
-				page, err := pe.dao.Image.List(ctx, folder, 100, offset)
-				if err != nil {
-					log.Warn("[plugin:images] 图床枚举失败", "folder", folder, "err", err)
-					break
-				}
-				out = append(out, page...)
-				if len(page) < 100 {
-					break
-				}
+			// 单次查询（上限 500）：分页 OFFSET 循环在查询间隙有增删时会重复/遗漏；
+			// DAO 方法带 created_at DESC, id DESC 稳定排序
+			list, err := pe.dao.Image.ListFolder(ctx, folder, 500)
+			if err != nil {
+				log.Warn("[plugin:images] 图床枚举失败", "folder", folder, "err", err)
 			}
-			pushAssets(L, out)
+			pushAssets(L, list)
 			return 1
 		},
 		"search": func(L *lua.LState) int {
