@@ -1442,6 +1442,11 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 		pe.injectFileAPI(L, pluginName)
 	}
 
+	// Images：图床枚举/搜索（需要 image 权限）
+	if hasPerm("image") {
+		pe.injectImagesAPI(L)
+	}
+
 	// Config：动态配置（无需权限，默认注入）
 	pe.injectConfigAPI(L, pluginName)
 

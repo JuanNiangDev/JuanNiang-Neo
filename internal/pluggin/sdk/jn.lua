@@ -400,6 +400,21 @@ M.metrics = metrics
 M.file = file
 
 -- ====================================================================
+-- images 图床枚举/搜索 (需要 image 权限)
+-- ====================================================================
+---@class jn.ImageAsset
+---@field id string 图床图片 UUID（可直接拼 [CQ:image,file=imgs://<id>]，发送层自动解析为 base64）
+---@field name string 展示名称
+---@field folder string 虚拟文件夹路径（/ 或 /<name>）
+---@field mime_type string image/jpeg 等
+---@field size_bytes number 字节数
+
+---@class jn.Images
+---@field list fun(folder: string): jn.ImageAsset[] 列出虚拟文件夹下全部图片（folder 空串或 "/" 表示根目录，最多 500 条）
+---@field search fun(keyword: string, limit?: number): jn.ImageAsset[] 按展示名称模糊匹配（前缀优先，默认 20 条）
+M.images = images
+
+-- ====================================================================
 -- command 多级命令注册
 -- ====================================================================
 
