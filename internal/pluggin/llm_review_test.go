@@ -55,6 +55,12 @@ func (f *fakeAdapter) SendGroupForwardMsg(groupID int64, nodes []adapter.Forward
 	f.groups = append(f.groups, fmt.Sprintf("forward:%d", len(nodes)))
 	return 0, nil
 }
+func (f *fakeAdapter) SendPrivateForwardMsg(userID int64, nodes []adapter.ForwardNode) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.groups = append(f.groups, fmt.Sprintf("private_forward:%d:%d", userID, len(nodes)))
+	return 0, nil
+}
 func (f *fakeAdapter) DeleteMsg(messageID int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

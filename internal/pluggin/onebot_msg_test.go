@@ -101,3 +101,33 @@ end
 		t.Fatalf("空节点应返回错误，got %q", err.String())
 	}
 }
+
+// TestOneBot11PrivateForwardMsg 测试私聊合并转发 send_private_forward_msg_sync
+func TestOneBot11PrivateForwardMsg(t *testing.T) {
+	pe, adp := newMiniTestEngine(t, nil)
+	L := loadMiniPlugin(t, pe, "privfwdtest", `
+local jn = require("jn")
+function on_message(event)
+    jn.onebot11.send_private_forward_msg_sync(2001, {
+        { user_id = 1, nickname = "bot", content = "node1" },
+        { user_id = 1, nickname = "bot", content = "node2" },
+    })
+    return false, nil
+end
+`)
+
+	runOnMessage(t, pe, L, 0, 2001, "trigger", "90003")
+
+	adp.mu.Lock()
+	defer adp.mu.Unlock()
+	found := false
+	for _, g := range adp.groups {
+		if strings.Contains(g, "private_forward:2001:2") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("应发送私聊合并转发 2 节点: %v", adp.groups)
+	}
+}

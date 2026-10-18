@@ -371,6 +371,32 @@ func (p *Adapter) SendGroupForwardMsg(groupID int64, nodes []ForwardNode) (int64
 	return data.MessageID, nil
 }
 
+// SendPrivateForwardMsg 发送合并转发消息给私聊好友。
+func (p *Adapter) SendPrivateForwardMsg(userID int64, nodes []ForwardNode) (int64, error) {
+	messages := make([]map[string]any, 0, len(nodes))
+	for _, n := range nodes {
+		data := make(map[string]any, 3)
+		if n.ID != 0 {
+			data["id"] = n.ID
+		} else {
+			data["user_id"] = n.Uin
+			data["nickname"] = n.Name
+			data["content"] = p.resolveImageAssets(normalizeMessage(n.Content))
+		}
+		messages = append(messages, map[string]any{"type": "node", "data": data})
+	}
+	rsp, err := p.call("send_private_forward_msg", map[string]any{
+		"user_id":  userID,
+		"messages": messages,
+	})
+	if err != nil {
+		return 0, err
+	}
+	var data MessageData
+	json.Unmarshal([]byte(rsp.Data.(string)), &data)
+	return data.MessageID, nil
+}
+
 // ============================================================
 // 内部辅助
 // ============================================================
