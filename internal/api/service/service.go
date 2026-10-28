@@ -1088,6 +1088,7 @@ func (s *Service) ToggleTool(ctx context.Context, c *app.RequestContext) {
 
 // UpdateToolAdminOnly 更新工具的"仅管理员"标志（内置/自定义工具均可）。
 // 更新成功后回调 OnUpdateToolAdminOnly 刷新 Agent 运行时权限表，立即生效。
+// 数据库已保存但运行时刷新失败时返回错误，不将部分成功报告为权限已生效。
 func (s *Service) UpdateToolAdminOnly(ctx context.Context, c *app.RequestContext) {
 	var data dto.UpdateToolAdminOnlyReq
 	id := c.Param("id")
@@ -1103,7 +1104,12 @@ func (s *Service) UpdateToolAdminOnly(ctx context.Context, c *app.RequestContext
 
 	// 刷新 Agent 运行时名单，立即生效
 	if s.OnUpdateToolAdminOnly != nil {
-		s.OnUpdateToolAdminOnly()
+		if err := s.OnUpdateToolAdminOnly(); err != nil {
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{
+				ErrorDetail: "工具权限已保存，但运行时权限刷新失败，请重试：" + err.Error(),
+			}))
+			return
+		}
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }

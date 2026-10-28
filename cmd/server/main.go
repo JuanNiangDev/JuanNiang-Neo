@@ -355,7 +355,7 @@ func main() {
 		hago.Memory.SetRAGClient(client) // 同步记忆双写客户端
 	}
 	svc.OnRebuildAgent = func() { hago.RebuildEinoAgent(ctx) }
-	svc.OnUpdateToolAdminOnly = func() { hago.RefreshToolAdminOnly(ctx) }
+	svc.OnUpdateToolAdminOnly = func() error { return hago.RefreshToolAdminOnly(ctx) }
 	svc.OnReplyStrategyChanged = func() { hago.InvalidateReplySettings() }
 	svc.OnKnowledgeChanged = func() { hago.InvalidateKnowledgeLRU() }
 	svc.OnExtractKnowledge = func(id string) { hago.ExtractKeywordsAsync(ctx, id) }

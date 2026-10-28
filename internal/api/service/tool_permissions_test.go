@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"JuanNiang-Neo/internal/agent/tool"
+	"JuanNiang-Neo/internal/api/dto"
 	"JuanNiang-Neo/internal/core/dao"
 	"JuanNiang-Neo/internal/core/models"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -42,7 +44,7 @@ func TestToolPermissionPersistsByReturnedID(t *testing.T) {
 	s := &Service{DAO: dao.NewBundle(db), ToolRegistry: tool.NewToolRegistry()}
 	s.ToolRegistry.Register(permissionTestTool{})
 	refreshed := 0
-	s.OnUpdateToolAdminOnly = func() { refreshed++ }
+	s.OnUpdateToolAdminOnly = func() error { refreshed++; return nil }
 	h := server.New()
 	h.PUT("/tools/:id/admin-only", s.UpdateToolAdminOnly)
 	h.GET("/tools", s.ListTools)
@@ -104,5 +106,72 @@ func TestToolPermissionPersistsByReturnedID(t *testing.T) {
 	sqlDB.Close()
 	if err = s.setToolAdminOnly(ctx, "builtin:fixture", true); err == nil {
 		t.Fatal("ignored DB failure")
+	}
+}
+
+// TestToolPermissionRefreshFailure 验证数据库写入成功但运行时刷新失败时，接口返回错误。
+// 刷新恢复后可使用同一标识重试，且不会重复创建工具配置。
+func TestToolPermissionRefreshFailure(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sqlDB.Close() })
+	if err := db.AutoMigrate(&models.ToolConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{DAO: dao.NewBundle(db), ToolRegistry: tool.NewToolRegistry()}
+	s.ToolRegistry.Register(permissionTestTool{})
+	refreshErr := errors.New("runtime refresh unavailable")
+	refreshCalls := 0
+	s.OnUpdateToolAdminOnly = func() error {
+		refreshCalls++
+		return refreshErr
+	}
+	h := server.New()
+	h.PUT("/tools/:id/admin-only", s.UpdateToolAdminOnly)
+	body := `{"admin_only":true}`
+	for _, wantStatus := range []uint{dto.ServerInternalErr.Status, dto.OK.Status} {
+		res := ut.PerformRequest(h.Engine, "PUT", "/tools/builtin:fixture/admin-only",
+			&ut.Body{Body: strings.NewReader(body), Len: len(body)},
+			ut.Header{Key: "Content-Type", Value: "application/json"})
+		var envelope struct {
+			Status uint            `json:"status"`
+			Data   dto.ErrorDetail `json:"data"`
+		}
+		if err := json.Unmarshal(res.Body.Bytes(), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Status != wantStatus {
+			t.Fatalf("want status %d, got %s", wantStatus, res.Body.String())
+		}
+		if refreshErr != nil && (!strings.Contains(envelope.Data.ErrorDetail, "已保存") ||
+			!strings.Contains(envelope.Data.ErrorDetail, refreshErr.Error())) {
+			t.Fatalf("missing refresh failure details: %s", res.Body.String())
+		}
+		rows, err := s.DAO.ToolConfig.List(context.Background())
+		if err != nil || len(rows) != 1 || !rows[0].AdminOnly {
+			t.Fatalf("persisted permission missing or duplicated: rows=%v err=%v", rows, err)
+		}
+		refreshErr = nil
+	}
+	if refreshCalls != 2 {
+		t.Fatalf("expected refresh on failure and retry, got %d calls", refreshCalls)
+	}
+	res := ut.PerformRequest(h.Engine, "PUT", "/tools/missing-id/admin-only",
+		&ut.Body{Body: strings.NewReader(body), Len: len(body)},
+		ut.Header{Key: "Content-Type", Value: "application/json"})
+	var envelope struct {
+		Status uint `json:"status"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &envelope); err != nil || envelope.Status != dto.ServerInternalErr.Status {
+		t.Fatalf("expected persistence failure: %s", res.Body.String())
+	}
+	if refreshCalls != 2 {
+		t.Fatal("refresh called despite persistence failure")
 	}
 }

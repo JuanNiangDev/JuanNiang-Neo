@@ -133,9 +133,9 @@ async function toggleAdminOnly(item: ToolConfigResp, v: boolean) {
       return
     }
     toastStore.success(v ? `已开启「${item.name}」仅管理员` : `已关闭「${item.name}」仅管理员`)
-  } catch {
+  } catch (err) {
     item.admin_only = previous
-    toastStore.error('操作失败')
+    toastStore.error(err instanceof Error ? err.message : '操作失败')
   } finally {
     adminOnlyLoading.value = null
   }
