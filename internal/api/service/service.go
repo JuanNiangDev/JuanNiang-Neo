@@ -1096,30 +1096,9 @@ func (s *Service) UpdateToolAdminOnly(ctx context.Context, c *app.RequestContext
 		return
 	}
 
-	// 内置工具 ID 形如 builtin:<name>：按 name 查找/创建对应 ToolConfig 行
-	name := id
-	if strings.HasPrefix(id, builtinToolPrefix) {
-		name = strings.TrimPrefix(id, builtinToolPrefix)
-	}
-
-	tc, err := s.DAO.ToolConfig.GetByName(ctx, name)
-	if err == nil {
-		if err := s.DAO.ToolConfig.SetAdminOnly(ctx, tc.ID, data.AdminOnly); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
-	} else {
-		// 无对应行（内置工具首次设置）：幂等创建并写入标志
-		desc := ""
-		if s.ToolRegistry != nil {
-			if t, ok := s.ToolRegistry.Get(name); ok {
-				desc = t.Description()
-			}
-		}
-		if err := s.DAO.ToolConfig.EnsureBuiltin(ctx, name, desc, data.AdminOnly); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-			return
-		}
+	if err := s.setToolAdminOnly(ctx, id, data.AdminOnly); err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
 	}
 
 	// 刷新 Agent 运行时名单，立即生效
@@ -1127,6 +1106,37 @@ func (s *Service) UpdateToolAdminOnly(ctx context.Context, c *app.RequestContext
 		s.OnUpdateToolAdminOnly()
 	}
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
+}
+
+// setToolAdminOnly distinguishes persisted IDs from runtime-only builtin names.
+// Never create a tool from an unknown ID or a failed database lookup.
+func (s *Service) setToolAdminOnly(ctx context.Context, id string, adminOnly bool) error {
+	if !strings.HasPrefix(id, builtinToolPrefix) {
+		tc, err := s.DAO.ToolConfig.GetByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		return s.DAO.ToolConfig.SetAdminOnly(ctx, tc.ID, adminOnly)
+	}
+	name := strings.TrimPrefix(id, builtinToolPrefix)
+	if s.ToolRegistry == nil {
+		return fmt.Errorf("unknown builtin tool")
+	}
+	t, ok := s.ToolRegistry.Get(name)
+	if !ok || !t.IsBuiltin() {
+		return fmt.Errorf("unknown builtin tool")
+	}
+	tc, err := s.DAO.ToolConfig.GetByName(ctx, name)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		if err = s.DAO.ToolConfig.EnsureBuiltin(ctx, name, t.Description(), adminOnly); err != nil {
+			return err
+		}
+		tc, err = s.DAO.ToolConfig.GetByName(ctx, name)
+	}
+	if err != nil {
+		return err
+	}
+	return s.DAO.ToolConfig.SetAdminOnly(ctx, tc.ID, adminOnly)
 }
 
 // ====================================================================

@@ -7,7 +7,7 @@
     <v-alert type="info" variant="tonal" class="mb-4" density="compact">
       <strong>仅管理员</strong>：开启后该工具只能由 Admins（管理员列表）内的人触发，防止提示词注入诱导 Agent 执行敏感操作（踢人/禁言/撤回等）。内置群管理工具默认开启。
     </v-alert>
-    <v-data-table :headers="headers" :items="items" :loading="loading">
+    <v-data-table class="tools-table" :headers="headers" :items="items" :loading="loading" item-value="name">
       <template #item.is_builtin="{ item }">
         <v-chip size="small" :color="item.is_builtin ? 'primary' : 'grey'" variant="tonal">{{ item.is_builtin ? '内置' : '自定义' }}</v-chip>
       </template>
@@ -16,11 +16,14 @@
       </template>
       <template #item.admin_only="{ item }">
         <v-switch
+          class="tool-permission-switch"
           :model-value="item.admin_only"
           color="error"
           density="compact"
           hide-details
-          :loading="adminOnlyLoading === item.id"
+          :loading="adminOnlyLoading === item.name"
+          :disabled="adminOnlyLoading !== null"
+          :aria-label="`${item.name} 仅管理员`"
           @update:model-value="(v) => toggleAdminOnly(item, !!v)"
         />
       </template>
@@ -77,17 +80,21 @@ const detail = ref<ToolConfigResp | null>(null)
 const adminOnlyLoading = ref<string | null>(null)
 
 const headers = [
-  { title: '名称', key: 'name' },
-  { title: '描述', key: 'description' },
-  { title: '类型', key: 'is_builtin' },
-  { title: '仅管理员', key: 'admin_only', align: 'center' as const },
-  { title: 'Active', key: 'is_active', align: 'center' as const },
-  { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
+  { title: '名称', key: 'name', minWidth: 200 },
+  { title: '描述', key: 'description', minWidth: 300 },
+  { title: '类型', key: 'is_builtin', width: 100, minWidth: 100 },
+  { title: '仅管理员', key: 'admin_only', align: 'center' as const, width: 140, minWidth: 140 },
+  { title: 'Active', key: 'is_active', align: 'center' as const, width: 100, minWidth: 100 },
+  { title: '操作', key: 'actions', align: 'center' as const, sortable: false, width: 80, minWidth: 80 },
 ]
 
 async function fetch() {
   loading.value = true
-  try { items.value = (await toolApi.list()).data.data || [] }
+  try {
+    // Runtime tools come from a Go map; API iteration order is not a display order.
+    const tools: ToolConfigResp[] = (await toolApi.list()).data.data || []
+    items.value = [...tools].sort((a, b) => a.name.localeCompare(b.name, 'en'))
+  }
   catch { toastStore.error('获取失败') }
   finally { loading.value = false }
 }
@@ -98,12 +105,26 @@ function showDetail(item: ToolConfigResp) {
 }
 
 async function toggleAdminOnly(item: ToolConfigResp, v: boolean) {
-  adminOnlyLoading.value = item.id
+  if (adminOnlyLoading.value !== null) return
+  const previous = item.admin_only
+  adminOnlyLoading.value = item.name
+  item.admin_only = v
   try {
     await toolApi.updateAdminOnly(item.id, v)
-    item.admin_only = v
+    try {
+      const tools: ToolConfigResp[] = (await toolApi.list()).data.data || []
+      const updated = tools.find(tool => tool.name === item.name)
+      if (!updated) throw new Error('Tool missing from refreshed list')
+      // First save changes builtin:<name> to a database ID. Update the same row,
+      // without replacing the table, its order, pagination or current sort.
+      Object.assign(item, updated)
+    } catch {
+      toastStore.warning('权限已保存，但工具信息刷新失败；可以继续操作')
+      return
+    }
     toastStore.success(v ? `已开启「${item.name}」仅管理员` : `已关闭「${item.name}」仅管理员`)
   } catch {
+    item.admin_only = previous
     toastStore.error('操作失败')
   } finally {
     adminOnlyLoading.value = null
@@ -114,6 +135,14 @@ onMounted(fetch)
 </script>
 
 <style scoped>
+.tools-table :deep(th) {
+  white-space: nowrap;
+}
+
+.tool-permission-switch :deep(.v-selection-control) {
+  justify-content: center;
+}
+
 .code-block {
   background: rgb(var(--v-theme-code-bg));
   color: rgb(var(--v-theme-code-fg));
