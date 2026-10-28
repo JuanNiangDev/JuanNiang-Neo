@@ -26,6 +26,9 @@ func (permissionTestTool) Execute(context.Context, json.RawMessage) (string, err
 func (permissionTestTool) IsBuiltin() bool                                          { return true }
 func (permissionTestTool) IsLongRunning() bool                                      { return false }
 
+// TestToolPermissionPersistsByReturnedID 验证内置工具首次保存后，使用接口返回的数据库 ID
+// 继续修改权限仍能正确持久化，并同步刷新运行时权限。
+// 同时覆盖自定义工具、无效标识和数据库异常，防止后续更新误创建工具配置记录。
 func TestToolPermissionPersistsByReturnedID(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	if err != nil {

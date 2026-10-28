@@ -88,6 +88,10 @@ const headers = [
   { title: '操作', key: 'actions', align: 'center' as const, sortable: false, width: 80, minWidth: 80 },
 ]
 
+/**
+ * 加载工具列表并按名称稳定排序，避免接口返回顺序不固定导致行位置变化。
+ * 加载失败时显示提示，无论成功或失败都会清除加载状态。
+ */
 async function fetch() {
   loading.value = true
   try {
@@ -104,6 +108,12 @@ function showDetail(item: ToolConfigResp) {
   detailDialog.value = true
 }
 
+/**
+ * 保存权限后仅更新当前行及其数据库 ID，保留表格的分页、排序和滚动状态。
+ * 保存失败时恢复原值；保存成功但刷新失败时保留已保存的值，并提示刷新失败。
+ * @param item 保存后需要就地更新的工具行。
+ * @param v 是否将工具调用限制为仅管理员。
+ */
 async function toggleAdminOnly(item: ToolConfigResp, v: boolean) {
   if (adminOnlyLoading.value !== null) return
   const previous = item.admin_only
