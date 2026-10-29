@@ -69,6 +69,12 @@ type ErrorDetail struct {
 	ErrorDetail string `json:"error_detail"`
 }
 
+// ToolPermissionErrorDetail 区分权限未保存与已保存但运行时刷新失败。
+type ToolPermissionErrorDetail struct {
+	ErrorDetail
+	Persisted bool `json:"persisted"`
+}
+
 type AdapterStatus struct {
 	Running    bool                 `json:"running"`
 	ListenAddr string               `json:"listen_addr"`

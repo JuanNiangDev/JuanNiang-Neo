@@ -7,7 +7,7 @@
     <v-alert type="info" variant="tonal" class="mb-4" density="compact">
       <strong>仅管理员</strong>：开启后该工具只能由 Admins（管理员列表）内的人触发，防止提示词注入诱导 Agent 执行敏感操作（踢人/禁言/撤回等）。内置群管理工具默认开启。
     </v-alert>
-    <v-data-table :headers="headers" :items="items" :loading="loading">
+    <v-data-table class="tools-table" :headers="headers" :items="items" :loading="loading" item-value="name">
       <template #item.is_builtin="{ item }">
         <v-chip size="small" :color="item.is_builtin ? 'primary' : 'grey'" variant="tonal">{{ item.is_builtin ? '内置' : '自定义' }}</v-chip>
       </template>
@@ -16,11 +16,14 @@
       </template>
       <template #item.admin_only="{ item }">
         <v-switch
+          class="tool-permission-switch"
           :model-value="item.admin_only"
           color="error"
           density="compact"
           hide-details
-          :loading="adminOnlyLoading === item.id"
+          :loading="adminOnlyLoading === item.name"
+          :disabled="adminOnlyLoading !== null"
+          :aria-label="`${item.name} 仅管理员`"
           @update:model-value="(v) => toggleAdminOnly(item, !!v)"
         />
       </template>
@@ -67,6 +70,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { toolApi, type ToolConfigResp } from '@/api'
+import { ApiError } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
@@ -77,17 +81,25 @@ const detail = ref<ToolConfigResp | null>(null)
 const adminOnlyLoading = ref<string | null>(null)
 
 const headers = [
-  { title: '名称', key: 'name' },
-  { title: '描述', key: 'description' },
-  { title: '类型', key: 'is_builtin' },
-  { title: '仅管理员', key: 'admin_only', align: 'center' as const },
-  { title: 'Active', key: 'is_active', align: 'center' as const },
-  { title: '操作', key: 'actions', align: 'center' as const, sortable: false },
+  { title: '名称', key: 'name', minWidth: 200 },
+  { title: '描述', key: 'description', minWidth: 300 },
+  { title: '类型', key: 'is_builtin', width: 100, minWidth: 100 },
+  { title: '仅管理员', key: 'admin_only', align: 'center' as const, width: 140, minWidth: 140 },
+  { title: 'Active', key: 'is_active', align: 'center' as const, width: 100, minWidth: 100 },
+  { title: '操作', key: 'actions', align: 'center' as const, sortable: false, width: 80, minWidth: 80 },
 ]
 
+/**
+ * 加载工具列表并按名称稳定排序，避免接口返回顺序不固定导致行位置变化。
+ * 加载失败时显示提示，无论成功或失败都会清除加载状态。
+ */
 async function fetch() {
   loading.value = true
-  try { items.value = (await toolApi.list()).data.data || [] }
+  try {
+    // Runtime tools come from a Go map; API iteration order is not a display order.
+    const tools: ToolConfigResp[] = (await toolApi.list()).data.data || []
+    items.value = [...tools].sort((a, b) => a.name.localeCompare(b.name, 'en'))
+  }
   catch { toastStore.error('获取失败') }
   finally { loading.value = false }
 }
@@ -97,14 +109,59 @@ function showDetail(item: ToolConfigResp) {
   detailDialog.value = true
 }
 
+/**
+ * 保存权限后仅更新当前行及其数据库 ID，保留表格的分页、排序和滚动状态。
+ * 仅在后端确认未持久化时恢复原值；已保存但运行时刷新失败时保留新值并提示。
+ * 无法确认保存结果时查询数据库状态，不将网络异常直接视为持久化失败。
+ * @param item 保存后需要就地更新的工具行。
+ * @param v 是否将工具调用限制为仅管理员。
+ */
 async function toggleAdminOnly(item: ToolConfigResp, v: boolean) {
-  adminOnlyLoading.value = item.id
+  if (adminOnlyLoading.value !== null) return
+  const previous = item.admin_only
+  adminOnlyLoading.value = item.name
+  item.admin_only = v
   try {
-    await toolApi.updateAdminOnly(item.id, v)
-    item.admin_only = v
-    toastStore.success(v ? `已开启「${item.name}」仅管理员` : `已关闭「${item.name}」仅管理员`)
-  } catch {
-    toastStore.error('操作失败')
+    let persisted: boolean | undefined
+    let saveError: string | undefined
+    try {
+      await toolApi.updateAdminOnly(item.id, v)
+      persisted = true
+    } catch (err) {
+      saveError = err instanceof Error ? err.message : '操作失败'
+      const data = err instanceof ApiError ? err.data : undefined
+      if (data && typeof data === 'object' && 'persisted' in data && typeof data.persisted === 'boolean') {
+        persisted = data.persisted
+      }
+    }
+    if (persisted === false) {
+      item.admin_only = previous
+      toastStore.error(saveError || '权限保存失败')
+      return
+    }
+
+    let refreshed = false
+    try {
+      const tools: ToolConfigResp[] = (await toolApi.list()).data.data || []
+      const updated = tools.find(tool => tool.name === item.name)
+      if (!updated) throw new Error('Tool missing from refreshed list')
+      // 首次保存可能生成数据库 ID；只更新当前行，保留分页、排序与滚动位置。
+      Object.assign(item, updated)
+      refreshed = true
+    } catch {
+      // 查询失败时保留当前值，由下方分别提示已保存或结果未知。
+    }
+    if (persisted !== true) {
+      toastStore.warning(refreshed
+        ? '保存结果未确认，已同步数据库配置；运行时权限状态未知，请重试'
+        : '保存结果未确认，工具信息刷新也失败，请核对后重试')
+    } else if (saveError) {
+      toastStore.warning(saveError + (refreshed ? '' : '；工具信息刷新也失败，暂未同步数据库 ID'))
+    } else if (!refreshed) {
+      toastStore.warning('权限已保存，但工具信息刷新失败；可以继续操作')
+    } else {
+      toastStore.success(v ? `已开启「${item.name}」仅管理员` : `已关闭「${item.name}」仅管理员`)
+    }
   } finally {
     adminOnlyLoading.value = null
   }
@@ -114,6 +171,14 @@ onMounted(fetch)
 </script>
 
 <style scoped>
+.tools-table :deep(th) {
+  white-space: nowrap;
+}
+
+.tool-permission-switch :deep(.v-selection-control) {
+  justify-content: center;
+}
+
 .code-block {
   background: rgb(var(--v-theme-code-bg));
   color: rgb(var(--v-theme-code-fg));

@@ -484,14 +484,16 @@ func (h *HagoCenter) loadToolAdminOnly(ctx context.Context) error {
 }
 
 // RefreshToolAdminOnly 从 DB 重载"仅管理员"工具名单（Web 配置变更后调用）。
-func (h *HagoCenter) RefreshToolAdminOnly(ctx context.Context) {
+// 加载失败时保留原有名单并返回错误，由调用方报告权限尚未刷新。
+func (h *HagoCenter) RefreshToolAdminOnly(ctx context.Context) error {
 	if err := h.loadToolAdminOnly(ctx); err != nil {
 		log.Error("刷新工具管理员名单失败", "err", err)
-		return
+		return err
 	}
 	h.toolAdminOnlyMu.RLock()
 	defer h.toolAdminOnlyMu.RUnlock()
 	log.Info("工具管理员名单已刷新", "count", len(h.toolAdminOnly))
+	return nil
 }
 
 // isToolAdminOnly 查询工具是否标记为"仅管理员"。
