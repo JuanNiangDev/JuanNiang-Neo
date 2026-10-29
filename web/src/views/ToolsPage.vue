@@ -70,6 +70,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { toolApi, type ToolConfigResp } from '@/api'
+import { ApiError } from '@/api/client'
 import { useToastStore } from '@/stores/toast'
 
 const toastStore = useToastStore()
@@ -110,7 +111,8 @@ function showDetail(item: ToolConfigResp) {
 
 /**
  * 保存权限后仅更新当前行及其数据库 ID，保留表格的分页、排序和滚动状态。
- * 保存失败时恢复原值；保存成功但刷新失败时保留已保存的值，并提示刷新失败。
+ * 仅在后端确认未持久化时恢复原值；已保存但运行时刷新失败时保留新值并提示。
+ * 无法确认保存结果时查询数据库状态，不将网络异常直接视为持久化失败。
  * @param item 保存后需要就地更新的工具行。
  * @param v 是否将工具调用限制为仅管理员。
  */
@@ -120,22 +122,46 @@ async function toggleAdminOnly(item: ToolConfigResp, v: boolean) {
   adminOnlyLoading.value = item.name
   item.admin_only = v
   try {
-    await toolApi.updateAdminOnly(item.id, v)
+    let persisted: boolean | undefined
+    let saveError: string | undefined
+    try {
+      await toolApi.updateAdminOnly(item.id, v)
+      persisted = true
+    } catch (err) {
+      saveError = err instanceof Error ? err.message : '操作失败'
+      const data = err instanceof ApiError ? err.data : undefined
+      if (data && typeof data === 'object' && 'persisted' in data && typeof data.persisted === 'boolean') {
+        persisted = data.persisted
+      }
+    }
+    if (persisted === false) {
+      item.admin_only = previous
+      toastStore.error(saveError || '权限保存失败')
+      return
+    }
+
+    let refreshed = false
     try {
       const tools: ToolConfigResp[] = (await toolApi.list()).data.data || []
       const updated = tools.find(tool => tool.name === item.name)
       if (!updated) throw new Error('Tool missing from refreshed list')
-      // First save changes builtin:<name> to a database ID. Update the same row,
-      // without replacing the table, its order, pagination or current sort.
+      // 首次保存可能生成数据库 ID；只更新当前行，保留分页、排序与滚动位置。
       Object.assign(item, updated)
+      refreshed = true
     } catch {
-      toastStore.warning('权限已保存，但工具信息刷新失败；可以继续操作')
-      return
+      // 查询失败时保留当前值，由下方分别提示已保存或结果未知。
     }
-    toastStore.success(v ? `已开启「${item.name}」仅管理员` : `已关闭「${item.name}」仅管理员`)
-  } catch (err) {
-    item.admin_only = previous
-    toastStore.error(err instanceof Error ? err.message : '操作失败')
+    if (persisted !== true) {
+      toastStore.warning(refreshed
+        ? '保存结果未确认，已同步数据库配置；运行时权限状态未知，请重试'
+        : '保存结果未确认，工具信息刷新也失败，请核对后重试')
+    } else if (saveError) {
+      toastStore.warning(saveError + (refreshed ? '' : '；工具信息刷新也失败，暂未同步数据库 ID'))
+    } else if (!refreshed) {
+      toastStore.warning('权限已保存，但工具信息刷新失败；可以继续操作')
+    } else {
+      toastStore.success(v ? `已开启「${item.name}」仅管理员` : `已关闭「${item.name}」仅管理员`)
+    }
   } finally {
     adminOnlyLoading.value = null
   }

@@ -140,8 +140,11 @@ func TestToolPermissionRefreshFailure(t *testing.T) {
 			&ut.Body{Body: strings.NewReader(body), Len: len(body)},
 			ut.Header{Key: "Content-Type", Value: "application/json"})
 		var envelope struct {
-			Status uint            `json:"status"`
-			Data   dto.ErrorDetail `json:"data"`
+			Status uint `json:"status"`
+			Data   struct {
+				ErrorDetail string `json:"error_detail"`
+				Persisted   *bool  `json:"persisted"`
+			} `json:"data"`
 		}
 		if err := json.Unmarshal(res.Body.Bytes(), &envelope); err != nil {
 			t.Fatal(err)
@@ -152,6 +155,9 @@ func TestToolPermissionRefreshFailure(t *testing.T) {
 		if refreshErr != nil && (!strings.Contains(envelope.Data.ErrorDetail, "已保存") ||
 			!strings.Contains(envelope.Data.ErrorDetail, refreshErr.Error())) {
 			t.Fatalf("missing refresh failure details: %s", res.Body.String())
+		}
+		if refreshErr != nil && (envelope.Data.Persisted == nil || !*envelope.Data.Persisted) {
+			t.Fatalf("missing persisted=true on runtime refresh failure: %s", res.Body.String())
 		}
 		rows, err := s.DAO.ToolConfig.List(context.Background())
 		if err != nil || len(rows) != 1 || !rows[0].AdminOnly {
@@ -167,11 +173,90 @@ func TestToolPermissionRefreshFailure(t *testing.T) {
 		ut.Header{Key: "Content-Type", Value: "application/json"})
 	var envelope struct {
 		Status uint `json:"status"`
+		Data   struct {
+			Persisted *bool `json:"persisted"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &envelope); err != nil || envelope.Status != dto.ServerInternalErr.Status {
 		t.Fatalf("expected persistence failure: %s", res.Body.String())
 	}
+	if envelope.Data.Persisted == nil || *envelope.Data.Persisted {
+		t.Fatalf("missing persisted=false on persistence failure: %s", res.Body.String())
+	}
 	if refreshCalls != 2 {
 		t.Fatal("refresh called despite persistence failure")
+	}
+}
+
+// TestToolPermissionCreationRollback 验证首次创建后查询或更新失败时，事务回滚新配置。
+// 接口必须明确返回 persisted=false，且不能继续触发运行时刷新。
+func TestToolPermissionCreationRollback(t *testing.T) {
+	for _, failAt := range []string{"query_after_create", "update_after_create"} {
+		t.Run(failAt, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB, err := db.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { sqlDB.Close() })
+			if err := db.AutoMigrate(&models.ToolConfig{}); err != nil {
+				t.Fatal(err)
+			}
+			created := false
+			if err := db.Callback().Create().After("gorm:create").Register("test:created", func(tx *gorm.DB) {
+				created = tx.Error == nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			injectedErr := errors.New("failure after initial creation")
+			fail := func(tx *gorm.DB) {
+				if created {
+					tx.AddError(injectedErr)
+				}
+			}
+			if failAt == "query_after_create" {
+				err = db.Callback().Query().Before("gorm:query").Register("test:fail", fail)
+			} else {
+				err = db.Callback().Update().Before("gorm:update").Register("test:fail", fail)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := &Service{DAO: dao.NewBundle(db), ToolRegistry: tool.NewToolRegistry()}
+			s.ToolRegistry.Register(permissionTestTool{})
+			s.OnUpdateToolAdminOnly = func() error {
+				t.Fatal("refresh called despite persistence failure")
+				return nil
+			}
+			h := server.New()
+			h.PUT("/tools/:id/admin-only", s.UpdateToolAdminOnly)
+			body := `{"admin_only":true}`
+			res := ut.PerformRequest(h.Engine, "PUT", "/tools/builtin:fixture/admin-only",
+				&ut.Body{Body: strings.NewReader(body), Len: len(body)},
+				ut.Header{Key: "Content-Type", Value: "application/json"})
+			var envelope struct {
+				Status uint `json:"status"`
+				Data   struct {
+					ErrorDetail string `json:"error_detail"`
+					Persisted   *bool  `json:"persisted"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(res.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if !created || envelope.Status != dto.ServerInternalErr.Status ||
+				envelope.Data.Persisted == nil || *envelope.Data.Persisted ||
+				!strings.Contains(envelope.Data.ErrorDetail, injectedErr.Error()) {
+				t.Fatalf("expected persisted=false after creation failure: %s", res.Body.String())
+			}
+			created = false // 停止注入查询错误，以核对事务回滚后的真实数据库内容。
+			rows, err := s.DAO.ToolConfig.List(context.Background())
+			if err != nil || len(rows) != 0 {
+				t.Fatalf("failed creation left persisted rows: rows=%v err=%v", rows, err)
+			}
+		})
 	}
 }

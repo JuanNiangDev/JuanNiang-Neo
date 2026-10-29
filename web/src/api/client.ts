@@ -1,5 +1,14 @@
 import axios from 'axios'
 
+/** 业务错误保留响应状态和数据，供页面识别已持久化等部分成功状态。 */
+export class ApiError extends Error {
+  /** 创建业务错误，同时保持原有 Error.message 的调用方式。 */
+  constructor(message: string, readonly status: number, readonly data: unknown) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 const client = axios.create({
   baseURL: '/api/v1',
   timeout: 30000,
@@ -29,7 +38,7 @@ client.interceptors.response.use(
       // 优先取后端附带的 error_detail（具体原因，如"该请求已被其他管理员在 QQ 侧处理"），
       // 缺失时回退 info 概述
       const message = res.data?.data?.error_detail || res.data?.info || 'Unknown error'
-      return Promise.reject(new Error(message))
+      return Promise.reject(new ApiError(message, res.data?.status, res.data?.data))
     }
     return res
   },

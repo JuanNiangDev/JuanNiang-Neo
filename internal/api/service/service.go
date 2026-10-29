@@ -1093,20 +1093,25 @@ func (s *Service) UpdateToolAdminOnly(ctx context.Context, c *app.RequestContext
 	var data dto.UpdateToolAdminOnlyReq
 	id := c.Param("id")
 	if err := c.BindJSON(&data); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.BindJSONErr, dto.ToolPermissionErrorDetail{
+			ErrorDetail: dto.ErrorDetail{ErrorDetail: err.Error()}, Persisted: false,
+		}))
 		return
 	}
 
 	if err := s.setToolAdminOnly(ctx, id, data.AdminOnly); err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ToolPermissionErrorDetail{
+			ErrorDetail: dto.ErrorDetail{ErrorDetail: err.Error()}, Persisted: false,
+		}))
 		return
 	}
 
 	// 刷新 Agent 运行时名单，立即生效
 	if s.OnUpdateToolAdminOnly != nil {
 		if err := s.OnUpdateToolAdminOnly(); err != nil {
-			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{
-				ErrorDetail: "工具权限已保存，但运行时权限刷新失败，请重试：" + err.Error(),
+			c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ToolPermissionErrorDetail{
+				ErrorDetail: dto.ErrorDetail{ErrorDetail: "工具权限已保存，但运行时权限尚未生效，请重试：" + err.Error()},
+				Persisted:   true,
 			}))
 			return
 		}
@@ -1114,8 +1119,8 @@ func (s *Service) UpdateToolAdminOnly(ctx context.Context, c *app.RequestContext
 	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, nil))
 }
 
-// setToolAdminOnly distinguishes persisted IDs from runtime-only builtin names.
-// Never create a tool from an unknown ID or a failed database lookup.
+// setToolAdminOnly 区分数据库 ID 和运行时内置工具名，不为无效标识创建配置。
+// 首次创建与权限更新使用同一事务，避免后续失败时遗留已保存的配置。
 func (s *Service) setToolAdminOnly(ctx context.Context, id string, adminOnly bool) error {
 	if !strings.HasPrefix(id, builtinToolPrefix) {
 		tc, err := s.DAO.ToolConfig.GetByID(ctx, id)
@@ -1132,17 +1137,20 @@ func (s *Service) setToolAdminOnly(ctx context.Context, id string, adminOnly boo
 	if !ok || !t.IsBuiltin() {
 		return fmt.Errorf("unknown builtin tool")
 	}
-	tc, err := s.DAO.ToolConfig.GetByName(ctx, name)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		if err = s.DAO.ToolConfig.EnsureBuiltin(ctx, name, t.Description(), adminOnly); err != nil {
+	return s.DAO.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		configs := dao.NewToolConfigDAO(tx)
+		tc, err := configs.GetByName(ctx, name)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			if err = configs.EnsureBuiltin(ctx, name, t.Description(), adminOnly); err != nil {
+				return err
+			}
+			tc, err = configs.GetByName(ctx, name)
+		}
+		if err != nil {
 			return err
 		}
-		tc, err = s.DAO.ToolConfig.GetByName(ctx, name)
-	}
-	if err != nil {
-		return err
-	}
-	return s.DAO.ToolConfig.SetAdminOnly(ctx, tc.ID, adminOnly)
+		return configs.SetAdminOnly(ctx, tc.ID, adminOnly)
+	})
 }
 
 // ====================================================================
