@@ -159,14 +159,18 @@ func runOnNoticePoke(t *testing.T, pe *PluginEngine, L *lua.LState, groupID, use
 	}
 }
 
-// TestNormalizeImageFolderArg 目录参数归一化：空→根、补前导斜杠、原样保留。
+// TestNormalizeImageFolderArg 目录参数归一化：空/纯斜杠→根，首尾斜杠去掉后补单个前导斜杠。
 func TestNormalizeImageFolderArg(t *testing.T) {
 	cases := map[string]string{
 		"":         "/",
 		"/":        "/",
+		"///":      "/",
 		"表情包":      "/表情包",
-		"/表情包":     "/表情包",
+		"表情包/":     "/表情包",
+		"/表情包/":    "/表情包",
+		"//表情包//":  "/表情包",
 		"  /a b  ": "/a b",
+		" /a b/ ":  "/a b",
 	}
 	for in, want := range cases {
 		if got := normalizeImageFolderArg(in); got != want {

@@ -15,17 +15,15 @@ import (
 const imagesQueryTimeout = 10 * time.Second
 
 // normalizeImageFolderArg 归一化插件传入的图床目录参数：
-// 空串 → "/"（根）；不带前导斜杠的名称（如 "表情包"）→ "/表情包"，
-// 与图床存储的 folder 值（"/<name>"）对齐，否则 DAO 查询恒为空。
+// 空串/纯斜杠 → "/"（根）；"表情包"、"表情包/"、"/表情包" 均 → "/表情包"。
+// 与上传侧 service.normalizeImageFolder 保持一致（首尾斜杠一律去掉再加单个前导斜杠），
+// 否则 DAO 精确匹配会因末尾斜杠恒为空。
 func normalizeImageFolderArg(folder string) string {
-	folder = strings.TrimSpace(folder)
+	folder = strings.Trim(strings.TrimSpace(folder), "/")
 	if folder == "" {
 		return "/"
 	}
-	if !strings.HasPrefix(folder, "/") {
-		folder = "/" + folder
-	}
-	return folder
+	return "/" + folder
 }
 
 // injectImagesAPI 注入 jn.images：图床枚举/搜索（需要 image 权限）。
@@ -71,7 +69,10 @@ func (pe *PluginEngine) injectImagesAPI(L *lua.LState) {
 			// DAO 方法带 created_at DESC, id DESC 稳定排序
 			list, err := pe.dao.Image.ListFolder(ctx, folder, 500)
 			if err != nil {
+				// 超时/取消时 GORM 可能已追加部分行，不能把不完整结果当成功返回
 				log.Warn("[plugin:images] 图床枚举失败", "folder", folder, "err", err)
+				L.Push(L.NewTable())
+				return 1
 			}
 			pushAssets(L, list)
 			return 1
