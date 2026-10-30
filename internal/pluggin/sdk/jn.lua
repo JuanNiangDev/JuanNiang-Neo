@@ -96,6 +96,8 @@ M.json = json
 ---@field send_group_msg_sync fun(group_id: number, message: string|table, reply_to?: number): boolean, string? 同步发送群消息，等待结果（reply_to=引用回复的消息ID，可选）
 ---@field send_group_forward_msg fun(group_id: number, nodes: table[]): boolean, string? 异步发送群合并转发（转发卡片），不阻塞；nodes 为节点数组：构造节点 {user_id=…, nickname=“…”, content=“文本或消息段数组”} / 引用节点 {id=群内已有消息ID}
 ---@field send_group_forward_msg_sync fun(group_id: number, nodes: table[]): number, string? 同步发送群合并转发，返回 message_id
+---@field send_private_forward_msg fun(user_id: number, nodes: table[]): boolean, string? 异步发送私聊合并转发（转发卡片），不阻塞；nodes 格式同 send_group_forward_msg
+---@field send_private_forward_msg_sync fun(user_id: number, nodes: table[]): number, string? 同步发送私聊合并转发，返回 message_id
 ---@field delete_msg fun(message_id: number|string): boolean, string? 撤回消息（事件表的 message_id 为字符串）
 ---@field get_msg fun(message_id: number|string): table, string? 根据消息 ID 获取消息完整内容
 ---@field get_group_info fun(group_id: number): table, string?
@@ -398,6 +400,21 @@ M.metrics = metrics
 ---@field exists fun(path: string): boolean 判断文件是否存在
 ---@field remove fun(path: string): boolean, string? 删除文件
 M.file = file
+
+-- ====================================================================
+-- images 图床枚举/搜索 (需要 image 权限)
+-- ====================================================================
+---@class jn.ImageAsset
+---@field id string 图床图片 UUID（可直接拼 [CQ:image,file=imgs://<id>]，发送层自动解析为 base64）
+---@field name string 展示名称
+---@field folder string 虚拟文件夹路径（/ 或 /<name>）
+---@field mime_type string image/jpeg 等
+---@field size_bytes number 字节数
+
+---@class jn.Images
+---@field list fun(folder: string): jn.ImageAsset[] 列出虚拟文件夹下全部图片（folder 空串或 "/" 表示根目录，最多 500 条）
+---@field search fun(keyword: string, limit?: number): jn.ImageAsset[] 按展示名称模糊匹配（前缀优先，默认 20 条）
+M.images = images
 
 -- ====================================================================
 -- command 多级命令注册

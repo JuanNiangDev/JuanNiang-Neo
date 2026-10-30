@@ -96,6 +96,7 @@ type SendAdapter interface {
 	SendPrivateMsg(userID int64, message any) (int64, error)
 	SendGroupMsg(groupID int64, message any) (int64, error)
 	SendGroupForwardMsg(groupID int64, nodes []adapter.ForwardNode) (int64, error)
+	SendPrivateForwardMsg(userID int64, nodes []adapter.ForwardNode) (int64, error)
 	DeleteMsg(messageID int64) error
 	GetMsg(messageID int64) (map[string]any, error)
 	GetGroupInfo(groupID int64) (map[string]any, error)
@@ -1442,6 +1443,11 @@ func (pe *PluginEngine) injectBaseAPI(L *lua.LState, pluginName string, permissi
 		pe.injectFileAPI(L, pluginName)
 	}
 
+	// Images：图床枚举/搜索（需要 image 权限）
+	if hasPerm("image") {
+		pe.injectImagesAPI(L)
+	}
+
 	// Config：动态配置（无需权限，默认注入）
 	pe.injectConfigAPI(L, pluginName)
 
@@ -1851,6 +1857,32 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 				return pushResult(L, fmt.Errorf("合并转发节点不能为空"))
 			}
 			id, err := sendAdp.SendGroupForwardMsg(groupID, nodes)
+			if err != nil {
+				return pushResult(L, err)
+			}
+			L.Push(lua.LNumber(id))
+			return 1
+		},
+		"send_private_forward_msg": func(L *lua.LState) int {
+			userID := int64(L.CheckNumber(1))
+			nodes := buildForwardNodes(L.CheckTable(2))
+			if len(nodes) == 0 {
+				return pushResult(L, fmt.Errorf("合并转发节点不能为空"))
+			}
+			go func() {
+				if _, err := sendAdp.SendPrivateForwardMsg(userID, nodes); err != nil {
+					log.Warn("插件异步发送私聊合并转发失败", "plugin", pluginName, "user_id", userID, "nodes", len(nodes), "err", err)
+				}
+			}()
+			return pushOk(L)
+		},
+		"send_private_forward_msg_sync": func(L *lua.LState) int {
+			userID := int64(L.CheckNumber(1))
+			nodes := buildForwardNodes(L.CheckTable(2))
+			if len(nodes) == 0 {
+				return pushResult(L, fmt.Errorf("合并转发节点不能为空"))
+			}
+			id, err := sendAdp.SendPrivateForwardMsg(userID, nodes)
 			if err != nil {
 				return pushResult(L, err)
 			}

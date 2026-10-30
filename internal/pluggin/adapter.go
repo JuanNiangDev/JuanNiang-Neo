@@ -28,6 +28,10 @@ func (a *AdapterWrapper) SendGroupForwardMsg(groupID int64, nodes []adapter.Forw
 	return a.p.SendGroupForwardMsg(groupID, nodes)
 }
 
+func (a *AdapterWrapper) SendPrivateForwardMsg(userID int64, nodes []adapter.ForwardNode) (int64, error) {
+	return a.p.SendPrivateForwardMsg(userID, nodes)
+}
+
 func (a *AdapterWrapper) DeleteMsg(messageID int64) error {
 	return a.p.DeleteMsg(messageID)
 }

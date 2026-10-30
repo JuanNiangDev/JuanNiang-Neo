@@ -46,6 +46,19 @@ func (d *ImageDAO) List(ctx context.Context, folder string, limit, offset int) (
 	return list, err
 }
 
+// ListFolder 单次查询列出虚拟文件夹下最多 limit 张图片，供图床枚举（jn.images.list）使用。
+// 与 List 的差异：limit 不做 100 钳制（上限 500），且排序带 id 第二键——
+// created_at 相同的记录顺序稳定，避免枚举结果抖动。
+func (d *ImageDAO) ListFolder(ctx context.Context, folder string, limit int) ([]models.ImageAsset, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	var list []models.ImageAsset
+	err := d.db.WithContext(ctx).Where("folder = ?", normalizeFolder(folder)).
+		Order("created_at DESC, id DESC").Limit(limit).Find(&list).Error
+	return list, err
+}
+
 // SearchByName 按图片展示名称模糊匹配（供 Agent search_images 工具使用）。
 // 命中条件：name ILIKE '%keyword%'；结果按名称匹配度（前缀优先）再按创建时间倒序。
 func (d *ImageDAO) SearchByName(ctx context.Context, keyword string, limit int) ([]models.ImageAsset, error) {

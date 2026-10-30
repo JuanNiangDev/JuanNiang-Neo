@@ -33,19 +33,32 @@ type fakeAdapter struct {
 	kicked     []string
 	mutedUsers map[int64]bool // 模拟处于禁言中的用户
 	kickErr    error          // 非 nil 时 KickGroupMember 返回该错误（模拟踢人失败）
+	notify     chan struct{}  // 非 nil 时每次 SendGroupMsg 落账后发通知（负向断言用）
 }
 
 func (f *fakeAdapter) SendPrivateMsg(userID int64, message any) (int64, error) { return 0, nil }
 func (f *fakeAdapter) SendGroupMsg(groupID int64, message any) (int64, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.groups = append(f.groups, fmt.Sprintf("%v", message))
+	f.mu.Unlock()
+	if f.notify != nil {
+		select {
+		case f.notify <- struct{}{}:
+		default: // 满则丢弃，测试方按 groups 账本为准
+		}
+	}
 	return 0, nil
 }
 func (f *fakeAdapter) SendGroupForwardMsg(groupID int64, nodes []adapter.ForwardNode) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.groups = append(f.groups, fmt.Sprintf("forward:%d", len(nodes)))
+	return 0, nil
+}
+func (f *fakeAdapter) SendPrivateForwardMsg(userID int64, nodes []adapter.ForwardNode) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.groups = append(f.groups, fmt.Sprintf("private_forward:%d:%d", userID, len(nodes)))
 	return 0, nil
 }
 func (f *fakeAdapter) DeleteMsg(messageID int64) error {
