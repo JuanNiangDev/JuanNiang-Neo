@@ -230,10 +230,6 @@ type VersionInfo struct {
 	ProtocolVersion string `json:"protocol_version"`
 }
 
-type MessageData struct {
-	MessageID int64 `json:"message_id"`
-}
-
 type Cookies struct {
 	Cookies string `json:"cookies"`
 }

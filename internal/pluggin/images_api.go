@@ -3,11 +3,16 @@ package pluggin
 import (
 	"context"
 	"strings"
+	"time"
 
 	lua "github.com/yuin/gopher-lua"
 
 	"JuanNiang-Neo/internal/core/models"
 )
+
+// imagesQueryTimeout 图床枚举/搜索单次查询上限：Lua 回调在 stateMu 下同步执行，
+// 慢查询会阻塞该插件后续回调与关闭，必须带截止时间。
+const imagesQueryTimeout = 10 * time.Second
 
 // normalizeImageFolderArg 归一化插件传入的图床目录参数：
 // 空串 → "/"（根）；不带前导斜杠的名称（如 "表情包"）→ "/表情包"，
@@ -25,8 +30,9 @@ func normalizeImageFolderArg(folder string) string {
 
 // injectImagesAPI 注入 jn.images：图床枚举/搜索（需要 image 权限）。
 //
-// images.list(folder)        → {{id,name,folder,mime_type,size_bytes},...}
-//                              folder 空串或 "/" 表示根目录；最多返回 500 条。
+// images.list(folder) → {{id,name,folder,mime_type,size_bytes},...}
+// folder 空串或 "/" 表示根目录；最多返回 500 条。
+//
 // images.search(keyword, n?) → 同结构，按展示名称模糊匹配（前缀优先）。
 //
 // 返回的 id 可直接拼 [CQ:image,file=imgs://<id>]：adapter 发送层统一解析为
@@ -59,7 +65,8 @@ func (pe *PluginEngine) injectImagesAPI(L *lua.LState) {
 				folder = L.CheckString(1)
 			}
 			folder = normalizeImageFolderArg(folder)
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), imagesQueryTimeout)
+			defer cancel()
 			// 单次查询（上限 500）：分页 OFFSET 循环在查询间隙有增删时会重复/遗漏；
 			// DAO 方法带 created_at DESC, id DESC 稳定排序
 			list, err := pe.dao.Image.ListFolder(ctx, folder, 500)
@@ -87,7 +94,9 @@ func (pe *PluginEngine) injectImagesAPI(L *lua.LState) {
 				L.Push(L.NewTable())
 				return 1
 			}
-			list, err := pe.dao.Image.SearchByName(context.Background(), keyword, limit)
+			ctx, cancel := context.WithTimeout(context.Background(), imagesQueryTimeout)
+			defer cancel()
+			list, err := pe.dao.Image.SearchByName(ctx, keyword, limit)
 			if err != nil {
 				log.Warn("[plugin:images] 图床搜索失败", "keyword", keyword, "err", err)
 				L.Push(L.NewTable())

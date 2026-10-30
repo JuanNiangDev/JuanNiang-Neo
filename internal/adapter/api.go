@@ -3,6 +3,7 @@ package adapter
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -366,9 +367,7 @@ func (p *Adapter) SendGroupForwardMsg(groupID int64, nodes []ForwardNode) (int64
 	if err != nil {
 		return 0, err
 	}
-	var data MessageData
-	json.Unmarshal([]byte(rsp.Data.(string)), &data)
-	return data.MessageID, nil
+	return parseForwardMsgID("send_group_forward_msg", rsp)
 }
 
 // SendPrivateForwardMsg 发送合并转发消息给私聊好友。
@@ -392,9 +391,7 @@ func (p *Adapter) SendPrivateForwardMsg(userID int64, nodes []ForwardNode) (int6
 	if err != nil {
 		return 0, err
 	}
-	var data MessageData
-	json.Unmarshal([]byte(rsp.Data.(string)), &data)
-	return data.MessageID, nil
+	return parseForwardMsgID("send_private_forward_msg", rsp)
 }
 
 // ============================================================
@@ -516,4 +513,39 @@ func callAndCheckYes(p *Adapter, action string) (bool, error) {
 	}
 	json.Unmarshal([]byte(dataStr), &result)
 	return result.Yes, nil
+}
+
+// parseForwardMsgID 解析合并转发响应中的 message_id。
+// 兼容 JSON 数字（LLBot/NapCat）与十进制字符串（go-cqhttp 的 send_*_forward_msg 返回 string）；
+// 空值、null 或非法值返回错误，避免消息已发出却向调用方报告 0。
+func parseForwardMsgID(action string, rsp *APIResponse) (int64, error) {
+	if rsp == nil {
+		return 0, fmt.Errorf("api %s: nil response", action)
+	}
+	dataStr, ok := rsp.Data.(string)
+	if !ok {
+		return 0, fmt.Errorf("api %s: unexpected data type %T", action, rsp.Data)
+	}
+	var data struct {
+		MessageID json.RawMessage `json:"message_id"`
+	}
+	if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
+		return 0, fmt.Errorf("api %s parse: %w, data=%s", action, err, dataStr)
+	}
+	raw := strings.TrimSpace(string(data.MessageID))
+	if raw == "" || raw == "null" {
+		return 0, fmt.Errorf("api %s: 响应缺少 message_id, data=%s", action, dataStr)
+	}
+	if id, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return id, nil
+	}
+	var text string
+	if err := json.Unmarshal(data.MessageID, &text); err != nil {
+		return 0, fmt.Errorf("api %s: message_id 格式非法: %s", action, raw)
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(text), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("api %s: message_id 非法: %q", action, text)
+	}
+	return id, nil
 }
