@@ -97,6 +97,7 @@ type SendAdapter interface {
 	SendGroupMsg(groupID int64, message any) (int64, error)
 	SendGroupForwardMsg(groupID int64, nodes []adapter.ForwardNode) (int64, error)
 	SendPrivateForwardMsg(userID int64, nodes []adapter.ForwardNode) (int64, error)
+	GetForwardMsg(forwardID string) ([]adapter.ForwardNode, error)
 	DeleteMsg(messageID int64) error
 	GetMsg(messageID int64) (map[string]any, error)
 	GetGroupInfo(groupID int64) (map[string]any, error)
@@ -151,6 +152,9 @@ type LLMAccess interface {
 	Available() bool
 	// Chat 调用 Bot 当前启用的文本模型。req 中未设置的采样参数回退到 Bot 配置。
 	Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error)
+	// VisionURL 用指定名称的 image_model Provider 描述一张网络图片；
+	// providerName 为空时使用当前启用的图像模型。
+	VisionURL(ctx context.Context, providerName, imageURL, prompt string) (string, error)
 }
 
 // MCPGroupAccess 暴露给插件的 MCP 管理接口。
@@ -1889,6 +1893,27 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			L.Push(lua.LNumber(id))
 			return 1
 		},
+		"get_forward_msg_sync": func(L *lua.LState) int {
+			forwardID := L.CheckString(1)
+			nodes, err := sendAdp.GetForwardMsg(forwardID)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			// ForwardNode 不是 goToLuaValue 的已知类型，显式构造为 Lua 数组
+			arr := L.NewTable()
+			for i, n := range nodes {
+				item := L.NewTable()
+				L.SetField(item, "id", lua.LNumber(n.ID))
+				L.SetField(item, "name", lua.LString(n.Name))
+				L.SetField(item, "uin", lua.LNumber(n.Uin))
+				L.SetField(item, "content", goToLuaValue(L, n.Content))
+				L.SetTable(arr, lua.LNumber(i+1), item)
+			}
+			L.Push(arr)
+			return 1
+		},
 		"delete_msg": func(L *lua.LState) int {
 			id, err := luaMsgID(L.Get(1))
 			if err != nil {
@@ -3205,6 +3230,22 @@ func (pe *PluginEngine) injectAgent(L *lua.LState) {
 func (pe *PluginEngine) injectLLM(L *lua.LState, pluginName string) {
 	llmTable := L.NewTable()
 	funcs := map[string]lua.LGFunction{
+		"vision_url": func(L *lua.LState) int {
+			providerName := L.OptString(1, "")
+			imageURL := L.CheckString(2)
+			prompt := L.OptString(3, "用一句简洁的中文描述这张图片的内容，不要编造细节")
+			timeout := llmTimeoutFromOpts(L, 4)
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			text, err := pe.llmAccess.VisionURL(ctx, providerName, imageURL, prompt)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			L.Push(lua.LString(text))
+			return 1
+		},
 		"available": func(L *lua.LState) int {
 			L.Push(lua.LBool(pe.llmAccess != nil && pe.llmAccess.Available()))
 			return 1

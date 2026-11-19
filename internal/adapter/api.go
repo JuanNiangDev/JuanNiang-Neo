@@ -337,8 +337,57 @@ func (p *Adapter) GetVersionInfo() (*VersionInfo, error) {
 // ============================================================
 
 // GetForwardMsg 获取合并转发消息内容。
+// go-cqhttp 返回数组；NapCat 返回 {"messages":[{user_id,sender,message}]}，
+// 两种形状都归一成 ForwardNode（uin/name/content）。
 func (p *Adapter) GetForwardMsg(messageID string) ([]ForwardNode, error) {
-	return callAndParseSlice[ForwardNode](p, "get_forward_msg", map[string]any{"message_id": messageID})
+	rsp, err := p.call("get_forward_msg", map[string]any{"message_id": messageID})
+	if err != nil {
+		return nil, err
+	}
+	if rsp == nil {
+		return nil, fmt.Errorf("api get_forward_msg: nil response")
+	}
+	dataStr, ok := rsp.Data.(string)
+	if !ok {
+		return nil, fmt.Errorf("api get_forward_msg: unexpected data type %T", rsp.Data)
+	}
+	return parseForwardMsgData([]byte(dataStr))
+}
+
+// parseForwardMsgData 归一 get_forward_msg 的数组 / 对象响应。
+func parseForwardMsgData(data []byte) ([]ForwardNode, error) {
+	var arr []ForwardNode
+	if err := json.Unmarshal(data, &arr); err == nil {
+		return arr, nil
+	}
+
+	var wrapper struct {
+		Messages []struct {
+			UserID int64 `json:"user_id"`
+			Sender struct {
+				Nickname string `json:"nickname"`
+				Card     string `json:"card"`
+			} `json:"sender"`
+			Message json.RawMessage `json:"message"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, fmt.Errorf("api get_forward_msg parse: %w, data=%s", err, data)
+	}
+
+	out := make([]ForwardNode, 0, len(wrapper.Messages))
+	for _, m := range wrapper.Messages {
+		name := m.Sender.Card
+		if name == "" {
+			name = m.Sender.Nickname
+		}
+		var content any
+		if len(m.Message) > 0 {
+			_ = json.Unmarshal(m.Message, &content)
+		}
+		out = append(out, ForwardNode{Uin: m.UserID, Name: name, Content: content})
+	}
+	return out, nil
 }
 
 // SendGroupForwardMsg 发送合并转发消息到群。nodes 支持两种节点（LLBot/OneBot11 扩展标准）：

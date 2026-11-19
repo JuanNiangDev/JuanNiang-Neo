@@ -96,6 +96,7 @@ M.json = json
 ---@field send_group_msg_sync fun(group_id: number, message: string|table, reply_to?: number): boolean, string? 同步发送群消息，等待结果（reply_to=引用回复的消息ID，可选）
 ---@field send_group_forward_msg fun(group_id: number, nodes: table[]): boolean, string? 异步发送群合并转发（转发卡片），不阻塞；nodes 为节点数组：构造节点 {user_id=…, nickname=“…”, content=“文本或消息段数组”} / 引用节点 {id=群内已有消息ID}
 ---@field send_group_forward_msg_sync fun(group_id: number, nodes: table[]): number, string? 同步发送群合并转发，返回 message_id
+---@field get_forward_msg_sync fun(forward_id: string): table[]?, string? 读取合并转发内层节点 [{id,name,uin,content}]，content 为消息段数组
 ---@field send_private_forward_msg fun(user_id: number, nodes: table[]): boolean, string? 异步发送私聊合并转发（转发卡片），不阻塞；nodes 格式同 send_group_forward_msg
 ---@field send_private_forward_msg_sync fun(user_id: number, nodes: table[]): number, string? 同步发送私聊合并转发，返回 message_id
 ---@field delete_msg fun(message_id: number|string): boolean, string? 撤回消息（事件表的 message_id 为字符串）
@@ -292,6 +293,7 @@ M.agent = agent
 ---@field available fun(): boolean 当前是否有可用的文本模型 Provider
 ---@field chat fun(messages: string|table, opts?: table): string?, string? 同步调用，返回 (content, err)；适合命令等低频路径
 ---@field chat_async fun(messages: string|table, opts?: table): number 异步提交，立即返回 req_id（失败返回 0）；完成后引擎调用插件入口 on_chat_response(req_id, content, err)
+---@field vision_url fun(provider: string, image_url: string, prompt?: string, opts?: table): string?, string? 用 image_model Provider 描述网络图片；provider 为空时用启用的图像模型
 ---@field messages table 消息参数：单字符串（role=user）或数组，元素为字符串（role=user）或 {role="system|user|assistant", content="..."}
 ---@field opts table 选项：{temperature=?, max_tokens=?, timeout=?秒}，缺省回退 Bot Provider 配置（默认超时 60s）
 ---

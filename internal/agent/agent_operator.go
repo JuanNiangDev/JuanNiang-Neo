@@ -1,8 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"io"
+	"net/http"
+	"strings"
 	"time"
 
 	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
@@ -285,6 +291,78 @@ func (h *HagoCenter) Chat(ctx context.Context, req provider.ChatRequest) (*provi
 		return nil, fmt.Errorf("无可用文本模型 Provider")
 	}
 	return pr.Chat(ctx, req)
+}
+
+// VisionURL 用指定名称的 image_model Provider 描述一张网络图片。
+// providerName 为空时回退到当前启用的图像模型；图片统一转码为 JPEG 再送模型
+// （Provider.Vision 固定按 image/jpeg 编码 data URL）。
+func (h *HagoCenter) VisionURL(ctx context.Context, providerName, imageURL, prompt string) (string, error) {
+	if h.Providers == nil {
+		return "", fmt.Errorf("Provider 未初始化")
+	}
+	name := strings.TrimSpace(providerName)
+	var pr provider.Provider
+	if name == "" {
+		pr = h.Providers.SelectModel(provider.ModelTypeImage)
+	} else {
+		for _, p := range h.Providers.ListProviders() {
+			if strings.EqualFold(p.Name(), name) || strings.EqualFold(p.ID(), name) {
+				pr = p
+				break
+			}
+		}
+	}
+	if pr == nil {
+		if name == "" {
+			return "", fmt.Errorf("无可用图像模型 Provider")
+		}
+		return "", fmt.Errorf("未找到图像模型 Provider: %s", name)
+	}
+
+	img, err := fetchImageBytes(ctx, imageURL)
+	if err != nil {
+		return "", err
+	}
+	return pr.Vision(ctx, toJPEG(img), prompt)
+}
+
+// fetchImageBytes 下载图片（浏览器 UA，微信/QQ 图床对默认 UA 敏感），限制 12MB。
+func fetchImageBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("图片地址无效: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+	cli := &http.Client{Timeout: 30 * time.Second}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("图片下载失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("图片下载失败: HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 12<<20))
+	if err != nil {
+		return nil, fmt.Errorf("图片读取失败: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("图片内容为空")
+	}
+	return data, nil
+}
+
+// toJPEG 把任意可解码图片转成 JPEG；解码失败时原样返回（交给上游决定）。
+func toJPEG(data []byte) []byte {
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return data
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: 85}); err != nil {
+		return data
+	}
+	return buf.Bytes()
 }
 
 // Available 当前是否有启用的文本模型 Provider。

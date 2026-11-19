@@ -32,6 +32,11 @@ func (a *AdapterWrapper) SendPrivateForwardMsg(userID int64, nodes []adapter.For
 	return a.p.SendPrivateForwardMsg(userID, nodes)
 }
 
+// GetForwardMsg 读取合并转发卡片的内层消息节点。
+func (a *AdapterWrapper) GetForwardMsg(forwardID string) ([]adapter.ForwardNode, error) {
+	return a.p.GetForwardMsg(forwardID)
+}
+
 func (a *AdapterWrapper) DeleteMsg(messageID int64) error {
 	return a.p.DeleteMsg(messageID)
 }
