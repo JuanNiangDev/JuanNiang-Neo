@@ -365,9 +365,12 @@ func parseForwardMsgData(data []byte) ([]ForwardNode, error) {
 		Messages []struct {
 			UserID int64 `json:"user_id"`
 			Sender struct {
+				UserID   int64  `json:"user_id"`
 				Nickname string `json:"nickname"`
 				Card     string `json:"card"`
 			} `json:"sender"`
+			// go-cqhttp 用 content，NapCat 用 message
+			Content json.RawMessage `json:"content"`
 			Message json.RawMessage `json:"message"`
 		} `json:"messages"`
 	}
@@ -381,11 +384,19 @@ func parseForwardMsgData(data []byte) ([]ForwardNode, error) {
 		if name == "" {
 			name = m.Sender.Nickname
 		}
-		var content any
-		if len(m.Message) > 0 {
-			_ = json.Unmarshal(m.Message, &content)
+		rawContent := m.Content
+		if len(rawContent) == 0 {
+			rawContent = m.Message
 		}
-		out = append(out, ForwardNode{Uin: m.UserID, Name: name, Content: content})
+		var content any
+		if len(rawContent) > 0 {
+			_ = json.Unmarshal(rawContent, &content)
+		}
+		uin := m.UserID
+		if uin == 0 {
+			uin = m.Sender.UserID // go-cqhttp v1.2.0 把 QQ 放在 sender.user_id
+		}
+		out = append(out, ForwardNode{Uin: uin, Name: name, Content: content})
 	}
 	return out, nil
 }

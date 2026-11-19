@@ -10,7 +10,8 @@ import (
 )
 
 // TestVisionURLLive 真实链路验证：下载图片 → 转码 JPEG → image_model Provider 描述。
-// 默认跳过，需要真实端点时显式提供环境变量：
+// 图片下载按安全要求禁用代理、只允许公网直连，因此该测试需要在具备公网直连的
+// 服务器上运行；默认跳过，需要真实端点时显式提供环境变量：
 //
 //	VISION_ENDPOINT=http://127.0.0.1:5276/v1 \
 //	VISION_KEY=<wb-api token> \

@@ -96,7 +96,7 @@ M.json = json
 ---@field send_group_msg_sync fun(group_id: number, message: string|table, reply_to?: number): boolean, string? 同步发送群消息，等待结果（reply_to=引用回复的消息ID，可选）
 ---@field send_group_forward_msg fun(group_id: number, nodes: table[]): boolean, string? 异步发送群合并转发（转发卡片），不阻塞；nodes 为节点数组：构造节点 {user_id=…, nickname=“…”, content=“文本或消息段数组”} / 引用节点 {id=群内已有消息ID}
 ---@field send_group_forward_msg_sync fun(group_id: number, nodes: table[]): number, string? 同步发送群合并转发，返回 message_id
----@field get_forward_msg_sync fun(forward_id: string): table[]?, string? 读取合并转发内层节点 [{id,name,uin,content}]，content 为消息段数组
+---@field get_forward_msg_sync fun(forward_id: string): table[]?, string? 读取合并转发内层节点 [{id,name,uin,content}]；content 可能是消息段数组，也可能是纯文本字符串（go-cqhttp 兼容）
 ---@field send_private_forward_msg fun(user_id: number, nodes: table[]): boolean, string? 异步发送私聊合并转发（转发卡片），不阻塞；nodes 格式同 send_group_forward_msg
 ---@field send_private_forward_msg_sync fun(user_id: number, nodes: table[]): number, string? 同步发送私聊合并转发，返回 message_id
 ---@field delete_msg fun(message_id: number|string): boolean, string? 撤回消息（事件表的 message_id 为字符串）

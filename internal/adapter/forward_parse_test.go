@@ -30,3 +30,21 @@ func TestParseForwardMsgDataArrayShape(t *testing.T) {
 		t.Fatalf("数组形状解析异常: %+v err=%v", nodes, err)
 	}
 }
+
+func TestParseForwardMsgDataGoCQHTTPShape(t *testing.T) {
+	data := []byte(`{"messages":[
+		{"sender":{"user_id":7788,"nickname":"好的昵称"},
+		 "content":[{"type":"text","data":{"text":"go-cqhttp 正文"}}]}
+	]}`)
+	nodes, err := parseForwardMsgData(data)
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("go-cqhttp 形状解析异常: %+v err=%v", nodes, err)
+	}
+	if nodes[0].Uin != 7788 || nodes[0].Name != "好的昵称" {
+		t.Fatalf("sender.user_id 回退失败: %+v", nodes[0])
+	}
+	segs, ok := nodes[0].Content.([]any)
+	if !ok || len(segs) != 1 {
+		t.Fatalf("content 字段未映射: %#v", nodes[0].Content)
+	}
+}
