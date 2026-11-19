@@ -245,6 +245,7 @@ jn.file.append_line("data/log.txt", "事件发生于 " .. os.date())
 | `onebot11.send_group_msg_sync(group_id, message, reply_to?) → bool [, err]` | **同步发送**群聊，阻塞等待结果返回；可选 `reply_to` 同上 |
 | `onebot11.send_group_forward_msg(group_id, nodes) → bool, string` | **异步发送**群合并转发（转发卡片），立即返回。`nodes` 为节点数组：构造节点 `{user_id=…, nickname=“…”, content=“文本或消息段数组”}`；引用节点 `{id=群内已有消息ID}`（引用既有消息作为转发节点） |
 | `onebot11.send_group_forward_msg_sync(group_id, nodes) → number [, err]` | **同步发送**群合并转发，阻塞等待，返回 `message_id`（部分实现不返回时可能为 0，请以 `err` 判断成功） |
+| `onebot11.get_forward_msg_sync(forward_id) → nodes [, err]` | **同步读取**合并转发卡片的内层消息：返回 `[{id,name,uin,content}]`，`content` 为消息段数组（text/image 等）或纯文本字符串（go-cqhttp；遍历前先判断类型） |
 | `onebot11.delete_msg(message_id) → bool [, err]` | 撤回消息；`message_id` 接受数字或字符串（事件表的 `message_id` 为字符串，避免 QQ 长 ID 精度丢失） |
 | `onebot11.read_file_base64(path) → string, err` | 从插件目录读取文件并返回 `base64://...` 字符串 |
 

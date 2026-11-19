@@ -1,8 +1,17 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	_ "image/gif"
+	"image/jpeg"
+	_ "image/png"
+	"io"
+	"net"
+	"net/http"
+	"strings"
 	"time"
 
 	ragcaller "JuanNiang-Neo/infrastructure/rag/handler"
@@ -285,6 +294,158 @@ func (h *HagoCenter) Chat(ctx context.Context, req provider.ChatRequest) (*provi
 		return nil, fmt.Errorf("无可用文本模型 Provider")
 	}
 	return pr.Chat(ctx, req)
+}
+
+// VisionURL 用指定名称的 image_model Provider 描述一张网络图片。
+// providerName 为空时回退到当前启用的图像模型；图片统一转码为 JPEG 再送模型
+// （Provider.Vision 固定按 image/jpeg 编码 data URL）。
+func (h *HagoCenter) VisionURL(ctx context.Context, providerName, imageURL, prompt string) (string, error) {
+	if h.Providers == nil {
+		return "", fmt.Errorf("Provider 未初始化")
+	}
+	name := strings.TrimSpace(providerName)
+	var pr provider.Provider
+	if name == "" {
+		pr = h.Providers.SelectModel(provider.ModelTypeImage)
+	} else {
+		for _, p := range h.Providers.ListProviders() {
+			if p.Type() == provider.ModelTypeImage &&
+				(strings.EqualFold(p.Name(), name) || strings.EqualFold(p.ID(), name)) {
+				pr = p
+				break
+			}
+		}
+	}
+	if pr == nil {
+		if name == "" {
+			return "", fmt.Errorf("无可用图像模型 Provider")
+		}
+		return "", fmt.Errorf("未找到图像模型 Provider: %s", name)
+	}
+
+	img, err := fetchImageBytes(ctx, imageURL)
+	if err != nil {
+		return "", err
+	}
+	jpegImg, err := toJPEG(img)
+	if err != nil {
+		return "", fmt.Errorf("图片转码失败: %w", err)
+	}
+	return pr.Vision(ctx, jpegImg, prompt)
+}
+
+// fetchImageBytes 下载图片：仅允许公网地址（含重定向目标），限制 12 MiB。
+func fetchImageBytes(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("图片地址无效: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+	resp, err := publicImageClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("图片下载失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("图片下载失败: HTTP %d", resp.StatusCode)
+	}
+	// 多读 1 字节以区分「恰好 12 MiB」与「超限被截断」
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (12<<20)+1))
+	if err != nil {
+		return nil, fmt.Errorf("图片读取失败: %w", err)
+	}
+	if len(data) > 12<<20 {
+		return nil, fmt.Errorf("图片超过 12 MiB 上限")
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("图片内容为空")
+	}
+	return data, nil
+}
+
+// publicImageClient 禁用代理，并在每次连接/重定向时校验目标 IP 为公网地址，
+// 防止插件传入的图片 URL 访问内网资源（SSRF）。
+func publicImageClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			ips, err := publicIPs(ctx, host)
+			if err != nil {
+				return nil, err
+			}
+			// 直接连接已校验的 IP，避免 DNS 重绑定（解析与连接使用同一结果）
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		},
+	}
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("图片重定向过多")
+			}
+			return checkPublicHost(req.Context(), req.URL.Hostname())
+		},
+	}
+}
+
+func publicIPs(ctx context.Context, host string) ([]net.IPAddr, error) {
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("图片域名解析失败 %s: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("图片域名无解析结果: %s", host)
+	}
+	for _, entry := range ips {
+		if !isPublicIP(entry.IP) {
+			return nil, fmt.Errorf("拒绝非公网图片地址: %s (%s)", host, entry.IP)
+		}
+	}
+	return ips, nil
+}
+
+func checkPublicHost(ctx context.Context, host string) error {
+	_, err := publicIPs(ctx, host)
+	return err
+}
+
+func isPublicIP(ip net.IP) bool {
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return false
+	}
+	// CGNAT 100.64.0.0/10 也不是公网地址
+	_, cgnat, _ := net.ParseCIDR("100.64.0.0/10")
+	return !cgnat.Contains(ip)
+}
+
+// toJPEG 先按尺寸预算校验（防止压缩炸弹），再完整解码并统一转 JPEG。
+func toJPEG(data []byte) ([]byte, error) {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("图片解码失败: %w", err)
+	}
+	const maxSide, maxPixels = 8192, 40_000_000
+	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > maxSide || cfg.Height > maxSide ||
+		float64(cfg.Width)*float64(cfg.Height) > maxPixels {
+		return nil, fmt.Errorf("图片尺寸超出预算: %dx%d", cfg.Width, cfg.Height)
+	}
+	_ = format // 已由 DecodeConfig 识别；png/gif/jpeg 解码器均已注册
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("图片完整解码失败: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, src, &jpeg.Options{Quality: 85}); err != nil {
+		return nil, fmt.Errorf("图片 JPEG 编码失败: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // Available 当前是否有启用的文本模型 Provider。

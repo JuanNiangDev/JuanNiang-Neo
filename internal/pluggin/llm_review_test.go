@@ -26,14 +26,16 @@ import (
 
 // fakeAdapter 空实现 SendAdapter，记录关键调用。
 type fakeAdapter struct {
-	mu         sync.Mutex
-	deleted    []int64
-	groups     []string
-	muted      []string
-	kicked     []string
-	mutedUsers map[int64]bool // 模拟处于禁言中的用户
-	kickErr    error          // 非 nil 时 KickGroupMember 返回该错误（模拟踢人失败）
-	notify     chan struct{}  // 非 nil 时每次 SendGroupMsg 落账后发通知（负向断言用）
+	mu           sync.Mutex
+	deleted      []int64
+	groups       []string
+	muted        []string
+	kicked       []string
+	mutedUsers   map[int64]bool        // 模拟处于禁言中的用户
+	kickErr      error                 // 非 nil 时 KickGroupMember 返回该错误（模拟踢人失败）
+	forwardNodes []adapter.ForwardNode // GetForwardMsg 返回的节点
+	forwardErr   error                 // 非 nil 时 GetForwardMsg 返回该错误
+	notify       chan struct{}         // 非 nil 时每次 SendGroupMsg 落账后发通知（负向断言用）
 }
 
 func (f *fakeAdapter) SendPrivateMsg(userID int64, message any) (int64, error) { return 0, nil }
@@ -61,6 +63,15 @@ func (f *fakeAdapter) SendPrivateForwardMsg(userID int64, nodes []adapter.Forwar
 	f.groups = append(f.groups, fmt.Sprintf("private_forward:%d:%d", userID, len(nodes)))
 	return 0, nil
 }
+func (f *fakeAdapter) GetForwardMsg(forwardID string) ([]adapter.ForwardNode, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.forwardErr != nil {
+		return nil, f.forwardErr
+	}
+	return f.forwardNodes, nil
+}
+
 func (f *fakeAdapter) DeleteMsg(messageID int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -135,6 +146,13 @@ type fakeLLM struct {
 	err   error
 	calls int
 	delay time.Duration // 每次 Chat 的模拟耗时（测试在途任务场景）
+
+	visionCalls    int
+	visionProvider string
+	visionURL      string
+	visionPrompt   string
+	visionReply    string
+	visionErr      error
 }
 
 func (f *fakeLLM) Available() bool { return true }
@@ -158,6 +176,22 @@ func (f *fakeLLM) Chat(ctx context.Context, req provider.ChatRequest) (*provider
 		time.Sleep(d)
 	}
 	return &provider.ChatResponse{Message: provider.ChatMessage{Role: "assistant", Content: reply}}, nil
+}
+
+func (f *fakeLLM) VisionURL(_ context.Context, providerName, imageURL, prompt string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.visionErr != nil {
+		return "", f.visionErr
+	}
+	f.visionCalls++
+	f.visionProvider = providerName
+	f.visionURL = imageURL
+	f.visionPrompt = prompt
+	if f.visionReply == "" {
+		return "一张测试图片", nil
+	}
+	return f.visionReply, nil
 }
 
 func (f *fakeLLM) setReply(s string) {
