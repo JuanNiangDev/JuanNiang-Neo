@@ -80,7 +80,7 @@ func (f *fakeAdapter) DeleteMsg(messageID int64) error {
 }
 func (f *fakeAdapter) GetMsg(messageID int64) (map[string]any, error) { return nil, nil }
 func (f *fakeAdapter) GetImage(file string) (*adapter.FileInfo, error) {
-	return &adapter.FileInfo{File: file}, nil
+	return &adapter.FileInfo{File: file, URL: "https://img.example/" + file}, nil
 }
 func (f *fakeAdapter) GetGroupInfo(groupID int64) (map[string]any, error) {
 	return map[string]any{"group_name": "test"}, nil

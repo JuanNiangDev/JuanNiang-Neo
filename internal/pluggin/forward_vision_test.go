@@ -174,7 +174,7 @@ func TestGetImageBinding(t *testing.T) {
 local jn = require("jn")
 function on_message(event)
     local info, err = jn.onebot11.get_image("ABC.jpg")
-    if info and info.file == "ABC.jpg" then
+    if info and info.file == "ABC.jpg" and info.url == "https://img.example/ABC.jpg" then
         jn.onebot11.send_group_msg(100, "IMAGE_OK")
     else
         jn.onebot11.send_group_msg(100, "IMAGE_ERR:" .. tostring(err))
