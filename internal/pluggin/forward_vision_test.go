@@ -167,3 +167,25 @@ end
 		t.Fatalf("视觉失败应返回 nil+err: %v", fvGroupsSnapshot(t, adp))
 	}
 }
+
+func TestGetImageBinding(t *testing.T) {
+	pe, adp := newMiniTestEngine(t, &fakeLLM{})
+	L := loadMiniPlugin(t, pe, "getimagetest", `
+local jn = require("jn")
+function on_message(event)
+    local info, err = jn.onebot11.get_image("ABC.jpg")
+    if info and info.file == "ABC.jpg" and info.url == "https://img.example/ABC.jpg" then
+        jn.onebot11.send_group_msg(100, "IMAGE_OK")
+    else
+        jn.onebot11.send_group_msg(100, "IMAGE_ERR:" .. tostring(err))
+    end
+    return false, nil
+end
+`)
+	runOnMessage(t, pe, L, 10001, 20001, "hi", "90005")
+
+	fvWaitFor(t, func() bool { return fvGroupsContain(t, adp, "IMAGE_OK") })
+	if !fvGroupsContain(t, adp, "IMAGE_OK") {
+		t.Fatalf("get_image 应返回图片信息: %v", fvGroupsSnapshot(t, adp))
+	}
+}
