@@ -112,6 +112,7 @@ M.json = json
 ---@field handle_friend_request fun(flag: string, approve: boolean, remark: string): boolean, string?
 ---@field handle_group_request fun(flag: string, sub_type: string, approve: boolean, reason: string): boolean, string?
 ---@field get_login_info fun(): table, string?
+---@field get_image fun(file: string): table?, string? 获取图片信息，返回 {file=…, url=…}；url 是重新签发的可下载链接（QQ 图片原始 rkey 会过期）
 ---@field get_stranger_info fun(user_id: number): table, string?
 ---@field get_friend_list fun(): table[], string?
 ---@field get_group_list fun(): table[], string?

@@ -100,6 +100,7 @@ type SendAdapter interface {
 	GetForwardMsg(forwardID string) ([]adapter.ForwardNode, error)
 	DeleteMsg(messageID int64) error
 	GetMsg(messageID int64) (map[string]any, error)
+	GetImage(file string) (*adapter.FileInfo, error)
 	GetGroupInfo(groupID int64) (map[string]any, error)
 	GetGroupMemberList(groupID int64) ([]map[string]any, error)
 	KickGroupMember(groupID, userID int64, rejectAdd bool) error
@@ -1981,6 +1982,11 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 		},
 		"get_login_info": func(L *lua.LState) int {
 			info, err := sendAdp.GetLoginInfo()
+			return pushResultJSON(L, info, err)
+		},
+		"get_image": func(L *lua.LState) int {
+			// QQ 图片原始 URL 的 rkey 会过期；用 CQ 码里的 file 哈希换一条新链接。
+			info, err := sendAdp.GetImage(L.CheckString(1))
 			return pushResultJSON(L, info, err)
 		},
 		"get_stranger_info": func(L *lua.LState) int {

@@ -79,6 +79,9 @@ func (f *fakeAdapter) DeleteMsg(messageID int64) error {
 	return nil
 }
 func (f *fakeAdapter) GetMsg(messageID int64) (map[string]any, error) { return nil, nil }
+func (f *fakeAdapter) GetImage(file string) (*adapter.FileInfo, error) {
+	return &adapter.FileInfo{File: file}, nil
+}
 func (f *fakeAdapter) GetGroupInfo(groupID int64) (map[string]any, error) {
 	return map[string]any{"group_name": "test"}, nil
 }

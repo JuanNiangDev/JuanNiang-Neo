@@ -49,6 +49,11 @@ func (a *AdapterWrapper) GetMsg(messageID int64) (map[string]any, error) {
 	return toMap(msg), nil
 }
 
+// GetImage 用 QQ 图片文件哈希换一条新的可下载链接（原始 rkey 会过期）。
+func (a *AdapterWrapper) GetImage(file string) (*adapter.FileInfo, error) {
+	return a.p.GetImage(file)
+}
+
 func (a *AdapterWrapper) GetGroupInfo(groupID int64) (map[string]any, error) {
 	info, err := a.p.GetGroupInfo(groupID)
 	if err != nil {
