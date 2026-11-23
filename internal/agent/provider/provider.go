@@ -33,7 +33,7 @@ type openAIProvider struct {
 func NewProvider(cfg ProviderConfig) Provider {
 	return &openAIProvider{
 		cfg: cfg,
-		cli: &http.Client{Timeout: 120 * time.Second},
+		cli: &http.Client{Timeout: 300 * time.Second},
 	}
 }
 
