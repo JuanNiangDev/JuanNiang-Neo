@@ -115,6 +115,7 @@ type ProviderResp struct {
 	ProviderKey       string           `json:"provider_key"`
 	AuthHeader        string           `json:"auth_header"`
 	URLMode           string           `json:"url_mode"`
+	Timeout           int              `json:"timeout"`
 }
 
 // ProviderPresetResp 国产厂商协议能力预设（前端渲染协议下拉）。
@@ -501,6 +502,7 @@ type ReplyStrategyResp struct {
 	RelevancePrompt    string  `json:"relevance_prompt"`  // 相关性检测自定义提示词
 	RelevanceModel     string  `json:"relevance_model"`   // 相关性检测使用的 Text Provider ID
 	RelevanceTimeout   int     `json:"relevance_timeout"` // 相关性检测超时（秒）
+	LLMTimeout         int     `json:"llm_timeout"`       // LLM 请求全局默认等待超时（秒）
 	JudgeFailPolicy    string  `json:"judge_fail_policy"` // 判断失败策略: drop / reply
 }
 

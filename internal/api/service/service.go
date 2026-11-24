@@ -259,7 +259,7 @@ func (s *Service) AddProvider(ctx context.Context, c *app.RequestContext) {
 		IsActive:       data.IsActive,
 		EnableThinking: data.EnableThinking,
 	}
-	dto.ApplyProviderFields(&providerConfig, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode)
+	dto.ApplyProviderFields(&providerConfig, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode, data.Timeout)
 
 	// 事务内行锁校验 + 写入：并发 AddProvider 请求无法同时通过"同类型已存在启用"
 	// 检查并各自创建 is_active=true 的同类型 Provider。
@@ -331,7 +331,7 @@ func (s *Service) UpdateProvider(ctx context.Context, c *app.RequestContext) {
 		IsActive:       data.IsActive,
 		EnableThinking: data.EnableThinking,
 	}
-	dto.ApplyProviderFields(&providerConfig, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode)
+	dto.ApplyProviderFields(&providerConfig, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode, data.Timeout)
 
 	provType := provider.ModelType(data.Type)
 	providerConfig_ := provider.ProviderConfigFromModel(&providerConfig)
@@ -570,7 +570,7 @@ func (s *Service) TestProvider(ctx context.Context, c *app.RequestContext) {
 		Temperature:    float32(data.Temperature),
 		EnableThinking: data.EnableThinking,
 	}
-	dto.ApplyProviderFields(m, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode)
+	dto.ApplyProviderFields(m, data.APIMode, data.ThinkingEffort, data.ThinkingBudget, data.MaxTokens, data.TopP, data.TopK, data.FrequencyPenalty, data.PresencePenalty, data.RepetitionPenalty, data.ProviderKey, data.AuthHeader, data.URLMode, data.Timeout)
 
 	p := provider.NewProvider(provider.ProviderConfigFromModel(m))
 	testCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -2514,13 +2514,12 @@ func (s *Service) ToggleCronJob(ctx context.Context, c *app.RequestContext) {
 
 // ---------- 回复策略 ----------
 
-func (s *Service) GetReplyStrategy(ctx context.Context, c *app.RequestContext) {
-	cfg, err := s.DAO.ReplyStrategy.GetOrCreate(ctx)
-	if err != nil {
-		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
-		return
+func replyStrategyToResp(cfg *models.ReplyStrategyConfig) dto.ReplyStrategyResp {
+	llmTimeout := cfg.LLMTimeout
+	if llmTimeout <= 0 {
+		llmTimeout = provider.DefaultTimeoutSec
 	}
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ReplyStrategyResp{
+	return dto.ReplyStrategyResp{
 		Strategy:           string(cfg.Strategy),
 		RelevanceThreshold: cfg.RelevanceThreshold,
 		BotName:            cfg.BotName,
@@ -2529,8 +2528,18 @@ func (s *Service) GetReplyStrategy(ctx context.Context, c *app.RequestContext) {
 		RelevancePrompt:    cfg.RelevancePrompt,
 		RelevanceModel:     cfg.RelevanceModel,
 		RelevanceTimeout:   cfg.RelevanceTimeout,
+		LLMTimeout:         llmTimeout,
 		JudgeFailPolicy:    cfg.JudgeFailPolicy,
-	}))
+	}
+}
+
+func (s *Service) GetReplyStrategy(ctx context.Context, c *app.RequestContext) {
+	cfg, err := s.DAO.ReplyStrategy.GetOrCreate(ctx)
+	if err != nil {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))
+		return
+	}
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, replyStrategyToResp(cfg)))
 }
 
 func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext) {
@@ -2561,6 +2570,15 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		data.RelevanceTimeout = 10
 	}
 
+	// 验证全局默认 LLM 超时（1-3600 秒，0=默认 150s）
+	if data.LLMTimeout < 0 || data.LLMTimeout > 3600 {
+		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.Response{Status: 40032, Info: "LLM 默认等待超时必须在 1-3600 秒之间"}, nil))
+		return
+	}
+	if data.LLMTimeout == 0 {
+		data.LLMTimeout = provider.DefaultTimeoutSec
+	}
+
 	// 验证判断失败策略
 	if data.JudgeFailPolicy == "" {
 		data.JudgeFailPolicy = "drop"
@@ -2585,6 +2603,7 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 	cfg.RelevancePrompt = data.RelevancePrompt
 	cfg.RelevanceModel = data.RelevanceModel
 	cfg.RelevanceTimeout = data.RelevanceTimeout
+	cfg.LLMTimeout = data.LLMTimeout
 	cfg.JudgeFailPolicy = data.JudgeFailPolicy
 
 	if err := s.DAO.ReplyStrategy.Update(ctx, cfg); err != nil {
@@ -2597,17 +2616,7 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		s.OnReplyStrategyChanged()
 	}
 
-	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, dto.ReplyStrategyResp{
-		Strategy:           string(cfg.Strategy),
-		RelevanceThreshold: cfg.RelevanceThreshold,
-		BotName:            cfg.BotName,
-		StripMarkdown:      cfg.StripMarkdown,
-		AgentLite:          cfg.AgentLite,
-		RelevancePrompt:    cfg.RelevancePrompt,
-		RelevanceModel:     cfg.RelevanceModel,
-		RelevanceTimeout:   cfg.RelevanceTimeout,
-		JudgeFailPolicy:    cfg.JudgeFailPolicy,
-	}))
+	c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.OK, replyStrategyToResp(cfg)))
 }
 
 // ---------- 知识库 ----------

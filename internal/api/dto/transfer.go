@@ -41,6 +41,7 @@ func RawProvider2Resp(raw *models.Provider) ProviderResp {
 		ProviderKey:       raw.ProviderKey,
 		AuthHeader:        raw.AuthHeader,
 		URLMode:           raw.URLMode,
+		Timeout:           raw.Timeout,
 	}
 }
 
@@ -54,7 +55,7 @@ func flexFloat32Ptr(p *FlexFloat32) *float32 {
 }
 
 // ApplyProviderFields 把请求中共有的扩展字段写入 models.Provider（Add/Update 复用）。
-func ApplyProviderFields(m *models.Provider, apiMode, thinkingEffort string, thinkingBudget, maxTokens int, topP *FlexFloat32, topK *int, freqPenalty, presencePenalty, repetitionPenalty *FlexFloat32, providerKey, authHeader, urlMode string) {
+func ApplyProviderFields(m *models.Provider, apiMode, thinkingEffort string, thinkingBudget, maxTokens int, topP *FlexFloat32, topK *int, freqPenalty, presencePenalty, repetitionPenalty *FlexFloat32, providerKey, authHeader, urlMode string, timeout int) {
 	m.APIMode = apiMode
 	m.ThinkingEffort = thinkingEffort
 	m.ThinkingBudget = thinkingBudget
@@ -67,6 +68,10 @@ func ApplyProviderFields(m *models.Provider, apiMode, thinkingEffort string, thi
 	m.ProviderKey = providerKey
 	m.AuthHeader = authHeader
 	m.URLMode = urlMode
+	if timeout < 0 {
+		timeout = 0
+	}
+	m.Timeout = timeout
 }
 
 func RawMCPServer2Resp(raw *models.MCPServer) MCPServerResp {
