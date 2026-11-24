@@ -2588,6 +2588,10 @@ func (s *Service) UpdateReplyStrategy(ctx context.Context, c *app.RequestContext
 		return
 	}
 
+	// 串行化 DB 读写与 OnReplyStrategyChanged，避免并发保存出现旧值覆盖新值
+	s.replyStrategyMu.Lock()
+	defer s.replyStrategyMu.Unlock()
+
 	cfg, err := s.DAO.ReplyStrategy.GetOrCreate(ctx)
 	if err != nil {
 		c.JSON(consts.StatusOK, dto.GenFinalResponse(dto.ServerInternalErr, dto.ErrorDetail{ErrorDetail: err.Error()}))

@@ -1,8 +1,11 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -355,5 +358,83 @@ func TestProviderEffectiveTimeout(t *testing.T) {
 	pOverride := NewProvider(ProviderConfig{Timeout: 420}).(*openAIProvider)
 	if got := pOverride.effectiveTimeout(); got != 420*time.Second {
 		t.Fatalf("override effectiveTimeout = %v, want 420s", got)
+	}
+}
+
+func TestProviderExplicitTimeoutPrecedence(t *testing.T) {
+	SetDefaultTimeout(DefaultTimeoutSec)
+	t.Cleanup(func() { SetDefaultTimeout(DefaultTimeoutSec) })
+
+	// 1. 显式超时 300s 优先于较小的全球默认 (150s) 与 Provider 自身配置 (120s)
+	pSmall := NewProvider(ProviderConfig{Timeout: 120}).(*openAIProvider)
+	explicitCtx, cancelExplicit := WithExplicitTimeout(context.Background(), 300*time.Second)
+	defer cancelExplicit()
+
+	reqCtx, cancelReq := pSmall.withEffectiveTimeout(explicitCtx)
+	defer cancelReq()
+	dl, ok := reqCtx.Deadline()
+	if !ok {
+		t.Fatal("expected deadline on reqCtx")
+	}
+	if rem := time.Until(dl); rem < 250*time.Second || rem > 305*time.Second {
+		t.Fatalf("explicit timeout truncated/expanded: remaining = %v, want ~300s", rem)
+	}
+
+	// 2. 未设置显式超时时，Provider 大超时 (420s) 生效
+	pLarge := NewProvider(ProviderConfig{Timeout: 420}).(*openAIProvider)
+	plainCtx, cancelPlain := WithExplicitTimeout(context.Background(), 0)
+	defer cancelPlain()
+	reqCtx2, cancelReq2 := pLarge.withEffectiveTimeout(plainCtx)
+	defer cancelReq2()
+	dl2, ok := reqCtx2.Deadline()
+	if !ok {
+		t.Fatal("expected deadline on reqCtx2")
+	}
+	if rem := time.Until(dl2); rem < 380*time.Second || rem > 425*time.Second {
+		t.Fatalf("provider large timeout not applied: remaining = %v, want ~420s", rem)
+	}
+}
+
+func TestStreamRequestExitsOnReqCtxTimeout(t *testing.T) {
+	// 服务端快速推送 40 条 SSE chunk 后保持连接打开（无 [DONE]），使 buffer=32 的 ch 阻塞第 33 条发送，
+	// 验证当 reqCtx 因 Provider.Timeout=1s 过期而父 ctx 为 Background 时，流协程能及时退出并关闭 ch。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for i := 0; i < 40; i++ {
+			_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":\"chunk-%d\"}}]}\n\n", i)
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	p := NewProvider(ProviderConfig{
+		Endpoint: srv.URL,
+		URLMode:  "exact",
+		Token:    "sk-test",
+		Model:    "gpt-test",
+		Timeout:  1,
+	}).(*openAIProvider)
+
+	ch, err := p.streamRequest(context.Background(), srv.URL, []byte(`{"stream":true}`))
+	if err != nil {
+		t.Fatalf("streamRequest err: %v", err)
+	}
+
+	// 等到 1s Provider 超时过期后，清空缓冲区应能立即看到通道关闭
+	time.Sleep(1200 * time.Millisecond)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			t.Fatal("streamRequest goroutine leaked after reqCtx expired")
+		}
 	}
 }

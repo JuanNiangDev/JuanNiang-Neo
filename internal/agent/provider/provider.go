@@ -64,6 +64,17 @@ func NewProvider(cfg ProviderConfig) Provider {
 	}
 }
 
+type explicitTimeoutKey struct{}
+
+// WithExplicitTimeout 为 ctx 标记显式调用方超时（优先级高于 Provider 与全局默认配置），
+// 同时保留父 ctx 的取消语义。d <= 0 时仅返回可取消上下文而不覆盖下层默认超时。
+func WithExplicitTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(context.WithValue(ctx, explicitTimeoutKey{}, d), d)
+}
+
 // effectiveTimeout 返回该 Provider 本次请求生效的超时：自身配置优先，<=0 时跟随全局默认。
 func (p *openAIProvider) effectiveTimeout() time.Duration {
 	if p.cfg.Timeout > 0 {
@@ -73,6 +84,11 @@ func (p *openAIProvider) effectiveTimeout() time.Duration {
 }
 
 func (p *openAIProvider) withEffectiveTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Value(explicitTimeoutKey{}).(time.Duration); ok {
+		if _, hasDeadline := ctx.Deadline(); hasDeadline {
+			return ctx, func() {}
+		}
+	}
 	return context.WithTimeout(ctx, p.effectiveTimeout())
 }
 
@@ -813,7 +829,7 @@ func (p *openAIProvider) streamRequest(ctx context.Context, url string, body []b
 			for _, out := range p.parseStreamEvent(data) {
 				select {
 				case ch <- out:
-				case <-ctx.Done():
+				case <-reqCtx.Done():
 					return
 				}
 			}

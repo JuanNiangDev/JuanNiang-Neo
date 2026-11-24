@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	rag "JuanNiang-Neo/infrastructure/rag"
@@ -85,6 +86,9 @@ type Service struct {
 	GroupMgr *groupmgr.Manager
 	// JoinReview 加群请求 AI 攒批审核（Web 面板配置/待审列表/人工审核）。
 	JoinReview *joinreview.Manager
+
+	// replyStrategyMu 串行化回复策略 DB 读写与缓存/超时同步，防止并发更新出现旧值覆盖新值。
+	replyStrategyMu sync.Mutex
 }
 
 func New(dao *dao.Bundle, adapter *adapter.Adapter, webhookAdapter *adapter.WebhookAdapter, pluginEngine *pluggin.PluginEngine) *Service {

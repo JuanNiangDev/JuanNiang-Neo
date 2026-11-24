@@ -3240,8 +3240,7 @@ func (pe *PluginEngine) injectLLM(L *lua.LState, pluginName string) {
 			providerName := L.OptString(1, "")
 			imageURL := L.CheckString(2)
 			prompt := L.OptString(3, "用一句简洁的中文描述这张图片的内容，不要编造细节")
-			timeout := llmTimeoutFromOpts(L, 4)
-			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			ctx, cancel := llmCallContext(llmTimeoutFromOpts(L, 4))
 			defer cancel()
 			text, err := pe.llmAccess.VisionURL(ctx, providerName, imageURL, prompt)
 			if err != nil {
@@ -3263,7 +3262,7 @@ func (pe *PluginEngine) injectLLM(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(err.Error()))
 				return 2
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), llmTimeoutFromOpts(L, 2))
+			ctx, cancel := llmCallContext(llmTimeoutFromOpts(L, 2))
 			defer cancel()
 			resp, err := pe.llmAccess.Chat(ctx, req)
 			if err != nil {
@@ -3281,14 +3280,20 @@ func (pe *PluginEngine) injectLLM(L *lua.LState, pluginName string) {
 				L.Push(lua.LString(err.Error()))
 				return 2
 			}
+			timeout := llmTimeoutFromOpts(L, 2)
 			run := func(ctx context.Context) (any, error) {
+				if timeout > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = provider.WithExplicitTimeout(ctx, timeout)
+					defer cancel()
+				}
 				resp, err := pe.llmAccess.Chat(ctx, req)
 				if err != nil {
 					return nil, err
 				}
 				return resp.Message.Content, nil
 			}
-			id, err := pe.submitAsync(L, pluginName, "chat", llmTimeoutFromOpts(L, 2), run)
+			id, err := pe.submitAsync(L, pluginName, "chat", timeout, run)
 			if err != nil {
 				L.Push(lua.LNumber(0))
 				L.Push(lua.LString(err.Error()))
@@ -3381,7 +3386,15 @@ func (pe *PluginEngine) submitAsync(L *lua.LState, pluginName, kind string, time
 	ev := currentEventOf(L)
 	id := atomic.AddUint64(&pe.asyncSeq, 1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		var (
+			ctx    context.Context
+			cancel context.CancelFunc
+		)
+		if timeout > 0 {
+			ctx, cancel = context.WithTimeout(context.Background(), timeout)
+		} else {
+			ctx, cancel = context.WithCancel(context.Background())
+		}
 		defer cancel()
 		result, err := run(ctx)
 		pe.asyncCh <- asyncTask{pluginName: pluginName, kind: kind, api: api, reqID: id, result: result, err: err, event: ev}
@@ -3554,17 +3567,24 @@ func lvString(v lua.LValue, def string) string {
 	return def
 }
 
-// llmTimeoutFromOpts 从 opts.timeout（秒）解析调用超时，缺省跟随全局默认 LLM 超时。
+// llmTimeoutFromOpts 从 opts.timeout（秒）解析插件显式超时；未指定或 <=0 时返回 0，
+// 交由 Provider 自身超时或全局默认 LLM 超时决定。
 func llmTimeoutFromOpts(L *lua.LState, optsIdx int) time.Duration {
-	timeout := provider.GetDefaultTimeout()
 	if opts := L.Get(optsIdx); opts.Type() == lua.LTTable {
 		if t := opts.(*lua.LTable).RawGetString("timeout"); t.Type() == lua.LTNumber {
 			if sec := float64(t.(lua.LNumber)); sec > 0 {
-				timeout = time.Duration(sec * float64(time.Second))
+				return time.Duration(sec * float64(time.Second))
 			}
 		}
 	}
-	return timeout
+	return 0
+}
+
+func llmCallContext(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout > 0 {
+		return provider.WithExplicitTimeout(context.Background(), timeout)
+	}
+	return context.WithCancel(context.Background())
 }
 
 // ====================================================================

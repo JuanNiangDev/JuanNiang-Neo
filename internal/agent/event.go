@@ -251,7 +251,13 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 	if time.Now().Before(h.replySettingsExp) {
 		return h.replySettings
 	}
+	// 查询 DB 与同步全局 LLM 超时统一经 replySyncMu 串行化，防止先读后写反转
+	h.replySyncMu.Lock()
 	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+	if err == nil {
+		provider.SetDefaultTimeout(cfg.LLMTimeout)
+	}
+	h.replySyncMu.Unlock()
 	if err != nil {
 		log.Warn("获取回复策略失败，使用默认值", "err", err)
 		return ReplySettings{Strategy: models.StrategyRelevance}
@@ -277,17 +283,33 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 	return rs
 }
 
-// syncDefaultLLMTimeout 从回复策略配置同步全局默认 LLM 等待超时到 provider 层。
+// syncDefaultLLMTimeout 从回复策略配置同步全局默认 LLM 等待超时到 provider 层（串行化 + 有界重试）。
 func (h *HagoCenter) syncDefaultLLMTimeout(ctx context.Context) {
 	if h.DAO == nil || h.DAO.ReplyStrategy == nil {
 		return
 	}
-	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
-	if err != nil {
-		log.Warn("同步全局 LLM 超时失败，保持当前默认", "err", err)
-		return
+	h.replySyncMu.Lock()
+	defer h.replySyncMu.Unlock()
+
+	const maxAttempts = 2
+	var err error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		var cfg *models.ReplyStrategyConfig
+		cfg, err = h.DAO.ReplyStrategy.GetOrCreate(ctx)
+		if err == nil {
+			provider.SetDefaultTimeout(cfg.LLMTimeout)
+			return
+		}
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				log.Warn("同步全局 LLM 超时失败，保持当前默认", "err", err)
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
 	}
-	provider.SetDefaultTimeout(cfg.LLMTimeout)
+	log.Warn("同步全局 LLM 超时失败，保持当前默认（将在策略缓存刷新时自动恢复）", "err", err)
 }
 
 // InvalidateReplySettings 使回复策略内存缓存失效（Web 面板更新策略后立即生效）。

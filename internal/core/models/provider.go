@@ -45,7 +45,7 @@ type Provider struct {
 	// AuthHeader 认证头：""|bearer|x-api-key|api-key
 	AuthHeader string `gorm:"default:''"`
 	// URLMode URL 拼接：""|auto|exact
-	URLMode   string `gorm:"default:''"`
+	URLMode string `gorm:"default:''"`
 	// Timeout 单独设置的 LLM 请求等待超时（秒），0=跟随全局回复设置
 	Timeout   int  `gorm:"default:0"`
 	IsActive  bool `gorm:"default:false;index"`

@@ -696,7 +696,12 @@ async function runTest(payload: AddProviderReq) {
 }
 
 // 测试新增/编辑表单中的当前配置（不落库）。
-function testForm() { runTest({ ...form.value }) }
+function testForm() {
+  runTest({
+    ...form.value,
+    timeout: Math.max(0, Number(form.value.timeout) || 0),
+  })
+}
 
 // 测试列表中已保存的 Provider。
 async function testItem(item: ProviderResp) {
