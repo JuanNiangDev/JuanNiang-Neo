@@ -46,7 +46,9 @@ type Provider struct {
 	AuthHeader string `gorm:"default:''"`
 	// URLMode URL 拼接：""|auto|exact
 	URLMode   string `gorm:"default:''"`
-	IsActive  bool   `gorm:"default:false;index"`
+	// Timeout 单独设置的 LLM 请求等待超时（秒），0=跟随全局回复设置
+	Timeout   int  `gorm:"default:0"`
+	IsActive  bool `gorm:"default:false;index"`
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	DeletedAt gorm.DeletedAt `gorm:"index"`

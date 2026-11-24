@@ -28,6 +28,7 @@ func (d *ReplyStrategyDAO) GetOrCreate(ctx context.Context) (*models.ReplyStrate
 		Strategy:           models.StrategyRelevance,
 		RelevanceThreshold: 0.5,
 		RelevanceTimeout:   10,
+		LLMTimeout:         150,
 		JudgeFailPolicy:    "drop",
 	}
 	if err := d.db.WithContext(ctx).Create(&cfg).Error; err != nil {
