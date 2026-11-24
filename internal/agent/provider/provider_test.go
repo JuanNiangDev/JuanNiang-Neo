@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -395,9 +397,34 @@ func TestProviderExplicitTimeoutPrecedence(t *testing.T) {
 	}
 }
 
+type closeSignalingBody struct {
+	io.ReadCloser
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (b *closeSignalingBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return b.ReadCloser.Close()
+}
+
+type closeSignalingTransport struct {
+	base   http.RoundTripper
+	closed chan struct{}
+}
+
+func (t *closeSignalingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = &closeSignalingBody{ReadCloser: resp.Body, closed: t.closed}
+	return resp, nil
+}
+
 func TestStreamRequestExitsOnReqCtxTimeout(t *testing.T) {
-	// 服务端快速推送 40 条 SSE chunk 后保持连接打开（无 [DONE]），使 buffer=32 的 ch 阻塞第 33 条发送，
-	// 验证当 reqCtx 因 Provider.Timeout=1s 过期而父 ctx 为 Background 时，流协程能及时退出并关闭 ch。
+	// 服务端快速推送 40 条 SSE chunk 后保持连接打开（无 [DONE]），使 buffer=32 的 ch 阻塞第 33 条发送；
+	// 在完全不读取 ch 的前提下，先等待 worker 执行 defer resp.Body.Close() 退出信号，确认无 goroutine 泄漏后再排空 ch。
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, _ := w.(http.Flusher)
@@ -411,6 +438,7 @@ func TestStreamRequestExitsOnReqCtxTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	bodyClosed := make(chan struct{})
 	p := NewProvider(ProviderConfig{
 		Endpoint: srv.URL,
 		URLMode:  "exact",
@@ -418,23 +446,30 @@ func TestStreamRequestExitsOnReqCtxTimeout(t *testing.T) {
 		Model:    "gpt-test",
 		Timeout:  1,
 	}).(*openAIProvider)
+	p.cli.Transport = &closeSignalingTransport{base: http.DefaultTransport, closed: bodyClosed}
 
 	ch, err := p.streamRequest(context.Background(), srv.URL, []byte(`{"stream":true}`))
 	if err != nil {
 		t.Fatalf("streamRequest err: %v", err)
 	}
 
-	// 等到 1s Provider 超时过期后，清空缓冲区应能立即看到通道关闭
-	time.Sleep(1200 * time.Millisecond)
-	deadline := time.After(2 * time.Second)
+	// 不读取 ch，直接等待 worker 因 reqCtx 超时退出并关闭 resp.Body
+	select {
+	case <-bodyClosed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("streamRequest worker leaked: resp.Body was not closed after reqCtx expired")
+	}
+
+	// worker 已确认退出后再排空缓冲区并验证 ch 正常关闭
+	drainDeadline := time.After(time.Second)
 	for {
 		select {
 		case _, ok := <-ch:
 			if !ok {
 				return
 			}
-		case <-deadline:
-			t.Fatal("streamRequest goroutine leaked after reqCtx expired")
+		case <-drainDeadline:
+			t.Fatal("ch was not closed after worker closed resp.Body")
 		}
 	}
 }

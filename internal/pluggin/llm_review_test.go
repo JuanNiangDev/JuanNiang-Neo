@@ -935,18 +935,30 @@ func TestPluginLLMTimeoutPropagation(t *testing.T) {
 	mainLua := `
 plugin = { name = "llmtimeout", version = "1.0.0", commands = {} }
 async_done = 0
-function on_chat_response(req_id, ctx, text, err)
+async_results = {}
+function on_chat_response(req_id, text, err)
+	async_results[req_id] = { text = text, err = err }
 	async_done = async_done + 1
 end
 sync_default_ok = false
 sync_explicit_ok = false
+async_default_ok = false
+async_explicit_ok = false
 function run_checks()
 	local r1 = llm.chat("hello")
 	sync_default_ok = (r1 == "ok")
 	local r2 = llm.chat("hello explicit", { timeout = 300 })
 	sync_explicit_ok = (r2 == "ok")
-	llm.chat_async("hello async")
-	llm.chat_async("hello async explicit", { timeout = 300 })
+	local id1 = llm.chat_async("hello async")
+	local id2 = llm.chat_async("hello async explicit", { timeout = 300 })
+	async_id_1 = id1
+	async_id_2 = id2
+end
+function verify_async()
+	local a = async_results[async_id_1]
+	local b = async_results[async_id_2]
+	async_default_ok = (a ~= nil and a.text == "ok" and a.err == nil)
+	async_explicit_ok = (b ~= nil and b.text == "ok" and b.err == nil)
 end
 `
 	if err := os.WriteFile(filepath.Join(base, "llmtimeout", "main.lua"), []byte(mainLua), 0o644); err != nil {
@@ -972,6 +984,9 @@ end
 		v := luaGetGlobal(pe, L, "async_done")
 		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 2
 	})
+	if err := luaDoString(pe, L, `verify_async()`); err != nil {
+		t.Fatalf("verify_async err: %v", err)
+	}
 
 	llm.mu.Lock()
 	recs := append([]fakeLLMChatRecord(nil), llm.chatRecords...)
@@ -985,7 +1000,7 @@ end
 		byPrompt[r.prompt] = r
 	}
 
-	for _, name := range []string{"sync_default_ok", "sync_explicit_ok"} {
+	for _, name := range []string{"sync_default_ok", "sync_explicit_ok", "async_default_ok", "async_explicit_ok"} {
 		if v := luaGetGlobal(pe, L, name); v != lua.LTrue {
 			t.Fatalf("%s = %v, want true", name, v)
 		}
