@@ -14,6 +14,7 @@ import (
 	"JuanNiang-Neo/internal/agent/groupmgr"
 	"JuanNiang-Neo/internal/agent/memory/longterm"
 	"JuanNiang-Neo/internal/agent/memory/shortterm"
+	"JuanNiang-Neo/internal/agent/provider"
 	"JuanNiang-Neo/internal/agent/stats"
 	"JuanNiang-Neo/internal/agent/tool"
 	"JuanNiang-Neo/internal/core/models"
@@ -276,11 +277,27 @@ func (h *HagoCenter) getReplySettings(ctx context.Context) ReplySettings {
 	return rs
 }
 
+// syncDefaultLLMTimeout 从回复策略配置同步全局默认 LLM 等待超时到 provider 层。
+func (h *HagoCenter) syncDefaultLLMTimeout(ctx context.Context) {
+	if h.DAO == nil || h.DAO.ReplyStrategy == nil {
+		return
+	}
+	cfg, err := h.DAO.ReplyStrategy.GetOrCreate(ctx)
+	if err != nil {
+		log.Warn("同步全局 LLM 超时失败，保持当前默认", "err", err)
+		return
+	}
+	provider.SetDefaultTimeout(cfg.LLMTimeout)
+}
+
 // InvalidateReplySettings 使回复策略内存缓存失效（Web 面板更新策略后立即生效）。
 func (h *HagoCenter) InvalidateReplySettings() {
 	h.replySettingsMu.Lock()
 	h.replySettingsExp = time.Time{}
 	h.replySettingsMu.Unlock()
+	syncCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	h.syncDefaultLLMTimeout(syncCtx)
 }
 
 // checkReplyStrategy 已废弃：相关性判断统一在 filterRelevant 中按批次执行

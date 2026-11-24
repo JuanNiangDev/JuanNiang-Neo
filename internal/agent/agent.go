@@ -282,6 +282,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 
 	// 内置工具"仅管理员"标志：seed 默认高危名单到 DB（幂等），并加载运行时权限表
 	h.seedBuiltinToolGuard(ctx)
+	h.syncDefaultLLMTimeout(ctx)
 
 	if err := h.loadProviders(ctx); err != nil {
 		return err

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // ---------- URL 规则（§5.3） ----------
@@ -334,5 +335,25 @@ func TestBuildResponsesSystemToInstructions(t *testing.T) {
 	first := input[0].(map[string]any)
 	if first["role"] != "user" {
 		t.Errorf("input[0].role = %v, want user（system 不得出现在 input）", first["role"])
+	}
+}
+
+func TestProviderEffectiveTimeout(t *testing.T) {
+	SetDefaultTimeout(0)
+	t.Cleanup(func() { SetDefaultTimeout(DefaultTimeoutSec) })
+
+	pFollow := NewProvider(ProviderConfig{}).(*openAIProvider)
+	if got := pFollow.effectiveTimeout(); got != 150*time.Second {
+		t.Fatalf("default effectiveTimeout = %v, want 150s", got)
+	}
+
+	SetDefaultTimeout(240)
+	if got := pFollow.effectiveTimeout(); got != 240*time.Second {
+		t.Fatalf("updated global effectiveTimeout = %v, want 240s", got)
+	}
+
+	pOverride := NewProvider(ProviderConfig{Timeout: 420}).(*openAIProvider)
+	if got := pOverride.effectiveTimeout(); got != 420*time.Second {
+		t.Fatalf("override effectiveTimeout = %v, want 420s", got)
 	}
 }

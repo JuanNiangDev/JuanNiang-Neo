@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -22,6 +23,32 @@ import (
 )
 
 var log = logging.NewModule("provider")
+
+// DefaultTimeoutSec 全局默认 LLM 请求等待超时（秒）。
+const DefaultTimeoutSec = 150
+
+var defaultTimeoutSec atomic.Int64
+
+func init() {
+	defaultTimeoutSec.Store(DefaultTimeoutSec)
+}
+
+// SetDefaultTimeout 更新全局默认 LLM 等待超时（秒）；<=0 时回退 DefaultTimeoutSec。
+func SetDefaultTimeout(sec int) {
+	if sec <= 0 {
+		sec = DefaultTimeoutSec
+	}
+	defaultTimeoutSec.Store(int64(sec))
+}
+
+// GetDefaultTimeout 返回当前全局默认 LLM 等待超时。
+func GetDefaultTimeout() time.Duration {
+	sec := defaultTimeoutSec.Load()
+	if sec <= 0 {
+		sec = DefaultTimeoutSec
+	}
+	return time.Duration(sec) * time.Second
+}
 
 // openAIProvider 实现多协议 LLM API 客户端：按 cfg.APIMode 分派
 // chat_completions / anthropic_messages / openai_responses / gemini_native。
@@ -33,8 +60,20 @@ type openAIProvider struct {
 func NewProvider(cfg ProviderConfig) Provider {
 	return &openAIProvider{
 		cfg: cfg,
-		cli: &http.Client{Timeout: 300 * time.Second},
+		cli: &http.Client{},
 	}
+}
+
+// effectiveTimeout 返回该 Provider 本次请求生效的超时：自身配置优先，<=0 时跟随全局默认。
+func (p *openAIProvider) effectiveTimeout() time.Duration {
+	if p.cfg.Timeout > 0 {
+		return time.Duration(p.cfg.Timeout) * time.Second
+	}
+	return GetDefaultTimeout()
+}
+
+func (p *openAIProvider) withEffectiveTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, p.effectiveTimeout())
 }
 
 func (p *openAIProvider) ID() string      { return p.cfg.ID }
@@ -673,7 +712,10 @@ func (p *openAIProvider) parseChatCompletions(body []byte) (*ChatResponse, error
 // ---------- HTTP 请求 ----------
 
 func (p *openAIProvider) doRequest(ctx context.Context, url string, body []byte) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	reqCtx, cancel := p.withEffectiveTimeout(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("provider request: %w", err)
 	}
@@ -732,19 +774,23 @@ func (p *openAIProvider) setHeaders(req *http.Request) {
 // ---------- 流式 ----------
 
 func (p *openAIProvider) streamRequest(ctx context.Context, url string, body []byte) (<-chan ChatStreamChunk, error) {
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	reqCtx, cancel := p.withEffectiveTimeout(ctx)
+	httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	p.setHeaders(httpReq)
 
 	resp, err := p.cli.Do(httpReq)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("provider chat stream: %w", err)
 	}
 
 	ch := make(chan ChatStreamChunk, 32)
 	go func() {
+		defer cancel()
 		defer close(ch)
 		defer resp.Body.Close()
 

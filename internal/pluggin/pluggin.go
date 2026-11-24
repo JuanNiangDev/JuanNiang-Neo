@@ -3554,9 +3554,9 @@ func lvString(v lua.LValue, def string) string {
 	return def
 }
 
-// llmTimeoutFromOpts 从 opts.timeout（秒）解析调用超时，缺省 60s。
+// llmTimeoutFromOpts 从 opts.timeout（秒）解析调用超时，缺省跟随全局默认 LLM 超时。
 func llmTimeoutFromOpts(L *lua.LState, optsIdx int) time.Duration {
-	timeout := 60 * time.Second
+	timeout := provider.GetDefaultTimeout()
 	if opts := L.Get(optsIdx); opts.Type() == lua.LTTable {
 		if t := opts.(*lua.LTable).RawGetString("timeout"); t.Type() == lua.LTNumber {
 			if sec := float64(t.(lua.LNumber)); sec > 0 {
