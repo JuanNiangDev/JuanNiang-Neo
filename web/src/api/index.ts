@@ -9,12 +9,12 @@ export interface AdapterConnDetail { id: number; ip: string; self_id: number }
 export interface AdapterStatus { running: boolean; listen_addr: string; self_id: number; conn_count: number; conn_ids: number[]; conns: AdapterConnDetail[] }
 export interface UpdateAdapterConfigReq { addr: string; port: number; token: string; admin_qq_numbers: string[]; enabled: boolean }
 
-export interface ProviderResp { id: string; created_at: string; name: string; type: string; endpoint: string; token: string; model: string; temperature: number; is_active: boolean; enable_thinking: boolean; api_mode: string; thinking_effort: string; thinking_budget: number; max_tokens: number; top_p: number | null; top_k: number | null; frequency_penalty: number | null; presence_penalty: number | null; repetition_penalty: number | null; provider_key: string; auth_header: string; url_mode: string }
+export interface ProviderResp { id: string; created_at: string; name: string; type: string; endpoint: string; token: string; model: string; temperature: number; is_active: boolean; enable_thinking: boolean; api_mode: string; thinking_effort: string; thinking_budget: number; max_tokens: number; top_p: number | null; top_k: number | null; frequency_penalty: number | null; presence_penalty: number | null; repetition_penalty: number | null; provider_key: string; auth_header: string; url_mode: string; timeout: number }
 export interface ProviderPresetProtocol { api_mode: string; base_url: string; auth_header: string; note?: string }
 export interface ProviderPreset { key: string; name: string; protocols: ProviderPresetProtocol[] }
 export interface ListProviderModelsReq { endpoint: string; token: string; auth_header: string; api_mode?: string }
 export interface ProviderModelsResp { ok: boolean; message: string; models: string[] }
-export interface AddProviderReq { name: string; type: string; endpoint: string; token: string; model: string; temperature?: number; isActive: boolean; enable_thinking: boolean; api_mode: string; thinking_effort: string; thinking_budget: number; max_tokens: number; top_p: number | null; top_k: number | null; frequency_penalty: number | null; presence_penalty: number | null; repetition_penalty: number | null; provider_key: string; auth_header: string; url_mode: string }
+export interface AddProviderReq { name: string; type: string; endpoint: string; token: string; model: string; temperature?: number; isActive: boolean; enable_thinking: boolean; api_mode: string; thinking_effort: string; thinking_budget: number; max_tokens: number; top_p: number | null; top_k: number | null; frequency_penalty: number | null; presence_penalty: number | null; repetition_penalty: number | null; provider_key: string; auth_header: string; url_mode: string; timeout: number }
 
 export interface MCPServerResp { id: string; name: string; server_url: string; headers: Record<string, any>; timeout: number; retry_count: number; tool_filter: string[]; auto_reconnect: boolean; is_active: boolean; created_at: string }
 export interface AddMCPServerReq { name: string; server_url: string; headers?: Record<string, any>; timeout?: number; retry_count?: number; tool_filter?: string[]; auto_reconnect?: boolean; is_active: boolean }
@@ -309,6 +309,7 @@ export interface ReplyStrategyResp {
   relevance_prompt: string
   relevance_model: string
   relevance_timeout: number
+  llm_timeout: number
   judge_fail_policy: string
 }
 
@@ -320,6 +321,7 @@ export interface UpdateReplyStrategyReq {
   relevance_prompt?: string
   relevance_model?: string
   relevance_timeout?: number
+  llm_timeout?: number
   judge_fail_policy?: string
 }
 

@@ -13,11 +13,24 @@ const UUID = () =>
 
 const now = () => new Date().toISOString()
 
+let replyStrategyMock: Record<string, any> = {
+  strategy: 'always',
+  relevance_threshold: 0.5,
+  bot_name: '小卷',
+  strip_markdown: false,
+  agent_lite: false,
+  relevance_prompt: '',
+  relevance_model: '',
+  relevance_timeout: 10,
+  llm_timeout: 150,
+  judge_fail_policy: 'drop',
+}
+
 // --- Providers ---
 let providers = [
-  { id: UUID(), created_at: now(), name: 'OpenAI GPT-4o', type: 'text_model', endpoint: 'https://api.openai.com/v1', token: 'sk-***', model: 'gpt-4o', temperature: 0.7, is_active: true, enable_thinking: false, api_mode: 'chat_completions', thinking_effort: 'off', thinking_budget: 0, max_tokens: 0, top_p: null, top_k: null, frequency_penalty: null, presence_penalty: null, repetition_penalty: null, provider_key: '', auth_header: '', url_mode: 'auto' },
-  { id: UUID(), created_at: now(), name: 'DALL-E 3', type: 'image_model', endpoint: 'https://api.openai.com/v1', token: 'sk-***', model: 'dall-e-3', temperature: 0, is_active: true, enable_thinking: false, api_mode: 'chat_completions', thinking_effort: 'off', thinking_budget: 0, max_tokens: 0, top_p: null, top_k: null, frequency_penalty: null, presence_penalty: null, repetition_penalty: null, provider_key: '', auth_header: '', url_mode: 'auto' },
-  { id: UUID(), created_at: now(), name: 'OpenAI Embedding', type: 'embedding_model', endpoint: 'https://api.openai.com/v1', token: 'sk-***', model: 'text-embedding-3-small', temperature: 0, is_active: false, enable_thinking: false, api_mode: 'chat_completions', thinking_effort: 'off', thinking_budget: 0, max_tokens: 0, top_p: null, top_k: null, frequency_penalty: null, presence_penalty: null, repetition_penalty: null, provider_key: '', auth_header: '', url_mode: 'auto' },
+  { id: UUID(), created_at: now(), name: 'OpenAI GPT-4o', type: 'text_model', endpoint: 'https://api.openai.com/v1', token: 'sk-***', model: 'gpt-4o', temperature: 0.7, is_active: true, enable_thinking: false, api_mode: 'chat_completions', thinking_effort: 'off', thinking_budget: 0, max_tokens: 0, top_p: null, top_k: null, frequency_penalty: null, presence_penalty: null, repetition_penalty: null, provider_key: '', auth_header: '', url_mode: 'auto', timeout: 0 },
+  { id: UUID(), created_at: now(), name: 'DALL-E 3', type: 'image_model', endpoint: 'https://api.openai.com/v1', token: 'sk-***', model: 'dall-e-3', temperature: 0, is_active: true, enable_thinking: false, api_mode: 'chat_completions', thinking_effort: 'off', thinking_budget: 0, max_tokens: 0, top_p: null, top_k: null, frequency_penalty: null, presence_penalty: null, repetition_penalty: null, provider_key: '', auth_header: '', url_mode: 'auto', timeout: 0 },
+  { id: UUID(), created_at: now(), name: 'OpenAI Embedding', type: 'embedding_model', endpoint: 'https://api.openai.com/v1', token: 'sk-***', model: 'text-embedding-3-small', temperature: 0, is_active: false, enable_thinking: false, api_mode: 'chat_completions', thinking_effort: 'off', thinking_budget: 0, max_tokens: 0, top_p: null, top_k: null, frequency_penalty: null, presence_penalty: null, repetition_penalty: null, provider_key: '', auth_header: '', url_mode: 'auto', timeout: 0 },
 ]
 
 // --- Provider 厂商预设（与后端 internal/agent/provider/provider_presets.go 对齐） ---
@@ -831,20 +844,15 @@ export const mockHandlers: MockHandler[] = [
   {
     method: 'GET', path: '/reply-strategy',
     handler() {
-      return ok({
-        strategy: 'always',
-        relevance_threshold: 0.5,
-        bot_name: '小卷',
-        strip_markdown: false,
-        agent_lite: false,
-        relevance_prompt: '',
-        relevance_model: '',
-      })
+      return ok({ ...replyStrategyMock })
     }
   },
   {
     method: 'PUT', path: '/reply-strategy',
-    handler({ body }) { return ok(body) }
+    handler({ body }) {
+      replyStrategyMock = { ...replyStrategyMock, ...(body as Record<string, any>) }
+      return ok({ ...replyStrategyMock })
+    }
   },
 
   // ============ Logs ============

@@ -231,6 +231,19 @@
                     <v-col cols="12" sm="6" md="4">
                       <v-text-field v-model="form.max_tokens" label="Max Tokens（0=默认）" type="number" />
                     </v-col>
+                    <v-col cols="12" sm="6" md="4">
+                      <v-text-field
+                        v-model="form.timeout"
+                        label="请求超时（秒，留空/0=跟随全局）"
+                        placeholder="跟随全局回复设置"
+                        type="number"
+                        step="1"
+                        :min="0"
+                        :max="3600"
+                        :rules="[validateProviderTimeout]"
+                        hide-details="auto"
+                      />
+                    </v-col>
                   </v-row>
                   <v-row>
                     <v-col v-if="show.topP" cols="12" sm="6" md="4">
@@ -482,7 +495,7 @@ const defaultForm = (): AddProviderReq => ({
   name: '', type: 'text_model', endpoint: '', token: '', model: '', temperature: 0.7,
   isActive: false, enable_thinking: false, api_mode: 'chat_completions', thinking_effort: 'off',
   thinking_budget: 0, max_tokens: 0, top_p: null, top_k: null, frequency_penalty: null,
-  presence_penalty: null, repetition_penalty: null, provider_key: '', auth_header: '', url_mode: 'auto',
+  presence_penalty: null, repetition_penalty: null, provider_key: '', auth_header: '', url_mode: 'auto', timeout: 0,
 })
 const form = ref<AddProviderReq>(defaultForm())
 
@@ -555,6 +568,7 @@ function openEdit(item: ProviderResp) {
     top_p: item.top_p, top_k: item.top_k, frequency_penalty: item.frequency_penalty,
     presence_penalty: item.presence_penalty, repetition_penalty: item.repetition_penalty,
     provider_key: item.provider_key || '', auth_header: item.auth_header || '', url_mode: item.url_mode || 'auto',
+    timeout: item.timeout || 0,
   }
   currentPreset.value = presets.value.find((p) => p.key === item.provider_key) || null
   isCustom.value = !currentPreset.value
@@ -640,13 +654,35 @@ async function toggle(id: string, v: boolean) {
   } catch (e: any) { toastStore.error('操作失败') }
 }
 
+function parseProviderTimeout(raw: unknown): { ok: true; value: number } | { ok: false; message: string } {
+  if (raw === '' || raw === null || raw === undefined) return { ok: true, value: 0 }
+  const s = String(raw).trim()
+  if (s === '') return { ok: true, value: 0 }
+  const n = Number(s)
+  if (!Number.isInteger(n) || n < 0 || n > 3600) {
+    return { ok: false, message: '请求超时须为 0–3600 之间的整数（秒）' }
+  }
+  return { ok: true, value: n }
+}
+
+function validateProviderTimeout(v: unknown): true | string {
+  const res = parseProviderTimeout(v)
+  return res.ok ? true : res.message
+}
+
 async function handleSave() {
   const valid = await formRef.value?.validate?.()
   if (valid && valid.valid === false) return
+  const tCheck = parseProviderTimeout(form.value.timeout)
+  if (!tCheck.ok) {
+    toastStore.error(tCheck.message)
+    return
+  }
   saving.value = true
   try {
     // 旧开关由思考强度推导，UI 不再单独暴露
     form.value.enable_thinking = form.value.thinking_effort !== 'off'
+    form.value.timeout = tCheck.value
     if (editing.value) { await providerApi.update(editing.value, form.value) } else { await providerApi.create(form.value) }
     toastStore.success(editing.value ? '已更新' : '已创建')
     formDialog.value = false
@@ -663,6 +699,7 @@ function reqFromItem(item: ProviderResp): AddProviderReq {
     top_p: item.top_p, top_k: item.top_k, frequency_penalty: item.frequency_penalty,
     presence_penalty: item.presence_penalty, repetition_penalty: item.repetition_penalty,
     provider_key: item.provider_key || '', auth_header: item.auth_header || '', url_mode: item.url_mode || 'auto',
+    timeout: item.timeout || 0,
   }
 }
 
@@ -683,7 +720,17 @@ async function runTest(payload: AddProviderReq) {
 }
 
 // 测试新增/编辑表单中的当前配置（不落库）。
-function testForm() { runTest({ ...form.value }) }
+function testForm() {
+  const tCheck = parseProviderTimeout(form.value.timeout)
+  if (!tCheck.ok) {
+    toastStore.error(tCheck.message)
+    return
+  }
+  runTest({
+    ...form.value,
+    timeout: tCheck.value,
+  })
+}
 
 // 测试列表中已保存的 Provider。
 async function testItem(item: ProviderResp) {

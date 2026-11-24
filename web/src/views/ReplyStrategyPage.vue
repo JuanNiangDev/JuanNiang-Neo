@@ -80,6 +80,20 @@
 
               <v-divider class="my-3" />
 
+              <div class="text-subtitle-2 font-weight-bold mb-2">全局 LLM 等待超时（秒）</div>
+              <v-text-field
+                v-model.number="form.llm_timeout"
+                type="number" :min="1" :max="3600"
+                label="全局默认 LLM 请求等待时间（默认 150s）"
+                :rules="[validateLlmTimeout]"
+                density="comfortable" variant="outlined" hide-details="auto"
+              />
+              <div class="text-caption text-medium-emphasis mt-1">
+                所有未单独配置超时的模型提供商及未指定超时的插件将跟随此全局默认值（1-3600 秒）。
+              </div>
+
+              <v-divider class="my-3" />
+
               <div class="text-subtitle-2 font-weight-bold mb-2">判断失败策略</div>
               <v-select
                 v-model="form.judge_fail_policy"
@@ -200,6 +214,7 @@ const form = ref({
   relevance_prompt: '',
   relevance_model: '',
   relevance_timeout: 10,
+  llm_timeout: 150,
   judge_fail_policy: 'drop',
 })
 
@@ -227,6 +242,7 @@ async function load() {
       form.value.relevance_prompt = d.relevance_prompt || ''
       form.value.relevance_model = d.relevance_model || ''
       form.value.relevance_timeout = d.relevance_timeout || 10
+      form.value.llm_timeout = d.llm_timeout || 150
       form.value.judge_fail_policy = d.judge_fail_policy || 'drop'
     }
   } catch (_e: any) {}
@@ -243,7 +259,23 @@ function savePrompt() {
   toastStore.success('提示词已更新，点击「保存」生效')
 }
 
+function validateLlmTimeout(val: unknown): true | string {
+  if (val === '' || val === null || val === undefined) {
+    return '请填写全局 LLM 等待超时（1-3600 秒）'
+  }
+  const n = Number(val)
+  if (!Number.isInteger(n) || n < 1 || n > 3600) {
+    return '全局 LLM 等待超时必须为 1-3600 之间的整数'
+  }
+  return true
+}
+
 async function handleSave() {
+  const timeoutCheck = validateLlmTimeout(form.value.llm_timeout)
+  if (timeoutCheck !== true) {
+    toastStore.error(timeoutCheck)
+    return
+  }
   saving.value = true
   try {
     await replyStrategyApi.update({
@@ -254,6 +286,7 @@ async function handleSave() {
       relevance_prompt: form.value.relevance_prompt,
       relevance_model: form.value.relevance_model,
       relevance_timeout: form.value.relevance_timeout || 10,
+      llm_timeout: Number(form.value.llm_timeout),
       judge_fail_policy: form.value.judge_fail_policy,
     })
     toastStore.success('回复设置已保存')

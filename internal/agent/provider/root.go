@@ -58,6 +58,8 @@ type ProviderConfig struct {
 	AuthHeader string `json:"auth_header,omitempty"`
 	// URLMode URL 拼接：""|auto|exact（auto=base+协议后缀自动拼接；exact=完整端点原样使用）
 	URLMode string `json:"url_mode,omitempty"`
+	// Timeout 单独设置的 LLM 请求等待超时（秒），0=跟随全局默认
+	Timeout int `json:"timeout,omitempty"`
 }
 
 // apiMode 返回归一化后的协议模式（空 → chat_completions）。
@@ -100,6 +102,7 @@ func ProviderConfigFromModel(m *models.Provider) ProviderConfig {
 		ProviderKey:       m.ProviderKey,
 		AuthHeader:        m.AuthHeader,
 		URLMode:           m.URLMode,
+		Timeout:           m.Timeout,
 	}
 }
 

@@ -120,6 +120,7 @@ type HagoCenter struct {
 	// 避免每条消息都同步查 DB 阻塞事件循环；Web 面板更新策略时通过
 	// InvalidateReplySettings 立即失效（TTL 仅作兜底）。
 	replySettingsMu  sync.Mutex
+	replySyncMu      sync.Mutex // 串行化全局 LLM 默认超时的 DB 读取与发布
 	replySettings    ReplySettings
 	replySettingsExp time.Time
 }
@@ -282,6 +283,7 @@ func (h *HagoCenter) Init(ctx context.Context, cfg Config) error {
 
 	// 内置工具"仅管理员"标志：seed 默认高危名单到 DB（幂等），并加载运行时权限表
 	h.seedBuiltinToolGuard(ctx)
+	h.syncDefaultLLMTimeout(ctx)
 
 	if err := h.loadProviders(ctx); err != nil {
 		return err

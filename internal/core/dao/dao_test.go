@@ -282,6 +282,7 @@ func TestProviderCreateKeepsInactiveOnLegacyDefaultTrue(t *testing.T) {
 		provider_key TEXT,
 		auth_header TEXT,
 		url_mode TEXT,
+		timeout INTEGER,
 		is_active BOOLEAN NOT NULL DEFAULT 1
 	)`).Error; err != nil {
 		t.Fatalf("create legacy table err: %v", err)

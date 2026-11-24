@@ -142,13 +142,21 @@ func (f *fakeAdapter) mutedCalls() []string {
 	return out
 }
 
+// fakeLLMChatRecord 记录单次 Chat 调用的上下文超时信息。
+type fakeLLMChatRecord struct {
+	prompt      string
+	hasDeadline bool
+	remaining   time.Duration
+}
+
 // fakeLLM 可编程 LLM 替身，实现 LLMAccess。
 type fakeLLM struct {
-	mu    sync.Mutex
-	reply string
-	err   error
-	calls int
-	delay time.Duration // 每次 Chat 的模拟耗时（测试在途任务场景）
+	mu          sync.Mutex
+	reply       string
+	err         error
+	calls       int
+	delay       time.Duration // 每次 Chat 的模拟耗时（测试在途任务场景）
+	chatRecords []fakeLLMChatRecord
 
 	visionCalls    int
 	visionProvider string
@@ -163,6 +171,15 @@ func (f *fakeLLM) Available() bool { return true }
 func (f *fakeLLM) Chat(ctx context.Context, req provider.ChatRequest) (*provider.ChatResponse, error) {
 	f.mu.Lock()
 	f.calls++
+	rec := fakeLLMChatRecord{}
+	if len(req.Messages) > 0 {
+		rec.prompt = req.Messages[0].Content
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		rec.hasDeadline = true
+		rec.remaining = time.Until(dl)
+	}
+	f.chatRecords = append(f.chatRecords, rec)
 	if f.err != nil {
 		err := f.err
 		d := f.delay
@@ -903,5 +920,113 @@ func TestSandboxAsync(t *testing.T) {
 	// 错误路径：HTTP 500 → 回调 err 非 nil
 	if v := luaGetGlobal(pe, L, "sb_fail_err"); v.String() == "" || v.String() == "nil" {
 		t.Fatalf("HTTP 500 应回调 err, got %v", v)
+	}
+}
+
+func TestPluginLLMTimeoutPropagation(t *testing.T) {
+	provider.SetDefaultTimeout(150)
+	t.Cleanup(func() { provider.SetDefaultTimeout(provider.DefaultTimeoutSec) })
+
+	llm := &fakeLLM{reply: "ok"}
+	base := t.TempDir()
+	pe := NewPluginEngine(base, &fakeAdapter{}, nil, nil, nil, nil, nil, nil, llm)
+	writeTestPlugin(t, base, "llmtimeout")
+
+	mainLua := `
+plugin = { name = "llmtimeout", version = "1.0.0", commands = {} }
+async_done = 0
+async_results = {}
+function on_chat_response(req_id, text, err)
+	async_results[req_id] = { text = text, err = err }
+	async_done = async_done + 1
+end
+sync_default_ok = false
+sync_explicit_ok = false
+async_default_ok = false
+async_explicit_ok = false
+function run_checks()
+	local r1 = llm.chat("hello")
+	sync_default_ok = (r1 == "ok")
+	local r2 = llm.chat("hello explicit", { timeout = 300 })
+	sync_explicit_ok = (r2 == "ok")
+	local id1 = llm.chat_async("hello async")
+	local id2 = llm.chat_async("hello async explicit", { timeout = 300 })
+	async_id_1 = id1
+	async_id_2 = id2
+end
+function verify_async()
+	local a = async_results[async_id_1]
+	local b = async_results[async_id_2]
+	async_default_ok = (a ~= nil and a.text == "ok" and a.err == nil)
+	async_explicit_ok = (b ~= nil and b.text == "ok" and b.err == nil)
+end
+`
+	if err := os.WriteFile(filepath.Join(base, "llmtimeout", "main.lua"), []byte(mainLua), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	L := lua.NewState()
+	t.Cleanup(L.Close)
+	pe.injectSDK(L, "llmtimeout")
+	pe.injectBaseAPI(L, "llmtimeout", []string{"llm"})
+	pe.mu.Lock()
+	pe.plugins["llmtimeout"] = &LoadedPlugin{Manifest: Manifest{Name: "llmtimeout"}, State: L, Dir: filepath.Join(base, "llmtimeout")}
+	pe.mu.Unlock()
+
+	if err := luaDoFile(pe, L, filepath.Join(base, "llmtimeout", "main.lua")); err != nil {
+		t.Fatalf("load lua err: %v", err)
+	}
+	if err := luaDoString(pe, L, `run_checks()`); err != nil {
+		t.Fatalf("run_checks err: %v", err)
+	}
+
+	waitFor(t, func() bool {
+		v := luaGetGlobal(pe, L, "async_done")
+		return v.Type() == lua.LTNumber && float64(v.(lua.LNumber)) >= 2
+	})
+	if err := luaDoString(pe, L, `verify_async()`); err != nil {
+		t.Fatalf("verify_async err: %v", err)
+	}
+
+	llm.mu.Lock()
+	recs := append([]fakeLLMChatRecord(nil), llm.chatRecords...)
+	llm.mu.Unlock()
+	if len(recs) != 4 {
+		t.Fatalf("expected 4 Chat calls, got %d", len(recs))
+	}
+
+	byPrompt := make(map[string]fakeLLMChatRecord, len(recs))
+	for _, r := range recs {
+		byPrompt[r.prompt] = r
+	}
+
+	for _, name := range []string{"sync_default_ok", "sync_explicit_ok", "async_default_ok", "async_explicit_ok"} {
+		if v := luaGetGlobal(pe, L, name); v != lua.LTrue {
+			t.Fatalf("%s = %v, want true", name, v)
+		}
+	}
+
+	// sync 与 async 未传 opts.timeout：不得提前截断为 150s（无 deadline，交由 Provider/全局决定）
+	for _, prompt := range []string{"hello", "hello async"} {
+		r, ok := byPrompt[prompt]
+		if !ok {
+			t.Fatalf("missing Chat record for %q", prompt)
+		}
+		if r.hasDeadline {
+			t.Fatalf("%q without opts.timeout should not pre-clamp deadline (remaining=%v)", prompt, r.remaining)
+		}
+	}
+	// sync 与 async 传了 timeout=300：携带约 300s 的显式 deadline
+	for _, prompt := range []string{"hello explicit", "hello async explicit"} {
+		r, ok := byPrompt[prompt]
+		if !ok {
+			t.Fatalf("missing Chat record for %q", prompt)
+		}
+		if !r.hasDeadline {
+			t.Fatalf("%q with timeout=300 missing deadline", prompt)
+		}
+		if r.remaining < 250*time.Second || r.remaining > 305*time.Second {
+			t.Fatalf("%q deadline remaining = %v, want ~300s", prompt, r.remaining)
+		}
 	}
 }
