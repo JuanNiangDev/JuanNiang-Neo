@@ -233,12 +233,15 @@
                     </v-col>
                     <v-col cols="12" sm="6" md="4">
                       <v-text-field
-                        v-model.number="form.timeout"
+                        v-model="form.timeout"
                         label="请求超时（秒，留空/0=跟随全局）"
                         placeholder="跟随全局回复设置"
                         type="number"
+                        step="1"
                         :min="0"
                         :max="3600"
+                        :rules="[validateProviderTimeout]"
+                        hide-details="auto"
                       />
                     </v-col>
                   </v-row>
@@ -651,14 +654,35 @@ async function toggle(id: string, v: boolean) {
   } catch (e: any) { toastStore.error('操作失败') }
 }
 
+function parseProviderTimeout(raw: unknown): { ok: true; value: number } | { ok: false; message: string } {
+  if (raw === '' || raw === null || raw === undefined) return { ok: true, value: 0 }
+  const s = String(raw).trim()
+  if (s === '') return { ok: true, value: 0 }
+  const n = Number(s)
+  if (!Number.isInteger(n) || n < 0 || n > 3600) {
+    return { ok: false, message: '请求超时须为 0–3600 之间的整数（秒）' }
+  }
+  return { ok: true, value: n }
+}
+
+function validateProviderTimeout(v: unknown): true | string {
+  const res = parseProviderTimeout(v)
+  return res.ok ? true : res.message
+}
+
 async function handleSave() {
   const valid = await formRef.value?.validate?.()
   if (valid && valid.valid === false) return
+  const tCheck = parseProviderTimeout(form.value.timeout)
+  if (!tCheck.ok) {
+    toastStore.error(tCheck.message)
+    return
+  }
   saving.value = true
   try {
     // 旧开关由思考强度推导，UI 不再单独暴露
     form.value.enable_thinking = form.value.thinking_effort !== 'off'
-    form.value.timeout = Math.max(0, Number(form.value.timeout) || 0)
+    form.value.timeout = tCheck.value
     if (editing.value) { await providerApi.update(editing.value, form.value) } else { await providerApi.create(form.value) }
     toastStore.success(editing.value ? '已更新' : '已创建')
     formDialog.value = false
@@ -697,9 +721,14 @@ async function runTest(payload: AddProviderReq) {
 
 // 测试新增/编辑表单中的当前配置（不落库）。
 function testForm() {
+  const tCheck = parseProviderTimeout(form.value.timeout)
+  if (!tCheck.ok) {
+    toastStore.error(tCheck.message)
+    return
+  }
   runTest({
     ...form.value,
-    timeout: Math.max(0, Number(form.value.timeout) || 0),
+    timeout: tCheck.value,
   })
 }
 
