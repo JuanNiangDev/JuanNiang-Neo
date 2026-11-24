@@ -80,6 +80,19 @@
 
               <v-divider class="my-3" />
 
+              <div class="text-subtitle-2 font-weight-bold mb-2">全局 LLM 等待超时（秒）</div>
+              <v-text-field
+                v-model.number="form.llm_timeout"
+                type="number" :min="1" :max="3600"
+                label="全局默认 LLM 请求等待时间（默认 150s）"
+                density="comfortable" variant="outlined" hide-details
+              />
+              <div class="text-caption text-medium-emphasis mt-1">
+                所有未单独配置超时的模型提供商及未指定超时的插件将跟随此全局默认值（1-3600 秒）。
+              </div>
+
+              <v-divider class="my-3" />
+
               <div class="text-subtitle-2 font-weight-bold mb-2">判断失败策略</div>
               <v-select
                 v-model="form.judge_fail_policy"
@@ -200,6 +213,7 @@ const form = ref({
   relevance_prompt: '',
   relevance_model: '',
   relevance_timeout: 10,
+  llm_timeout: 150,
   judge_fail_policy: 'drop',
 })
 
@@ -227,6 +241,7 @@ async function load() {
       form.value.relevance_prompt = d.relevance_prompt || ''
       form.value.relevance_model = d.relevance_model || ''
       form.value.relevance_timeout = d.relevance_timeout || 10
+      form.value.llm_timeout = d.llm_timeout || 150
       form.value.judge_fail_policy = d.judge_fail_policy || 'drop'
     }
   } catch (_e: any) {}
@@ -254,6 +269,7 @@ async function handleSave() {
       relevance_prompt: form.value.relevance_prompt,
       relevance_model: form.value.relevance_model,
       relevance_timeout: form.value.relevance_timeout || 10,
+      llm_timeout: form.value.llm_timeout || 150,
       judge_fail_policy: form.value.judge_fail_policy,
     })
     toastStore.success('回复设置已保存')
