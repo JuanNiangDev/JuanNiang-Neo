@@ -3778,16 +3778,16 @@ func messageEventsToLua(L *lua.LState, msgs []adapter.MessageEvent) *lua.LTable 
 		L.SetField(sender, "nickname", lua.LString(m.Sender.Nickname))
 		L.SetField(sender, "card", lua.LString(m.Sender.Card))
 		L.SetField(t, "sender", sender)
+		segs := L.NewTable()
 		if len(m.Message) > 0 {
-			segs := L.NewTable()
 			for j, seg := range m.Message {
 				st := L.NewTable()
 				L.SetField(st, "type", lua.LString(seg.Type))
 				L.SetField(st, "data", goToLuaValue(L, seg.Data))
 				L.SetTable(segs, lua.LNumber(j+1), st)
 			}
-			L.SetField(t, "message", segs)
 		}
+		L.SetField(t, "message", segs)
 		L.SetTable(arr, lua.LNumber(i+1), t)
 	}
 	return arr
