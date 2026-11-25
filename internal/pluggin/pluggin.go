@@ -1940,7 +1940,7 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			groupID := int64(L.CheckNumber(1))
 			var seq int64
 			if L.GetTop() >= 2 && L.Get(2) != lua.LNil {
-				if v, err := luaMsgID(L.Get(2)); err == nil && v > 0 {
+				if v, err := luaMsgID(L.Get(2)); err == nil && v != 0 {
 					seq = v
 				}
 			}
