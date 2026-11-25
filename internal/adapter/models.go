@@ -56,6 +56,8 @@ type MessageEvent struct {
 	MessageType string    `json:"message_type"` // private / group
 	SubType     string    `json:"sub_type"`     // friend / normal / anonymous / group_self
 	MessageID   int64     `json:"message_id"`
+	MessageSeq  int64     `json:"message_seq,omitempty"`
+	Time        int64     `json:"time,omitempty"`
 	UserID      int64     `json:"user_id"`
 	GroupID     int64     `json:"group_id,omitempty"`
 	Message     []Segment `json:"message"`     // 结构化消息段

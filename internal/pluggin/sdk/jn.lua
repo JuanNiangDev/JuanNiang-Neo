@@ -101,6 +101,7 @@ M.json = json
 ---@field send_private_forward_msg_sync fun(user_id: number, nodes: table[]): number, string? 同步发送私聊合并转发，返回 message_id
 ---@field delete_msg fun(message_id: number|string): boolean, string? 撤回消息（事件表的 message_id 为字符串）
 ---@field get_msg fun(message_id: number|string): table, string? 根据消息 ID 获取消息完整内容
+---@field get_group_msg_history fun(group_id: number, message_seq?: number|string, count?: number): table[]?, string? 获取群历史消息（升序，message_seq>0 取该游标之前的历史；message_id/message_seq 以字符串返回防精度丢失）
 ---@field get_group_info fun(group_id: number): table, string?
 ---@field get_group_member_list fun(group_id: number): table[], string?
 ---@field get_group_member_info fun(group_id: number, user_id: number): table, string?
