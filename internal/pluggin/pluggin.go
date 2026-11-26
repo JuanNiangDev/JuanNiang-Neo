@@ -100,6 +100,7 @@ type SendAdapter interface {
 	GetForwardMsg(forwardID string) ([]adapter.ForwardNode, error)
 	DeleteMsg(messageID int64) error
 	GetMsg(messageID int64) (map[string]any, error)
+	GetGroupMsgHistory(groupID, messageSeq int64, count int) ([]adapter.MessageEvent, error)
 	GetImage(file string) (*adapter.FileInfo, error)
 	GetGroupInfo(groupID int64) (map[string]any, error)
 	GetGroupMemberList(groupID int64) ([]map[string]any, error)
@@ -1935,6 +1936,27 @@ func (pe *PluginEngine) injectOneBot11(L *lua.LState, pluginName string) {
 			msg, err := sendAdp.GetMsg(id)
 			return pushResultJSON(L, msg, err)
 		},
+		"get_group_msg_history": func(L *lua.LState) int {
+			groupID := int64(L.CheckNumber(1))
+			var seq int64
+			if L.GetTop() >= 2 && L.Get(2) != lua.LNil {
+				if v, err := luaMsgID(L.Get(2)); err == nil && v != 0 {
+					seq = v
+				}
+			}
+			count := 0
+			if L.GetTop() >= 3 && L.Get(3) != lua.LNil {
+				count = L.CheckInt(3)
+			}
+			msgs, err := sendAdp.GetGroupMsgHistory(groupID, seq, count)
+			if err != nil {
+				L.Push(lua.LNil)
+				L.Push(lua.LString(err.Error()))
+				return 2
+			}
+			L.Push(messageEventsToLua(L, msgs))
+			return 1
+		},
 		"get_group_info": func(L *lua.LState) int {
 			info, err := sendAdp.GetGroupInfo(int64(L.CheckNumber(1)))
 			return pushResultJSON(L, info, err)
@@ -3730,6 +3752,45 @@ func eventToLuaTable(L *lua.LState, ev EventData) *lua.LTable {
 		L.SetField(t, "sender", goToLuaValue(L, ev.Sender))
 	}
 	return t
+}
+
+// messageEventsToLua 将 OneBot11 历史消息切片转换为 Lua 数组，保留 message_id/message_seq 字符串防精度丢失。
+func messageEventsToLua(L *lua.LState, msgs []adapter.MessageEvent) *lua.LTable {
+	arr := L.NewTable()
+	for i, m := range msgs {
+		t := L.NewTable()
+		L.SetField(t, "message_type", lua.LString(m.MessageType))
+		L.SetField(t, "sub_type", lua.LString(m.SubType))
+		if m.MessageID != 0 {
+			L.SetField(t, "message_id", lua.LString(strconv.FormatInt(m.MessageID, 10)))
+		} else {
+			L.SetField(t, "message_id", lua.LString("0"))
+		}
+		if m.MessageSeq != 0 {
+			L.SetField(t, "message_seq", lua.LString(strconv.FormatInt(m.MessageSeq, 10)))
+		}
+		L.SetField(t, "time", lua.LNumber(m.Time))
+		L.SetField(t, "user_id", lua.LNumber(m.UserID))
+		L.SetField(t, "group_id", lua.LNumber(m.GroupID))
+		L.SetField(t, "raw_message", lua.LString(m.RawMessage))
+		sender := L.NewTable()
+		L.SetField(sender, "user_id", lua.LNumber(m.Sender.UserID))
+		L.SetField(sender, "nickname", lua.LString(m.Sender.Nickname))
+		L.SetField(sender, "card", lua.LString(m.Sender.Card))
+		L.SetField(t, "sender", sender)
+		segs := L.NewTable()
+		if len(m.Message) > 0 {
+			for j, seg := range m.Message {
+				st := L.NewTable()
+				L.SetField(st, "type", lua.LString(seg.Type))
+				L.SetField(st, "data", goToLuaValue(L, seg.Data))
+				L.SetTable(segs, lua.LNumber(j+1), st)
+			}
+		}
+		L.SetField(t, "message", segs)
+		L.SetTable(arr, lua.LNumber(i+1), t)
+	}
+	return arr
 }
 
 func goToLuaValue(L *lua.LState, v any) lua.LValue {

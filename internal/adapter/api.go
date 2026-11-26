@@ -79,13 +79,35 @@ type MsgHistoryList struct {
 	Messages []MessageEvent `json:"messages"`
 }
 
-// GetGroupMsgHistory 获取群消息历史。messageSeq>0 时返回该消息之前的历史（升序）；
+// normalizeHistoryOrder 保证群/私聊历史消息统一按从旧到新升序返回（兼容 NapCat reverseOrder=true 返回倒序的情况）。
+func normalizeHistoryOrder(msgs []MessageEvent) []MessageEvent {
+	n := len(msgs)
+	if n < 2 {
+		return msgs
+	}
+	first, last := msgs[0], msgs[n-1]
+	desc := false
+	if first.MessageSeq > 0 && last.MessageSeq > 0 && first.MessageSeq != last.MessageSeq {
+		desc = first.MessageSeq > last.MessageSeq
+	} else if first.Time > 0 && last.Time > 0 && first.Time != last.Time {
+		desc = first.Time > last.Time
+	}
+	if desc {
+		for i, j := 0, n-1; i < j; i, j = i+1, j-1 {
+			msgs[i], msgs[j] = msgs[j], msgs[i]
+		}
+	}
+	return msgs
+}
+
+// GetGroupMsgHistory 获取群消息历史。messageSeq!=0 时返回该消息之前的历史（升序）；
 // count>0 时提示实现端返回条数（OneBot11 标准未定义 count，部分实现忽略，
 // 调用方需自行按需截断）。
 func (p *Adapter) GetGroupMsgHistory(groupID, messageSeq int64, count int) ([]MessageEvent, error) {
 	params := map[string]any{"group_id": groupID}
-	if messageSeq > 0 {
+	if messageSeq != 0 {
 		params["message_seq"] = messageSeq
+		params["reverseOrder"] = true
 	}
 	if count > 0 {
 		params["count"] = count
@@ -94,7 +116,7 @@ func (p *Adapter) GetGroupMsgHistory(groupID, messageSeq int64, count int) ([]Me
 	if err != nil {
 		return nil, err
 	}
-	return rsp.Messages, nil
+	return normalizeHistoryOrder(rsp.Messages), nil
 }
 
 // GetFriendMsgHistory 获取好友私聊消息历史。参数语义同 GetGroupMsgHistory。
