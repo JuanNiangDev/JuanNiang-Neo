@@ -49,11 +49,6 @@ func (a *AdapterWrapper) GetMsg(messageID int64) (map[string]any, error) {
 	return toMap(msg), nil
 }
 
-// GetGroupMsgHistory 获取群历史消息（升序），用于插件在断线重连后补全漏收消息。
-func (a *AdapterWrapper) GetGroupMsgHistory(groupID, messageSeq int64, count int) ([]adapter.MessageEvent, error) {
-	return a.p.GetGroupMsgHistory(groupID, messageSeq, count)
-}
-
 // GetImage 用 QQ 图片文件哈希换一条新的可下载链接（原始 rkey 会过期）。
 func (a *AdapterWrapper) GetImage(file string) (*adapter.FileInfo, error) {
 	return a.p.GetImage(file)

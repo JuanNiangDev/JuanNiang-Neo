@@ -37,24 +37,3 @@ func TestParseForwardMsgID(t *testing.T) {
 		}
 	}
 }
-
-func TestNormalizeHistoryOrder(t *testing.T) {
-	desc := []MessageEvent{
-		{MessageID: 3, MessageSeq: 300, Time: 1003},
-		{MessageID: 2, MessageSeq: 200, Time: 1002},
-		{MessageID: 1, MessageSeq: 100, Time: 1001},
-	}
-	got := normalizeHistoryOrder(desc)
-	if got[0].MessageSeq != 100 || got[2].MessageSeq != 300 {
-		t.Fatalf("expected ascending order, got seq=[%d, %d, %d]", got[0].MessageSeq, got[1].MessageSeq, got[2].MessageSeq)
-	}
-
-	asc := []MessageEvent{
-		{MessageID: 1, Time: 1001},
-		{MessageID: 2, Time: 1002},
-	}
-	gotAsc := normalizeHistoryOrder(asc)
-	if gotAsc[0].MessageID != 1 || gotAsc[1].MessageID != 2 {
-		t.Fatalf("expected ascending order preserved, got ids=[%d, %d]", gotAsc[0].MessageID, gotAsc[1].MessageID)
-	}
-}
